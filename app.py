@@ -167,24 +167,23 @@ def nba_get_pra_params(name: str, n_games: int):
 
 
 # =========================
-# PROP ODDS API: PrizePicks PRA Lines
+# PROP ODDS API: PrizePicks PRA Lines (updated endpoint)
 # =========================
 
 PROP_ODDS_API_KEY = st.secrets.get("PROP_ODDS_API_KEY", os.getenv("PROP_ODDS_API_KEY", ""))
-PROP_BASE = "https://api.prop-odds.com/beta"
+PROP_BASE = "https://api.prop-odds.com/v1"
 
 @st.cache_data(show_spinner=False)
 def load_prizepicks_pra_lines():
     """
-    Pull PrizePicks PRA lines from the Prop Odds API.
+    Pull PrizePicks PRA lines from Prop Odds API (v1).
     """
     if not PROP_ODDS_API_KEY:
         return {}, "Missing PROP_ODDS_API_KEY in secrets."
 
-    url = f"{PROP_BASE}/dfs/markets"
+    url = f"{PROP_BASE}/dfs/picks"
     params = {
         "sport": "nba",
-        "region": "us",
         "book": "prizepicks",
         "market": "player_points_rebounds_assists",
         "api_key": PROP_ODDS_API_KEY,
@@ -199,6 +198,8 @@ def load_prizepicks_pra_lines():
         return {}, "Prop Odds 401: Invalid API key. Check your PROP_ODDS_API_KEY secret."
     if r.status_code == 403:
         return {}, "Prop Odds 403: Access forbidden (plan/tier issue)."
+    if r.status_code == 404:
+        return {}, "Prop Odds 404: Endpoint or market not found. Try again later or check plan."
     if r.status_code != 200:
         return {}, f"Prop Odds error {r.status_code}: {r.text}"
 
@@ -208,18 +209,19 @@ def load_prizepicks_pra_lines():
         return {}, "Prop Odds returned invalid JSON."
 
     lines = {}
-    # Different versions of Prop Odds use "data" or "markets" as the key
-    markets = data.get("data") or data.get("markets") or []
-    for item in markets:
+    picks = data.get("picks") or data.get("data") or []
+    for item in picks:
         player = item.get("player_name") or item.get("name")
         line_val = item.get("line") or item.get("odds_value")
-        if player and line_val:
+        market = item.get("market_name") or ""
+        book = item.get("book_name") or ""
+        if player and line_val and "rebounds" in market.lower() and "assists" in market.lower():
             lines[_norm_name(player)] = float(line_val)
 
     if not lines:
         return {}, "No PrizePicks PRA lines found via Prop Odds API."
 
-    return lines, f"Loaded {len(lines)} PrizePicks PRA lines from Prop Odds."
+    return lines, f"Loaded {len(lines)} PrizePicks PRA lines from Prop Odds (v1)."
 
 def get_prizepicks_pra_line(player_name: str):
     """
