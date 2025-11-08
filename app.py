@@ -31,7 +31,6 @@ This app:
 """
 )
 
-THE_ODDS_API_KEY = st.secrets.get("THE_ODDS_API_KEY", os.getenv("THE_ODDS_API_KEY", ""))
 
 TOA_BASE = "https://api.the-odds-api.com/v4"
 SPORT_KEY = "basketball_nba"
@@ -167,94 +166,72 @@ def nba_get_pra_params(name: str, n_games: int):
 
 
 # =========================
-# The Odds API: PrizePicks PRA lines
+# PROP ODDS API: PrizePicks PRA Lines
 # =========================
+
+PROP_ODDS_API_KEY = st.secrets.get("PROP_ODDS_API_KEY", os.getenv("PROP_ODDS_API_KEY", ""))
+PROP_BASE = "https://api.prop-odds.com/beta"
 
 @st.cache_data(show_spinner=False)
 def load_prizepicks_pra_lines():
     """
-    Load PrizePicks PRA lines for today's/tomorrow's NBA via The Odds API.
-    Returns (dict: norm_name -> line, message).
+    Pull PrizePicks PRA lines from the Prop Odds API.
     """
-    if not THE_ODDS_API_KEY:
-        return {}, "Missing THE_ODDS_API_KEY."
+    if not PROP_ODDS_API_KEY:
+        return {}, "Missing PROP_ODDS_API_KEY in secrets."
 
-    now = datetime.now(timezone.utc)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=2)
-
-    events_url = f"{TOA_BASE}/sports/{SPORT_KEY}/events"
-    ev_params = {
-        "apiKey": THE_ODDS_API_KEY,
-        "commenceTimeFrom": start.isoformat(),
-        "commenceTimeTo": end.isoformat(),
+    url = f"{PROP_BASE}/dfs/markets"
+    params = {
+        "sport": "nba",
+        "region": "us",
+        "book": "prizepicks",
+        "market": "player_points_rebounds_assists",
+        "api_key": PROP_ODDS_API_KEY,
     }
 
     try:
-        ev_resp = requests.get(events_url, params=ev_params, timeout=8)
+        r = requests.get(url, params=params, timeout=8)
     except Exception as e:
-        return {}, f"Events request failed: {e}"
+        return {}, f"Prop Odds request failed: {e}"
 
-    if ev_resp.status_code != 200:
-        return {}, f"Events error {ev_resp.status_code}: {ev_resp.text}"
+    if r.status_code == 401:
+        return {}, "Prop Odds 401: Invalid API key. Check your PROP_ODDS_API_KEY secret."
+    if r.status_code == 403:
+        return {}, "Prop Odds 403: Access forbidden (plan/tier issue)."
+    if r.status_code != 200:
+        return {}, f"Prop Odds error {r.status_code}: {r.text}"
 
-    events = ev_resp.json()
+    try:
+        data = r.json()
+    except Exception:
+        return {}, "Prop Odds returned invalid JSON."
+
     lines = {}
-
-    for ev in events:
-        eid = ev.get("id")
-        if not eid:
-            continue
-
-        odds_url = f"{TOA_BASE}/sports/{SPORT_KEY}/events/{eid}/odds"
-        odds_params = {
-            "apiKey": THE_ODDS_API_KEY,
-            "regions": "us_dfs",
-            "bookmakers": "prizepicks",
-            "markets": "player_points_rebounds_assists",
-            "oddsFormat": "decimal",
-        }
-
-        try:
-            od_resp = requests.get(odds_url, params=odds_params, timeout=8)
-        except Exception:
-            continue
-
-        if od_resp.status_code != 200:
-            continue
-
-        od = od_resp.json()
-        for bm in od.get("bookmakers", []):
-            if bm.get("key") != "prizepicks":
-                continue
-            for m in bm.get("markets", []):
-                if m.get("key") != "player_points_rebounds_assists":
-                    continue
-                for o in m.get("outcomes", []):
-                    raw_name = o.get("description") or o.get("name") or ""
-                    point = o.get("point")
-                    if not raw_name or point is None:
-                        continue
-                    lines[_norm_name(raw_name)] = float(point)
+    # Different versions of Prop Odds use "data" or "markets" as the key
+    markets = data.get("data") or data.get("markets") or []
+    for item in markets:
+        player = item.get("player_name") or item.get("name")
+        line_val = item.get("line") or item.get("odds_value")
+        if player and line_val:
+            lines[_norm_name(player)] = float(line_val)
 
     if not lines:
-        return {}, "No PrizePicks PRA lines found (check Odds API key/plan/markets)."
+        return {}, "No PrizePicks PRA lines found via Prop Odds API."
 
-    return lines, f"Loaded {len(lines)} PrizePicks PRA lines."
-
+    return lines, f"Loaded {len(lines)} PrizePicks PRA lines from Prop Odds."
 
 def get_prizepicks_pra_line(player_name: str):
+    """
+    Retrieve a specific player's PRA line using fuzzy matching.
+    """
     lines, msg = load_prizepicks_pra_lines()
     if not lines:
         return None, msg
 
     target = _norm_name(player_name)
-
-    # exact
     if target in lines:
         return lines[target], "OK"
 
-    # fuzzy
     keys = list(lines.keys())
     best = difflib.get_close_matches(target, keys, n=1, cutoff=0.5)
     if best:
