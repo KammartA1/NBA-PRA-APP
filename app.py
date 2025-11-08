@@ -30,6 +30,7 @@ This app:
   - 2-pick combo joint probability, EV, and optimal stake
 """
 )
+PROP_ODDS_API_KEY = st.secrets.get("PROP_ODDS_API_KEY", os.getenv("PROP_ODDS_API_KEY", ""))
 
 
 TOA_BASE = "https://api.the-odds-api.com/v4"
@@ -315,7 +316,9 @@ if run:
 
     if payout_mult <= 1:
         errors.append("Payout multiplier must be > 1.")
-    if not THE_ODDS_API_KEY:
+    if not PROP_ODDS_API_KEY:
+    errors.append("Missing PROP_ODDS_API_KEY in secrets.")
+
         errors.append("Missing THE_ODDS_API_KEY in secrets.")
 
     # Get last N game stats via nba_api
