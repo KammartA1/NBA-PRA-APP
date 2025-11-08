@@ -259,37 +259,78 @@ if st.button("Run Live Model"):
     ev_combo = payout_mult * combo_prob - 1
     stake_combo = min(bankroll * fractional_kelly * ((payout_mult * combo_prob - (1 - combo_prob)) / (payout_mult - 1)), bankroll * MAX_BANKROLL_PCT)
 
-    # =========================
-    # DISPLAY
-    # =========================
-    st.markdown("### 📊 Single-Leg Results")
-    col1, col2 = st.columns(2)
+    # -------------------- RESULTS SECTION --------------------
 
-    with col1:
-        st.subheader(p1_name)
-        st.write(msg1)
-        st.metric("Auto Projected Minutes", f"{p1_avg_min:.1f}")
-        st.metric("Line", p1_line)
-        st.metric("Prob OVER", f"{p1_prob:.1%}")
-        st.metric("EV per $", f"{ev1*100:.1f}%")
-        st.metric("Suggested Stake", f"${stake1:.2f}")
-        st.success("✅ +EV leg") if ev1 > 0 else st.error("❌ -EV leg")
+st.markdown("## 📊 Results")
 
-    with col2:
-        st.subheader(p2_name)
-        st.write(msg2)
-        st.metric("Auto Projected Minutes", f"{p2_avg_min:.1f}")
-        st.metric("Line", p2_line)
-        st.metric("Prob OVER", f"{p2_prob:.1%}")
-        st.metric("EV per $", f"{ev2*100:.1f}%")
-        st.metric("Suggested Stake", f"${stake2:.2f}")
-        st.success("✅ +EV leg") if ev2 > 0 else st.error("❌ -EV leg")
+col1, col2 = st.columns(2)
 
-    st.markdown("---")
-    st.header("🎯 2-Pick Combo (Both Must Hit)")
-    st.metric("Joint Prob", f"{combo_prob:.1%}")
-    st.metric("EV per $", f"{ev_combo*100:.1f}%")
-    st.metric("Recommended Stake", f"${stake_combo:.2f}")
-    st.success("✅ Combo is +EV") if ev_combo > 0 else st.error("❌ Combo is -EV")
+with col1:
+    st.markdown(f"### {p1_name}")
+    st.markdown(f"**Line:** {p1_line}")
+    st.markdown(f"**Projected PRA:** {p1_proj:.1f}")
+    st.markdown(f"**Prob OVER:** {prob1 * 100:.1f}%")
+    st.markdown(f"**EV per $:** {ev1:.1f}%")
+    st.markdown(f"**Suggested Stake:** ${stake1:.2f}")
 
-st.caption("App uses live Odds API lines and auto-estimates minutes from recent NBA logs.")
+    if ev1 > 0:
+        st.success("✅ +EV leg")
+    else:
+        st.error("❌ -EV leg")
+
+with col2:
+    st.markdown(f"### {p2_name}")
+    st.markdown(f"**Line:** {p2_line}")
+    st.markdown(f"**Projected PRA:** {p2_proj:.1f}")
+    st.markdown(f"**Prob OVER:** {prob2 * 100:.1f}%")
+    st.markdown(f"**EV per $:** {ev2:.1f}%")
+    st.markdown(f"**Suggested Stake:** ${stake2:.2f}")
+
+    if ev2 > 0:
+        st.success("✅ +EV leg")
+    else:
+        st.error("❌ -EV leg")
+
+# ----------- 2-Pick Combo Section -----------
+
+st.markdown("---")
+st.markdown("## 🎯 2-Pick Power Play Combo")
+
+st.markdown(f"**Joint Prob OVER:** {joint_prob * 100:.1f}%")
+st.markdown(f"**Expected Value (EV):** {combo_ev * 100:.1f}%")
+st.markdown(f"**Suggested Stake (Kelly):** ${combo_stake:.2f}")
+
+if combo_ev > 0:
+    st.success("🔥 Positive EV combo! Consider playing this 2-Pick.")
+else:
+    st.error("🚫 Negative EV combo — best to skip.")
+# -------------------- BEST BET SUMMARY --------------------
+
+st.markdown("---")
+st.markdown("## 💬 Best Bet Summary")
+
+# Determine which leg has the higher EV
+if ev1 >= ev2:
+    best_player = p1_name
+    best_line = p1_line
+    best_ev = ev1
+    best_prob = prob1
+else:
+    best_player = p2_name
+    best_line = p2_line
+    best_ev = ev2
+    best_prob = prob2
+
+# Display summary card
+if best_ev > 0:
+    st.success(
+        f"**Best Bet:** {best_player} OVER {best_line}  \n"
+        f"Win Probability: **{best_prob * 100:.1f}%**  \n"
+        f"Expected Value: **{best_ev * 100:.1f}%**"
+    )
+else:
+    st.warning(
+        f"No +EV plays detected.  \n"
+        f"Highest-rated leg: {best_player} OVER {best_line} "
+        f"(EV {best_ev * 100:.1f}%, Win Probability {best_prob * 100:.1f}%)"
+    )
