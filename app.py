@@ -148,10 +148,44 @@ def nba_get_player_params(name, n_games, market_type):
     return mu, sd, avg_min, f"{label}: {len(vals_per_min)} games analyzed ({current_season()})"
 
 @st.cache_data
+@st.cache_data
 def load_prizepicks_lines(market_key):
     if not THE_ODDS_API_KEY:
         return {}, "Missing THE_ODDS_API_KEY in secrets."
-    url = f"{ODDS_BASE}/basketball_nba/props"
+
+    url = f"{ODDS_BASE}/basketball_nba/odds"
+    params = {
+        "regions": "us",
+        "markets": market_key,
+        "bookmakers": "prizepicks",
+        "oddsFormat": "american",
+        "apiKey": THE_ODDS_API_KEY,
+    }
+
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code != 200:
+            return {}, f"The Odds API error {r.status_code}: {r.text}"
+        data = r.json()
+    except Exception as e:
+        return {}, f"Request failed: {e}"
+
+    lines = {}
+    for game in data:
+        for bookmaker in game.get("bookmakers", []):
+            if bookmaker.get("key") == "prizepicks":
+                for market in bookmaker.get("markets", []):
+                    if market.get("key") == market_key:
+                        for outcome in market.get("outcomes", []):
+                            name = outcome.get("name")
+                            line = outcome.get("point")
+                            if name and line:
+                                lines[_norm_name(name)] = float(line)
+
+    if not lines:
+        return {}, f"No PrizePicks {market_key} lines found."
+    return lines, f"Loaded {len(lines)} {market_key} lines successfully."
+
     params = {"regions": "us", "markets": market_key, "bookmakers": "prizepicks", "apiKey": THE_ODDS_API_KEY}
     try:
         r = requests.get(url, params=params, timeout=10)
