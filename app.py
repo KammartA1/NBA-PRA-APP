@@ -167,61 +167,64 @@ def nba_get_pra_params(name: str, n_games: int):
 
 
 # =========================
-# PROP ODDS API: PrizePicks PRA Lines (updated endpoint)
+# The Odds API: PrizePicks PRA Lines
 # =========================
 
-PROP_ODDS_API_KEY = st.secrets.get("PROP_ODDS_API_KEY", os.getenv("PROP_ODDS_API_KEY", ""))
-PROP_BASE = "https://api.prop-odds.com/v1"
+THE_ODDS_API_KEY = st.secrets.get("THE_ODDS_API_KEY", os.getenv("THE_ODDS_API_KEY", ""))
+ODDS_BASE = "https://api.the-odds-api.com/v4/sports"
 
 @st.cache_data(show_spinner=False)
 def load_prizepicks_pra_lines():
     """
-    Pull PrizePicks PRA lines from Prop Odds API (v1).
+    Load PrizePicks PRA lines from The Odds API.
     """
-    if not PROP_ODDS_API_KEY:
-        return {}, "Missing PROP_ODDS_API_KEY in secrets."
+    if not THE_ODDS_API_KEY:
+        return {}, "Missing THE_ODDS_API_KEY in secrets."
 
-    url = f"{PROP_BASE}/dfs/picks"
+    url = f"{ODDS_BASE}/basketball_nba/odds"
     params = {
-        "sport": "nba",
-        "book": "prizepicks",
-        "market": "player_points_rebounds_assists",
-        "api_key": PROP_ODDS_API_KEY,
+        "regions": "us",
+        "markets": "player_points_rebounds_assists",
+        "bookmakers": "prizepicks",
+        "apiKey": THE_ODDS_API_KEY,
     }
 
     try:
-        r = requests.get(url, params=params, timeout=8)
+        r = requests.get(url, params=params, timeout=10)
     except Exception as e:
-        return {}, f"Prop Odds request failed: {e}"
+        return {}, f"The Odds API request failed: {e}"
 
     if r.status_code == 401:
-        return {}, "Prop Odds 401: Invalid API key. Check your PROP_ODDS_API_KEY secret."
+        return {}, "The Odds API 401: Invalid or expired API key."
     if r.status_code == 403:
-        return {}, "Prop Odds 403: Access forbidden (plan/tier issue)."
+        return {}, "The Odds API 403: Access forbidden (plan/tier issue)."
     if r.status_code == 404:
-        return {}, "Prop Odds 404: Endpoint or market not found. Try again later or check plan."
+        return {}, "The Odds API 404: Market not found or temporarily unavailable."
     if r.status_code != 200:
-        return {}, f"Prop Odds error {r.status_code}: {r.text}"
+        return {}, f"The Odds API error {r.status_code}: {r.text}"
 
     try:
         data = r.json()
     except Exception:
-        return {}, "Prop Odds returned invalid JSON."
+        return {}, "The Odds API returned invalid JSON."
 
     lines = {}
-    picks = data.get("picks") or data.get("data") or []
-    for item in picks:
-        player = item.get("player_name") or item.get("name")
-        line_val = item.get("line") or item.get("odds_value")
-        market = item.get("market_name") or ""
-        book = item.get("book_name") or ""
-        if player and line_val and "rebounds" in market.lower() and "assists" in market.lower():
-            lines[_norm_name(player)] = float(line_val)
+    # Parse PrizePicks PRA market data
+    for game in data:
+        for bookmaker in game.get("bookmakers", []):
+            if bookmaker.get("key") == "prizepicks":
+                for market in bookmaker.get("markets", []):
+                    if market.get("key") == "player_points_rebounds_assists":
+                        for outcome in market.get("outcomes", []):
+                            player = outcome.get("description")
+                            line_val = outcome.get("point")
+                            if player and line_val:
+                                lines[_norm_name(player)] = float(line_val)
 
     if not lines:
-        return {}, "No PrizePicks PRA lines found via Prop Odds API."
+        return {}, "No PrizePicks PRA lines found via The Odds API."
 
-    return lines, f"Loaded {len(lines)} PrizePicks PRA lines from Prop Odds (v1)."
+    return lines, f"Loaded {len(lines)} PrizePicks PRA lines via The Odds API."
 
 def get_prizepicks_pra_line(player_name: str):
     """
@@ -242,6 +245,7 @@ def get_prizepicks_pra_line(player_name: str):
         return lines[match], f"Matched as '{match}'"
 
     return None, f"No PRA line for '{player_name}'. {msg}"
+
 
 
 # =========================
@@ -318,8 +322,7 @@ if run:
     if payout_mult <= 1:
         errors.append("Payout multiplier must be > 1.")
 
-    if not PROP_ODDS_API_KEY:
-        errors.append("Missing PROP_ODDS_API_KEY in secrets.")
+    
 
     # Get last N game stats via nba_api
     if not errors:
