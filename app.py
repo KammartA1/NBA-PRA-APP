@@ -3,6 +3,112 @@ import numpy as np
 from scipy.stats import norm
 import requests
 import os
+import os
+import requests
+from datetime import datetime, timedelta, timezone
+
+THE_ODDS_API_KEY = os.getenv("THE_ODDS_API_KEY", "")
+try:
+    import streamlit as st
+    if not THE_ODDS_API_KEY:
+        THE_ODDS_API_KEY = st.secrets.get("THE_ODDS_API_KEY", "")
+except:
+    pass
+
+
+def _norm_name(name: str) -> str:
+    return (
+        name.lower()
+        .replace(".", "")
+        .replace("'", "")
+        .replace("-", " ")
+        .strip()
+    )
+
+
+def get_prizepicks_pra_line(player_name: str):
+    """
+    Fetch PrizePicks PRA line for a given player using The Odds API.
+    Returns (line_float or None, debug_message).
+    """
+
+    if not THE_ODDS_API_KEY:
+        return None, "Missing THE_ODDS_API_KEY. Add it to st.secrets or env."
+
+    base_url = "https://api.the-odds-api.com/v4"
+    sport_key = "basketball_nba"
+
+    # Time window: today in UTC (adjust if you only want strict today's slate)
+    now = datetime.now(timezone.utc)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=2)  # small buffer for late games
+
+    events_url = f"{base_url}/sports/{sport_key}/events"
+    events_params = {
+        "apiKey": THE_ODDS_API_KEY,
+        "commenceTimeFrom": start.isoformat(),
+        "commenceTimeTo": end.isoformat(),
+    }
+
+    try:
+        ev_resp = requests.get(events_url, params=events_params, timeout=8)
+        if ev_resp.status_code != 200:
+            return None, f"Events error {ev_resp.status_code}: {ev_resp.text}"
+        events = ev_resp.json()
+    except Exception as e:
+        return None, f"Events request failed: {e}"
+
+    target = _norm_name(player_name)
+
+    # For each event, query props via event-odds endpoint (required for player props)
+    for event in events:
+        event_id = event.get("id")
+        if not event_id:
+            continue
+
+        odds_url = f"{base_url}/sports/{sport_key}/events/{event_id}/odds"
+        odds_params = {
+            "apiKey": THE_ODDS_API_KEY,
+            "regions": "us_dfs",
+            "bookmakers": "prizepicks",
+            "markets": "player_points_rebounds_assists",
+            "oddsFormat": "decimal",
+        }
+
+        try:
+            od_resp = requests.get(odds_url, params=odds_params, timeout=8)
+            if od_resp.status_code != 200:
+                # Skip INVALID_MARKET etc. Don't hard fail the whole flow.
+                continue
+            od_data = od_resp.json()
+        except Exception:
+            continue
+
+        # od_data is a single-event structure
+        bookmakers = od_data.get("bookmakers", [])
+        for bm in bookmakers:
+            if bm.get("key") != "prizepicks":
+                continue
+
+            for market in bm.get("markets", []):
+                if market.get("key") != "player_points_rebounds_assists":
+                    continue
+
+                for o in market.get("outcomes", []):
+                    # The Odds API can put player name in 'description' or 'name' depending on provider
+                    raw_name = o.get("description") or o.get("name") or ""
+                    if not raw_name:
+                        continue
+
+                    if _norm_name(raw_name) == target or target in _norm_name(raw_name):
+                        point = o.get("point")
+                        if point is not None:
+                            try:
+                                return float(point), f"Found via PrizePicks / The Odds API (event {event_id})"
+                            except:
+                                continue
+
+    return None, f"No PrizePicks PRA line found for {player_name} via The Odds API."
 
 st.set_page_config(page_title="NBA PRA 2-Pick Edge", page_icon="🏀", layout="centered")
 st.title("🏀 NBA PRA 2-Pick Edge Calculator")
@@ -143,6 +249,21 @@ def compute_ev(line, pra_per_min, sd_per_min, minutes, payout, bankroll, kelly_f
 
 
 # ---------- UI: INPUTS ----------
+st.header("PRA Model - PrizePicks Auto Fill")
+
+col1, col2 = st.columns(2)
+with col1:
+    p1_name = st.text_input("Player 1 Name", "Donovan Mitchell")
+with col2:
+    p2_name = st.text_input("Player 2 Name", "Jaylen Brown")
+
+if st.button("Auto-fill PrizePicks PRA Lines"):
+    for label, name in [("P1", p1_name), ("P2", p2_name)]:
+        line, msg = get_prizepicks_pra_line(name)
+        if line is not None:
+            st.success(f"{label}: {name} PRA line = {line}  ({msg})")
+        else:
+            st.warning(f"{label}: {msg}")
 
 st.sidebar.header("Global Settings")
 bankroll = st.sidebar.number_input("Bankroll ($)", value=30.0, step=1.0)
@@ -208,6 +329,24 @@ with col_m2:
 run_calc = st.button("Calculate Edge for Both & Combo")
 
 # ---------- CALCULATIONS & OUTPUT ----------
+# Example: using your projection model (already built earlier in our convo)
+p1_proj = st.number_input("P1 Projected PRA", value=34.5)
+p2_proj = st.number_input("P2 Projected PRA", value=32.0)
+
+# Example edge logic (simplified):
+def leg_edge(proj, line):
+    return proj - line
+
+# Call API (ideally once, not inside this block in production)
+p1_api_line, _ = get_prizepicks_pra_line(p1_name)
+p2_api_line, _ = get_prizepicks_pra_line(p2_name)
+
+if p1_api_line and p2_api_line:
+    e1 = leg_edge(p1_proj, p1_api_line)
+    e2 = leg_edge(p2_proj, p2_api_line)
+    st.write(f"P1 edge: {e1:+.2f}")
+    st.write(f"P2 edge: {e2:+.2f}")
+    # Then your parlay/Power Play EV + bankroll rule goes here
 
 if run_calc:
     if payout <= 1:
