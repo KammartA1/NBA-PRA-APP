@@ -313,14 +313,11 @@ run = st.button("Run Live Model")
 
 if run:
     errors = []
-
     if payout_mult <= 1:
         errors.append("Payout multiplier must be > 1.")
-if not PROP_ODDS_API_KEY:
-    errors.append("Missing PROP_ODDS_API_KEY in secrets.")
 
-
-        errors.append("Missing THE_ODDS_API_KEY in secrets.")
+    if not PROP_ODDS_API_KEY:
+        errors.append("Missing PROP_ODDS_API_KEY in secrets.")
 
     # Get last N game stats via nba_api
     if not errors:
