@@ -268,7 +268,8 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown(f"### {p1_name}")
     st.markdown(f"**Line:** {p1_line}")
-    st.markdown(f"**Projected PRA:** {p1_proj:.1f}")
+  st.markdown(f"**Projected PRA:** {p1_proj if 'p1_proj' in locals() else 'N/A'}")
+
     st.markdown(f"**Prob OVER:** {prob1 * 100:.1f}%")
     st.markdown(f"**EV per $:** {ev1:.1f}%")
     st.markdown(f"**Suggested Stake:** ${stake1:.2f}")
@@ -281,7 +282,8 @@ with col1:
 with col2:
     st.markdown(f"### {p2_name}")
     st.markdown(f"**Line:** {p2_line}")
-    st.markdown(f"**Projected PRA:** {p2_proj:.1f}")
+  st.markdown(f"**Projected PRA:** {p2_proj if 'p2_proj' in locals() else 'N/A'}")
+
     st.markdown(f"**Prob OVER:** {prob2 * 100:.1f}%")
     st.markdown(f"**EV per $:** {ev2:.1f}%")
     st.markdown(f"**Suggested Stake:** ${stake2:.2f}")
