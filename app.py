@@ -316,8 +316,9 @@ if run:
 
     if payout_mult <= 1:
         errors.append("Payout multiplier must be > 1.")
-    if not PROP_ODDS_API_KEY:
+if not PROP_ODDS_API_KEY:
     errors.append("Missing PROP_ODDS_API_KEY in secrets.")
+
 
         errors.append("Missing THE_ODDS_API_KEY in secrets.")
 
