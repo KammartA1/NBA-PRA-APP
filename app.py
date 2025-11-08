@@ -1,5 +1,5 @@
-import os
 import difflib
+import os
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -8,31 +8,32 @@ import streamlit as st
 from scipy.stats import norm
 
 # =========================
-# CONFIG & SECRETS
+# BASIC CONFIG
 # =========================
 
 st.set_page_config(page_title="NBA PRA 2-Pick Live Edge", page_icon="🏀", layout="centered")
 st.title("🏀 NBA PRA 2-Pick Live Edge")
 
 st.markdown(
-    "This tool:\n"
-    "- Pulls recent stats from **balldontlie**\n"
+    "This app:\n"
+    "- Pulls recent game stats from **balldontlie** (no key)\n"
     "- Pulls PrizePicks PRA lines via **The Odds API**\n"
-    "- Computes probability, EV, and recommended stakes for each leg and a 2-pick combo."
+    "- Computes probability, EV, and recommended stakes for each leg and a 2-pick combo.\n"
+    "Use it on your phone like a lightweight model."
 )
 
-BALLDONTLIE_API_KEY = st.secrets.get("BALLDONTLIE_API_KEY", os.getenv("BALLDONTLIE_API_KEY", ""))
 THE_ODDS_API_KEY = st.secrets.get("THE_ODDS_API_KEY", os.getenv("THE_ODDS_API_KEY", ""))
 
-BDL_HEADERS = {"Authorization": BALLDONTLIE_API_KEY} if BALLDONTLIE_API_KEY else {}
+BDL_BASE = "https://api.balldontlie.io/v1"
 TOA_BASE = "https://api.the-odds-api.com/v4"
 SPORT_KEY = "basketball_nba"
 
-MAX_BANKROLL_PCT = 0.03  # 3% max position
-DEFAULT_LOOKBACK = 10    # games for PRA/min
+MAX_BANKROLL_PCT = 0.03     # cap each stake at 3% of bankroll
+DEFAULT_LOOKBACK = 10       # last N games for PRA/min
+
 
 # =========================
-# HELPER FUNCTIONS
+# HELPER UTILITIES
 # =========================
 
 def _norm_name(s: str) -> str:
@@ -44,32 +45,33 @@ def _norm_name(s: str) -> str:
         .strip()
     )
 
-# ---------- balldontlie: player lookup ----------
+# ---------- 1. balldontlie: Player lookup ----------
 
 @st.cache_data(show_spinner=False)
 def bdl_get_player_id(player_name: str):
-    """Fuzzy player search via balldontlie."""
-    if not BALLDONTLIE_API_KEY:
-        return None, "BALLDONTLIE_API_KEY missing. Add it in Streamlit secrets."
-
-    base_url = "https://api.balldontlie.io/v1/players"
+    """
+    Fuzzy player search via balldontlie public API.
+    No API key needed. Surfaces real errors clearly.
+    """
+    url = f"{BDL_BASE}/players"
 
     def _query(q):
         try:
-            r = requests.get(base_url, headers=BDL_HEADERS,
-                             params={"search": q, "per_page": 100}, timeout=8)
-            if r.status_code != 200:
-                return None, f"balldontlie error {r.status_code}: {r.text}"
-            return r.json().get("data", []), None
+            r = requests.get(url, params={"search": q, "per_page": 100}, timeout=8)
         except Exception as e:
             return None, f"Network error calling balldontlie: {e}"
+        if r.status_code == 429:
+            return None, "balldontlie rate limit (429). Wait a bit and retry."
+        if r.status_code != 200:
+            return None, f"balldontlie error {r.status_code}: {r.text}"
+        return r.json().get("data", []), None
 
-    # first try full input
+    # Try full input
     data, err = _query(player_name)
     if err:
         return None, err
 
-    # if no results, try last name only
+    # If nothing, try last name
     if not data:
         parts = player_name.split()
         if len(parts) > 1:
@@ -80,40 +82,39 @@ def bdl_get_player_id(player_name: str):
     if not data:
         return None, f"No player found for '{player_name}' via balldontlie."
 
-    # fuzzy match
+    # Fuzzy match among candidates
     target = _norm_name(player_name)
     candidates = []
     for p in data:
         full = f"{p.get('first_name','')} {p.get('last_name','')}".strip()
         candidates.append((p["id"], full, _norm_name(full)))
 
-    names_norm = [c[2] for c in candidates]
-    best = difflib.get_close_matches(target, names_norm, n=1, cutoff=0.4)
+    norm_names = [c[2] for c in candidates]
+    best = difflib.get_close_matches(target, norm_names, n=1, cutoff=0.4)
+
     if best:
-        best_norm = best[0]
+        chosen = best[0]
         for pid, full, normed in candidates:
-            if normed == best_norm:
+            if normed == chosen:
                 return pid, full
 
-    # fallback: first result
+    # fallback: first
     pid, full, _ = candidates[0]
     return pid, full
 
-# ---------- balldontlie: PRA/min from last N games ----------
+# ---------- 2. balldontlie: PRA/min from last N games ----------
 
 @st.cache_data(show_spinner=False)
 def bdl_get_pra_params(player_name: str, n_games: int):
     """
-    Get PRA_per_min mean & sd from last N games via balldontlie stats endpoint.
+    Compute PRA_per_min mean & sd from last N games for a player.
+    Uses balldontlie stats endpoint without auth.
     """
     pid, msg = bdl_get_player_id(player_name)
     if pid is None:
         return None, None, msg
 
-    if not BALLDONTLIE_API_KEY:
-        return None, None, "BALLDONTLIE_API_KEY missing."
-
-    url = "https://api.balldontlie.io/v1/stats"
+    url = f"{BDL_BASE}/stats"
     params = {
         "player_ids[]": pid,
         "per_page": n_games,
@@ -121,10 +122,12 @@ def bdl_get_pra_params(player_name: str, n_games: int):
     }
 
     try:
-        r = requests.get(url, headers=BDL_HEADERS, params=params, timeout=8)
+        r = requests.get(url, params=params, timeout=8)
     except Exception as e:
         return None, None, f"Error fetching stats: {e}"
 
+    if r.status_code == 429:
+        return None, None, "balldontlie rate limit (429). Wait and try again."
     if r.status_code != 200:
         return None, None, f"Stats error {r.status_code}: {r.text}"
 
@@ -141,8 +144,8 @@ def bdl_get_pra_params(player_name: str, n_games: int):
 
         # handle "MM:SS" or numeric
         if isinstance(mins_raw, str) and ":" in mins_raw:
-            mm, ss = mins_raw.split(":")
             try:
+                mm, ss = mins_raw.split(":")
                 mins = float(mm) + float(ss) / 60.0
             except:
                 mins = 0.0
@@ -166,38 +169,41 @@ def bdl_get_pra_params(player_name: str, n_games: int):
 
     return mu, sd, f"OK — using last {len(arr)} games for {player_name}"
 
-# ---------- The Odds API: pull all PrizePicks PRA lines ----------
+# ---------- 3. The Odds API: load PrizePicks PRA lines ----------
 
 @st.cache_data(show_spinner=False)
 def load_prizepicks_pra_lines():
     """
-    Load PrizePicks PRA lines for today's & near-future NBA games using The Odds API.
+    Load all PrizePicks PRA lines for today's + tomorrow's NBA games.
     Returns (dict: norm_name -> line, message).
     """
     if not THE_ODDS_API_KEY:
-        return {}, "THE_ODDS_API_KEY missing. Add it in Streamlit secrets."
+        return {}, "Missing THE_ODDS_API_KEY in secrets."
 
     now = datetime.now(timezone.utc)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=2)
 
+    # 1) Get events
     events_url = f"{TOA_BASE}/sports/{SPORT_KEY}/events"
-    events_params = {
+    ev_params = {
         "apiKey": THE_ODDS_API_KEY,
         "commenceTimeFrom": start.isoformat(),
         "commenceTimeTo": end.isoformat(),
     }
 
     try:
-        ev_resp = requests.get(events_url, params=events_params, timeout=8)
-        if ev_resp.status_code != 200:
-            return {}, f"Events error {ev_resp.status_code}: {ev_resp.text}"
-        events = ev_resp.json()
+        ev_resp = requests.get(events_url, params=ev_params, timeout=8)
     except Exception as e:
         return {}, f"Events request failed: {e}"
 
+    if ev_resp.status_code != 200:
+        return {}, f"Events error {ev_resp.status_code}: {ev_resp.text}"
+
+    events = ev_resp.json()
     lines = {}
 
+    # 2) For each event, fetch PrizePicks PRA props
     for ev in events:
         event_id = ev.get("id")
         if not event_id:
@@ -206,7 +212,7 @@ def load_prizepicks_pra_lines():
         odds_url = f"{TOA_BASE}/sports/{SPORT_KEY}/events/{event_id}/odds"
         odds_params = {
             "apiKey": THE_ODDS_API_KEY,
-            "regions": "us_dfs",  # DFS books region
+            "regions": "us_dfs",
             "bookmakers": "prizepicks",
             "markets": "player_points_rebounds_assists",
             "oddsFormat": "decimal",
@@ -214,13 +220,14 @@ def load_prizepicks_pra_lines():
 
         try:
             od_resp = requests.get(odds_url, params=odds_params, timeout=8)
-            if od_resp.status_code != 200:
-                # silently skip if this event doesn't have props
-                continue
-            od = od_resp.json()
         except Exception:
             continue
 
+        if od_resp.status_code != 200:
+            # silently skip events without those markets / auth issues
+            continue
+
+        od = od_resp.json()
         for bm in od.get("bookmakers", []):
             if bm.get("key") != "prizepicks":
                 continue
@@ -229,17 +236,14 @@ def load_prizepicks_pra_lines():
                     continue
                 for o in m.get("outcomes", []):
                     raw_name = o.get("description") or o.get("name") or ""
-                    if not raw_name:
-                        continue
                     point = o.get("point")
-                    if point is None:
+                    if not raw_name or point is None:
                         continue
                     norm = _norm_name(raw_name)
-                    # last one wins if duplicates; usually fine
                     lines[norm] = float(point)
 
     if not lines:
-        return {}, "No PrizePicks PRA lines found via The Odds API (check key/plan/markets)."
+        return {}, "No PrizePicks PRA lines found (check The Odds API key/plan/markets)."
 
     return lines, f"Loaded {len(lines)} PrizePicks PRA lines."
 
@@ -247,18 +251,23 @@ def get_prizepicks_pra_line(player_name: str):
     lines, msg = load_prizepicks_pra_lines()
     if not lines:
         return None, msg
+
     target = _norm_name(player_name)
-    # exact or substring match
+
+    # exact
     if target in lines:
         return lines[target], "OK"
-    # fuzzy search
+
+    # fuzzy
     keys = list(lines.keys())
     best = difflib.get_close_matches(target, keys, n=1, cutoff=0.5)
     if best:
-        return lines[best[0]], f"Matched as '{best[0]}'"
-    return None, f"No PRA line match for '{player_name}'. ({msg})"
+        matched = best[0]
+        return lines[matched], f"Matched as '{matched}'"
 
-# ---------- EV / Kelly model ----------
+    return None, f"No PRA line for '{player_name}'. {msg}"
+
+# ---------- 4. EV / Kelly ----------
 
 def compute_ev(line, pra_per_min, sd_per_min, minutes, payout_mult, bankroll, kelly_frac):
     mu = pra_per_min * minutes
@@ -266,13 +275,12 @@ def compute_ev(line, pra_per_min, sd_per_min, minutes, payout_mult, bankroll, ke
     if sd <= 0:
         sd = max(1.0, 0.15 * max(mu, 1.0))
 
-    # Probability OVER (Normal)
+    # P(OVER)
     p_hat = 1.0 - norm.cdf(line, mu, sd)
 
-    # EV per $1 for fixed-multiplier payout
+    # EV per $1 (fixed multiplier model)
     ev = p_hat * (payout_mult - 1.0) - (1.0 - p_hat)
 
-    # Full Kelly fraction (for multiplier odds)
     b = payout_mult - 1.0
     full_kelly = 0.0
     if b > 0:
@@ -284,6 +292,7 @@ def compute_ev(line, pra_per_min, sd_per_min, minutes, payout_mult, bankroll, ke
 
     return p_hat, ev, stake, mu, sd, full_kelly
 
+
 # =========================
 # UI: GLOBAL SETTINGS
 # =========================
@@ -292,12 +301,9 @@ st.sidebar.header("Global Settings")
 bankroll = st.sidebar.number_input("Bankroll ($)", value=30.0, step=1.0)
 payout_mult = st.sidebar.number_input("2-Pick Payout Multiplier", value=3.0, step=0.1)
 kelly_frac = st.sidebar.slider("Fractional Kelly", 0.0, 1.0, 0.25, 0.05)
-lookback = st.sidebar.slider("Games for PRA/min (lookback)", 5, 20, DEFAULT_LOOKBACK)
+lookback = st.sidebar.slider("Games for PRA/min lookback", 5, 20, DEFAULT_LOOKBACK)
 
-st.sidebar.caption(
-    "For PrizePicks 2-pick Power Play use 3.0x.\n"
-    "Kelly < 0.25 recommended with small bankroll."
-)
+st.sidebar.caption("For PrizePicks 2-pick Power Play, use 3.0x. Keep Kelly small on a $30 bank.")
 
 # =========================
 # UI: PLAYER INPUTS
@@ -309,14 +315,14 @@ with col1:
     st.subheader("Player 1")
     p1_name = st.text_input("Player 1 Name", "RJ Barrett")
     p1_proj_min = st.number_input("P1 Projected Minutes", value=34.0, step=1.0)
-    auto_p1_line = st.checkbox("Use PrizePicks PRA line (P1)", value=True)
+    auto_p1_line = st.checkbox("Use PrizePicks PRA line for P1", value=True)
     p1_manual_line = st.number_input("P1 Manual PRA Line", value=33.5, step=0.5)
 
 with col2:
     st.subheader("Player 2")
     p2_name = st.text_input("Player 2 Name", "Jaylen Brown")
     p2_proj_min = st.number_input("P2 Projected Minutes", value=32.0, step=1.0)
-    auto_p2_line = st.checkbox("Use PrizePicks PRA line (P2)", value=True)
+    auto_p2_line = st.checkbox("Use PrizePicks PRA line for P2", value=True)
     p2_manual_line = st.number_input("P2 Manual PRA Line", value=34.5, step=0.5)
 
 run = st.button("Run Live Model")
@@ -331,22 +337,20 @@ if run:
     if payout_mult <= 1:
         errors.append("Payout multiplier must be > 1.")
 
-    # P1 stats
-    p1_mu_min, p1_sd_min, p1_stats_msg = bdl_get_pra_params(p1_name, lookback)
+    # Get PRA/min params
+    p1_mu_min, p1_sd_min, p1_msg = bdl_get_pra_params(p1_name, lookback)
     if p1_mu_min is None:
-        errors.append(f"P1 stats: {p1_stats_msg}")
+        errors.append(f"P1 stats: {p1_msg}")
 
-    # P2 stats
-    p2_mu_min, p2_sd_min, p2_stats_msg = bdl_get_pra_params(p2_name, lookback)
+    p2_mu_min, p2_sd_min, p2_msg = bdl_get_pra_params(p2_name, lookback)
     if p2_mu_min is None:
-        errors.append(f"P2 stats: {p2_stats_msg}")
+        errors.append(f"P2 stats: {p2_msg}")
 
-    # show any blocking errors
     if errors:
         for e in errors:
             st.error(e)
     else:
-        # Lines from The Odds API (with manual fallback)
+        # Lines from The Odds API (fallback to manual)
         p1_line = p1_manual_line
         p2_line = p2_manual_line
 
@@ -354,7 +358,7 @@ if run:
             api_line, msg = get_prizepicks_pra_line(p1_name)
             if api_line is not None:
                 p1_line = api_line
-                st.info(f"P1 line from PrizePicks/The Odds API: {api_line} ({msg})")
+                st.info(f"P1 line from PrizePicks via The Odds API: {api_line} ({msg})")
             else:
                 st.warning(f"P1 line lookup: {msg} — using manual {p1_manual_line}")
 
@@ -362,7 +366,7 @@ if run:
             api_line, msg = get_prizepicks_pra_line(p2_name)
             if api_line is not None:
                 p2_line = api_line
-                st.info(f"P2 line from PrizePicks/The Odds API: {api_line} ({msg})")
+                st.info(f"P2 line from PrizePicks via The Odds API: {api_line} ({msg})")
             else:
                 st.warning(f"P2 line lookup: {msg} — using manual {p2_manual_line}")
 
@@ -374,7 +378,7 @@ if run:
             p2_line, p2_mu_min, p2_sd_min, p2_proj_min, payout_mult, bankroll, kelly_frac
         )
 
-        # Combo (independence assumed)
+        # 2-pick combo (assume independence)
         p_joint = p1 * p2
         ev_joint = payout_mult * p_joint - 1.0
         b_joint = payout_mult - 1.0
@@ -383,7 +387,7 @@ if run:
         stake_joint = min(stake_joint, bankroll * MAX_BANKROLL_PCT)
         stake_joint = max(0.0, round(stake_joint, 2))
 
-        # ----- DISPLAY RESULTS -----
+        # ---------- DISPLAY ----------
 
         st.markdown("---")
         st.header("📊 Single-Leg Results")
@@ -392,27 +396,21 @@ if run:
 
         with c1_out:
             st.subheader(p1_name)
-            st.write(f"Model from stats: PRA/min ≈ {p1_mu_min:.3f}, SD/min ≈ {p1_sd_min:.3f}")
-            st.write(f"Line: **{p1_line}**, Projected Minutes: **{p1_proj_min}**")
+            st.write(f"From stats: PRA/min ≈ {p1_mu_min:.3f}, SD/min ≈ {p1_sd_min:.3f}")
+            st.write(f"Line: **{p1_line}**, Proj Minutes: **{p1_proj_min}**")
             st.metric("Prob OVER", f"{p1:.1%}")
             st.metric("EV per $", f"{ev1*100:.1f}%")
             st.metric("Suggested Stake", f"${stake1:.2f}")
-            if ev1 > 0:
-                st.success("✅ +EV leg under current model.")
-            else:
-                st.error("❌ -EV leg (skip or adjust).")
+            st.success("✅ +EV leg") if ev1 > 0 else st.error("❌ -EV leg")
 
         with c2_out:
             st.subheader(p2_name)
-            st.write(f"Model from stats: PRA/min ≈ {p2_mu_min:.3f}, SD/min ≈ {p2_sd_min:.3f}")
-            st.write(f"Line: **{p2_line}**, Projected Minutes: **{p2_proj_min}**")
+            st.write(f"From stats: PRA/min ≈ {p2_mu_min:.3f}, SD/min ≈ {p2_sd_min:.3f}")
+            st.write(f"Line: **{p2_line}**, Proj Minutes: **{p2_proj_min}**")
             st.metric("Prob OVER", f"{p2:.1%}")
             st.metric("EV per $", f"{ev2*100:.1f}%")
             st.metric("Suggested Stake", f"${stake2:.2f}")
-            if ev2 > 0:
-                st.success("✅ +EV leg under current model.")
-            else:
-                st.error("❌ -EV leg (skip or adjust).")
+            st.success("✅ +EV leg") if ev2 > 0 else st.error("❌ -EV leg")
 
         st.markdown("---")
         st.header("🎯 2-Pick Combo (Both Must Hit)")
@@ -420,13 +418,10 @@ if run:
         st.metric("Joint Prob (both OVER)", f"{p_joint:.1%}")
         st.metric("EV per $", f"{ev_joint*100:.1f}%")
         st.metric("Recommended Combo Stake", f"${stake_joint:.2f}")
-
-        if ev_joint > 0:
-            st.success("✅ YES: Combo is +EV under your assumptions.")
-        else:
-            st.error("❌ NO: Combo is -EV. Do not force it.")
+        st.success("✅ +EV combo") if ev_joint > 0 else st.error("❌ -EV combo")
 
 st.caption(
-    "If a player or line doesn't load, the message will tell you exactly why "
-    "(missing key, no props returned, etc). Always sanity-check minutes/role."
+    "If a player or line fails to load, the message will tell you why "
+    "(rate limit, no stats, missing Odds API key, etc.). "
+    "Always sanity-check projected minutes & roles."
 )
