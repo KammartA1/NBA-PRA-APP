@@ -14,7 +14,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # =========================
-# CONFIG & CONSTANTS
+# BASE CONFIG
 # =========================
 
 st.set_page_config(
@@ -22,18 +22,40 @@ st.set_page_config(
     page_icon="🏀",
     layout="wide",
 )
+st.set_option("client.toolbarMode", "minimal")
 
 PRIMARY_MAROON = "#7A0019"
 GOLD = "#FFCC33"
 DARK_BG = "#0C0B10"
 CARD_BG = "#17131C"
 
-MAX_BANKROLL_PCT = 0.03  # 3% max stake per position
+MAX_BANKROLL_PCT = 0.03  # 3% max stake
 GSHEET_NAME = "NBA_Prop_Model_Log"
 CSV_LOG = "bet_history.csv"
 
 # =========================
-# GLOBAL STYLE (Gophers aesthetic)
+# SESSION STATE DEFAULTS
+# =========================
+
+defaults = {
+    "bankroll": 1000.0,
+    "payout_mult": 3.0,
+    "fractional_kelly": 0.25,
+    "games_lookback": 10,
+    "p1_name": "RJ Barrett",
+    "p2_name": "Jaylen Brown",
+    "p1_line": 33.5,
+    "p2_line": 34.5,
+    "compact_mode": True,
+    "last_run": None,
+}
+
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+# =========================
+# GLOBAL STYLE (Gophers + Mobile Responsive)
 # =========================
 
 st.markdown(
@@ -55,15 +77,15 @@ st.markdown(
     .prop-card {{
         background: {CARD_BG};
         border-radius: 18px;
-        padding: 18px 16px 14px 16px;
+        padding: 16px 14px 12px 14px;
         border: 1px solid {GOLD}22;
-        box-shadow: 0 10px 25px rgba(0,0,0,0.5);
-        margin-bottom: 14px;
+        box-shadow: 0 8px 20px rgba(0,0,0,0.45);
+        margin-bottom: 12px;
     }}
     .divider-gold {{
         height: 2px;
         background: linear-gradient(90deg, transparent, {GOLD}, transparent);
-        margin: 12px 0 16px 0;
+        margin: 10px 0 14px 0;
     }}
     .info-icon {{
         display: inline-block;
@@ -92,6 +114,25 @@ st.markdown(
     .stSlider > div > div > div {{
         background-color: {PRIMARY_MAROON}55 !important;
     }}
+    /* Mobile responsiveness */
+    @media (max-width: 768px) {{
+        h1 {{
+            font-size: 1.6rem;
+        }}
+        h2 {{
+            font-size: 1.2rem;
+        }}
+        .prop-card {{
+            padding: 14px 10px;
+        }}
+        div[data-testid="column"] {{
+            width: 100% !important;
+            flex: 1 1 100% !important;
+        }}
+        button[kind="primary"] {{
+            width: 100% !important;
+        }}
+    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -102,18 +143,17 @@ st.markdown(
 # =========================
 
 st.markdown(
-    f"""
+    """
     <h1>🏀 NBA 2-Pick Prop Edge & Risk Model</h1>
     <div class="divider-gold"></div>
     <p>
-      Manual-line, data-driven 2-pick modeling:
+      Manual-line, data-backed 2-pick builder:
       <ul>
-        <li>Recent-game priors via <b>nba_api</b></li>
-        <li>Markets: <b>PRA</b>, Points, Rebounds, Assists</li>
-        <li>Weighted recency + heavier tails</li>
-        <li>Auto same-team correlation for combos</li>
-        <li>Kelly-based stake sizing</li>
-        <li>History logging to Google Sheet or CSV</li>
+        <li>Recent game logs via <b>nba_api</b> (weighted recency)</li>
+        <li>Supports <b>PRA, Points, Rebounds, Assists</b></li>
+        <li>Heavy-tail volatility + auto same-team correlation</li>
+        <li>Kelly-based stake sizing with safety caps</li>
+        <li>History logging & tracking for calibration</li>
       </ul>
     </p>
     """,
@@ -129,29 +169,32 @@ st.sidebar.header("Global Settings")
 bankroll = st.sidebar.number_input(
     "Bankroll ($)",
     min_value=10.0,
-    value=1000.0,
+    value=st.session_state["bankroll"],
     step=10.0,
-    help="Total bankroll you're managing. Stakes are sized off this."
+    key="bankroll",
+    help="Total bankroll. Stakes are suggested as a fraction of this."
 )
 
 payout_mult = st.sidebar.number_input(
     "2-Pick Payout Multiplier",
     min_value=1.01,
-    value=3.0,
+    value=st.session_state["payout_mult"],
     step=0.1,
-    help="Total return on a winning 2-pick (e.g., 3.0x for PrizePicks Power Play)."
+    key="payout_mult",
+    help="Total return on a winning 2-pick (e.g., 3.0x Power Play)."
 )
 
 fractional_kelly = st.sidebar.slider(
     "Fractional Kelly",
     0.0,
     1.0,
-    0.25,
-    0.05,
+    value=st.session_state["fractional_kelly"],
+    step=0.05,
+    key="fractional_kelly",
     help=(
-        "Kelly = optimal % of bankroll with an edge.\n"
-        "1.0 = full (aggressive), 0.1–0.3 = safer.\n"
-        "Each stake also capped at 3% of bankroll."
+        "Kelly = optimal % of bankroll when you have an edge.\n"
+        "1.0 = full Kelly (aggressive), 0.1–0.3 = safer.\n"
+        "Each stake is also capped at 3% of bankroll."
     ),
 )
 
@@ -159,12 +202,20 @@ games_lookback = st.sidebar.slider(
     "Recent Games (N)",
     5,
     20,
-    10,
-    1,
-    help="Number of recent games used for per-minute production & minutes."
+    value=st.session_state["games_lookback"],
+    step=1,
+    key="games_lookback",
+    help="How many recent games to use for per-minute rates and minutes."
 )
 
-st.sidebar.caption("Manual lines only. Stable, transparent, model-based. 🧮")
+compact_mode = st.sidebar.checkbox(
+    "Compact Mode (mobile-friendly)",
+    value=st.session_state["compact_mode"],
+    key="compact_mode",
+    help="Hide some detailed fields for a cleaner mobile view."
+)
+
+st.sidebar.caption("Manual lines only. No odds API. Stable, transparent, sharp. 🧮")
 
 # =========================
 # MARKET SELECTOR
@@ -179,7 +230,7 @@ market_label = st.selectbox(
         "Assists",
     ],
     index=0,
-    help="Choose which stat you're modeling; enter that line from your book."
+    help="Pick the stat category you're modeling; input that line for each player."
 )
 
 market_key_map = {
@@ -200,7 +251,7 @@ metric_map = {
 HEAVY_TAIL_FACTOR = 1.2 if selected_market == "pra" else 1.1
 
 # =========================
-# HELPERS
+# HELPER FUNCTIONS
 # =========================
 
 def _norm_name(s: str) -> str:
@@ -219,7 +270,7 @@ def current_season() -> str:
     end = start + 1
     return f"{start}-{str(end)[-2:]}"
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=600)
 def nba_lookup_player(name: str):
     players = nba_players.get_players()
     target = _norm_name(name)
@@ -228,7 +279,6 @@ def nba_lookup_player(name: str):
         if _norm_name(p["full_name"]) == target:
             return p["id"], p["full_name"]
 
-    # fuzzy
     norm_names = [_norm_name(p["full_name"]) for p in players]
     best = difflib.get_close_matches(target, norm_names, n=1, cutoff=0.6)
     if best:
@@ -239,13 +289,8 @@ def nba_lookup_player(name: str):
 
     return None, f"No NBA player match for '{name}'."
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=600)
 def get_player_rate_and_minutes(name: str, n_games: int, market: str):
-    """
-    Returns:
-      mu_per_min, sd_per_min, avg_minutes, msg, team_abbrev
-    Uses weighted recency.
-    """
     cols = metric_map[market]
     pid, label = nba_lookup_player(name)
     if pid is None:
@@ -267,8 +312,7 @@ def get_player_rate_and_minutes(name: str, n_games: int, market: str):
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
     df = df.sort_values("GAME_DATE", ascending=False).head(n_games)
 
-    per_min_vals = []
-    minutes_list = []
+    per_min_vals, minutes_list = [], []
 
     for _, row in df.iterrows():
         total_val = sum(float(row.get(c, 0)) for c in cols)
@@ -294,9 +338,9 @@ def get_player_rate_and_minutes(name: str, n_games: int, market: str):
     per_min_arr = np.array(per_min_vals)
     mins_arr = np.array(minutes_list)
 
-    # Weighted recency: older games ~0.5, newest ~1.5
+    # Weighted recency: older ~0.5, newest ~1.5
     weights = np.linspace(0.5, 1.5, len(per_min_arr))
-    weights = weights / weights.sum()
+    weights /= weights.sum()
 
     mu_per_min = float(np.average(per_min_arr, weights=weights))
     avg_min = float(np.average(mins_arr, weights=weights))
@@ -342,10 +386,6 @@ def adjust_joint_probability(p1_prob, p2_prob, corr):
     adj = base + corr * (min(p1_prob, p2_prob) - base)
     return max(0.0, min(1.0, adj))
 
-# =========================
-# LOGGING HELPERS
-# =========================
-
 @st.cache_resource(show_spinner=False)
 def connect_to_gsheet():
     try:
@@ -376,9 +416,6 @@ def append_to_csv(row):
         w.writerow(row)
 
 def log_bet(row):
-    """
-    Try Google Sheet, else fallback to local CSV.
-    """
     sheet = connect_to_gsheet()
     if sheet:
         try:
@@ -421,242 +458,299 @@ tab_model, tab_results = st.tabs(["📊 Model", "📓 Results / Tracking"])
 with tab_model:
     st.subheader("🎯 Player Inputs")
 
-    col1, col2 = st.columns(2)
+    col_inputs = st.columns(2)
 
-    with col1:
+    with col_inputs[0]:
         p1_name = st.text_input(
             "Player 1 Name",
-            "RJ Barrett",
+            value=st.session_state["p1_name"],
+            key="p1_name",
             help="Enter as listed in NBA box scores."
         )
         p1_line = st.number_input(
             "P1 Line (manual)",
             min_value=1.0,
             max_value=100.0,
-            value=33.5,
+            value=float(st.session_state["p1_line"]),
             step=0.5,
-            help="Enter line from PrizePicks or any book for the selected market."
+            key="p1_line",
+            help="Enter the line for the selected market from your book."
         )
 
-    with col2:
+    with col_inputs[1]:
         p2_name = st.text_input(
             "Player 2 Name",
-            "Jaylen Brown",
+            value=st.session_state["p2_name"],
+            key="p2_name",
             help="Enter as listed in NBA box scores."
         )
         p2_line = st.number_input(
             "P2 Line (manual)",
             min_value=1.0,
             max_value=100.0,
-            value=34.5,
+            value=float(st.session_state["p2_line"]),
             step=0.5,
-            help="Enter line from your book."
+            key="p2_line",
+            help="Enter the line for the selected market from your book."
         )
 
-    run = st.button("Run Model")
+    # Buttons row (Run + Quick Refresh)
+    btn_col1, btn_col2 = st.columns(2)
+    with btn_col1:
+        run_clicked = st.button("Run Model", use_container_width=True)
+    with btn_col2:
+        quick_refresh = st.button(
+            "Quick Refresh Last Bet",
+            use_container_width=True,
+            help="Re-run using the last successful inputs."
+        )
 
-    if run:
-        if payout_mult <= 1.0:
+    trigger = False
+    use_last = False
+
+    if run_clicked:
+        trigger = True
+        use_last = False
+    elif quick_refresh and st.session_state["last_run"]:
+        trigger = True
+        use_last = True
+
+    if trigger:
+        # Choose input source
+        if use_last:
+            params = st.session_state["last_run"]
+            p1_name_i = params["p1_name"]
+            p2_name_i = params["p2_name"]
+            p1_line_i = params["p1_line"]
+            p2_line_i = params["p2_line"]
+            payout_i = params["payout_mult"]
+            bank_i = params["bankroll"]
+            kelly_i = params["fractional_kelly"]
+            gl_i = params["games_lookback"]
+        else:
+            p1_name_i = p1_name
+            p2_name_i = p2_name
+            p1_line_i = p1_line
+            p2_line_i = p2_line
+            payout_i = payout_mult
+            bank_i = bankroll
+            kelly_i = fractional_kelly
+            gl_i = games_lookback
+            st.session_state["last_run"] = {
+                "p1_name": p1_name_i,
+                "p2_name": p2_name_i,
+                "p1_line": float(p1_line_i),
+                "p2_line": float(p2_line_i),
+                "payout_mult": float(payout_i),
+                "bankroll": float(bank_i),
+                "fractional_kelly": float(kelly_i),
+                "games_lookback": int(gl_i),
+                "market_label": market_label,
+                "selected_market": selected_market,
+            }
+
+        if payout_i <= 1.0:
             st.error("Payout multiplier must be > 1.0")
-            st.stop()
-
-        # Stats
-        p1_mu_min, p1_sd_min, p1_avg_min, p1_msg, p1_team = get_player_rate_and_minutes(
-            p1_name, games_lookback, selected_market
-        )
-        if p1_mu_min is None:
-            st.error(f"P1 stats error: {p1_msg}")
-            st.stop()
-
-        p2_mu_min, p2_sd_min, p2_avg_min, p2_msg, p2_team = get_player_rate_and_minutes(
-            p2_name, games_lookback, selected_market
-        )
-        if p2_mu_min is None:
-            st.error(f"P2 stats error: {p2_msg}")
-            st.stop()
-
-        # Legs
-        p1_prob, ev1, k1, stake1, p1_mu, p1_sd = compute_leg(
-            p1_line, p1_mu_min, p1_sd_min, p1_avg_min,
-            payout_mult, bankroll, fractional_kelly, HEAVY_TAIL_FACTOR
-        )
-        p2_prob, ev2, k2, stake2, p2_mu, p2_sd = compute_leg(
-            p2_line, p2_mu_min, p2_sd_min, p2_avg_min,
-            payout_mult, bankroll, fractional_kelly, HEAVY_TAIL_FACTOR
-        )
-
-        # Auto correlation
-        corr = 0.0
-        corr_reason = "0.00 (Assumed independent)"
-        if p1_team and p2_team and p1_team == p2_team:
-            corr = 0.35
-            corr_reason = f"+0.35 (Same team: {p1_team})"
-
-        joint_prob = adjust_joint_probability(p1_prob, p2_prob, corr)
-
-        # Combo EV
-        b_combo = payout_mult - 1.0
-        combo_ev = payout_mult * joint_prob - 1.0
-        combo_full_kelly = max(
-            0.0, (b_combo * joint_prob - (1.0 - joint_prob)) / b_combo
-        ) if b_combo > 0 else 0.0
-
-        combo_stake = bankroll * fractional_kelly * combo_full_kelly
-        combo_stake = min(combo_stake, bankroll * MAX_BANKROLL_PCT)
-        combo_stake = max(0.0, round(combo_stake, 2))
-
-        # -------- Single-Leg Results --------
-        st.markdown("## 📊 Single-Leg Results")
-        col_a, col_b = st.columns(2)
-
-        with col_a:
-            st.markdown("<div class='prop-card'>", unsafe_allow_html=True)
-            st.markdown(f"### {p1_name}")
-            st.caption(p1_msg)
-            st.markdown(f"**Market:** {market_label}")
-            st.markdown(f"**Line:** {p1_line}")
-            st.markdown(f"**Auto Projected Minutes:** {p1_avg_min:.1f}")
-            st.markdown(f"**Model Mean:** {p1_mu:.1f}")
-            st.markdown(
-                f"**Prob OVER** <span class='info-icon' title='Model-estimated chance this leg goes over.'>ℹ️</span>: "
-                f"{p1_prob * 100:.1f}%",
-                unsafe_allow_html=True,
+        else:
+            # Fetch stats
+            p1_mu_min, p1_sd_min, p1_avg_min, p1_msg, p1_team = get_player_rate_and_minutes(
+                p1_name_i, gl_i, selected_market
             )
-            st.markdown(
-                f"<div class='prob-bar-outer'><div class='prob-bar-inner' style='width:{max(3,min(97,p1_prob*100))}%;'></div></div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"**EV per $** <span class='info-icon' title='Long-term profit per $1. Higher EV = better value; not just hit rate.'>ℹ️</span>: "
-                f"{ev1 * 100:.1f}%",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"**Suggested Stake** <span class='info-icon' title='Fractional Kelly stake, capped at 3% of bankroll.'>ℹ️</span>: "
-                f"${stake1:.2f}",
-                unsafe_allow_html=True,
-            )
-            if ev1 > 0 and stake1 > 0:
-                st.success("✅ +EV leg")
+            if p1_mu_min is None:
+                st.error(f"P1 stats error: {p1_msg}")
             else:
-                st.error("❌ -EV leg")
-            st.markdown("</div>", unsafe_allow_html=True)
+                p2_mu_min, p2_sd_min, p2_avg_min, p2_msg, p2_team = get_player_rate_and_minutes(
+                    p2_name_i, gl_i, selected_market
+                )
+                if p2_mu_min is None:
+                    st.error(f"P2 stats error: {p2_msg}")
+                else:
+                    # Compute legs
+                    p1_prob, ev1, k1, stake1, p1_mu, p1_sd = compute_leg(
+                        p1_line_i, p1_mu_min, p1_sd_min, p1_avg_min,
+                        payout_i, bank_i, kelly_i, HEAVY_TAIL_FACTOR
+                    )
+                    p2_prob, ev2, k2, stake2, p2_mu, p2_sd = compute_leg(
+                        p2_line_i, p2_mu_min, p2_sd_min, p2_avg_min,
+                        payout_i, bank_i, kelly_i, HEAVY_TAIL_FACTOR
+                    )
 
-        with col_b:
-            st.markdown("<div class='prop-card'>", unsafe_allow_html=True)
-            st.markdown(f"### {p2_name}")
-            st.caption(p2_msg)
-            st.markdown(f"**Market:** {market_label}")
-            st.markdown(f"**Line:** {p2_line}")
-            st.markdown(f"**Auto Projected Minutes:** {p2_avg_min:.1f}")
-            st.markdown(f"**Model Mean:** {p2_mu:.1f}")
-            st.markdown(
-                f"**Prob OVER** <span class='info-icon' title='Model-estimated chance this leg goes over.'>ℹ️</span>: "
-                f"{p2_prob * 100:.1f}%",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"<div class='prob-bar-outer'><div class='prob-bar-inner' style='width:{max(3,min(97,p2_prob*100))}%;'></div></div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"**EV per $** <span class='info-icon' title='Long-term profit per $1 at given edge & payout.'>ℹ️</span>: "
-                f"{ev2 * 100:.1f}%",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"**Suggested Stake** <span class='info-icon' title='Fractional Kelly stake, capped at 3% of bankroll.'>ℹ️</span>: "
-                f"${stake2:.2f}",
-                unsafe_allow_html=True,
-            )
-            if ev2 > 0 and stake2 > 0:
-                st.success("✅ +EV leg")
-            else:
-                st.error("❌ -EV leg")
-            st.markdown("</div>", unsafe_allow_html=True)
+                    # Auto correlation: same team → +0.35
+                    corr = 0.0
+                    corr_reason = "0.00 (Independent)"
+                    if p1_team and p2_team and p1_team == p2_team:
+                        corr = 0.35
+                        corr_reason = f"+0.35 (Same team: {p1_team})"
 
-        # -------- Combo Results --------
-        st.markdown("---")
-        st.markdown("## 🎯 2-Pick Combo (Both Must Hit)")
+                    joint_prob = adjust_joint_probability(p1_prob, p2_prob, corr)
 
-        st.markdown(
-            f"**Correlation Applied** <span class='info-icon' title='Same team → positive correlation; otherwise independent.'>ℹ️</span>: "
-            f"{corr_reason}",
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f"**Joint Prob** <span class='info-icon' title='Adjusted probability BOTH legs go over.'>ℹ️</span>: "
-            f"{joint_prob * 100:.1f}%",
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f"**EV per $** <span class='info-icon' title='Expected long-term return for the combo.'>ℹ️</span>: "
-            f"{combo_ev * 100:.1f}%",
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f"**Suggested Combo Stake** <span class='info-icon' title='Kelly-based stake on combo, capped at 3% of bankroll.'>ℹ️</span>: "
-            f"${combo_stake:.2f}",
-            unsafe_allow_html=True,
-        )
+                    b_combo = payout_i - 1.0
+                    combo_ev = payout_i * joint_prob - 1.0
+                    combo_full_kelly = max(
+                        0.0, (b_combo * joint_prob - (1.0 - joint_prob)) / b_combo
+                    ) if b_combo > 0 else 0.0
 
-        if combo_ev > 0 and combo_stake > 0:
-            st.success("🔥 Combo is +EV under this model.")
-        else:
-            st.error("🚫 Combo is -EV. Don’t force it.")
+                    combo_stake = bank_i * kelly_i * combo_full_kelly
+                    combo_stake = min(combo_stake, bank_i * MAX_BANKROLL_PCT)
+                    combo_stake = max(0.0, round(combo_stake, 2))
 
-        # -------- Best Bet Summary --------
-        st.markdown("---")
-        st.markdown("## 💬 Best Bet Summary")
+                    # ---------- Single-Leg Results ----------
+                    st.markdown("## 📊 Single-Leg Results")
+                    col_a, col_b = st.columns(2)
 
-        if ev1 >= ev2:
-            best_player, best_line, best_ev, best_prob, best_stake = (
-                p1_name, p1_line, ev1, p1_prob, stake1
-            )
-        else:
-            best_player, best_line, best_ev, best_prob, best_stake = (
-                p2_name, p2_line, ev2, p2_prob, stake2
-            )
+                    # P1 card
+                    with col_a:
+                        st.markdown("<div class='prop-card'>", unsafe_allow_html=True)
+                        st.markdown(f"### {p1_name_i}")
+                        st.caption(p1_msg)
+                        if not compact_mode:
+                            st.markdown(f"**Market:** {market_label}")
+                        st.markdown(f"**Line:** {p1_line_i}")
+                        if not compact_mode:
+                            st.markdown(f"**Auto Projected Minutes:** {p1_avg_min:.1f}")
+                            st.markdown(f"**Model Mean:** {p1_mu:.1f}")
+                        st.markdown(
+                            f"**Prob OVER** <span class='info-icon' title='Model-estimated chance this leg goes over.'>ℹ️</span>: "
+                            f"{p1_prob * 100:.1f}%",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f"<div class='prob-bar-outer'><div class='prob-bar-inner' style='width:{max(3,min(97,p1_prob*100))}%;'></div></div>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f"**EV per $** <span class='info-icon' title='Long-term return per $1. Higher EV = better value.'>ℹ️</span>: "
+                            f"{ev1 * 100:.1f}%",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f"**Suggested Stake** <span class='info-icon' title='Fractional Kelly stake, capped at 3% of bankroll.'>ℹ️</span>: "
+                            f"${stake1:.2f}",
+                            unsafe_allow_html=True,
+                        )
+                        if ev1 > 0 and stake1 > 0:
+                            st.success("✅ +EV leg")
+                        else:
+                            st.error("❌ -EV leg")
+                        st.markdown("</div>", unsafe_allow_html=True)
 
-        if best_ev > 0 and best_stake > 0:
-            st.success(
-                f"**Best Single-Leg Edge:** {best_player} OVER {best_line}  \n"
-                f"Win Probability: **{best_prob * 100:.1f}%**  \n"
-                f"EV per $: **{best_ev * 100:.1f}%**  \n"
-                f"Suggested Stake: **${best_stake:.2f}**"
-            )
-        else:
-            st.warning(
-                "No strong +EV single-leg edge detected. Passing is a winning strategy."
-            )
+                    # P2 card
+                    with col_b:
+                        st.markdown("<div class='prop-card'>", unsafe_allow_html=True)
+                        st.markdown(f"### {p2_name_i}")
+                        st.caption(p2_msg)
+                        if not compact_mode:
+                            st.markdown(f"**Market:** {market_label}")
+                        st.markdown(f"**Line:** {p2_line_i}")
+                        if not compact_mode:
+                            st.markdown(f"**Auto Projected Minutes:** {p2_avg_min:.1f}")
+                            st.markdown(f"**Model Mean:** {p2_mu:.1f}")
+                        st.markdown(
+                            f"**Prob OVER** <span class='info-icon' title='Model-estimated chance this leg goes over.'>ℹ️</span>: "
+                            f"{p2_prob * 100:.1f}%",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f"<div class='prob-bar-outer'><div class='prob-bar-inner' style='width:{max(3,min(97,p2_prob*100))}%;'></div></div>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f"**EV per $** <span class='info-icon' title='Long-term return per $1 at these odds.'>ℹ️</span>: "
+                            f"{ev2 * 100:.1f}%",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f"**Suggested Stake** <span class='info-icon' title='Fractional Kelly stake, capped at 3% of bankroll.'>ℹ️</span>: "
+                            f"${stake2:.2f}",
+                            unsafe_allow_html=True,
+                        )
+                        if ev2 > 0 and stake2 > 0:
+                            st.success("✅ +EV leg")
+                        else:
+                            st.error("❌ -EV leg")
+                        st.markdown("</div>", unsafe_allow_html=True)
 
-        # -------- Log Bets (Sheet or CSV) --------
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    # ---------- Combo ----------
+                    st.markdown("---")
+                    st.markdown("## 🎯 2-Pick Combo (Both Must Hit)")
+                    st.markdown(
+                        f"**Correlation Applied** <span class='info-icon' title='Same team → positive correlation; otherwise independent.'>ℹ️</span>: "
+                        f"{corr_reason}",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f"**Joint Prob** <span class='info-icon' title='Adjusted probability BOTH legs go over.'>ℹ️</span>: "
+                        f"{joint_prob * 100:.1f}%",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f"**EV per $** <span class='info-icon' title='Expected long-term return for the combo.'>ℹ️</span>: "
+                        f"{combo_ev * 100:.1f}%",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f"**Suggested Combo Stake** <span class='info-icon' title='Kelly-based stake on combo, capped at 3% of bankroll.'>ℹ️</span>: "
+                        f"${combo_stake:.2f}",
+                        unsafe_allow_html=True,
+                    )
+                    if combo_ev > 0 and combo_stake > 0:
+                        st.success("🔥 Combo is +EV under this model.")
+                    else:
+                        st.error("🚫 Combo is -EV. Don’t force action.")
 
-        src1 = log_bet([
-            ts, p1_name, market_label, p1_line,
-            round(p1_mu, 2), round(p1_prob, 4),
-            round(ev1, 4), stake1,
-            "Single", "", ""  # Extra, Result
-        ])
-        src2 = log_bet([
-            ts, p2_name, market_label, p2_line,
-            round(p2_mu, 2), round(p2_prob, 4),
-            round(ev2, 4), stake2,
-            "Single", "", ""
-        ])
-        src3 = log_bet([
-            ts, f"{p1_name} + {p2_name}", market_label,
-            f"{p1_line} & {p2_line}",
-            "-", round(joint_prob, 4),
-            round(combo_ev, 4), combo_stake,
-            f"Combo (corr={corr_reason})", "", ""
-        ])
+                    # ---------- Best Bet ----------
+                    st.markdown("---")
+                    st.markdown("## 💬 Best Bet Summary")
 
-        if src1 == "sheet" or src2 == "sheet" or src3 == "sheet":
-            st.info("📊 Logged this run to Google Sheet (NBA_Prop_Model_Log).")
-        else:
-            st.info("💾 Logged this run locally to bet_history.csv (in app directory).")
+                    if ev1 >= ev2:
+                        best_player, best_line, best_ev, best_prob, best_stake = (
+                            p1_name_i, p1_line_i, ev1, p1_prob, stake1
+                        )
+                    else:
+                        best_player, best_line, best_ev, best_prob, best_stake = (
+                            p2_name_i, p2_line_i, ev2, p2_prob, stake2
+                        )
+
+                    if best_ev > 0 and best_stake > 0:
+                        st.success(
+                            f"**Best Single-Leg Edge:** {best_player} OVER {best_line}  \n"
+                            f"Win Probability: **{best_prob * 100:.1f}%**  \n"
+                            f"EV per $: **{best_ev * 100:.1f}%**  \n"
+                            f"Suggested Stake: **${best_stake:.2f}**"
+                        )
+                    else:
+                        st.warning(
+                            "No strong +EV single-leg edge detected. Passing is perfectly fine."
+                        )
+
+                    # ---------- Logging ----------
+                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                    srcs = []
+                    srcs.append(log_bet([
+                        ts, p1_name_i, market_label, p1_line_i,
+                        round(p1_mu, 2), round(p1_prob, 4),
+                        round(ev1, 4), stake1,
+                        "Single", "", ""
+                    ]))
+                    srcs.append(log_bet([
+                        ts, p2_name_i, market_label, p2_line_i,
+                        round(p2_mu, 2), round(p2_prob, 4),
+                        round(ev2, 4), stake2,
+                        "Single", "", ""
+                    ]))
+                    srcs.append(log_bet([
+                        ts, f"{p1_name_i} + {p2_name_i}", market_label,
+                        f"{p1_line_i} & {p2_line_i}",
+                        "-", round(joint_prob, 4),
+                        round(combo_ev, 4), combo_stake,
+                        f"Combo (corr={corr_reason})", "", ""
+                    ]))
+
+                    if "sheet" in srcs:
+                        st.info("📊 Logged this run to Google Sheet (NBA_Prop_Model_Log).")
+                    else:
+                        st.info("💾 Logged this run locally to bet_history.csv.")
 
 # =========================
 # RESULTS / TRACKING TAB
@@ -670,64 +764,63 @@ with tab_results:
     if df is None or df.empty:
         st.info(
             "No logged history yet. Run the model in the 'Model' tab to start logging.\n"
-            "Logs go to Google Sheets if configured, otherwise to bet_history.csv."
+            "Logs go to Google Sheets (if configured) or to bet_history.csv."
         )
     else:
         st.markdown(
             f"Data source: **{'Google Sheet' if source == 'sheet' else 'Local CSV'}**"
         )
 
-        # Show latest 50 rows (most recent first)
-        df_view = df.copy()
-        if "Timestamp" in df_view.columns:
-            df_view = df_view.sort_values("Timestamp", ascending=False)
-        st.dataframe(df_view.head(50), use_container_width=True)
+        # Sort by latest
+        if "Timestamp" in df.columns:
+            df = df.sort_values("Timestamp", ascending=False)
 
-        # Basic metrics (only where Result is recorded as 'Hit' or 'Miss')
-        if "Result" in df_view.columns:
-            eval_df = df_view[df_view["Result"].isin(["Hit", "Miss"])].copy()
+        st.dataframe(df.head(100), use_container_width=True)
+
+        # Basic evaluation where Result is Hit/Miss (you fill this in manually post-game)
+        if "Result" in df.columns:
+            eval_df = df[df["Result"].isin(["Hit", "Miss"])].copy()
             if not eval_df.empty:
-                # Treat Type == 'Single' only for hit rate on legs
-                single_df = eval_df[eval_df["Type"] == "Single"]
-                if not single_df.empty:
-                    hits = (single_df["Result"] == "Hit").sum()
-                    total = len(single_df)
+                singles = eval_df[eval_df["Type"].str.contains("Single", na=False)]
+                if not singles.empty:
+                    hits = (singles["Result"] == "Hit").sum()
+                    total = len(singles)
                     hit_rate = hits / total if total > 0 else 0.0
 
                     st.markdown("### ✅ Performance Summary (Singles)")
                     st.markdown(f"**Recorded Bets:** {total}")
                     st.markdown(f"**Hit Rate:** {hit_rate * 100:.1f}%")
 
-                    # Compare to average model prob
-                    if "ProbOVER" in single_df.columns:
-                        avg_model_prob = single_df["ProbOVER"].mean()
+                    if "ProbOVER" in singles.columns:
+                        avg_model_prob = singles["ProbOVER"].mean()
                         st.markdown(
-                            f"**Avg Model Prob (at time of bet):** {avg_model_prob * 100:.1f}%"
+                            f"**Avg Model Prob at Bet Time:** {avg_model_prob * 100:.1f}%"
                         )
-
-                        # Calibration hint
                         if abs(hit_rate - avg_model_prob) > 0.05:
                             st.warning(
-                                "Model may be miscalibrated (hit rate vs predicted).\n"
-                                "Consider adjusting variance or edge thresholds."
+                                "Model may be miscalibrated (hit rate vs predicted). "
+                                "Consider slightly adjusting variance or required EV threshold."
                             )
                         else:
                             st.success(
-                                "Model calibration looks reasonable vs actual results so far."
+                                "Model calibration vs results looks reasonable so far."
                             )
             else:
                 st.info(
-                    "You have logs but no Results marked yet.\n"
-                    "Add 'Hit' / 'Miss' in the 'Result' column (in your sheet or CSV) to unlock calibration."
+                    "You have logs but no Results set. "
+                    "Mark 'Hit' or 'Miss' in your sheet/CSV to unlock analytics."
                 )
         else:
             st.info(
-                "Your log does not yet include a 'Result' column.\n"
-                "Add it to your Google Sheet or CSV to track Hit/Miss outcomes."
+                "No 'Result' column found. "
+                "Add a 'Result' column (Hit/Miss) in your sheet/CSV to track outcomes."
             )
 
+# =========================
 # FOOTER
+# =========================
+
 st.caption(
-    "Workflow: Enter lines → Run Model → Model logs to sheet/CSV → "
-    "You later mark Hit/Miss in the log → Track calibration & refine edges over time."
+    "Mobile tips: Add this page to your home screen. Your settings & inputs persist via session state. "
+    "Use Quick Refresh before locking slips. Always layer in injuries, role, pace, and your own judgment."
 )
