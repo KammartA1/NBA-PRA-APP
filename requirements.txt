@@ -4,3 +4,5 @@ pandas
 scipy
 nba_api
 requests
+gspread
+oauth2client
