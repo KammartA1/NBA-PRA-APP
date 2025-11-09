@@ -8,60 +8,59 @@ from nba_api.stats.static import players as nba_players
 from nba_api.stats.endpoints import PlayerGameLog
 from scipy.stats import norm
 
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
 # =========================
-# PAGE CONFIG
+# CONFIG & CONSTANTS
 # =========================
+
 st.set_page_config(
     page_title="NBA 2-Pick Prop Edge Model",
     page_icon="🏀",
     layout="wide",
 )
 
-# =========================
-# CUSTOM STYLING (Gophers theme)
-# =========================
 PRIMARY_MAROON = "#7A0019"
 GOLD = "#FFCC33"
-DARK_BG = "#1A0C10"
+DARK_BG = "#0C0B10"
+CARD_BG = "#17131C"
+
+MAX_BANKROLL_PCT = 0.03  # 3% cap on any one stake
+
+# =========================
+# GLOBAL STYLE (Gophers aesthetic)
+# =========================
 
 st.markdown(
     f"""
     <style>
-    /* Main background */
     .stApp {{
         background-color: {DARK_BG};
         color: #FFFFFF;
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, -sans-serif;
     }}
-
-    /* Sidebar */
     section[data-testid="stSidebar"] {{
-        background: linear-gradient(180deg, {PRIMARY_MAROON}, #32000F);
-        color: #FFFFFF;
+        background: radial-gradient(circle at top, {PRIMARY_MAROON} 0%, #2b0b14 55%, #12060a 100%);
         border-right: 1px solid {GOLD}33;
     }}
-
-    /* Headers */
-    h1, h2, h3, h4 {{
+    h1, h2, h3, h4, h5 {{
         color: {GOLD};
         font-weight: 700;
     }}
-
-    /* Metric cards and boxes */
-    .stMetric, .stAlert {{
-        color: #FFFFFF !important;
-    }}
-
-    /* Cards / containers */
     .prop-card {{
-        padding: 18px 16px;
-        border-radius: 14px;
-        border: 1px solid {GOLD}33;
-        background: rgba(122, 0, 25, 0.16);
-        margin-bottom: 10px;
+        background: {CARD_BG};
+        border-radius: 18px;
+        padding: 18px 16px 14px 16px;
+        border: 1px solid {GOLD}22;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        margin-bottom: 14px;
     }}
-
-    /* Tooltips using title attr */
+    .divider-gold {{
+        height: 2px;
+        background: linear-gradient(90deg, transparent, {GOLD}, transparent);
+        margin: 12px 0 16px 0;
+    }}
     .info-icon {{
         display: inline-block;
         margin-left: 4px;
@@ -69,11 +68,25 @@ st.markdown(
         cursor: help;
         font-weight: 700;
     }}
-
-    /* Inputs background tweak */
-    .stTextInput input, .stNumberInput input, .stSelectbox select, .stSlider > div {{
-        background-color: #2B151C !important;
+    .prob-bar-outer {{
+        width: 100%;
+        background: #2a222f;
+        border-radius: 999px;
+        height: 8px;
+        margin-top: 4px;
+    }}
+    .prob-bar-inner {{
+        height: 8px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, {GOLD}, #ffec99);
+    }}
+    .stTextInput input, .stNumberInput input, .stSelectbox select {{
+        background-color: #221925 !important;
         color: #ffffff !important;
+        border-radius: 8px !important;
+    }}
+    .stSlider > div > div > div {{
+        background-color: {PRIMARY_MAROON}55 !important;
     }}
     </style>
     """,
@@ -81,27 +94,31 @@ st.markdown(
 )
 
 # =========================
-# TITLE & DESCRIPTION
+# TITLE / DESCRIPTION
 # =========================
+
 st.markdown(
     f"""
     <h1>🏀 NBA 2-Pick Prop Edge & Risk Model</h1>
+    <div class="divider-gold"></div>
     <p>
-    Built for <b>PrizePicks-style</b> 2-pick cards.<br>
-    Enter lines manually from any app. The model:
-    <ul>
-      <li>Uses recent NBA logs (<b>nba_api</b>) to estimate efficiency & minutes</li>
-      <li>Supports <b>PRA, Points, Rebounds, Assists</b></li>
-      <li>Computes win probability, EV, and <b>Kelly-based stake sizing</b></li>
-    </ul>
+      Enter live lines from <b>PrizePicks</b> or any book.<br>
+      This tool:
+      <ul>
+        <li>Uses recent NBA logs (<b>nba_api</b>) to estimate per-minute production & minutes</li>
+        <li>Supports <b>PRA, Points, Rebounds, Assists</b></li>
+        <li>Computes win probability, <b>EV per $</b>, and <b>Kelly-based stake</b></li>
+        <li>Evaluates the 2-pick combo and logs every run to Google Sheets</li>
+      </ul>
     </p>
     """,
     unsafe_allow_html=True,
 )
 
 # =========================
-# SIDEBAR: GLOBAL SETTINGS
+# SIDEBAR SETTINGS
 # =========================
+
 st.sidebar.header("Global Settings")
 
 bankroll = st.sidebar.number_input(
@@ -109,7 +126,7 @@ bankroll = st.sidebar.number_input(
     min_value=10.0,
     value=1000.0,
     step=10.0,
-    help="Total bankroll you are managing. All suggested stakes are percentages of this."
+    help="Total bankroll you are managing. Stakes are sized as a fraction of this."
 )
 
 payout_mult = st.sidebar.number_input(
@@ -117,7 +134,7 @@ payout_mult = st.sidebar.number_input(
     min_value=1.01,
     value=3.0,
     step=0.1,
-    help="Total return on a winning 2-pick (e.g. 3.0x for PrizePicks Power Play)."
+    help="Total return on a winning 2-pick Power Play (e.g., 3.0x)."
 )
 
 fractional_kelly = st.sidebar.slider(
@@ -127,27 +144,27 @@ fractional_kelly = st.sidebar.slider(
     0.25,
     0.05,
     help=(
-        "Kelly Criterion controls how much of your bankroll to risk when you have an edge.\n"
-        "- 1.0 = Full Kelly (aggressive)\n"
-        "- 0.1–0.3 = Common range (safer)\n"
-        "- 0.0 = No staking advice"
+        "Kelly Criterion = optimal fraction of bankroll to wager when you have an edge.\n"
+        "1.0 = Full Kelly (aggressive), 0.1–0.3 = common safer range.\n"
+        "We also cap stakes at 3% of bankroll."
     ),
 )
 
 games_lookback = st.sidebar.slider(
-    "Recent Games Used (N)",
+    "Recent Games (N)",
     5,
     20,
     10,
     1,
-    help="Number of recent games used to estimate per-minute production & minutes."
+    help="How many recent games to use for per-minute production and minutes."
 )
 
-MAX_BANKROLL_PCT = 0.03  # cap any one stake at 3% of bankroll
+st.sidebar.caption("Manual-line only. No sportsbook API dependencies. Stable & sharp. 🧮")
 
 # =========================
 # MARKET SELECTOR
 # =========================
+
 market_label = st.selectbox(
     "Select Prop Market",
     [
@@ -157,7 +174,7 @@ market_label = st.selectbox(
         "Assists",
     ],
     index=0,
-    help="Choose which stat line you're modeling. Enter the corresponding line from PrizePicks or any book."
+    help="Pick the stat type you're modeling. Then enter that stat's line for each player."
 )
 
 market_key_map = {
@@ -178,15 +195,16 @@ metric_map = {
 # =========================
 # PLAYER INPUTS
 # =========================
-st.subheader("Player Inputs")
 
-c1, c2 = st.columns(2)
+st.subheader("🎯 Player Inputs")
 
-with c1:
+col1, col2 = st.columns(2)
+
+with col1:
     p1_name = st.text_input(
         "Player 1 Name",
         "RJ Barrett",
-        help="Enter the player's name as listed in NBA box scores."
+        help="Type the player's name as listed in NBA box scores. We'll auto-pull recent stats."
     )
     p1_line = st.number_input(
         "P1 Line (manual)",
@@ -194,14 +212,14 @@ with c1:
         max_value=100.0,
         value=33.5,
         step=0.5,
-        help="Enter the prop line from PrizePicks or any sportsbook for the selected market."
+        help="Enter the current line from PrizePicks or any sportsbook for the chosen market."
     )
 
-with c2:
+with col2:
     p2_name = st.text_input(
         "Player 2 Name",
         "Jaylen Brown",
-        help="Enter the player's name as listed in NBA box scores."
+        help="Type the player's name as listed in NBA box scores."
     )
     p2_line = st.number_input(
         "P2 Line (manual)",
@@ -209,7 +227,7 @@ with c2:
         max_value=100.0,
         value=34.5,
         step=0.5,
-        help="Enter the prop line from PrizePicks or any sportsbook for the selected market."
+        help="Enter the current line from PrizePicks or any sportsbook for the chosen market."
     )
 
 run = st.button("Run Model")
@@ -217,6 +235,7 @@ run = st.button("Run Model")
 # =========================
 # HELPER FUNCTIONS
 # =========================
+
 def _norm_name(s: str) -> str:
     return (
         s.lower()
@@ -238,12 +257,10 @@ def nba_lookup_player(name: str):
     players = nba_players.get_players()
     target = _norm_name(name)
 
-    # exact
     for p in players:
         if _norm_name(p["full_name"]) == target:
             return p["id"], p["full_name"]
 
-    # fuzzy
     norm_names = [_norm_name(p["full_name"]) for p in players]
     best = difflib.get_close_matches(target, norm_names, n=1, cutoff=0.6)
     if best:
@@ -256,11 +273,6 @@ def nba_lookup_player(name: str):
 
 @st.cache_data(show_spinner=False)
 def get_player_rate_and_minutes(name: str, n_games: int, market: str):
-    """
-    Returns:
-      (mu_per_min, sd_per_min, avg_minutes, message)
-    for selected market based on last N regular-season games.
-    """
     cols = metric_map[market]
     pid, label = nba_lookup_player(name)
     if pid is None:
@@ -314,33 +326,21 @@ def get_player_rate_and_minutes(name: str, n_games: int, market: str):
 
     avg_min = float(np.mean(minutes_list))
     msg = (
-        f"{label}: using last {len(per_min_vals)} games "
-        f"({current_season()}), avg minutes {avg_min:.1f}"
+        f"{label}: {len(per_min_vals)} recent games, "
+        f"avg minutes {avg_min:.1f}"
     )
     return mu_per_min, sd_per_min, avg_min, msg
 
 def compute_leg(line, mu_per_min, sd_per_min, minutes, payout_mult, bankroll, kelly_frac):
-    """
-    Build normal distribution from per-minute rates:
-      X ~ N(mu, sd^2), where:
-        mu = mu_per_min * minutes
-        sd = sd_per_min * sqrt(minutes)
-
-    Returns:
-      p_over, ev_per_dollar, full_kelly_fraction, stake, mu, sd
-    """
     mu = mu_per_min * minutes
     sd = sd_per_min * np.sqrt(max(minutes, 1.0))
     if sd <= 0:
         sd = max(1.0, 0.15 * max(mu, 1.0))
 
-    # Probability of going over the line
     p_over = 1.0 - norm.cdf(line, mu, sd)
 
-    # Kelly-style EV for a bet with net odds b = payout_mult - 1
     b = payout_mult - 1.0
     ev_per_dollar = p_over * b - (1.0 - p_over)
-
     full_kelly = max(0.0, (b * p_over - (1.0 - p_over)) / b) if b > 0 else 0.0
 
     stake = bankroll * kelly_frac * full_kelly
@@ -350,14 +350,49 @@ def compute_leg(line, mu_per_min, sd_per_min, minutes, payout_mult, bankroll, ke
     return p_over, ev_per_dollar, full_kelly, stake, mu, sd
 
 # =========================
+# GOOGLE SHEETS LOGGING
+# =========================
+
+GSHEET_NAME = "NBA_Prop_Model_Log"
+
+@st.cache_resource(show_spinner=False)
+def connect_to_gsheet():
+    """
+    Connect to Google Sheet using local service_account.json.
+    Returns sheet object or None if it fails.
+    """
+    try:
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = ServiceAccountCredentials.from_json_keyfile_name(
+            "service_account.json", scope
+        )
+        client = gspread.authorize(creds)
+        sh = client.open(GSHEET_NAME)
+        sheet = sh.sheet1
+        return sheet
+    except Exception:
+        return None
+
+def log_bet_row(sheet, row):
+    try:
+        sheet.append_row(row, value_input_option="USER_ENTERED")
+    except Exception:
+        pass  # fail silently; don't break the app
+
+
+# =========================
 # MAIN RUN
 # =========================
+
 if run:
     if payout_mult <= 1.0:
         st.error("Payout multiplier must be > 1.0")
         st.stop()
 
-    # Player 1
+    # Pull model inputs from nba_api
     p1_mu_min, p1_sd_min, p1_avg_min, p1_msg = get_player_rate_and_minutes(
         p1_name, games_lookback, selected_market
     )
@@ -365,7 +400,6 @@ if run:
         st.error(f"P1 stats error: {p1_msg}")
         st.stop()
 
-    # Player 2
     p2_mu_min, p2_sd_min, p2_avg_min, p2_msg = get_player_rate_and_minutes(
         p2_name, games_lookback, selected_market
     )
@@ -373,7 +407,7 @@ if run:
         st.error(f"P2 stats error: {p2_msg}")
         st.stop()
 
-    # Single-leg calculations
+    # Compute legs
     p1_prob, ev1, k1, stake1, p1_mu, p1_sd = compute_leg(
         p1_line, p1_mu_min, p1_sd_min, p1_avg_min, payout_mult, bankroll, fractional_kelly
     )
@@ -394,84 +428,122 @@ if run:
     combo_stake = max(0.0, round(combo_stake, 2))
 
     # =========================
-    # SINGLE-LEG RESULTS
+    # DISPLAY: SINGLE LEGS
     # =========================
+
     st.markdown("## 📊 Single-Leg Results")
 
     col_a, col_b = st.columns(2)
 
+    # Player 1 card
     with col_a:
-        st.markdown(f"<div class='prop-card'><h3>{p1_name}</h3>", unsafe_allow_html=True)
+        st.markdown("<div class='prop-card'>", unsafe_allow_html=True)
+        st.markdown(f"### {p1_name}")
         st.caption(p1_msg)
+        st.markdown(f"**Market:** {market_label}")
         st.markdown(f"**Line:** {p1_line}")
         st.markdown(f"**Auto Projected Minutes:** {p1_avg_min:.1f}")
-        st.markdown(f"**Model Mean ({market_label}):** {p1_mu:.1f}")
+        st.markdown(f"**Model Mean:** {p1_mu:.1f}")
+
+        # Prob bar
         st.markdown(
-            f"**Prob OVER** <span class='info-icon' title='Model-estimated chance this leg goes over the line.'>ℹ️</span>: "
+            f"**Prob OVER** "
+            f"<span class='info-icon' title='Model-estimated chance this leg goes over the line.'>ℹ️</span>: "
             f"{p1_prob * 100:.1f}%",
             unsafe_allow_html=True,
         )
         st.markdown(
-            f"**EV per $** <span class='info-icon' title='Expected long-term return per $1 staked. Higher EV = better value, not always higher hit rate.'>ℹ️</span>: "
+            f"<div class='prob-bar-outer'><div class='prob-bar-inner' style='width:{max(3,min(97,p1_prob*100))}%;'></div></div>",
+            unsafe_allow_html=True,
+        )
+
+        # EV
+        st.markdown(
+            f"**EV per $** "
+            f"<span class='info-icon' title='Expected long-term return per $1. Higher EV = better value, not always higher hit rate.'>ℹ️</span>: "
             f"{ev1 * 100:.1f}%",
             unsafe_allow_html=True,
         )
+
+        # Stake
         st.markdown(
-            f"**Suggested Stake** <span class='info-icon' title='Fractional Kelly stake, capped at 3% of bankroll.'>ℹ️</span>: "
+            f"**Suggested Stake** "
+            f"<span class='info-icon' title='Kelly-based stake using your Fractional Kelly, capped at 3% of bankroll.'>ℹ️</span>: "
             f"${stake1:.2f}",
             unsafe_allow_html=True,
         )
+
         if ev1 > 0 and stake1 > 0:
             st.success("✅ +EV leg")
         else:
             st.error("❌ -EV leg")
+
         st.markdown("</div>", unsafe_allow_html=True)
 
+    # Player 2 card
     with col_b:
-        st.markdown(f"<div class='prop-card'><h3>{p2_name}</h3>", unsafe_allow_html=True)
+        st.markdown("<div class='prop-card'>", unsafe_allow_html=True)
+        st.markdown(f"### {p2_name}")
         st.caption(p2_msg)
+        st.markdown(f"**Market:** {market_label}")
         st.markdown(f"**Line:** {p2_line}")
         st.markdown(f"**Auto Projected Minutes:** {p2_avg_min:.1f}")
-        st.markdown(f"**Model Mean ({market_label}):** {p2_mu:.1f}")
+        st.markdown(f"**Model Mean:** {p2_mu:.1f}")
+
         st.markdown(
-            f"**Prob OVER** <span class='info-icon' title='Model-estimated chance this leg goes over the line.'>ℹ️</span>: "
+            f"**Prob OVER** "
+            f"<span class='info-icon' title='Model-estimated chance this leg goes over the line.'>ℹ️</span>: "
             f"{p2_prob * 100:.1f}%",
             unsafe_allow_html=True,
         )
         st.markdown(
-            f"**EV per $** <span class='info-icon' title='Expected long-term return per $1 staked. Higher EV = better value, not always higher hit rate.'>ℹ️</span>: "
+            f"<div class='prob-bar-outer'><div class='prob-bar-inner' style='width:{max(3,min(97,p2_prob*100))}%;'></div></div>",
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            f"**EV per $** "
+            f"<span class='info-icon' title='Expected long-term return per $1. Compares your edge vs the payout.'>ℹ️</span>: "
             f"{ev2 * 100:.1f}%",
             unsafe_allow_html=True,
         )
+
         st.markdown(
-            f"**Suggested Stake** <span class='info-icon' title='Fractional Kelly stake, capped at 3% of bankroll.'>ℹ️</span>: "
+            f"**Suggested Stake** "
+            f"<span class='info-icon' title='Kelly-based stake using your Fractional Kelly, capped at 3% of bankroll.'>ℹ️</span>: "
             f"${stake2:.2f}",
             unsafe_allow_html=True,
         )
+
         if ev2 > 0 and stake2 > 0:
             st.success("✅ +EV leg")
         else:
             st.error("❌ -EV leg")
+
         st.markdown("</div>", unsafe_allow_html=True)
 
     # =========================
-    # COMBO RESULTS
+    # DISPLAY: COMBO
     # =========================
+
     st.markdown("---")
     st.markdown("## 🎯 2-Pick Combo (Both Must Hit)")
 
     st.markdown(
-        f"**Joint Prob** <span class='info-icon' title='Probability that BOTH players go over, assuming independence.'>ℹ️</span>: "
+        f"**Joint Prob** "
+        f"<span class='info-icon' title='Probability that BOTH legs go over, assuming independence.'>ℹ️</span>: "
         f"{joint_prob * 100:.1f}%",
         unsafe_allow_html=True,
     )
     st.markdown(
-        f"**EV per $** <span class='info-icon' title='Expected long-term return on the 2-pick as a whole.'>ℹ️</span>: "
+        f"**EV per $** "
+        f"<span class='info-icon' title='Expected long-term return for the 2-pick as a whole.'>ℹ️</span>: "
         f"{combo_ev * 100:.1f}%",
         unsafe_allow_html=True,
     )
     st.markdown(
-        f"**Suggested Combo Stake** <span class='info-icon' title='Fractional Kelly on the combo, capped at 3% of bankroll.'>ℹ️</span>: "
+        f"**Suggested Combo Stake** "
+        f"<span class='info-icon' title='Fractional Kelly stake on the combo, capped at 3% of bankroll.'>ℹ️</span>: "
         f"${combo_stake:.2f}",
         unsafe_allow_html=True,
     )
@@ -479,11 +551,12 @@ if run:
     if combo_ev > 0 and combo_stake > 0:
         st.success("🔥 Combo is +EV under this model.")
     else:
-        st.error("🚫 Combo is -EV. Consider passing.")
+        st.error("🚫 Combo is -EV. Only fire if you have other reasons to like it.")
 
     # =========================
     # BEST BET SUMMARY
     # =========================
+
     st.markdown("---")
     st.markdown("## 💬 Best Bet Summary")
 
@@ -514,12 +587,49 @@ if run:
     else:
         st.warning(
             "No strong +EV single-leg edge detected. "
-            "Stay disciplined and wait for better numbers."
+            "Be selective. Passing is a winning strategy too."
+        )
+
+    # =========================
+    # GOOGLE SHEETS LOGGING
+    # =========================
+
+    sheet = connect_to_gsheet()
+    if sheet:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # log P1
+        log_bet_row(sheet, [
+            ts, p1_name, market_label, p1_line,
+            round(p1_mu, 2), round(p1_prob, 4),
+            round(ev1, 4), stake1,
+            "Single"
+        ])
+        # log P2
+        log_bet_row(sheet, [
+            ts, p2_name, market_label, p2_line,
+            round(p2_mu, 2), round(p2_prob, 4),
+            round(ev2, 4), stake2,
+            "Single"
+        ])
+        # log Combo
+        log_bet_row(sheet, [
+            ts, f"{p1_name} + {p2_name}", market_label, f"{p1_line} & {p2_line}",
+            "-", round(joint_prob, 4),
+            round(combo_ev, 4), combo_stake,
+            "Combo"
+        ])
+
+        st.info("📊 Logged this run to Google Sheet: NBA_Prop_Model_Log")
+    else:
+        st.warning(
+            "Could not connect to Google Sheets. "
+            "Ensure 'service_account.json' is present and the sheet is shared with that service account."
         )
 
 # FOOTER
 st.caption(
-    "Usage: Enter live lines from PrizePicks or any sportsbook. "
-    "Model uses recent performance + minutes to estimate edge. "
-    "This is NOT a guarantee — always consider news, injuries, and your own risk tolerance."
+    "This tool is for informational/educational use. "
+    "Always layer in injuries, usage, pace, matchup, and your own judgment. "
+    "Long-term success = edges + discipline."
 )
