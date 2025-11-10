@@ -29,9 +29,34 @@ GOLD = "#FFCC33"
 DARK_BG = "#0C0B10"
 CARD_BG = "#17131C"
 
-MAX_BANKROLL_PCT = 0.03  # 3% max stake
+MAX_BANKROLL_PCT = 0.03  # 3% max stake per entry
 GSHEET_NAME = "NBA_Prop_Model_Log"
 CSV_LOG = "bet_history.csv"
+
+MARKET_OPTIONS = [
+    "PRA (Points + Rebounds + Assists)",
+    "Points",
+    "Rebounds",
+    "Assists",
+]
+
+market_key_map = {
+    "PRA (Points + Rebounds + Assists)": "pra",
+    "Points": "pts",
+    "Rebounds": "reb",
+    "Assists": "ast",
+}
+
+metric_map = {
+    "pra": ["PTS", "REB", "AST"],
+    "pts": ["PTS"],
+    "reb": ["REB"],
+    "ast": ["AST"],
+}
+
+# Usage baseline assumptions (approximate)
+LEAGUE_USAGE_PCT = 20.0
+BASE_USAGE_PER_MIN = 0.39  # approx FGA+0.44*FTA+TOV per minute for 20% usage
 
 # =========================
 # SESSION STATE DEFAULTS
@@ -46,6 +71,8 @@ defaults = {
     "p2_name": "Jaylen Brown",
     "p1_line": 33.5,
     "p2_line": 34.5,
+    "p1_market_label": "PRA (Points + Rebounds + Assists)",
+    "p2_market_label": "PRA (Points + Rebounds + Assists)",
     "compact_mode": True,
     "last_run": None,
 }
@@ -114,7 +141,6 @@ st.markdown(
     .stSlider > div > div > div {{
         background-color: {PRIMARY_MAROON}55 !important;
     }}
-    /* Mobile responsiveness */
     @media (max-width: 768px) {{
         h1 {{
             font-size: 1.6rem;
@@ -147,13 +173,13 @@ st.markdown(
     <h1>🏀 NBA 2-Pick Prop Edge & Risk Model</h1>
     <div class="divider-gold"></div>
     <p>
-      Manual-line, data-backed 2-pick builder:
+      Built for manual PrizePicks-style entries:
       <ul>
-        <li>Recent game logs via <b>nba_api</b> (weighted recency)</li>
-        <li>Supports <b>PRA, Points, Rebounds, Assists</b></li>
-        <li>Heavy-tail volatility + auto same-team correlation</li>
-        <li>Kelly-based stake sizing with safety caps</li>
-        <li>History logging & tracking for calibration</li>
+        <li>Per-player markets: <b>PRA, Points, Rebounds, Assists</b></li>
+        <li>Usage-adjusted per-minute projections</li>
+        <li>Weighted recency + heavy-tail variance for realistic probabilities</li>
+        <li>Auto same-team correlation on 2-pick combos</li>
+        <li>Kelly-based staking, logging & tracking</li>
       </ul>
     </p>
     """,
@@ -172,7 +198,7 @@ bankroll = st.sidebar.number_input(
     value=st.session_state["bankroll"],
     step=10.0,
     key="bankroll",
-    help="Total bankroll. Stakes are suggested as a fraction of this."
+    help="Total bankroll. Stakes are fractions of this."
 )
 
 payout_mult = st.sidebar.number_input(
@@ -181,7 +207,7 @@ payout_mult = st.sidebar.number_input(
     value=st.session_state["payout_mult"],
     step=0.1,
     key="payout_mult",
-    help="Total return on a winning 2-pick (e.g., 3.0x Power Play)."
+    help="Total payout on a winning 2-pick (e.g. 3.0x Power Play)."
 )
 
 fractional_kelly = st.sidebar.slider(
@@ -193,8 +219,7 @@ fractional_kelly = st.sidebar.slider(
     key="fractional_kelly",
     help=(
         "Kelly = optimal % of bankroll when you have an edge.\n"
-        "1.0 = full Kelly (aggressive), 0.1–0.3 = safer.\n"
-        "Each stake is also capped at 3% of bankroll."
+        "Use 0.1–0.3 for safer growth. Each stake is capped at 3% of bankroll."
     ),
 )
 
@@ -205,50 +230,17 @@ games_lookback = st.sidebar.slider(
     value=st.session_state["games_lookback"],
     step=1,
     key="games_lookback",
-    help="How many recent games to use for per-minute rates and minutes."
+    help="How many recent games to use for rates, minutes & usage."
 )
 
 compact_mode = st.sidebar.checkbox(
     "Compact Mode (mobile-friendly)",
     value=st.session_state["compact_mode"],
     key="compact_mode",
-    help="Hide some detailed fields for a cleaner mobile view."
+    help="Hide some details for a cleaner mobile layout."
 )
 
 st.sidebar.caption("Manual lines only. No odds API. Stable, transparent, sharp. 🧮")
-
-# =========================
-# MARKET SELECTOR
-# =========================
-
-market_label = st.selectbox(
-    "Select Prop Market",
-    [
-        "PRA (Points + Rebounds + Assists)",
-        "Points",
-        "Rebounds",
-        "Assists",
-    ],
-    index=0,
-    help="Pick the stat category you're modeling; input that line for each player."
-)
-
-market_key_map = {
-    "PRA (Points + Rebounds + Assists)": "pra",
-    "Points": "pts",
-    "Rebounds": "reb",
-    "Assists": "ast",
-}
-selected_market = market_key_map[market_label]
-
-metric_map = {
-    "pra": ["PTS", "REB", "AST"],
-    "pts": ["PTS"],
-    "reb": ["REB"],
-    "ast": ["AST"],
-}
-
-HEAVY_TAIL_FACTOR = 1.2 if selected_market == "pra" else 1.1
 
 # =========================
 # HELPER FUNCTIONS
@@ -289,12 +281,24 @@ def nba_lookup_player(name: str):
 
     return None, f"No NBA player match for '{name}'."
 
+def headshot_url(player_id: int | None):
+    if not player_id:
+        return None
+    # Standard NBA headshot pattern
+    return f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/{player_id}.png"
+
 @st.cache_data(show_spinner=False, ttl=600)
-def get_player_rate_and_minutes(name: str, n_games: int, market: str):
-    cols = metric_map[market]
+def get_player_rate_and_minutes(name: str, n_games: int, market_key: str):
+    """
+    Returns:
+      mu_per_min, sd_per_min, avg_minutes, msg, team_abbrev, usage_pct, player_id
+    - mu_per_min is for the requested market_key
+    - usage_pct is an approximate usage rate based on FGA/FTA/TOV
+    """
+    cols = metric_map[market_key]
     pid, label = nba_lookup_player(name)
     if pid is None:
-        return None, None, None, f"Could not find player '{name}'.", None
+        return None, None, None, f"Could not find player '{name}'.", None, None, None
 
     try:
         gl = PlayerGameLog(
@@ -304,20 +308,22 @@ def get_player_rate_and_minutes(name: str, n_games: int, market: str):
         )
         df = gl.get_data_frames()[0]
     except Exception as e:
-        return None, None, None, f"Error fetching logs for {label}: {e}", None
+        return None, None, None, f"Error fetching logs for {label}: {e}", None, None, pid
 
     if df.empty:
-        return None, None, None, f"No logs found for {label}.", None
+        return None, None, None, f"No logs found for {label}.", None, None, pid
 
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
     df = df.sort_values("GAME_DATE", ascending=False).head(n_games)
 
-    per_min_vals, minutes_list = [], []
+    per_min_vals = []
+    minutes_list = []
+    usg_like_vals = []
 
     for _, row in df.iterrows():
         total_val = sum(float(row.get(c, 0)) for c in cols)
-        mins_raw = row.get("MIN", 0)
 
+        mins_raw = row.get("MIN", 0)
         minutes = 0.0
         try:
             if isinstance(mins_raw, str) and ":" in mins_raw:
@@ -328,17 +334,26 @@ def get_player_rate_and_minutes(name: str, n_games: int, market: str):
         except Exception:
             minutes = 0.0
 
-        if minutes > 0:
-            minutes_list.append(minutes)
-            per_min_vals.append(total_val / minutes)
+        if minutes <= 0:
+            continue
+
+        per_min_vals.append(total_val / minutes)
+        minutes_list.append(minutes)
+
+        # Usage proxy: (FGA + 0.44*FTA + TOV) per minute
+        fga = float(row.get("FGA", 0))
+        fta = float(row.get("FTA", 0))
+        tov = float(row.get("TOV", 0))
+        usg_like = (fga + 0.44 * fta + tov) / minutes
+        usg_like_vals.append(usg_like)
 
     if len(per_min_vals) < 3 or not minutes_list:
-        return None, None, None, f"Not enough valid recent games for {label}.", None
+        return None, None, None, f"Not enough valid recent games for {label}.", None, None, pid
 
     per_min_arr = np.array(per_min_vals)
     mins_arr = np.array(minutes_list)
 
-    # Weighted recency: older ~0.5, newest ~1.5
+    # Weighted recency for per-minute and minutes
     weights = np.linspace(0.5, 1.5, len(per_min_arr))
     weights /= weights.sum()
 
@@ -347,7 +362,17 @@ def get_player_rate_and_minutes(name: str, n_games: int, market: str):
 
     sd_per_min = float(per_min_arr.std(ddof=1))
     if sd_per_min <= 0:
-        sd_per_min = max(0.05, 0.1 * mu_per_min)
+        sd_per_min = max(0.05, 0.1 * max(mu_per_min, 0.5))
+
+    # Usage rate estimate
+    if usg_like_vals:
+        usg_arr = np.array(usg_like_vals)
+        usg_per_min = float(np.average(usg_arr, weights=weights))
+        # Map to usage% relative to baseline
+        approx_usage_pct = (usg_per_min / BASE_USAGE_PER_MIN) * LEAGUE_USAGE_PCT
+        usage_pct = float(np.clip(approx_usage_pct, 10.0, 40.0))
+    else:
+        usage_pct = LEAGUE_USAGE_PCT
 
     team_abbrev = None
     if "TEAM_ABBREVIATION" in df.columns:
@@ -360,31 +385,73 @@ def get_player_rate_and_minutes(name: str, n_games: int, market: str):
         f"{label}: {len(per_min_vals)} recent games (weighted), "
         f"avg minutes {avg_min:.1f}"
     )
-    return mu_per_min, sd_per_min, avg_min, msg, team_abbrev
+    return mu_per_min, sd_per_min, avg_min, msg, team_abbrev, usage_pct, pid
 
-def compute_leg(line, mu_per_min, sd_per_min, minutes,
-                payout_mult, bankroll, kelly_frac, heavy_tail_factor):
-    mu = mu_per_min * minutes
+def compute_leg(
+    line: float,
+    mu_per_min: float,
+    sd_per_min: float,
+    minutes: float,
+    usage_pct: float,
+    payout_mult: float,
+    bankroll: float,
+    kelly_frac: float,
+    heavy_tail_factor: float,
+):
+    """
+    Builds a usage-adjusted, heavy-tailed normal model for the chosen stat.
+    Returns:
+      p_over (clamped realistic),
+      ev_raw_per_dollar,
+      ev_display_per_dollar,
+      full_kelly_fraction,
+      suggested_stake,
+      mu,
+      sd
+    """
+    # Usage adjustment: scale per-minute rate
+    usage_factor = 1.0 + (usage_pct - LEAGUE_USAGE_PCT) / 100.0
+    usage_factor = float(np.clip(usage_factor, 0.7, 1.4))
+
+    mu_per_min_adj = mu_per_min * usage_factor
+    mu = mu_per_min_adj * minutes
+
+    # Base SD from sample, then inflate for heavy tails & high usage volatility
     base_sd = sd_per_min * np.sqrt(max(minutes, 1.0))
-    sd = max(1.0, base_sd * heavy_tail_factor)
+    volatility_factor = 1.0 + (abs(usage_pct - LEAGUE_USAGE_PCT) / 100.0) * 0.3
+    sd = max(1.0, base_sd * heavy_tail_factor * volatility_factor)
 
+    # Probability of going over
     p_over = 1.0 - norm.cdf(line, mu, sd)
+    # Clamp extremes to avoid fake 99.9% edges
+    p_over = float(np.clip(p_over, 0.05, 0.95))
 
+    # EV per $ (raw, theoretical)
     b = payout_mult - 1.0
-    ev_per_dollar = p_over * b - (1.0 - p_over)
+    ev_raw = p_over * b - (1.0 - p_over)
 
+    # Kelly fraction from raw probabilities
     full_kelly = max(0.0, (b * p_over - (1.0 - p_over)) / b) if b > 0 else 0.0
 
+    # Suggested stake using fractional Kelly, with bankroll cap
     stake = bankroll * kelly_frac * full_kelly
     stake = min(stake, bankroll * MAX_BANKROLL_PCT)
     stake = max(0.0, round(stake, 2))
 
-    return p_over, ev_per_dollar, full_kelly, stake, mu, sd
+    # Display EV compressed so it's realistic & readable
+    ev_display = float(np.tanh(ev_raw * 0.5))
 
-def adjust_joint_probability(p1_prob, p2_prob, corr):
+    return p_over, ev_raw, ev_display, full_kelly, stake, mu, sd
+
+def adjust_joint_probability(p1_prob: float, p2_prob: float, corr: float):
+    """
+    Adjust joint probability:
+      base = P1 * P2
+      P12 = base + corr * (min(P1,P2) - base)
+    """
     base = p1_prob * p2_prob
     adj = base + corr * (min(p1_prob, p2_prob) - base)
-    return max(0.0, min(1.0, adj))
+    return float(np.clip(adj, 0.0, 1.0))
 
 @st.cache_resource(show_spinner=False)
 def connect_to_gsheet():
@@ -458,14 +525,21 @@ tab_model, tab_results = st.tabs(["📊 Model", "📓 Results / Tracking"])
 with tab_model:
     st.subheader("🎯 Player Inputs")
 
-    col_inputs = st.columns(2)
+    col_left, col_right = st.columns(2)
 
-    with col_inputs[0]:
+    with col_left:
         p1_name = st.text_input(
             "Player 1 Name",
             value=st.session_state["p1_name"],
             key="p1_name",
             help="Enter as listed in NBA box scores."
+        )
+        p1_market_label = st.selectbox(
+            "P1 Market",
+            MARKET_OPTIONS,
+            index=MARKET_OPTIONS.index(st.session_state["p1_market_label"]),
+            key="p1_market_label",
+            help="Select which stat line you're modeling for Player 1."
         )
         p1_line = st.number_input(
             "P1 Line (manual)",
@@ -474,15 +548,22 @@ with tab_model:
             value=float(st.session_state["p1_line"]),
             step=0.5,
             key="p1_line",
-            help="Enter the line for the selected market from your book."
+            help="Enter the current line from PrizePicks or any book."
         )
 
-    with col_inputs[1]:
+    with col_right:
         p2_name = st.text_input(
             "Player 2 Name",
             value=st.session_state["p2_name"],
             key="p2_name",
             help="Enter as listed in NBA box scores."
+        )
+        p2_market_label = st.selectbox(
+            "P2 Market",
+            MARKET_OPTIONS,
+            index=MARKET_OPTIONS.index(st.session_state["p2_market_label"]),
+            key="p2_market_label",
+            help="Select which stat line you're modeling for Player 2."
         )
         p2_line = st.number_input(
             "P2 Line (manual)",
@@ -491,23 +572,22 @@ with tab_model:
             value=float(st.session_state["p2_line"]),
             step=0.5,
             key="p2_line",
-            help="Enter the line for the selected market from your book."
+            help="Enter the current line from PrizePicks or any book."
         )
 
-    # Buttons row (Run + Quick Refresh)
-    btn_col1, btn_col2 = st.columns(2)
-    with btn_col1:
+    # Buttons row
+    b1, b2 = st.columns(2)
+    with b1:
         run_clicked = st.button("Run Model", use_container_width=True)
-    with btn_col2:
+    with b2:
         quick_refresh = st.button(
             "Quick Refresh Last Bet",
             use_container_width=True,
-            help="Re-run using the last successful inputs."
+            help="Re-run using last successful inputs."
         )
 
     trigger = False
     use_last = False
-
     if run_clicked:
         trigger = True
         use_last = False
@@ -516,13 +596,14 @@ with tab_model:
         use_last = True
 
     if trigger:
-        # Choose input source
         if use_last:
             params = st.session_state["last_run"]
             p1_name_i = params["p1_name"]
             p2_name_i = params["p2_name"]
             p1_line_i = params["p1_line"]
             p2_line_i = params["p2_line"]
+            p1_market_label_i = params["p1_market_label"]
+            p2_market_label_i = params["p2_market_label"]
             payout_i = params["payout_mult"]
             bank_i = params["bankroll"]
             kelly_i = params["fractional_kelly"]
@@ -532,50 +613,60 @@ with tab_model:
             p2_name_i = p2_name
             p1_line_i = p1_line
             p2_line_i = p2_line
+            p1_market_label_i = p1_market_label
+            p2_market_label_i = p2_market_label
             payout_i = payout_mult
             bank_i = bankroll
             kelly_i = fractional_kelly
             gl_i = games_lookback
+
             st.session_state["last_run"] = {
                 "p1_name": p1_name_i,
                 "p2_name": p2_name_i,
                 "p1_line": float(p1_line_i),
                 "p2_line": float(p2_line_i),
+                "p1_market_label": p1_market_label_i,
+                "p2_market_label": p2_market_label_i,
                 "payout_mult": float(payout_i),
                 "bankroll": float(bank_i),
                 "fractional_kelly": float(kelly_i),
                 "games_lookback": int(gl_i),
-                "market_label": market_label,
-                "selected_market": selected_market,
             }
 
         if payout_i <= 1.0:
             st.error("Payout multiplier must be > 1.0")
         else:
-            # Fetch stats
-            p1_mu_min, p1_sd_min, p1_avg_min, p1_msg, p1_team = get_player_rate_and_minutes(
-                p1_name_i, gl_i, selected_market
-            )
+            # Resolve market keys
+            p1_market_key = market_key_map[p1_market_label_i]
+            p2_market_key = market_key_map[p2_market_label_i]
+
+            # Heavy-tail by market
+            p1_ht = 1.35 if p1_market_key == "pra" else 1.25
+            p2_ht = 1.35 if p2_market_key == "pra" else 1.25
+
+            # Stats P1
+            p1_mu_min, p1_sd_min, p1_avg_min, p1_msg, p1_team, p1_usg, p1_pid = \
+                get_player_rate_and_minutes(p1_name_i, gl_i, p1_market_key)
             if p1_mu_min is None:
                 st.error(f"P1 stats error: {p1_msg}")
             else:
-                p2_mu_min, p2_sd_min, p2_avg_min, p2_msg, p2_team = get_player_rate_and_minutes(
-                    p2_name_i, gl_i, selected_market
-                )
+                # Stats P2
+                p2_mu_min, p2_sd_min, p2_avg_min, p2_msg, p2_team, p2_usg, p2_pid = \
+                    get_player_rate_and_minutes(p2_name_i, gl_i, p2_market_key)
                 if p2_mu_min is None:
                     st.error(f"P2 stats error: {p2_msg}")
                 else:
                     # Compute legs
-                    p1_prob, ev1, k1, stake1, p1_mu, p1_sd = compute_leg(
+                    p1_prob, p1_ev_raw, p1_ev_disp, p1_kelly, p1_stake, p1_mu, p1_sd = compute_leg(
                         p1_line_i, p1_mu_min, p1_sd_min, p1_avg_min,
-                        payout_i, bank_i, kelly_i, HEAVY_TAIL_FACTOR
+                        p1_usg, payout_i, bank_i, kelly_i, p1_ht
                     )
-                    p2_prob, ev2, k2, stake2, p2_mu, p2_sd = compute_leg(
+                    p2_prob, p2_ev_raw, p2_ev_disp, p2_kelly, p2_stake, p2_mu, p2_sd = compute_leg(
                         p2_line_i, p2_mu_min, p2_sd_min, p2_avg_min,
-                        payout_i, bank_i, kelly_i, HEAVY_TAIL_FACTOR
+                        p2_usg, payout_i, bank_i, kelly_i, p2_ht
                     )
 
-                    # Auto correlation: same team → +0.35
+                    # Auto correlation: same team only
                     corr = 0.0
                     corr_reason = "0.00 (Independent)"
                     if p1_team and p2_team and p1_team == p2_team:
@@ -584,8 +675,11 @@ with tab_model:
 
                     joint_prob = adjust_joint_probability(p1_prob, p2_prob, corr)
 
+                    # Combo EV
                     b_combo = payout_i - 1.0
-                    combo_ev = payout_i * joint_prob - 1.0
+                    combo_ev_raw = payout_i * joint_prob - 1.0
+                    combo_ev_disp = float(np.tanh(combo_ev_raw * 0.5))
+
                     combo_full_kelly = max(
                         0.0, (b_combo * joint_prob - (1.0 - joint_prob)) / b_combo
                     ) if b_combo > 0 else 0.0
@@ -594,87 +688,109 @@ with tab_model:
                     combo_stake = min(combo_stake, bank_i * MAX_BANKROLL_PCT)
                     combo_stake = max(0.0, round(combo_stake, 2))
 
-                    # ---------- Single-Leg Results ----------
+                    # =========================
+                    # SINGLE-LEG RESULTS
+                    # =========================
                     st.markdown("## 📊 Single-Leg Results")
                     col_a, col_b = st.columns(2)
 
-                    # P1 card
+                    # P1 Card
                     with col_a:
                         st.markdown("<div class='prop-card'>", unsafe_allow_html=True)
-                        st.markdown(f"### {p1_name_i}")
-                        st.caption(p1_msg)
-                        if not compact_mode:
-                            st.markdown(f"**Market:** {market_label}")
+                        ch1, ch2 = st.columns([1, 4])
+                        with ch1:
+                            url = headshot_url(p1_pid)
+                            if url:
+                                st.image(url, width=60)
+                        with ch2:
+                            st.markdown(f"### {p1_name_i}")
+                            st.caption(p1_msg)
+
+                        st.markdown(f"**Market:** {p1_market_label_i}")
                         st.markdown(f"**Line:** {p1_line_i}")
                         if not compact_mode:
-                            st.markdown(f"**Auto Projected Minutes:** {p1_avg_min:.1f}")
+                            st.markdown(f"**Usage Rate (weighted):** {p1_usg:.1f}%")
                             st.markdown(f"**Model Mean:** {p1_mu:.1f}")
+                            st.markdown(f"**Proj Minutes:** {p1_avg_min:.1f}")
+
                         st.markdown(
-                            f"**Prob OVER** <span class='info-icon' title='Model-estimated chance this leg goes over.'>ℹ️</span>: "
+                            f"**Prob OVER** <span class='info-icon' title='Usage & volatility-adjusted probability this leg goes over.'>ℹ️</span>: "
                             f"{p1_prob * 100:.1f}%",
                             unsafe_allow_html=True,
                         )
                         st.markdown(
-                            f"<div class='prob-bar-outer'><div class='prob-bar-inner' style='width:{max(3,min(97,p1_prob*100))}%;'></div></div>",
+                            f"<div class='prob-bar-outer'><div class='prob-bar-inner' style='width:{max(4,min(96,p1_prob*100))}%;'></div></div>",
                             unsafe_allow_html=True,
                         )
                         st.markdown(
-                            f"**EV per $** <span class='info-icon' title='Long-term return per $1. Higher EV = better value.'>ℹ️</span>: "
-                            f"{ev1 * 100:.1f}%",
+                            f"**EV per $** <span class='info-icon' title='Display-smoothed EV. True EV is used for staking; this is a realistic edge signal.'>ℹ️</span>: "
+                            f"{p1_ev_disp * 100:.1f}%",
                             unsafe_allow_html=True,
                         )
                         st.markdown(
-                            f"**Suggested Stake** <span class='info-icon' title='Fractional Kelly stake, capped at 3% of bankroll.'>ℹ️</span>: "
-                            f"${stake1:.2f}",
+                            f"**Suggested Stake** <span class='info-icon' title='Fractional Kelly on true edge, capped at 3% of bankroll.'>ℹ️</span>: "
+                            f"${p1_stake:.2f}",
                             unsafe_allow_html=True,
                         )
-                        if ev1 > 0 and stake1 > 0:
-                            st.success("✅ +EV leg")
+                        if p1_ev_raw > 0 and p1_stake > 0:
+                            st.success("✅ +EV leg (model edge detected)")
                         else:
-                            st.error("❌ -EV leg")
+                            st.error("❌ -EV leg (no long-term edge)")
                         st.markdown("</div>", unsafe_allow_html=True)
 
-                    # P2 card
+                    # P2 Card
                     with col_b:
                         st.markdown("<div class='prop-card'>", unsafe_allow_html=True)
-                        st.markdown(f"### {p2_name_i}")
-                        st.caption(p2_msg)
-                        if not compact_mode:
-                            st.markdown(f"**Market:** {market_label}")
+                        ch1, ch2 = st.columns([1, 4])
+                        with ch1:
+                            url = headshot_url(p2_pid)
+                            if url:
+                                st.image(url, width=60)
+                        with ch2:
+                            st.markdown(f"### {p2_name_i}")
+                            st.caption(p2_msg)
+
+                        st.markdown(f"**Market:** {p2_market_label_i}")
                         st.markdown(f"**Line:** {p2_line_i}")
                         if not compact_mode:
-                            st.markdown(f"**Auto Projected Minutes:** {p2_avg_min:.1f}")
+                            st.markdown(f"**Usage Rate (weighted):** {p2_usg:.1f}%")
                             st.markdown(f"**Model Mean:** {p2_mu:.1f}")
+                            st.markdown(f"**Proj Minutes:** {p2_avg_min:.1f}")
+
                         st.markdown(
-                            f"**Prob OVER** <span class='info-icon' title='Model-estimated chance this leg goes over.'>ℹ️</span>: "
+                            f"**Prob OVER** <span class='info-icon' title='Usage & volatility-adjusted probability this leg goes over.'>ℹ️</span>: "
                             f"{p2_prob * 100:.1f}%",
                             unsafe_allow_html=True,
                         )
                         st.markdown(
-                            f"<div class='prob-bar-outer'><div class='prob-bar-inner' style='width:{max(3,min(97,p2_prob*100))}%;'></div></div>",
+                            f"<div class='prob-bar-outer'><div class='prob-bar-inner' style='width:{max(4,min(96,p2_prob*100))}%;'></div></div>",
                             unsafe_allow_html=True,
                         )
                         st.markdown(
-                            f"**EV per $** <span class='info-icon' title='Long-term return per $1 at these odds.'>ℹ️</span>: "
-                            f"{ev2 * 100:.1f}%",
+                            f"**EV per $** <span class='info-icon' title='Smoothed EV display; staking logic uses raw edge.'>ℹ️</span>: "
+                            f"{p2_ev_disp * 100:.1f}%",
                             unsafe_allow_html=True,
                         )
                         st.markdown(
-                            f"**Suggested Stake** <span class='info-icon' title='Fractional Kelly stake, capped at 3% of bankroll.'>ℹ️</span>: "
-                            f"${stake2:.2f}",
+                            f"**Suggested Stake** <span class='info-icon' title='Fractional Kelly on true edge, capped at 3% of bankroll.'>ℹ️</span>: "
+                            f"${p2_stake:.2f}",
                             unsafe_allow_html=True,
                         )
-                        if ev2 > 0 and stake2 > 0:
-                            st.success("✅ +EV leg")
+                        if p2_ev_raw > 0 and p2_stake > 0:
+                            st.success("✅ +EV leg (model edge detected)")
                         else:
-                            st.error("❌ -EV leg")
+                            st.error("❌ -EV leg (no long-term edge)")
                         st.markdown("</div>", unsafe_allow_html=True)
 
-                    # ---------- Combo ----------
+                    # =========================
+                    # COMBO RESULTS
+                    # =========================
+
                     st.markdown("---")
                     st.markdown("## 🎯 2-Pick Combo (Both Must Hit)")
+
                     st.markdown(
-                        f"**Correlation Applied** <span class='info-icon' title='Same team → positive correlation; otherwise independent.'>ℹ️</span>: "
+                        f"**Correlation Applied** <span class='info-icon' title='Same-team legs assumed positively correlated; others independent.'>ℹ️</span>: "
                         f"{corr_reason}",
                         unsafe_allow_html=True,
                     )
@@ -684,66 +800,75 @@ with tab_model:
                         unsafe_allow_html=True,
                     )
                     st.markdown(
-                        f"**EV per $** <span class='info-icon' title='Expected long-term return for the combo.'>ℹ️</span>: "
-                        f"{combo_ev * 100:.1f}%",
+                        f"**EV per $ (display)** <span class='info-icon' title='Smoothed EV for the combo. True EV used for staking and logging.'>ℹ️</span>: "
+                        f"{combo_ev_disp * 100:.1f}%",
                         unsafe_allow_html=True,
                     )
                     st.markdown(
-                        f"**Suggested Combo Stake** <span class='info-icon' title='Kelly-based stake on combo, capped at 3% of bankroll.'>ℹ️</span>: "
+                        f"**Suggested Combo Stake** <span class='info-icon' title='Fractional Kelly on true combo edge, capped at 3% of bankroll.'>ℹ️</span>: "
                         f"${combo_stake:.2f}",
                         unsafe_allow_html=True,
                     )
-                    if combo_ev > 0 and combo_stake > 0:
+                    if combo_ev_raw > 0 and combo_stake > 0:
                         st.success("🔥 Combo is +EV under this model.")
                     else:
-                        st.error("🚫 Combo is -EV. Don’t force action.")
+                        st.error("🚫 Combo is -EV. Only play with extra conviction.")
 
-                    # ---------- Best Bet ----------
+                    # =========================
+                    # BEST BET SUMMARY
+                    # =========================
+
                     st.markdown("---")
                     st.markdown("## 💬 Best Bet Summary")
 
-                    if ev1 >= ev2:
-                        best_player, best_line, best_ev, best_prob, best_stake = (
-                            p1_name_i, p1_line_i, ev1, p1_prob, stake1
-                        )
-                    else:
-                        best_player, best_line, best_ev, best_prob, best_stake = (
-                            p2_name_i, p2_line_i, ev2, p2_prob, stake2
-                        )
+                    # Pick best by raw EV
+                    best = max(
+                        [
+                            ("P1", p1_name_i, p1_market_label_i, p1_line_i, p1_ev_raw, p1_prob, p1_stake),
+                            ("P2", p2_name_i, p2_market_label_i, p2_line_i, p2_ev_raw, p2_prob, p2_stake),
+                        ],
+                        key=lambda x: x[4],
+                    )
 
-                    if best_ev > 0 and best_stake > 0:
+                    _, bp_name, bp_mkt, bp_line, bp_ev_raw, bp_prob, bp_stake = best
+
+                    if bp_ev_raw > 0 and bp_stake > 0:
                         st.success(
-                            f"**Best Single-Leg Edge:** {best_player} OVER {best_line}  \n"
-                            f"Win Probability: **{best_prob * 100:.1f}%**  \n"
-                            f"EV per $: **{best_ev * 100:.1f}%**  \n"
-                            f"Suggested Stake: **${best_stake:.2f}**"
+                            f"**Best Single-Leg Edge:** {bp_name} OVER {bp_line} ({bp_mkt})  \n"
+                            f"Win Probability: **{bp_prob * 100:.1f}%**  \n"
+                            f"True EV per $: **{bp_ev_raw * 100:.1f}%**  \n"
+                            f"Suggested Stake: **${bp_stake:.2f}**"
                         )
                     else:
                         st.warning(
-                            "No strong +EV single-leg edge detected. Passing is perfectly fine."
+                            "No strong +EV single-leg edge detected. Discipline = edge. Wait for better numbers."
                         )
 
-                    # ---------- Logging ----------
+                    # =========================
+                    # LOGGING (Sheet or CSV)
+                    # =========================
+
                     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                     srcs = []
                     srcs.append(log_bet([
-                        ts, p1_name_i, market_label, p1_line_i,
+                        ts, p1_name_i, p1_market_label_i, p1_line_i,
                         round(p1_mu, 2), round(p1_prob, 4),
-                        round(ev1, 4), stake1,
-                        "Single", "", ""
+                        round(p1_ev_raw, 4), p1_stake,
+                        "Single", f"Usage {p1_usg:.1f}%", ""
                     ]))
                     srcs.append(log_bet([
-                        ts, p2_name_i, market_label, p2_line_i,
+                        ts, p2_name_i, p2_market_label_i, p2_line_i,
                         round(p2_mu, 2), round(p2_prob, 4),
-                        round(ev2, 4), stake2,
-                        "Single", "", ""
+                        round(p2_ev_raw, 4), p2_stake,
+                        "Single", f"Usage {p2_usg:.1f}%", ""
                     ]))
                     srcs.append(log_bet([
-                        ts, f"{p1_name_i} + {p2_name_i}", market_label,
+                        ts, f"{p1_name_i} + {p2_name_i}",
+                        f"{p1_market_label_i} & {p2_market_label_i}",
                         f"{p1_line_i} & {p2_line_i}",
                         "-", round(joint_prob, 4),
-                        round(combo_ev, 4), combo_stake,
+                        round(combo_ev_raw, 4), combo_stake,
                         f"Combo (corr={corr_reason})", "", ""
                     ]))
 
@@ -764,20 +889,16 @@ with tab_results:
     if df is None or df.empty:
         st.info(
             "No logged history yet. Run the model in the 'Model' tab to start logging.\n"
-            "Logs go to Google Sheets (if configured) or to bet_history.csv."
+            "Logs go to Google Sheets (if configured) or bet_history.csv."
         )
     else:
         st.markdown(
             f"Data source: **{'Google Sheet' if source == 'sheet' else 'Local CSV'}**"
         )
-
-        # Sort by latest
         if "Timestamp" in df.columns:
             df = df.sort_values("Timestamp", ascending=False)
+        st.dataframe(df.head(150), use_container_width=True)
 
-        st.dataframe(df.head(100), use_container_width=True)
-
-        # Basic evaluation where Result is Hit/Miss (you fill this in manually post-game)
         if "Result" in df.columns:
             eval_df = df[df["Result"].isin(["Hit", "Miss"])].copy()
             if not eval_df.empty:
@@ -785,7 +906,7 @@ with tab_results:
                 if not singles.empty:
                     hits = (singles["Result"] == "Hit").sum()
                     total = len(singles)
-                    hit_rate = hits / total if total > 0 else 0.0
+                    hit_rate = hits / total if total else 0.0
 
                     st.markdown("### ✅ Performance Summary (Singles)")
                     st.markdown(f"**Recorded Bets:** {total}")
@@ -798,22 +919,21 @@ with tab_results:
                         )
                         if abs(hit_rate - avg_model_prob) > 0.05:
                             st.warning(
-                                "Model may be miscalibrated (hit rate vs predicted). "
-                                "Consider slightly adjusting variance or required EV threshold."
+                                "Model may be a bit off calibration (hit rate vs predicted).\n"
+                                "Consider modest tweaks to variance or required EV threshold."
                             )
                         else:
                             st.success(
-                                "Model calibration vs results looks reasonable so far."
+                                "Model calibration vs results looks reasonably in line so far."
                             )
             else:
                 st.info(
-                    "You have logs but no Results set. "
-                    "Mark 'Hit' or 'Miss' in your sheet/CSV to unlock analytics."
+                    "Logs found but no 'Hit/Miss' yet. Add results in your sheet/CSV to unlock accuracy tracking."
                 )
         else:
             st.info(
-                "No 'Result' column found. "
-                "Add a 'Result' column (Hit/Miss) in your sheet/CSV to track outcomes."
+                "No 'Result' column detected.\n"
+                "Add a 'Result' column (Hit/Miss) in your log to track outcomes."
             )
 
 # =========================
@@ -821,6 +941,8 @@ with tab_results:
 # =========================
 
 st.caption(
-    "Mobile tips: Add this page to your home screen. Your settings & inputs persist via session state. "
-    "Use Quick Refresh before locking slips. Always layer in injuries, role, pace, and your own judgment."
+    "Workflow: Enter lines → Run Model → Use +EV & Kelly sizing → Log auto-saves → "
+    "After games, mark Hit/Miss in your log → Use Results tab to calibrate and refine. "
+    "Remember: the edge is in disciplined volume on +EV spots, not forcing action."
 )
+
