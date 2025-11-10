@@ -205,11 +205,13 @@ st.sidebar.header("User & Bankroll")
 user_input = st.sidebar.text_input(
     "Your ID (for personal bet history)",
     value=st.session_state["user_id"],
+    key="user_id_input",  # ✅ added to prevent duplicate element ID errors
     help="Use something unique (e.g. your name or initials)."
 ).strip() or "Me"
 
 safe_id = "".join(c for c in user_input if c.isalnum() or c in ("_", "-")).strip() or "Me"
 st.session_state["user_id"] = user_input
+
 
 LOG_FILE = f"bet_history_{safe_id}.csv"
 BACKUP_FILE = f"bet_history_{safe_id}_backup.csv"
