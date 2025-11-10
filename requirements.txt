@@ -1,8 +1,7 @@
 streamlit
-numpy
 pandas
-scipy
+numpy
+plotly
 nba_api
 requests
-gspread
-oauth2client
+scipy
