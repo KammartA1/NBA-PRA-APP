@@ -5,3 +5,5 @@ plotly
 nba_api
 requests
 scipy
+gspread
+google-auth
