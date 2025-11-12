@@ -127,39 +127,73 @@ refresh_notice()
 #  NBA API + SportsMetrics Dual-Source Data Fetcher
 # =============================================================
 
-from nba_api.stats.endpoints import leaguedashteamstats, playergamelog, commonplayerinfo
-from nba_api.stats.static import players
+# =============================================================
+#  DATA FETCHING – NBA API WITH RETRY & BACKUP FALLBACK
+# =============================================================
+import requests
+from requests.exceptions import RequestException, Timeout, ConnectionError
 
 @st.cache_data(ttl=86400)
-def fetch_team_metrics():
+def fetch_nba_data(endpoint, params=None, max_retries=2):
     """
-    Pull team pace and defense metrics.
-    Tries nba_api first; falls back to SportsMetrics API if unavailable.
+    Fetch NBA JSON data with retry & graceful fallback.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; NBAPropModel/1.0)",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept": "application/json",
+        "Connection": "keep-alive"
+    }
+
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(endpoint, params=params, headers=headers, timeout=15)
+            resp.raise_for_status()
+            return resp.json()
+        except (Timeout, ConnectionError):
+            st.warning(f"NBA API timeout (attempt {attempt+1}/{max_retries}) – retrying...")
+            time.sleep(3)
+        except RequestException as e:
+            st.error(f"NBA API error: {e}")
+            break
+
+    st.error("⚠️ NBA API failed after retries — switching to backup dataset.")
+    return None
+
+
+@st.cache_data(ttl=86400)
+def fetch_sportsmetrics_backup(endpoint="https://api.sportsmetrics.io/nba/team_metrics"):
+    """
+    Backup SportsMetrics data with graceful failure fallback.
     """
     try:
-        team_stats = leaguedashteamstats.LeagueDashTeamStats(
-            measure_type_detailed_defense='Base',
-            per_mode_detailed='PerGame',
-            season=NBA_SEASON
-        ).get_data_frames()[0]
-        df = team_stats[['TEAM_ID','TEAM_NAME','PACE','DEF_RATING']]
-        df.columns = ['team_id','team_name','pace','def_rating']
-        return df
+        resp = requests.get(endpoint, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
-        st.warning(f"NBA API failed: {e}. Switching to SportsMetrics backup ...")
-        try:
-            res = cached_request("https://api.sportsmetrics.io/nba/team_metrics")
-            if res:
-                df = pd.DataFrame(res)
-                if not {'team_name','pace','def_rating'}.issubset(df.columns):
-                    st.error("SportsMetrics data missing expected columns.")
-                    return pd.DataFrame(columns=['team_id','team_name','pace','def_rating'])
-                return df
-        except Exception as ex:
-            st.error(f"SportsMetrics fallback also failed: {ex}")
-    return pd.DataFrame(columns=['team_id','team_name','pace','def_rating'])
+        st.error(f"Backup source also failed: {e}")
+        return None
 
-team_metrics = fetch_team_metrics()
+
+# =============================================================
+#  LOAD PRIMARY NBA DATA
+# =============================================================
+nba_api_url = "https://stats.nba.com/stats/playergamelog"
+params = {
+    "Season": "2024-25",
+    "SeasonType": "Regular Season"
+}
+
+data = fetch_nba_data(nba_api_url, params)
+
+if not data:
+    st.warning("Loading SportsMetrics backup...")
+    data = fetch_sportsmetrics_backup()
+
+if not data:
+    st.error("❌ All data sources unavailable. Please refresh later.")
+else:
+    st.success("✅ Data loaded successfully.")
 
 # =============================================================
 #  PLAYER LOOKUP & INFO UTILITIES
