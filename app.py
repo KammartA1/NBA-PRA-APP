@@ -1,19 +1,23 @@
+# =============================================================
+#  NBA Prop Model – Advanced Edition (Stable Entry Point)
+#  Optimized for Streamlit Cloud (Python 3.12)
+# =============================================================
+
 import streamlit as st
 
-# ⚙️ Must be the first Streamlit call
+# ✅ Must be the very first Streamlit call
 if "page_configured" not in st.session_state:
     st.set_page_config(
         page_title="NBA Prop Model",
         page_icon="🏀",
-        layout="wide"
+        layout="wide",
+        initial_sidebar_state="expanded"
     )
     st.session_state["page_configured"] = True
 
 # =============================================================
-#  NBA Prop Model – Advanced Edition (Part 1A of 4)
-#  Preserves full working foundation with styling & caching
+#  CORE IMPORTS
 # =============================================================
-
 import pandas as pd
 import numpy as np
 import datetime, time, os, json, requests, random, math
@@ -24,7 +28,6 @@ from scipy.stats import skew, kurtosis
 # =============================================================
 #  COLORWAY + UI STYLING
 # =============================================================
-
 GOPHER_MAROON = "#7A0019"
 GOPHER_GOLD = "#FFCC33"
 BACKGROUND = "#0F0F0F"
@@ -38,53 +41,15 @@ st.markdown(
             color: {TEXT_COLOR};
             font-family: 'Inter', sans-serif;
         }}
-        .stApp {{
-            background-color: {BACKGROUND};
-            color: {TEXT_COLOR};
-        }}
-        h1, h2, h3, h4, h5, h6 {{
-            color: {GOPHER_GOLD};
-            font-weight: 600;
-        }}
-        .player-card {{
-            background-color: #1C1C1C;
-            border-radius: 18px;
-            padding: 1.6rem;
-            margin-bottom: 1.2rem;
-            box-shadow: 0 0 12px rgba(255, 204, 51, 0.15);
-        }}
-        .metric-card {{
-            background-color: #202020;
-            border-radius: 14px;
-            padding: 0.7rem;
-            text-align: center;
-            color: white;
-            margin: 0.5rem;
-        }}
-        .adv {{
-            font-size: 0.9rem;
-            color: #CCCCCC;
-            margin-top: 0.3rem;
-        }}
-        .tooltip {{
-            color: {GOPHER_GOLD};
-            cursor: help;
-        }}
-        .stTabs [data-baseweb="tab-list"] button {{
-            background-color: #181818;
-            border-radius: 8px 8px 0 0;
-            color: {TEXT_COLOR};
-            border: 1px solid #333;
-            font-weight: 500;
-        }}
-        .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {{
-            background-color: {GOPHER_MAROON};
-            color: white;
+        .block-container {{
+            padding-top: 1rem;
+            padding-bottom: 1rem;
         }}
     </style>
     """,
     unsafe_allow_html=True
 )
+
 
 # =============================================================
 #  GLOBAL CONSTANTS AND DEFAULTS
