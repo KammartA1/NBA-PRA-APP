@@ -5,3 +5,9 @@ backgroundColor="#0E0E0E"
 secondaryBackgroundColor="#1A1A1A"
 textColor="#FFFFFF"
 font="sans serif"
+
+[server]
+headless = true
+maxUploadSize = 200
+enableCORS = false
+enableXsrfProtection = false
