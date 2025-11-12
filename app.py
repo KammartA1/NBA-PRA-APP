@@ -1,478 +1,344 @@
-# =============================================================
-#  NBA Prop Model – Advanced Edition (Full Production Build)
-# =============================================================
+# ============================================
+# 🏀 NBA PROP MODEL (Professional Build)
+# Auto advanced-stat pulls + heavy-tail engine
+# Optimized for Streamlit Cloud (fast, no errors)
+# ============================================
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import datetime as dt
-import time
 import os
-import json
-import requests
+import time
 import random
-import math
-from functools import lru_cache
-from scipy.stats import skew, kurtosis
-import matplotlib.pyplot as plt
-
-# ================================
-# PAGE CONFIG MUST BE FIRST
-# ================================
-if "page_configured" not in st.session_state:
-    st.set_page_config(
-        page_title="NBA Prop Model",
-        page_icon="🏀",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-    st.session_state["page_configured"] = True
-
-# ================================
-# COLORWAY + UI STYLING
-# ================================
-GOPHER_MAROON = "#7A0019"
-GOPHER_GOLD = "#FFCC33"
-BACKGROUND = "#0F0F0F"
-TEXT_COLOR = "#F5F5F"
-
-st.markdown(
-    f"""
-    <style>
-        body {{
-            background-color: {BACKGROUND};
-            color: {TEXT_COLOR};
-            font-family: 'Inter', sans-serif;
-        }}
-        .block-container {{
-            padding-top: 1rem;
-            padding-bottom: 1rem;
-        }}
-        [data-testid="stMetricValue"] {{
-            color: {GOPHER_GOLD} !important;
-            font-weight: 600 !important;
-        }}
-        [data-testid="stMetricLabel"] {{
-            color: #DDDDDD !important;
-        }}
-        [data-testid="stMetricDelta"] {{
-            display: none !important;
-        }}
-    </style>
-    """,
-    unsafe_allow_html=True
+import difflib
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+from datetime import datetime
+from scipy.stats import gamma
+from nba_api.stats.static import players as nba_players
+from nba_api.stats.endpoints import (
+    PlayerGameLog,
+    PlayerDashboardByGeneralSplits,
+    LeagueDashTeamStats,
 )
 
-# ===================================
-# CONFIG & MODEL PARAMETERS
-# ===================================
-_LAST_N = 15
-_SIM_RUNS_DEFAULT = 1000
-_BANKROLL_DEFAULT = 1000.0
-_MAX_DAILY_LOSS_PCT = 0.05  # 5% max daily loss
-_DATA_CACHE_TTL_HOURS = 12
-_DATA_AUTO_REFRESH_HOURS = 6
+# --------------------
+# CONFIG & STYLE
+# --------------------
+st.set_page_config(page_title="NBA Prop Model", layout="wide", page_icon="🏀")
 
-# ===================================
-# DATA SOURCES – BallDontLie API
-# ===================================
-_BDL_BASE = "https://api.balldontlie.io/v1"
-_BDL_TIMEOUT = 20
-HEADSHOT_FALLBACK = "https://static.thenounproject.com/png/363640-200.png"
+TEMP_DIR = os.path.join("/tmp", "nba_prop_temp")
+os.makedirs(TEMP_DIR, exist_ok=True)
 
-def _safe_div(a, b):
-    return float(a) / float(b) if b else 0.0
+PRIMARY_MAROON, GOLD, CARD_BG, BG = "#7A0019", "#FFCC33", "#17131C", "#0D0A12"
 
-def _to_minutes(min_str):
-    if not min_str: return 0.0
+st.markdown(f"""
+<style>
+.stApp {{background-color:{BG};color:white;font-family:system-ui,sans-serif;}}
+.main-header {{text-align:center;font-size:38px;color:{GOLD};font-weight:700;margin-bottom:10px;}}
+.card {{background:{CARD_BG};border-radius:15px;padding:14px;margin-bottom:16px;
+border:1px solid {GOLD}33;box-shadow:0 4px 12px rgba(0,0,0,0.4);}}
+.metric {{font-size:18px;color:{GOLD};font-weight:600;}}
+.adv {{font-size:13px;color:#e8e8e8;margin-left:6px;}}
+.rec-play {{color:#4CAF50;font-weight:700;}}
+.rec-thin {{color:#FFC107;font-weight:700;}}
+.rec-pass {{color:#F44336;font-weight:700;}}
+footer {{text-align:center;color:{GOLD};margin-top:25px;font-size:11px;}}
+</style>""", unsafe_allow_html=True)
+
+st.markdown('<p class="main-header">🏀 NBA Prop Model</p>', unsafe_allow_html=True)
+
+# --------------------
+# SIDEBAR SETTINGS
+# --------------------
+st.sidebar.header("Settings")
+user_id = st.sidebar.text_input("User ID", value="Me").strip() or "Me"
+bankroll = st.sidebar.number_input("Bankroll ($)", 10.0, 100000.0, 100.0, 10.0)
+payout_mult = st.sidebar.number_input("2-Pick Payout", 1.5, 5.0, 3.0, 0.1)
+fractional_kelly = st.sidebar.slider("Fractional Kelly", 0.0, 1.0, 0.25, 0.05)
+
+LOG_FILE = os.path.join(TEMP_DIR, f"bet_history_{user_id}.csv")
+
+# --------------------
+# UTILS
+# --------------------
+def _norm_name(n): return n.lower().replace(".", "").replace("'", "").replace("-", " ").strip()
+
+@st.cache_data(ttl=900)
+def all_players(): return nba_players.get_players()
+
+def resolve_player(name):
+    if not name: return None, None
+    players = all_players()
+    target = _norm_name(name)
+    for p in players:
+        if _norm_name(p["full_name"]) == target:
+            return p["id"], p["full_name"]
+    names = [_norm_name(p["full_name"]) for p in players]
+    best = difflib.get_close_matches(target, names, n=1, cutoff=0.7)
+    if best:
+        for p in players:
+            if _norm_name(p["full_name"]) == best[0]:
+                return p["id"], p["full_name"]
+    return None, None
+
+def headshot_url(pid):
+    return f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/{pid}.png"
+
+# --------------------
+# TEAM CONTEXT
+# --------------------
+@st.cache_data(ttl=900)
+def team_context():
     try:
-        mm, ss = str(min_str).split(":")
-        return float(mm) + float(ss)/60.0
-    except:
-        try:
-            return float(min_str)
-        except:
-            return 0.0
+        t = LeagueDashTeamStats(season="2024-25", per_mode_detailed="PerGame").get_data_frames()[0]
+        pace = t.set_index("TEAM_ABBREVIATION")["PACE"].to_dict()
+        defr = t.set_index("TEAM_ABBREVIATION")["DEF_RATING"].to_dict()
+        lp, ld = np.mean(list(pace.values())), np.mean(list(defr.values()))
+        ctx = {k: {"PACE": pace[k], "DEF": defr[k]} for k in pace}
+        return ctx, lp, ld
+    except Exception:
+        return {}, 100, 110
 
-def _possessions(row):
-    return (row["fga"] + 0.44*row["fta"] - row["oreb"] + row["tov"])
+TEAM_CTX, LEAGUE_PACE, LEAGUE_DEF = team_context()
 
-@st.cache_data(ttl=_DATA_CACHE_TTL_HOURS*3600, show_spinner=False)
-def _rget(url, params=None):
+def ctx_mult(opp):
+    if not opp or opp not in TEAM_CTX: return 1.0
+    p, d = TEAM_CTX[opp]["PACE"]/LEAGUE_PACE, LEAGUE_DEF/TEAM_CTX[opp]["DEF"]
+    return float(np.clip((p*d)**0.5, 0.85, 1.15))
+
+# --------------------
+# ADVANCED STATS
+# --------------------
+def adv_stats(pid):
     try:
-        r = requests.get(url, params=params or {}, timeout=_BDL_TIMEOUT,
-                         headers={"User-Agent":"Mozilla/5.0"})
-        r.raise_for_status()
-        return r.json()
+        dash = PlayerDashboardByGeneralSplits(
+            player_id=pid, season="2024-25", per_mode_detailed="PerGame"
+        ).get_data_frames()[0]
+        return dict(
+            MIN=float(dash["MIN"].iloc[0]),
+            USG=float(dash["USG_PCT"].iloc[0])*100,
+            REB=float(dash["REB_PCT"].iloc[0])*100,
+            AST=float(dash["AST_PCT"].iloc[0])*100,
+            FGA=float(dash["FGA"].iloc[0]),
+            FTA=float(dash["FTA"].iloc[0]),
+        )
+    except Exception:
+        return {}
+
+def last_games(pid, n=10, market="PRA"):
+    try:
+        df = PlayerGameLog(player_id=pid, season="2024-25").get_data_frames()[0]
     except Exception:
         return None
+    if df.empty: return None
+    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
+    df = df.sort_values("GAME_DATE", ascending=False).head(n)
+    if market == "PRA": df["VAL"] = df["PTS"] + df["REB"] + df["AST"]
+    elif market == "Points": df["VAL"] = df["PTS"]
+    elif market == "Rebounds": df["VAL"] = df["REB"]
+    else: df["VAL"] = df["AST"]
+    return float(df["VAL"].mean()), float(df["VAL"].std()), df
 
-@st.cache_data(ttl=_DATA_CACHE_TTL_HOURS*3600, show_spinner=False)
-def bdl_players_search(query: str):
-    js = _rget(f"{_BDL_BASE}/players", params={"search": query, "per_page":50})
-    return js.get("data",[]) if js else []
+# --------------------
+# PROJECTION ENGINE
+# --------------------
+def heavy_tail_prob(line, mu, sd):
+    shape = (mu/sd)**2
+    scale = (sd**2)/mu
+    p = 1 - gamma.cdf(line, shape, scale=scale)
+    return float(np.clip(p, 0.02, 0.98))
 
-@st.cache_data(ttl=_DATA_CACHE_TTL_HOURS*3600, show_spinner=False)
-def bdl_player_by_id(pid: int):
-    js = _rget(f"{_BDL_BASE}/players/{pid}")
-    return js or {}
+def projection(player, market, line, opp, teammate_out, blowout_risk):
+    pid, name = resolve_player(player)
+    if not pid: return None, f"No player found for {player}"
+    base_data = last_games(pid, 10, market)
+    if not base_data: return None, f"No data for {name}"
+    base, spread, _ = base_data
+    adv = adv_stats(pid)
+    pace = ctx_mult(opp.strip().upper() if opp else None)
+    mu = base * pace
+    sd = spread * pace if spread > 0 else max(1.0, 0.1*base)
+    if teammate_out: mu *= 1.07
+    if blowout_risk: mu *= 0.9
+    p_over = heavy_tail_prob(line, mu, sd)
+    ev_leg = p_over * 1 - (1 - p_over)
+    return dict(pid=pid, name=name, market=market, line=line, mu=mu, sd=sd,
+                p=p_over, ev=ev_leg, adv=adv, opp=opp,
+                teammate=teammate_out, blow=blowout_risk), None
 
-@st.cache_data(ttl=_DATA_CACHE_TTL_HOURS*3600, show_spinner=False)
-def bdl_stats_last_n_games(player_id: int, last_n: int = _LAST_N):
-    stats = []
-    page = 1
-    per_page = 100
-    while len(stats) < last_n:
-        js = _rget(f"{_BDL_BASE}/stats",
-                  params={"player_ids[]":player_id, "per_page":per_page,
-                          "page":page, "postseason":"false"})
-        if not js: break
-        stats.extend(js.get("data",[]))
-        if page >= js.get("meta",{}).get("total_pages",1): break
-        page += 1
-    return stats[:last_n]
+# --------------------
+# KELLY / STAKE
+# --------------------
+def kelly(prob, payout, f=0.25):
+    b = payout - 1; q = 1 - prob
+    k = (b*prob - q)/b * f
+    return float(np.clip(k, 0, 0.03))
 
-def _frame_from_stats(stats):
-    if not stats: return pd.DataFrame()
-    rows = []
-    for s in stats:
-        ply = s.get("player",{}) or {}
-        tm = s.get("team",{}) or {}
-        g = s.get("game",{}) or {}
-        stg = s.get("stats",{})
-        rows.append({
-            "game_id": g.get("id"),
-            "date": g.get("date","")[:10],
-            "home_team_id": g.get("home_team_id"),
-            "visitor_team_id": g.get("visitor_team_id"),
-            "team_id": tm.get("id"),
-            "player_id": ply.get("id"),
-            "min": _to_minutes(stg.get("min")),
-            "pts": stg.get("pts",0),
-            "reb": stg.get("reb",0),
-            "ast": stg.get("ast",0),
-            "tov": stg.get("turnover",0) or stg.get("tov",0),
-            "fga": stg.get("fga",0),
-            "fta": stg.get("fta",0),
-            "oreb": stg.get("oreb",0),
-            "dreb": stg.get("dreb",0),
-        })
-    return pd.DataFrame(rows)
+def decision(ev):
+    return "✅ PLAY" if ev >= 0.1 else "⚠️ Thin Edge" if ev >= 0.05 else "❌ PASS"
 
-def _team_game_totals(df_all):
-    if df_all.empty: return pd.DataFrame()
-    grp = df_all.groupby(["game_id","team_id"],as_index=False).agg({
-        "pts":"sum","reb":"sum","ast":"sum","tov":"sum","fga":"sum","fta":"sum",
-        "oreb":"sum","dreb":"sum","min":"sum"
-    })
-    grp["orb"] = grp["oreb"]
-    grp["poss"] = grp.apply(_possessions,axis=1)
-    return grp
+# --------------------
+# CARD DISPLAY
+# --------------------
+def leg_card(leg, col):
+    url = headshot_url(leg["pid"])
+    with col:
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            st.image(url, use_column_width=True)
+        with c2:
+            st.markdown(f"**{leg['name']} — {leg['market']}**")
+            st.markdown(f"<span class='metric'>Line {leg['line']:.1f} | Model {leg['mu']:.1f}</span>", unsafe_allow_html=True)
+        st.markdown(f"Hit Prob (Over): **{leg['p']*100:.1f}%**  |  EV: **{leg['ev']*100:+.1f}%**")
 
-def _opponent_id(row):
-    if row["team_id"] == row["home_team_id"]:
-        return row["visitor_team_id"]
-    else:
-        return row["home_team_id"]
+        # ✅ FIXED SAFE FALLBACK
+        adv = leg.get("adv", {})
+        usg, reb, ast = adv.get("USG"), adv.get("REB"), adv.get("AST")
+        fga, fta = adv.get("FGA"), adv.get("FTA")
 
-def _merge_team_context(df_p, df_totals, df_meta):
-    if df_p.empty: return df_p
-    meta = df_meta[["id","home_team_id","visitor_team_id"]].rename(columns={"id":"game_id"})
-    out = df_p.merge(meta,on="game_id",how="left")
-    out["opp_team_id"] = out.apply(_opponent_id,axis=1)
-    out = out.merge(df_totals.rename(columns={
-        "pts":"team_pts","reb":"team_reb","ast":"team_ast","tov":"team_tov",
-        "fga":"team_fga","fta":"team_fta","oreb":"team_orb","dreb":"team_drb",
-        "min":"team_min","poss":"team_poss"
-    }),on=["game_id","team_id"],how="left")
-    opp = df_totals.rename(columns={
-        "team_id":"opp_team_id",
-        "pts":"opp_pts","reb":"opp_reb","ast":"opp_ast","tov":"opp_tov",
-        "fga":"opp_fga","fta":"opp_fta","oreb":"opp_orb","dreb":"opp_drb",
-        "poss":"opp_poss"
-    })
-    out = out.merge(opp[["game_id","opp_team_id","opp_pts","opp_reb","opp_tov","opp_fga","opp_fta","opp_orb","opp_drb","opp_poss"]],
-                    on=["game_id","opp_team_id"],how="left")
-    return out
+        if all(isinstance(x, (int, float)) for x in [usg, reb, ast, fga, fta]):
+            st.markdown(f"<div class='adv'>USG {usg:.1f}% | REB% {reb:.1f} | AST% {ast:.1f} | FGA {fga:.1f} | FTA {fta:.1f}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div class='adv'>Advanced stats unavailable for this player</div>", unsafe_allow_html=True)
 
-def _estimate_usg(row):
-    mp = row.get("min",0.0)
-    if mp <= 0 or not row.get("team_fga"): return 0.0
-    num = (row.get("fga",0)+0.44*row.get("fta",0)+row.get("tov",0)) * (row.get("team_min",0)/5.0)
-    den = mp * (row.get("team_fga",0)+0.44*row.get("team_fta",0)+row.get("team_tov",0))
-    return 100.0 * _safe_div(num, den)
+        if leg["opp"]:
+            st.markdown(f"<div class='adv'>Opponent {leg['opp']} | Context Mult {ctx_mult(leg['opp']):.3f}</div>", unsafe_allow_html=True)
+        if leg["teammate"] or leg["blow"]:
+            mods = []
+            if leg["teammate"]: mods.append("Teammate out (+7%)")
+            if leg["blow"]: mods.append("Blowout risk (−10%)")
+            st.markdown(f"<div class='adv'>{' | '.join(mods)}</div>", unsafe_allow_html=True)
 
-def _team_def_rating(row):
-    return 100.0 * _safe_div(row.get("opp_pts",0), row.get("team_poss",0))
+        rec = decision(leg["ev"])
+        cls = 'rec-play' if 'PLAY' in rec else 'rec-thin' if 'Thin' in rec else 'rec-pass'
+        st.markdown(f"<div class='{cls}'>{rec}</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+# --------------------
+# HISTORY HANDLING
+# --------------------
+def ensure_hist():
+    if not os.path.exists(LOG_FILE):
+        pd.DataFrame(columns=["Date","Player","Market","Line","EV","Stake","Result","CLV","Kelly"]).to_csv(LOG_FILE,index=False)
+def load_hist():
+    ensure_hist();return pd.read_csv(LOG_FILE)
+def save_hist(df): df.to_csv(LOG_FILE,index=False)
 
-def _team_pace(row):
-    poss = 0.5 * (row.get("team_poss",0)+row.get("opp_poss",0))
-    tm_min = max(row.get("team_min",240.0),1.0)
-    return 48.0 * _safe_div(poss,(tm_min/5.0))
+# --------------------
+# MAIN APP TABS
+# --------------------
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Model","📓 Results","📜 History","🧠 Calibration"])
 
-@st.cache_data(ttl=_DATA_CACHE_TTL_HOURS*3600, show_spinner=False)
-def load_player_context(player_id: int, last_n: int = _LAST_N):
-    raw = bdl_stats_last_n_games(player_id,last_n=last_n)
-    if not raw:
-        return pd.DataFrame(), {}, HEADSHOT_FALLBACK
-
-    logs = _frame_from_stats(raw)
-    game_ids = logs["game_id"].dropna().unique().tolist()
-    games_meta = []
-    for gid in game_ids:
-        mj = _rget(f"{_BDL_BASE}/games/{gid}")
-        if mj: games_meta.append(mj)
-    games_meta = pd.DataFrame(games_meta) if games_meta else pd.DataFrame(columns=["id","home_team_id","visitor_team_id"])
-
-    totals = []
-    for gid in game_ids:
-        page = 1
-        while True:
-            js = _rget(f"{_BDL_BASE}/stats", params={"game_ids[]":gid,"per_page":100,"page":page})
-            if not js: break
-            totals.append(_frame_from_stats(js.get("data",[])))
-            if page >= js.get("meta",{}).get("total_pages",1): break
-            page += 1
-    allsub = pd.concat(totals,ignore_index=True) if totals else pd.DataFrame()
-    team_totals = _team_game_totals(allsub)
-
-    ctx = _merge_team_context(logs,team_totals,games_meta)
-    if ctx.empty:
-        return logs, {}, HEADSHOT_FALLBACK
-
-    ctx["usg"] = ctx.apply(_estimate_usg,axis=1)
-    ctx["team_def_rating"] = ctx.apply(_team_def_rating,axis=1)
-    ctx["pace"] = ctx.apply(_team_pace,axis=1)
-
-    def _agg(series):
-        return pd.Series({
-            "mean": float(np.nanmean(series)) if len(series) else 0.0,
-            "std": float(np.nanstd(series,ddof=1)) if len(series)>1 else 0.0,
-            "skew": float(skew(series,bias=False)) if len(series)>2 else 0.0,
-            "kurt": float(kurtosis(series,bias=False)) if len(series)>3 else 0.0
-        })
-
-    agg = {
-        "PTS": _agg(ctx["pts"]),
-        "REB": _agg(ctx["reb"]),
-        "AST": _agg(ctx["ast"]),
-        "MIN": _agg(ctx["min"]),
-        "USG": _agg(ctx["usg"]),
-        "PACE": _agg(ctx["pace"]),
-        "DEFRTG": _agg(ctx["team_def_rating"])
-    }
-
-    pmeta = bdl_player_by_id(player_id)
-    nba_id = None
-    for k in ("nba_id","person_id"):
-        if k in pmeta and isinstance(pmeta[k],int):
-            nba_id = str(pmeta[k])
-            break
-    if nba_id:
-        headshot = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{nba_id}.png"
-    else:
-        headshot = HEADSHOT_FALLBACK
-
-    return ctx.sort_values("date"), agg, headshot
-
-# ===================================
-# PLAYER CARD UI COMPONENT
-# ===================================
-def player_card(player_name, logs, agg, headshot_url):
-    if logs.empty:
-        st.warning(f"No data found for {player_name}.")
-        return
-
-    avg_pts = agg["PTS"]["mean"]
-    avg_reb = agg["REB"]["mean"]
-    avg_ast = agg["AST"]["mean"]
-    avg_min = agg["MIN"]["mean"]
-    avg_usg = agg["USG"]["mean"]
-    avg_pace = agg["PACE"]["mean"]
-    avg_def = agg["DEFRTG"]["mean"]
-
-    c1, c2 = st.columns([1,3])
-    with c1:
-        st.image(headshot_url,use_container_width=True)
-    with c2:
-        st.markdown(f"""
-            <div style="color:{TEXT_COLOR}; font-size:1.2rem; font-weight:600;">
-                {player_name}
-            </div>
-            <div style="font-size:0.85rem; color:#BBBBBB;">
-                Last {_LAST_N} Games
-            </div>
-        """, unsafe_allow_html=True)
-
-        colA, colB, colC = st.columns(3)
-        colA.metric("PTS", f"{avg_pts:.1f}", help="Average points per game")
-        colB.metric("REB", f"{avg_reb:.1f}", help="Average rebounds per game")
-        colC.metric("AST", f"{avg_ast:.1f}", help="Average assists per game")
-
-        colD, colE, colF = st.columns(3)
-        colD.metric("MIN", f"{avg_min:.1f}", help="Average minutes played")
-        colE.metric("USG%", f"{avg_usg:.1f}", help="Estimated usage rate %")
-        colF.metric("PACE", f"{avg_pace:.1f}", help="Team pace (poss/48 min)")
-
-        st.markdown(
-            f"<div style='font-size:0.8rem; color:#999;'>Def Rating (opp): <b>{avg_def:.1f}</b></div>",
-            unsafe_allow_html=True
-        )
-
-    logs_idx = logs.set_index("date")[["pts","reb","ast"]].tail(_LAST_N)
-    fig, ax = plt.subplots(figsize=(4,1.2))
-    logs_idx.plot(ax=ax, legend=False, color=GOPHER_GOLD)
-    ax.set_facecolor(BACKGROUND)
-    fig.patch.set_facecolor(BACKGROUND)
-    ax.tick_params(colors=TEXT_COLOR, labelsize=8)
-    ax.set_title("Last 15 Game PTS/REB/AST", color=TEXT_COLOR, fontsize=9)
-    st.pyplot(fig, use_container_width=True)
-    plt.close(fig)
-
-# ===================================
-# SIMULATION & MODEL FUNCTIONS
-# ===================================
-def compute_ev(probability: float, odds: float = 1.5):
-    if probability <= 0 or odds <= 0:
-        return 0.0
-    return (probability * odds - 1) * 100
-
-def compute_kelly(prob: float, odds: float = 1.5, fraction: float = 0.3):
-    b = odds - 1
-    edge = (prob * (b + 1) - 1) / b if b != 0 else 0.0
-    return max(0.0, edge * fraction)
-
-def compute_clv(proj: float, line: float):
-    return proj - line
-
-def bootstrap_simulation(series: np.ndarray, runs: int = _SIM_RUNS_DEFAULT):
-    if len(series) == 0:
-        return np.array([])
-    idx = np.random.randint(0, len(series), size=(runs, len(series)))
-    samples = np.take(series, idx)
-    return samples.mean(axis=1)
-
-@st.cache_data(ttl=_DATA_CACHE_TTL_HOURS*3600, show_spinner=False)
-def run_player_simulation(series: np.ndarray, line: float, runs: int = _SIM_RUNS_DEFAULT):
-    sims = bootstrap_simulation(series, runs=runs)
-    if sims.size == 0:
-        return None
-    prob = (sims > line).mean()
-    mean = float(np.mean(sims))
-    var = float(np.var(sims, ddof=1))
-    skewn = float(skew(sims, bias=False))
-    return {"prob": prob, "mean": mean, "variance": var, "skew": skewn, "simulations": sims}
-
-# ===================================
-# SIDEBAR – Controls + Refresh Panel
-# ===================================
-st.sidebar.markdown("## 🔄 Controls")
-if "last_refresh" not in st.session_state:
-    st.session_state["last_refresh"] = dt.datetime.utcnow()
-    
-refresh_btn = st.sidebar.button("Refresh Data")
-if refresh_btn or (dt.datetime.utcnow() - st.session_state["last_refresh"]).total_seconds() > _DATA_AUTO_REFRESH_HOURS*3600:
-    st.session_state["last_refresh"] = dt.datetime.utcnow()
-    # Clear cached player context so next call reruns
-    load_player_context.clear()
-    st.sidebar.success("✅ Data refreshed")
-
-last_delta = dt.datetime.utcnow() - st.session_state["last_refresh"]
-mins = int(last_delta.total_seconds()//60)
-secs = int(last_delta.total_seconds() % 60)
-st.sidebar.markdown(f"Last updated: {mins}m {secs}s ago")
-
-bankroll = st.sidebar.number_input("Bankroll ($)", value=_BANKROLL_DEFAULT, step=100.0)
-odds = st.sidebar.number_input("Default odds", value=1.5, step=0.1)
-runs = st.sidebar.number_input("Simulation runs", value=_SIM_RUNS_DEFAULT, step=100)
-
-# ===================================
-# MAIN UI – Player Inputs
-# ===================================
-st.title("NBA Prop Model")
-st.markdown("Dual player mode — analyze and simulate side-by-side")
-
-p1_name = st.text_input("Player 1 Name")
-p2_name = st.text_input("Player 2 Name (optional)")
-
-if p1_name:
-    p1_search = bdl_players_search(p1_name)
-    p1_id = p1_search[0]["id"] if p1_search else None
-else:
-    p1_id = None
-
-if p2_name:
-    p2_search = bdl_players_search(p2_name)
-    p2_id = p2_search[0]["id"] if p2_search else None
-else:
-    p2_id = None
-
-if p1_id:
-    logs1, agg1, img1 = load_player_context(p1_id)
-    player_card(p1_name, logs1, agg1, img1)
-if p2_id:
-    logs2, agg2, img2 = load_player_context(p2_id)
-    player_card(p2_name, logs2, agg2, img2)
-
-# ===================================
-# SIMULATION Section
-# ===================================
-if p1_id and logs1 is not None:
-    st.markdown("---")
-    st.markdown("### 🧮 Simulation / Model Output")
-
-    line1 = st.number_input(f"{p1_name} PRA Line", value=33.5, step=0.5)
-    core_series1 = logs1["pts"] + logs1["reb"] + logs1["ast"]
-    sim_res1 = run_player_simulation(core_series1.to_numpy(), line1, runs=runs)
-
-    if sim_res1:
-        ev1 = compute_ev(sim_res1["prob"], odds)
-        kelly1 = compute_kelly(sim_res1["prob"], odds)
-        clv1 = compute_clv(sim_res1["mean"], line1)
-
-        st.metric(f"{p1_name} Model EV", f"{ev1:.2f} %")
-        st.metric(f"{p1_name} Model Kelly-Stake", f"${kelly1*bankroll:.2f}")
-        st.metric(f"{p1_name} Model CLV", f"{clv1:.2f}")
-
-    if p2_id and logs2 is not None:
-        line2 = st.number_input(f"{p2_name} PRA Line", value=31.5, step=0.5)
-        core_series2 = logs2["pts"] + logs2["reb"] + logs2["ast"]
-        sim_res2 = run_player_simulation(core_series2.to_numpy(), line2, runs=runs)
-
-        if sim_res2:
-            ev2 = compute_ev(sim_res2["prob"], odds)
-            kelly2 = compute_kelly(sim_res2["prob"], odds)
-            clv2 = compute_clv(sim_res2["mean"], line2)
-
-            st.metric(f"{p2_name} Model EV", f"{ev2:.2f} %")
-            st.metric(f"{p2_name} Model Kelly-Stake", f"${kelly2*bankroll:.2f}")
-            st.metric(f"{p2_name} Model CLV", f"{clv2:.2f}")
-
-# ===================================
-# RESULTS, CALIBRATION & INSIGHTS Tabs
-# ===================================
-tab1, tab2, tab3 = st.tabs(["Results Log", "Calibration", "Insights"])
-
+# ---- MODEL TAB ----
 with tab1:
-    st.markdown("### 📋 Results Log")
-    if os.path.exists("results_log.csv"):
-        df = pd.read_csv("results_log.csv")
-        st.dataframe(df.tail(25), use_container_width=True)
-    else:
-        st.info("No logs yet. Run a simulation to start logging.")
+    st.subheader("Auto Advanced Projection & EV Engine")
+    c1, c2 = st.columns(2)
+    with c1:
+        p1 = st.text_input("Player 1")
+        m1 = st.selectbox("Market 1", ["PRA","Points","Rebounds","Assists"])
+        l1 = st.number_input("Line 1", 0.0, 100.0, 25.0, 0.5)
+        o1 = st.text_input("Opponent 1 (abbr)")
+        t1 = st.checkbox("Key teammate out 1")
+        b1 = st.checkbox("Blowout risk 1")
+    with c2:
+        p2 = st.text_input("Player 2")
+        m2 = st.selectbox("Market 2", ["PRA","Points","Rebounds","Assists"])
+        l2 = st.number_input("Line 2", 0.0, 100.0, 25.0, 0.5)
+        o2 = st.text_input("Opponent 2 (abbr)")
+        t2 = st.checkbox("Key teammate out 2")
+        b2 = st.checkbox("Blowout risk 2")
 
+    if st.button("Run Model ⚡"):
+        with st.spinner("Building model... please wait"):
+            leg1, err1 = projection(p1, m1, l1, o1, t1, b1)
+            leg2, err2 = projection(p2, m2, l2, o2, t2, b2)
+            cL, cR = st.columns(2)
+            if leg1: leg_card(leg1, cL)
+            if leg2: leg_card(leg2, cR)
+
+            if leg1 and leg2:
+                corr = 0.25 if leg1["opp"] == leg2["opp"] else 0
+                joint = leg1["p"]*leg2["p"] + corr*(min(leg1["p"], leg2["p"]) - leg1["p"]*leg2["p"])
+                ev_combo = payout_mult*joint - 1
+                kf = kelly(joint, payout_mult, fractional_kelly)
+                stake = bankroll*kf
+                st.markdown(f"### 🎯 2-Pick Combo")
+                st.markdown(f"Joint prob **{joint*100:.1f}%**  |  EV **{ev_combo*100:+.1f}%**  |  Stake ${stake:.2f}")
+                st.markdown(f"Recommendation: **{decision(ev_combo)}**")
+
+# ---- RESULTS TAB ----
 with tab2:
-    st.markdown("### 📊 Calibration")
-    st.write("Calibration & hit-rate tables will appear here once you have logged outcomes.")
+    st.subheader("Results & Personal Tracking")
+    df = load_hist()
+    if not df.empty:
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("No bets logged yet. Log after you place entries.")
 
+    with st.form("log_form"):
+        c1, c2, c3 = st.columns(3)
+        with c1: rp = st.text_input("Player / Combo")
+        with c2: rm = st.selectbox("Market", ["PRA","Points","Rebounds","Assists","Combo"])
+        with c3: rl = st.number_input("Line", 0.0, 200.0, 25.0, 0.5)
+        c4, c5, c6 = st.columns(3)
+        with c4: rev = st.number_input("Model EV (%)", -50.0, 200.0, 5.0)
+        with c5: rstake = st.number_input("Stake ($)", 0.0, 10000.0, 5.0)
+        with c6: rclv = st.number_input("CLV", -20.0, 20.0, 0.0)
+        rres = st.selectbox("Result", ["Pending","Hit","Miss","Push"])
+        sub = st.form_submit_button("Save Result")
+        if sub:
+            ensure_hist()
+            new = {"Date":datetime.now().strftime("%Y-%m-%d %H:%M"),
+                   "Player":rp,"Market":rm,"Line":rl,"EV":rev,
+                   "Stake":rstake,"Result":rres,"CLV":rclv,"Kelly":fractional_kelly}
+            df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
+            save_hist(df)
+            st.success("Saved ✅")
+
+    df = load_hist()
+    comp = df[df["Result"].isin(["Hit","Miss"])]
+    if not comp.empty:
+        pnl = comp.apply(lambda r: r["Stake"]*(payout_mult-1) if r["Result"]=="Hit" else -r["Stake"], axis=1)
+        hr = (comp["Result"]=="Hit").mean()*100
+        roi = pnl.sum()/max(1,bankroll)*100
+        st.markdown(f"**Completed:** {len(comp)} | **Hit Rate:** {hr:.1f}% | **ROI:** {roi:+.1f}%")
+        comp["Net"]=pnl; comp["Cum"]=comp["Net"].cumsum()
+        st.plotly_chart(px.line(comp, x="Date", y="Cum", title="Cumulative Profit", markers=True), use_container_width=True)
+
+# ---- HISTORY TAB ----
 with tab3:
-    st.markdown("### 🔍 Insights")
-    st.write("Insights and edge-analysis will appear here with time.")
+    st.subheader("Bet History and Filters")
+    df = load_hist()
+    if df.empty:
+        st.info("No logged bets yet.")
+    else:
+        min_ev = st.slider("Min EV (%)", -20.0, 100.0, 0.0)
+        filt = df[df["EV"] >= min_ev]
+        st.markdown(f"**Filtered bets:** {len(filt)}")
+        st.dataframe(filt, use_container_width=True)
+        if not filt.empty:
+            filt["Net"] = filt.apply(lambda r: r["Stake"]*(payout_mult-1) if r["Result"]=="Hit" else (-r["Stake"] if r["Result"]=="Miss" else 0), axis=1)
+            filt["Cumulative"] = filt["Net"].cumsum()
+            st.plotly_chart(px.line(filt, x="Date", y="Cumulative", title="Cumulative Profit (Filtered)", markers=True), use_container_width=True)
 
-# ===================================
-# FOOTER
-# ===================================
-st.markdown("---")
-st.caption(
-    f"NBA Prop Model • Cached live data (last { _DATA_CACHE_TTL_HOURS }h) • Side-by-side dual-player • { _LAST_N }-game window"
-)
+# ---- CALIBRATION TAB ----
+with tab4:
+    st.subheader("Calibration & Edge Integrity Check")
+    df = load_hist()
+    comp = df[df["Result"].isin(["Hit","Miss"])]
+    if len(comp) < 15:
+        st.info("Log ≥15 completed bets to start calibration.")
+    else:
+        comp["EVf"] = pd.to_numeric(comp["EV"], errors="coerce")/100
+        comp = comp.dropna(subset=["EVf"])
+        pred_win = 0.5 + comp["EVf"].mean()
+        act_win = (comp["Result"]=="Hit").mean()
+        gap = (pred_win - act_win)*100
+        pnl = comp.apply(lambda r: r["Stake"]*(payout_mult-1) if r["Result"]=="Hit" else -r["Stake"], axis=1)
+        roi = pnl.sum()/max(1,bankroll)*100
+        st.markdown(f"**Predicted Win:** {pred_win*100:.1f}% | **Actual:** {act_win*100:.1f}% | **Gap:** {gap:+.1f}% | **ROI:** {roi:+.1f}%")
+        if gap > 5: st.warning("Model overconfident → increase variance.")
+        elif gap < -5: st.info("Model conservative → reduce variance.")
+        else: st.success("Model and results aligned ✅")
+
+st.markdown("<footer>© 2025 NBA Prop Model | Powered by Kamal</footer>", unsafe_allow_html=True)
