@@ -24,31 +24,68 @@ import datetime, time, os, json, requests, random, math
 import matplotlib.pyplot as plt
 from functools import lru_cache
 from scipy.stats import skew, kurtosis
-
 # =============================================================
-#  COLORWAY + UI STYLING
+#  PLAYER CARD COMPONENT
 # =============================================================
-GOPHER_MAROON = "#7A0019"
-GOPHER_GOLD = "#FFCC33"
-BACKGROUND = "#0F0F0F"
-TEXT_COLOR = "#F5F5F5"
 
-st.markdown(
-    f"""
-    <style>
-        body {{
-            background-color: {BACKGROUND};
-            color: {TEXT_COLOR};
-            font-family: 'Inter', sans-serif;
-        }}
-        .block-container {{
-            padding-top: 1rem;
-            padding-bottom: 1rem;
-        }}
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+def player_card(player_name, logs, agg, headshot_url):
+    """Displays a styled player info card with metrics & tooltips."""
+    if logs.empty:
+        st.warning(f"No data found for {player_name}.")
+        return
+
+    avg_pts = agg["PTS"]["mean"]
+    avg_reb = agg["REB"]["mean"]
+    avg_ast = agg["AST"]["mean"]
+    avg_min = agg["MIN"]["mean"]
+    avg_usg = agg["USG"]["mean"]
+    avg_pace = agg["PACE"]["mean"]
+    avg_def = agg["DEFRTG"]["mean"]
+
+    # Card layout
+    card = st.container()
+    with card:
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            st.image(headshot_url, use_container_width=True)
+        with c2:
+            st.markdown(f"""
+                <div style="color:{TEXT_COLOR}; font-size:1.2rem; font-weight:600;">
+                    {player_name}
+                </div>
+                <div style="font-size:0.85rem; color:#BBBBBB;">
+                    Last {len(logs)} Games (BallDontLie Data)
+                </div>
+            """, unsafe_allow_html=True)
+
+            colA, colB, colC = st.columns(3)
+            colA.metric("PTS", f"{avg_pts:.1f}", help="Average points per game")
+            colB.metric("REB", f"{avg_reb:.1f}", help="Average rebounds per game")
+            colC.metric("AST", f"{avg_ast:.1f}", help="Average assists per game")
+
+            colD, colE, colF = st.columns(3)
+            colD.metric("MIN", f"{avg_min:.1f}", help="Average minutes played")
+            colE.metric("USG%", f"{avg_usg:.1f}", help="Usage Rate: Estimated % of team possessions ending in a shot, FT, or turnover by player")
+            colF.metric("PACE", f"{avg_pace:.1f}", help="Team pace (possessions per 48 min)")
+
+            st.markdown(
+                f"<div style='font-size:0.8rem; color:#999;'>Defensive Rating: <b>{avg_def:.1f}</b> (opp points per 100 poss)</div>",
+                unsafe_allow_html=True
+            )
+st.markdown("""
+<style>
+[data-testid="stMetricValue"] {
+    color: #FFCC33 !important;
+    font-weight: 600 !important;
+}
+[data-testid="stMetricLabel"] {
+    color: #DDDDDD !important;
+}
+[data-testid="stMetricDelta"] {
+    display: none !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 
 # =============================================================
@@ -108,6 +145,30 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+# Example: Compare 2 players
+p1_name = st.text_input("Player 1 Name")
+p2_name = st.text_input("Player 2 Name")
+
+if p1_name and p2_name:
+    st.info("Fetching live player stats from BallDontLie API...")
+
+    # Find player IDs
+    p1_search = bdl_players_search(p1_name)
+    p2_search = bdl_players_search(p2_name)
+
+    if p1_search and p2_search:
+        p1_id = p1_search[0]["id"]
+        p2_id = p2_search[0]["id"]
+
+        logs1, agg1, img1 = load_player_context(p1_id)
+        logs2, agg2, img2 = load_player_context(p2_id)
+
+        # Show cards
+        c1, c2 = st.columns(2)
+        with c1: player_card(p1_name, logs1, agg1, img1)
+        with c2: player_card(p2_name, logs2, agg2, img2)
+    else:
+        st.warning("One or both players not found.")
 
 # ===========================
 # DATA SOURCES (BallDontLie)
