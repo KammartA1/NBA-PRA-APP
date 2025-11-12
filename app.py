@@ -1,25 +1,25 @@
+import streamlit as st
+
+# ⚙️ Must be the first Streamlit call
+if "page_configured" not in st.session_state:
+    st.set_page_config(
+        page_title="NBA Prop Model",
+        page_icon="🏀",
+        layout="wide"
+    )
+    st.session_state["page_configured"] = True
+
 # =============================================================
 #  NBA Prop Model – Advanced Edition (Part 1A of 4)
 #  Preserves full working foundation with styling & caching
 # =============================================================
 
-import streamlit as st
 import pandas as pd
 import numpy as np
 import datetime, time, os, json, requests, random, math
 import matplotlib.pyplot as plt
 from functools import lru_cache
 from scipy.stats import skew, kurtosis
-
-# =============================================================
-#  STREAMLIT PAGE CONFIGURATION
-# =============================================================
-
-st.set_page_config(
-    page_title="NBA Prop Model",
-    page_icon="🏀",
-    layout="wide"
-)
 
 # =============================================================
 #  COLORWAY + UI STYLING
