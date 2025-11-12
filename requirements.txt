@@ -1,12 +1,8 @@
---only-binary=:all:
-
 streamlit==1.39.0
 pandas==2.3.3
-numpy==1.26.4
+numpy==2.2.2
+scipy==1.15.1
 matplotlib==3.9.2
 requests==2.32.3
-scipy==1.15.3
-nba_api==1.4.1
-altair==5.3.0
-pytz==2024.2
 statsmodels==0.14.5
+altair==5.3.0
