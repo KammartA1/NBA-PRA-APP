@@ -173,6 +173,7 @@ def leg_card(leg,col):
         st.markdown(f"<div class='adv'>{'Teammate out (+7%) ' if leg['teammate'] else ''}{'Blowout risk (−10%)' if leg['blow'] else ''}</div>",unsafe_allow_html=True)
         rec=decision(leg['ev']);cls='rec-play' if 'PLAY' in rec else 'rec-thin' if 'Thin' in rec else 'rec-pass'
         st.markdown(f"<div class='{cls}'>{rec}</div></div>",unsafe_allow_html=True)
+auth = st.experimental_auth('google')
 
 # --------------------
 # HISTORY LOG
