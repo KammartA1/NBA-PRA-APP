@@ -298,6 +298,34 @@ def run_loader():
     bar.empty()
     txt.empty()
 
+# =========================
+# HISTORY HELPERS
+# =========================
+
+def ensure_history():
+    if not os.path.exists(LOG_FILE):
+        df = pd.DataFrame(
+            columns=[
+                "Date","Player","Market","Line","EV",
+                "Stake","Result","CLV","KellyFrac",
+            ]
+        )
+        df.to_csv(LOG_FILE, index=False)
+
+def load_history():
+    ensure_history()
+    try:
+        return pd.read_csv(LOG_FILE)
+    except Exception:
+        return pd.DataFrame(
+            columns=[
+                "Date","Player","Market","Line","EV",
+                "Stake","Result","CLV","KellyFrac",
+            ]
+        )
+
+def save_history(df):
+    df.to_csv(LOG_FILE, index=False)
 
 # =========================
 # TABS
