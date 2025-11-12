@@ -7,3 +7,4 @@ requests
 scipy
 gspread
 google-auth
+google-auth-oauthlib
