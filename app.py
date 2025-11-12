@@ -1,7 +1,3 @@
-import sys
-import streamlit as st
-st.sidebar.info(f"Running Python {sys.version.split()[0]}")
-
 # =============================================================
 #  NBA Prop Model – Advanced Edition (Part 1A of 4)
 #  Preserves full working foundation with styling & caching
