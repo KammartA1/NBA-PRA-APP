@@ -1,443 +1,880 @@
 # =============================================================
-#  NBA Prop Model – Optimized Version (Part A1)
-#  Author: Kamal Martin x ChatGPT (GPT-5)
-#  Description: High-performance NBA Prop Betting Model
+#  NBA Prop Model – Advanced Edition (Part 1A of 4)
+#  Preserves full working foundation with styling & caching
 # =============================================================
 
 import streamlit as st
 import pandas as pd
 import numpy as np
+import datetime, time, os, json, requests, random, math
 import matplotlib.pyplot as plt
-import requests
-import os
-import time
-from datetime import datetime, timedelta
-from nba_api.stats.endpoints import playergamelog
-from nba_api.stats.static import players
+from functools import lru_cache
+from scipy.stats import skew, kurtosis
 
 # =============================================================
-#  GLOBAL SETTINGS & CONSTANTS
+#  STREAMLIT PAGE CONFIGURATION
 # =============================================================
 
-st.set_page_config(page_title="NBA Prop Model", layout="wide")
+st.set_page_config(
+    page_title="NBA Prop Model",
+    page_icon="🏀",
+    layout="wide"
+)
 
-# --- Colors (slightly darker Gopher theme) ---
-GOPHER_MAROON = "#5E0018"
+# =============================================================
+#  COLORWAY + UI STYLING
+# =============================================================
+
+GOPHER_MAROON = "#7A0019"
 GOPHER_GOLD = "#FFCC33"
-BACKGROUND_DARK = "#0D0D0D"
-SECONDARY_DARK = "#181818"
-TEXT_COLOR = "#FFFFFF"
+BACKGROUND = "#0F0F0F"
+TEXT_COLOR = "#F5F5F5"
+
+st.markdown(
+    f"""
+    <style>
+        body {{
+            background-color: {BACKGROUND};
+            color: {TEXT_COLOR};
+            font-family: 'Inter', sans-serif;
+        }}
+        .stApp {{
+            background-color: {BACKGROUND};
+            color: {TEXT_COLOR};
+        }}
+        h1, h2, h3, h4, h5, h6 {{
+            color: {GOPHER_GOLD};
+            font-weight: 600;
+        }}
+        .player-card {{
+            background-color: #1C1C1C;
+            border-radius: 18px;
+            padding: 1.6rem;
+            margin-bottom: 1.2rem;
+            box-shadow: 0 0 12px rgba(255, 204, 51, 0.15);
+        }}
+        .metric-card {{
+            background-color: #202020;
+            border-radius: 14px;
+            padding: 0.7rem;
+            text-align: center;
+            color: white;
+            margin: 0.5rem;
+        }}
+        .adv {{
+            font-size: 0.9rem;
+            color: #CCCCCC;
+            margin-top: 0.3rem;
+        }}
+        .tooltip {{
+            color: {GOPHER_GOLD};
+            cursor: help;
+        }}
+        .stTabs [data-baseweb="tab-list"] button {{
+            background-color: #181818;
+            border-radius: 8px 8px 0 0;
+            color: {TEXT_COLOR};
+            border: 1px solid #333;
+            font-weight: 500;
+        }}
+        .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {{
+            background-color: {GOPHER_MAROON};
+            color: white;
+        }}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# =============================================================
+#  GLOBAL CONSTANTS AND DEFAULTS
+# =============================================================
 
 RESULTS_FILE = "results_log.csv"
-
-# --- Create log file if missing ---
-if not os.path.exists(RESULTS_FILE):
-    base_cols = [
-        "timestamp", "player", "market", "line", "projection", "probability",
-        "ev", "stake", "clv", "variance", "skewness", "p25", "p75", "sim_mean"
-    ]
-    pd.DataFrame(columns=base_cols).to_csv(RESULTS_FILE, index=False)
+DAILY_BANKROLL = 30.0
+DAILY_LOSS_CAP = 0.05
+SIMULATIONS = 1000
+BOOTSTRAP_WINDOW = 15
+NBA_SEASON = "2024-25"
 
 # =============================================================
-#  SESSION STATE INITIALIZATION
+#  HELPER FUNCTIONS & CACHE SETTINGS
 # =============================================================
 
-if "results" not in st.session_state:
-    st.session_state["results"] = None
-if "last_refresh" not in st.session_state:
-    st.session_state["last_refresh"] = None
-
-# =============================================================
-#  SIDEBAR – REFRESH & BANKROLL SETTINGS
-# =============================================================
-
-with st.sidebar:
-    st.markdown("### ⚙️ Controls")
-    if st.button("🔄 Refresh Data Manually"):
-        st.session_state["last_refresh"] = datetime.now()
-        st.success("Data refreshed successfully!")
-
-    bankroll = st.number_input("💰 Bankroll ($)", value=30.0, step=10.0)
-    risk_limit = 0.05  # Max daily loss cap = 5%
-
-# =============================================================
-#  HELPER FUNCTIONS
-# =============================================================
-
-@st.cache_data(show_spinner=False)
-def get_nba_player_id(player_name: str):
-    """Fetch NBA player ID from nba_api."""
+@st.cache_data(ttl=86400)
+def cached_request(url, headers=None, params=None):
+    """Generic cached GET request with 24h TTL for stability."""
     try:
-        player_list = players.get_players()
-        match = [p for p in player_list if p["full_name"].lower() == player_name.lower()]
-        return match[0]["id"] if match else None
-    except Exception:
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            st.warning(f"⚠️ Non-200 response from {url}: {resp.status_code}")
+            return None
+    except Exception as e:
+        st.error(f"Network error for {url}: {e}")
         return None
 
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_last_15_games(player_name: str):
-    """Return last 15-game stats for player with rolling averages."""
-    pid = get_nba_player_id(player_name)
-    if not pid:
-        return None
-
-    try:
-        gamelog = playergamelog.PlayerGameLog(player_id=pid, season="2024-25").get_data_frames()[0]
-        df = gamelog.head(15)[["GAME_DATE", "PTS", "REB", "AST", "MIN"]]
-        df = df.assign(PRA=df["PTS"] + df["REB"] + df["AST"])
-        df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
-        df = df.sort_values("GAME_DATE")
-        df["rolling_PRA"] = df["PRA"].rolling(5, min_periods=1).mean()
-        return df
-    except Exception:
-        return None
-
-
-def fetch_backup_metrics(player_name: str):
-    """Fallback to SportsMetrics API (simplified dummy backup)."""
-    try:
-        url = f"https://sportsmetrics.io/api/nba/player/{player_name.replace(' ', '%20')}/summary"
-        r = requests.get(url, timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            return {
-                "usage": data.get("usageRate", np.nan),
-                "pace": data.get("pace", np.nan),
-                "minutes": data.get("minutes", np.nan),
-                "team_defense": data.get("defRating", np.nan),
-            }
-    except Exception:
-        pass
-    return {"usage": np.nan, "pace": np.nan, "minutes": np.nan, "team_defense": np.nan}
-
-
-def ensure_dataframe(df):
-    """Ensure DataFrame integrity for simulation pipeline."""
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["GAME_DATE", "PTS", "REB", "AST", "PRA", "rolling_PRA"])
-    return df
-
-# =============================================================
-#  MODEL TAB – PLAYER INPUTS & LAYOUT
-# =============================================================
-
-st.title("🏀 NBA Prop Model – Optimized Edition")
-
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Model", "📈 Results", "⚙️ Calibration", "🔍 Insights"])
-
-with tab1:
-    st.header("📊 Player Selection & Simulation")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        p1_name = st.text_input("Player 1 Name", "")
-        p1_market = st.selectbox("Market", ["PRA", "Points", "Rebounds", "Assists"], key="p1_market")
-        p1_line = st.number_input("Player 1 Line", step=0.5, key="p1_line")
-
-        key_out1 = st.checkbox("Key teammate out (↑ usage)", value=False)
-        blowout1 = st.checkbox("High blowout risk (↓ minutes)", value=False)
-
-    with c2:
-        p2_name = st.text_input("Player 2 Name (optional)", "")
-        p2_market = st.selectbox("Market", ["PRA", "Points", "Rebounds", "Assists"], key="p2_market")
-        p2_line = st.number_input("Player 2 Line", step=0.5, key="p2_line")
-
-        key_out2 = st.checkbox("Key teammate out (↑ usage)", value=False)
-        blowout2 = st.checkbox("High blowout risk (↓ minutes)", value=False)
-
-    st.markdown("---")
-    st.markdown("### 📥 Load Player Data")
-
-    if st.button("Fetch Latest Stats"):
-        with st.spinner("Retrieving player data..."):
-            p1_data = get_last_15_games(p1_name)
-            p2_data = get_last_15_games(p2_name) if p2_name else None
-            if p1_data is None:
-                st.error(f"No valid data found for {p1_name}")
-            else:
-                st.success(f"{p1_name} data loaded successfully.")
-            if p2_name:
-                if p2_data is None:
-                    st.error(f"No valid data found for {p2_name}")
-                else:
-                    st.success(f"{p2_name} data loaded successfully.")
-            st.session_state["p1_data"] = ensure_dataframe(p1_data)
-            st.session_state["p2_data"] = ensure_dataframe(p2_data)
-
-# ---- End of Part A1 ----
-# =============================================================
-#  DATA PREPARATION & BOOTSTRAP PIPELINE  (Part A2)
-# =============================================================
-
-def adjust_for_context(df, usage_boost=False, blowout_risk=False):
-    """Apply contextual adjustments (usage/minutes modifiers)."""
-    if df is None or df.empty:
-        return df
-
-    df = df.copy()
-    # usage boost: +5% PRA increase
-    if usage_boost:
-        df["PRA"] *= 1.05
-        df["PTS"] *= 1.05
-        df["REB"] *= 1.05
-        df["AST"] *= 1.05
-
-    # blowout: -8% minutes impact on PRA/PTS/REB/AST
-    if blowout_risk:
-        df["PRA"] *= 0.92
-        df["PTS"] *= 0.92
-        df["REB"] *= 0.92
-        df["AST"] *= 0.92
-
-    return df
-
-
-def bootstrap_simulations(values, n=1000):
-    """Run bootstrap sampling for simulation of player prop outcomes."""
-    if len(values) == 0:
-        return np.array([])
-    idx = np.random.randint(0, len(values), (n, len(values)))
-    samples = np.take(values, idx)
-    return samples.mean(axis=1)
-
-
-def simulate_player(df, market="PRA", line=0.0, usage=False, blowout=False):
-    """Perform 1000-run bootstrapped Monte Carlo simulation for one player."""
-    df = adjust_for_context(df, usage, blowout)
-    market_col = {
-        "PRA": "PRA",
-        "Points": "PTS",
-        "Rebounds": "REB",
-        "Assists": "AST"
-    }.get(market, "PRA")
-
-    vals = df[market_col].dropna().values
-    sim_results = bootstrap_simulations(vals, n=1000)
-    if len(sim_results) == 0:
-        return None
-
-    prob = (sim_results > line).mean()
-    mean = np.mean(sim_results)
-    var = np.var(sim_results)
-    skew = (np.mean((sim_results - mean) ** 3)) / (np.std(sim_results) ** 3 + 1e-8)
-    p25, p75 = np.percentile(sim_results, [25, 75])
-    return {
-        "prob": prob,
-        "mean": mean,
-        "variance": var,
-        "skewness": skew,
-        "p25": p25,
-        "p75": p75,
-        "simulations": sim_results
-    }
-
-# =============================================================
-#  RUN MODEL SECTION WITH SPINNER + PROGRESS BAR
-# =============================================================
-
-st.markdown("---")
-st.markdown("### 🧮 Run Model Simulation")
-
-if st.button("Run 1000 Simulations"):
-    st.session_state["results"] = None
-    p1_df = st.session_state.get("p1_data")
-    p2_df = st.session_state.get("p2_data")
-
-    if p1_df is None or p1_df.empty:
-        st.error("Please fetch Player 1 data first.")
-    else:
-        with st.spinner("Running Monte Carlo simulations..."):
-            progress = st.progress(0)
-            # simulate player 1
-            p1_stats = simulate_player(p1_df, p1_market, p1_line, key_out1, blowout1)
-            progress.progress(50)
-            # simulate player 2 (if any)
-            p2_stats = None
-            if p2_name:
-                p2_stats = simulate_player(p2_df, p2_market, p2_line, key_out2, blowout2)
-            progress.progress(100)
-            time.sleep(0.3)
-            progress.empty()
-        st.success("✅ Simulation complete.")
-        st.session_state["results"] = {
-            "p1": p1_stats,
-            "p2": p2_stats,
-            "p1_name": p1_name,
-            "p2_name": p2_name,
-            "p1_line": p1_line,
-            "p2_line": p2_line,
-            "p1_market": p1_market,
-            "p2_market": p2_market,
-        }
-
-# ---- End of Part A2 ----
-# =============================================================
-#  MONTE CARLO POST-PROCESSING & RESULTS DISPLAY (Part B1)
-# =============================================================
-
-def compute_ev(probability: float, odds: float = 1.5):
-    """Compute expected value (%) given probability and odds."""
-    if probability <= 0 or odds <= 0:
-        return 0.0
-    ev = (probability * odds - 1) * 100
-    return ev
-
-
-def compute_kelly(prob: float, odds: float = 1.5, fraction: float = 0.3):
-    """Fractional Kelly stake sizing."""
-    b = odds - 1
-    edge = (prob * (b + 1) - 1) / b if b != 0 else 0
-    return max(0, edge * fraction)
-
-
-def compute_clv(projection: float, line: float):
-    """Simple CLV metric (projection - line)."""
-    return projection - line
-
-
-def append_to_csv(result_dict):
-    """Append simulation result to local results_log.csv."""
-    df = pd.DataFrame([result_dict])
+@st.cache_data(ttl=86400)
+def read_local_results():
+    """Load the results CSV if present; create empty if not."""
     if os.path.exists(RESULTS_FILE):
-        df_existing = pd.read_csv(RESULTS_FILE)
-        df_combined = pd.concat([df_existing, df], ignore_index=True)
-        df_combined.to_csv(RESULTS_FILE, index=False)
-    else:
-        df.to_csv(RESULTS_FILE, index=False)
+        try:
+            df = pd.read_csv(RESULTS_FILE)
+            return df
+        except Exception:
+            st.warning("⚠️ Could not read results file. Re-creating.")
+    return pd.DataFrame(columns=[
+        "timestamp","player","market","line","projection",
+        "probability","ev","stake","decision","clv",
+        "variance","skewness","p25","p75","sim_mean"
+    ])
 
+# =============================================================
+#  STYLIZED HEADER
+# =============================================================
 
-def render_stat_card(player_name, market, stats_dict, line, color=GOPHER_GOLD):
-    """Render a compact stat card for each player."""
-    if stats_dict is None:
-        st.warning(f"No stats for {player_name}.")
-        return
+st.markdown(
+    """
+    <div style='text-align:center; padding-top:0.5rem; padding-bottom:1rem;'>
+        <h1>🏀 NBA Prop Model</h1>
+        <p style='color:#ccc;'>Monte Carlo | PRA | Risk Management | Edge Analytics</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
-    prob = stats_dict["prob"]
-    ev = compute_ev(prob)
-    kelly_frac = compute_kelly(prob)
-    stake = kelly_frac * bankroll
-    clv = compute_clv(stats_dict["mean"], line)
+# =============================================================
+#  DATA REFRESH TIMER & CACHE INFO
+# =============================================================
 
-    # Stat card layout
-    st.markdown(
-        f"""
-        <div style='background-color:{SECONDARY_DARK};
-                    border-left:4px solid {color};
-                    padding:10px;margin-bottom:10px;
-                    border-radius:10px'>
-            <h4 style='color:{color};margin:0'>{player_name} – {market}</h4>
-            <p style='color:{TEXT_COLOR};margin:0.3em 0'>
-                <b>Line:</b> {line} |
-                <b>Projection:</b> {stats_dict["mean"]:.2f} |
-                <b>Prob:</b> {prob*100:.1f}% |
-                <b>EV:</b> {ev:.1f}% |
-                <b>CLV:</b> {clv:.2f}
-            </p>
-            <p style='color:{TEXT_COLOR};margin:0.3em 0'>
-                <b>Kelly Stake:</b> ${stake:.2f} |
-                <b>Variance:</b> {stats_dict["variance"]:.2f} |
-                <b>Skew:</b> {stats_dict["skewness"]:.2f}
-            </p>
-            <small style='color:#888'>
-                25th-75th Percentile Range: {stats_dict["p25"]:.1f} – {stats_dict["p75"]:.1f}
-            </small>
-        </div>
-        """,
-        unsafe_allow_html=True
+def refresh_notice():
+    st.sidebar.info(
+        "🔄 Data refreshes automatically every 24 hours.\n"
+        "Bootstrap window = 15 games per player.\n"
+        "Simulations = 1 000 per run."
     )
 
-    # small histogram
-    fig, ax = plt.subplots(figsize=(4, 1.2))
-    ax.hist(stats_dict["simulations"], bins=25, color=color, alpha=0.7)
-    ax.axvline(line, color="#ff4444", linestyle="--", linewidth=1)
-    ax.set_facecolor("#111")
-    fig.patch.set_facecolor("#111")
-    ax.tick_params(axis="x", colors="white", labelsize=8)
-    ax.tick_params(axis="y", colors="white", labelsize=8)
-    ax.set_title(f"{player_name} Distribution", color="white", fontsize=9)
-    st.pyplot(fig, use_container_width=True)
+refresh_notice()
 
-    # return dict for logging
+# ---- End of Part 1A ----
+# =============================================================
+#  NBA API + SportsMetrics Dual-Source Data Fetcher
+# =============================================================
+
+from nba_api.stats.endpoints import leaguedashteamstats, playergamelog, commonplayerinfo
+from nba_api.stats.static import players
+
+@st.cache_data(ttl=86400)
+def fetch_team_metrics():
+    """
+    Pull team pace and defense metrics.
+    Tries nba_api first; falls back to SportsMetrics API if unavailable.
+    """
+    try:
+        team_stats = leaguedashteamstats.LeagueDashTeamStats(
+            measure_type_detailed_defense='Base',
+            per_mode_detailed='PerGame',
+            season=NBA_SEASON
+        ).get_data_frames()[0]
+        df = team_stats[['TEAM_ID','TEAM_NAME','PACE','DEF_RATING']]
+        df.columns = ['team_id','team_name','pace','def_rating']
+        return df
+    except Exception as e:
+        st.warning(f"NBA API failed: {e}. Switching to SportsMetrics backup ...")
+        try:
+            res = cached_request("https://api.sportsmetrics.io/nba/team_metrics")
+            if res:
+                df = pd.DataFrame(res)
+                if not {'team_name','pace','def_rating'}.issubset(df.columns):
+                    st.error("SportsMetrics data missing expected columns.")
+                    return pd.DataFrame(columns=['team_id','team_name','pace','def_rating'])
+                return df
+        except Exception as ex:
+            st.error(f"SportsMetrics fallback also failed: {ex}")
+    return pd.DataFrame(columns=['team_id','team_name','pace','def_rating'])
+
+team_metrics = fetch_team_metrics()
+
+# =============================================================
+#  PLAYER LOOKUP & INFO UTILITIES
+# =============================================================
+
+@lru_cache(maxsize=512)
+def find_player_id(name):
+    """
+    Resolve player name → ID mapping (case-insensitive).
+    Returns None if no match found.
+    """
+    plist = players.get_players()
+    for p in plist:
+        if name.lower() in p['full_name'].lower():
+            return p['id']
+    return None
+
+def get_player_team_pos(pid):
+    """
+    Get player's team and position info.
+    """
+    try:
+        data = commonplayerinfo.CommonPlayerInfo(player_id=pid).get_data_frames()[0]
+        return data.loc[0,'TEAM_NAME'], data.loc[0,'POSITION']
+    except Exception:
+        return "Unknown","N/A"
+
+# =============================================================
+#  PLAYER GAME LOG FETCHER (15-Game Window)
+# =============================================================
+
+@st.cache_data(ttl=3600)
+def get_last_games(pid, n=BOOTSTRAP_WINDOW):
+    """
+    Retrieve a player's last N games from nba_api.
+    Adds PRA (PTS + REB + AST) column.
+    """
+    try:
+        df = playergamelog.PlayerGameLog(
+            player_id=pid,
+            season=NBA_SEASON
+        ).get_data_frames()[0]
+        df = df.head(n)
+        df['PRA'] = df['PTS'] + df['REB'] + df['AST']
+        return df[['GAME_DATE','PTS','REB','AST','PRA']]
+    except Exception as e:
+        st.warning(f"Game log fetch failed for {pid}: {e}")
+        return pd.DataFrame(columns=['GAME_DATE','PTS','REB','AST','PRA'])
+
+# =============================================================
+#  DATA PREPROCESSING HELPERS
+# =============================================================
+
+def clean_gamelog(gamelog: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure numeric columns are floats and drop NaNs.
+    """
+    for c in ['PTS','REB','AST','PRA']:
+        if c in gamelog.columns:
+            gamelog[c] = pd.to_numeric(gamelog[c], errors='coerce')
+    return gamelog.dropna(subset=['PTS','REB','AST','PRA'])
+
+def compute_player_trends(gamelog: pd.DataFrame) -> dict:
+    """
+    Compute rolling averages and volatility metrics for the last 15 games.
+    """
+    if gamelog.empty:
+        return {}
+    trends = {
+        "avg_pts": gamelog['PTS'].mean(),
+        "avg_reb": gamelog['REB'].mean(),
+        "avg_ast": gamelog['AST'].mean(),
+        "avg_pra": gamelog['PRA'].mean(),
+        "var_pra": np.var(gamelog['PRA']),
+        "skew_pra": skew(gamelog['PRA']),
+        "p25": np.percentile(gamelog['PRA'], 25),
+        "p75": np.percentile(gamelog['PRA'], 75)
+    }
+    return trends
+
+# ---- End of Part 1B ----
+# =============================================================
+#  Monte Carlo Simulation + EV / Kelly / CLV Engine  (Part 1C-A)
+# =============================================================
+
+def run_monte_carlo(gamelog: pd.DataFrame, metric: str, line: float, bankroll: float):
+    """
+    Bootstrapped Monte Carlo Simulation for player prop.
+    Uses last 15 games with 1000 resampled distributions.
+    Returns dict with projection, EV, CLV, stake, and stats.
+    """
+    gamelog = clean_gamelog(gamelog)
+    if gamelog.empty or metric not in gamelog.columns:
+        return {
+            "projection": 0,
+            "prob": 0,
+            "ev": 0,
+            "stake": 0,
+            "clv": 0,
+            "variance": 0,
+            "skewness": 0,
+            "p25": 0,
+            "p75": 0,
+            "sim_mean": 0,
+            "samples": []
+        }
+
+    # --- Bootstrapped resampling ---
+    vals = gamelog[metric].values
+    samples = np.random.choice(vals, size=(SIMULATIONS, len(vals)), replace=True)
+    sim_means = samples.mean(axis=1)
+
+    # --- Distribution statistics ---
+    sim_mean = np.mean(sim_means)
+    variance = np.var(sim_means)
+    skewness = skew(sim_means)
+    p25, p75 = np.percentile(sim_means, [25, 75])
+
+    # --- Probabilities ---
+    prob = np.mean(sim_means > line)   # % of samples beating the line
+    ev = expected_value(prob, line_odds=1.5)
+    clv = sim_mean - line
+    stake = kelly_stake(ev, prob, bankroll)
+
     return {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "player": player_name,
-        "market": market,
-        "line": line,
-        "projection": stats_dict["mean"],
-        "probability": prob,
+        "projection": sim_mean,
+        "prob": prob,
         "ev": ev,
         "stake": stake,
         "clv": clv,
-        "variance": stats_dict["variance"],
-        "skewness": stats_dict["skewness"],
-        "p25": stats_dict["p25"],
-        "p75": stats_dict["p75"],
-        "sim_mean": stats_dict["mean"],
+        "variance": variance,
+        "skewness": skewness,
+        "p25": p25,
+        "p75": p75,
+        "sim_mean": sim_mean,
+        "samples": sim_means.tolist()
     }
 
-# ---- End of Part B1 ----
 # =============================================================
-#  LOGGING & TWO-PLAYER DISPLAY + TAB ROUTING  (Part B2)
+#  ENHANCED LOGGING HANDLER
 # =============================================================
 
-with tab1:
-    st.markdown("### 📈 Simulation Results")
+def append_result(entry: dict):
+    """
+    Append single simulation result to local results_log.csv.
+    Adds new statistical columns if file already exists.
+    """
+    row = pd.DataFrame([{
+        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "player": entry.get("player", ""),
+        "market": entry.get("market", ""),
+        "line": entry.get("line", 0),
+        "projection": entry.get("projection", 0),
+        "probability": entry.get("prob", 0),
+        "ev": entry.get("ev", 0),
+        "stake": entry.get("stake", 0),
+        "decision": "BET" if entry.get("ev", 0) > 0 else "PASS",
+        "clv": entry.get("clv", 0),
+        "variance": entry.get("variance", 0),
+        "skewness": entry.get("skewness", 0),
+        "p25": entry.get("p25", 0),
+        "p75": entry.get("p75", 0),
+        "sim_mean": entry.get("sim_mean", 0)
+    }])
 
-    if st.session_state.get("results"):
-        r = st.session_state["results"]
-        p1, p2 = r.get("p1"), r.get("p2")
-
-        # ---- Layout: two cards side-by-side ----
-        c1, c2 = st.columns(2)
-        logs = []
-
-        with c1:
-            if p1:
-                res1 = render_stat_card(
-                    r["p1_name"], r["p1_market"], p1, r["p1_line"], GOPHER_GOLD
-                )
-                logs.append(res1)
-
-        with c2:
-            if p2:
-                res2 = render_stat_card(
-                    r["p2_name"], r["p2_market"], p2, r["p2_line"], GOPHER_MAROON
-                )
-                logs.append(res2)
-
-        # ---- Log results safely ----
-        if logs:
-            for entry in logs:
-                if entry:
-                    append_to_csv(entry)
-            st.success("✅ Logged results to results_log.csv")
-
+    if os.path.exists(RESULTS_FILE):
+        try:
+            row.to_csv(RESULTS_FILE, mode="a", header=False, index=False)
+        except Exception as e:
+            st.warning(f"Logging append failed: {e}")
     else:
-        st.info("Run simulations to see results here.")
+        row.to_csv(RESULTS_FILE, mode="w", header=True, index=False)
 
 # =============================================================
-#  TAB ROUTING
+#  PLAYER SIMULATION WRAPPER (CALLED FROM MODEL TAB)
 # =============================================================
 
-with tab2:
-    results_tab_ui()
+def simulate_player(name: str, market: str, line: float, bankroll: float):
+    """
+    High-level wrapper: runs simulation, logs result, and returns output dict.
+    """
+    pid = find_player_id(name)
+    if not pid:
+        st.warning(f"Player {name} not found.")
+        return None
 
-with tab3:
-    calibration_tab_ui()
+    team, pos = get_player_team_pos(pid)
+    gamelog = get_last_games(pid)
+    if gamelog.empty:
+        st.error(f"No game data for {name}.")
+        return None
 
-with tab4:
-    insights_tab_ui()
+    gamelog = clean_gamelog(gamelog)
+    result = run_monte_carlo(gamelog, market, line, bankroll)
+    result["player"] = name
+    result["market"] = market
+    result["line"] = line
+    result["team"] = team
+    result["position"] = pos
+
+    append_result(result)
+    return result
+
+# ---- End of Part 1C-A ----
+# =============================================================
+#  Simulation Display & Model Tab Integration (Part 1C-B)
+# =============================================================
+
+def display_simulation(result: dict):
+    """
+    Draw summary cards and histogram for a single simulation result.
+    """
+    if not result:
+        st.info("No data to display yet.")
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Projection", f"{result['projection']:.1f}")
+    c2.metric("Prob > Line", f"{result['prob']*100:.1f}%")
+    c3.metric("Expected Value", f"{result['ev']:.1f}%")
+    c4.metric("Kelly Stake", f"${result['stake']:.2f}")
+
+    with st.expander("📊 Distribution Details", expanded=False):
+        fig, ax = plt.subplots()
+        ax.hist(result["samples"], bins=30, color=GOPHER_MAROON, alpha=0.75)
+        ax.axvline(result["line"], color=GOPHER_GOLD, linestyle="--", label="Line")
+        ax.axvline(result["projection"], color="white", linestyle="-", label="Mean Projection")
+        ax.set_facecolor("#111")
+        ax.legend(facecolor="#111", labelcolor="white")
+        st.pyplot(fig)
+
+        st.caption(
+            f"Variance = {result['variance']:.2f} | Skew = {result['skewness']:.2f} | "
+            f"25-75% Range = [{result['p25']:.1f}, {result['p75']:.1f}]"
+        )
 
 # =============================================================
-#  FOOTER
+#  MODEL TAB UI HOOK
 # =============================================================
 
-st.markdown("---")
-st.caption(
-    "NBA Prop Model — Optimized Edition | "
-    "1000-run Monte Carlo Simulation | "
-    "Fractional Kelly Staking • Manual Data Refresh • Local Logging"
-)
+def model_tab_ui():
+    """
+    Integrates player entry boxes, line inputs, and Monte Carlo execution.
+    """
+    st.header("🏀 Model Simulation")
 
-# ---- End of Part B2 / End of app.py ----
+    st.markdown("Enter up to two players to simulate PRA / PTS / REB / AST props.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        p1 = st.text_input("Player 1 Name")
+        market1 = st.selectbox("Market (P1)", ["PRA","PTS","REB","AST"], key="m1")
+        line1 = st.number_input("Line (P1)", min_value=0.0, max_value=100.0, value=0.0, step=0.5, key="l1")
+    with col2:
+        p2 = st.text_input("Player 2 Name")
+        market2 = st.selectbox("Market (P2)", ["PRA","PTS","REB","AST"], key="m2")
+        line2 = st.number_input("Line (P2)", min_value=0.0, max_value=100.0, value=0.0, step=0.5, key="l2")
+
+    st.markdown("—")
+
+    bankroll = st.number_input("💰 Daily Bankroll", min_value=1.0, max_value=1000.0,
+                                value=DAILY_BANKROLL, step=1.0)
+
+    colA, colB = st.columns(2)
+    with colA:
+        blowout = st.checkbox("Blowout Risk High (-10 % Minutes)", value=False)
+    with colB:
+        teammate_out = st.checkbox("Key Teammate Out (+8 % Usage)", value=False)
+
+    run = st.button("▶️ Run Model")
+
+    if run:
+        st.info("Running simulations … please wait ≈ 3 seconds per player.")
+        if p1:
+            st.subheader(f"Results – {p1}")
+            res1 = simulate_player(p1, market1, line1, bankroll)
+            if blowout:
+                res1["projection"] *= 0.9
+            if teammate_out:
+                res1["projection"] *= 1.08
+            display_simulation(res1)
+
+        if p2:
+            st.subheader(f"Results – {p2}")
+            res2 = simulate_player(p2, market2, line2, bankroll)
+            if blowout:
+                res2["projection"] *= 0.9
+            if teammate_out:
+                res2["projection"] *= 1.08
+            display_simulation(res2)
+
+        st.success("✅ Simulations complete and logged to results_log.csv !")
+
+# ---- End of Part 1C-B ----
+# =============================================================
+#  RESULTS TAB  (Part 2A)
+# =============================================================
+
+def results_tab_ui():
+    """
+    Display logged simulation results with EV trend,
+    rolling hit rate, and summary performance metrics.
+    """
+    st.header("📊 Results Log")
+
+    if not os.path.exists(RESULTS_FILE):
+        st.info("No results logged yet. Run a simulation first.")
+        return
+
+    df = pd.read_csv(RESULTS_FILE)
+    if df.empty:
+        st.info("No entries yet.")
+        return
+
+    # Convert timestamps safely
+    try:
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+    except Exception:
+        df["timestamp"] = pd.to_datetime("today")
+
+    # ---- Summary Metrics ----
+    avg_ev = df["ev"].mean()
+    avg_clv = df["clv"].mean()
+    avg_stake = df["stake"].mean()
+    avg_var = df["variance"].mean()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Average EV", f"{avg_ev:.2f}%")
+    c2.metric("Average CLV", f"{avg_clv:.2f}")
+    c3.metric("Avg Stake", f"${avg_stake:.2f}")
+    c4.metric("Avg Variance", f"{avg_var:.2f}")
+
+    # ---- EV Chart ----
+    st.subheader("Expected Value Over Time")
+    fig, ax = plt.subplots()
+    ax.plot(df["timestamp"], df["ev"], color=GOPHER_GOLD, linewidth=2)
+    ax.axhline(0, color="#555", linestyle="--")
+    ax.set_facecolor("#111")
+    fig.patch.set_facecolor("#111")
+    ax.tick_params(colors="white")
+    ax.set_ylabel("EV (%)", color="white")
+    ax.set_xlabel("Date", color="white")
+    st.pyplot(fig)
+
+    # ---- Rolling Hit Rate ----
+    st.subheader("Rolling Hit Rate (EV>0)")
+    df["hit"] = (df["ev"] > 0).astype(int)
+    df["rolling_hit"] = df["hit"].rolling(window=10, min_periods=1).mean() * 100
+
+    fig2, ax2 = plt.subplots()
+    ax2.plot(df["timestamp"], df["rolling_hit"], color=GOPHER_MAROON, linewidth=2)
+    ax2.axhline(50, color="#333", linestyle="--")
+    ax2.set_facecolor("#111")
+    fig2.patch.set_facecolor("#111")
+    ax2.tick_params(colors="white")
+    ax2.set_ylabel("Hit Rate (%)", color="white")
+    ax2.set_xlabel("Date", color="white")
+    st.pyplot(fig2)
+
+    # ---- Expanded Table ----
+    with st.expander("📋 View Detailed Log"):
+        st.dataframe(
+            df[[
+                "timestamp","player","market","line","projection",
+                "probability","ev","stake","clv","variance","skewness",
+                "p25","p75","sim_mean"
+            ]].sort_values("timestamp", ascending=False),
+            use_container_width=True
+        )
+
+# ---- End of Part 2A ----
+# =============================================================
+#  RESULTS TAB CONTINUATION – Calibration Feedback (Part 2B)
+# =============================================================
+
+    # ---- Calibration & Feedback ----
+    st.markdown("---")
+    st.subheader("⚙️ Model Calibration & Performance Bands")
+
+    mean_ev = df["ev"].mean()
+    recent_hit = df["rolling_hit"].iloc[-1] if "rolling_hit" in df.columns else 0
+    avg_prob = df["probability"].mean() * 100
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Average EV (%)", f"{mean_ev:.2f}")
+    c2.metric("Recent Hit Rate (%)", f"{recent_hit:.2f}")
+    c3.metric("Avg Predicted Probability (%)", f"{avg_prob:.2f}")
+
+    if recent_hit < 45:
+        st.warning(
+            "🔴 Under-performing band detected.\n\n"
+            "Model likely too aggressive — consider slightly **reducing pace multipliers (0.95–1.0)** "
+            "or **tightening variance scaling**."
+        )
+    elif 45 <= recent_hit <= 65:
+        st.info(
+            "🟡 Stable calibration band.\n\n"
+            "Model is performing consistently. Continue logging data for larger sample confidence."
+        )
+    else:
+        st.success(
+            "🟢 Strong calibration band!\n\n"
+            "You’re outperforming market expectation — you may cautiously **increase fractional Kelly "
+            "or expand sample size per day.**"
+        )
+
+    # ---- Monthly Snapshot ----
+    st.subheader("📆 Monthly Snapshot")
+    df["month"] = df["timestamp"].dt.to_period("M")
+    monthly = df.groupby("month").agg({
+        "ev": "mean",
+        "hit": "mean",
+        "stake": "mean",
+        "clv": "mean"
+    }).reset_index()
+
+    fig3, ax3 = plt.subplots()
+    ax3.plot(monthly["month"].astype(str), monthly["ev"], color=GOPHER_GOLD, label="Avg EV (%)")
+    ax3.plot(monthly["month"].astype(str), monthly["hit"]*100, color=GOPHER_MAROON, label="Hit Rate (%)")
+    ax3.set_facecolor("#111")
+    fig3.patch.set_facecolor("#111")
+    ax3.tick_params(colors="white")
+    ax3.legend(facecolor="#111", labelcolor="white")
+    ax3.set_xlabel("Month", color="white")
+    ax3.set_ylabel("Percentage", color="white")
+    st.pyplot(fig3)
+
+    st.caption(
+        "EV = Expected Value %, Hit Rate = % of positive EV bets per month. "
+        "Use this chart to detect performance drift or seasonal variance."
+    )
+
+# ---- End of Part 2B ----
+# =============================================================
+#  CALIBRATION TAB  (Part 3)
+# =============================================================
+
+def calibration_tab_ui():
+    """
+    Analyze calibration across EV bins and generate tuning suggestions.
+    """
+    st.header("🧠 Model Calibration & Tuning")
+
+    if not os.path.exists(RESULTS_FILE):
+        st.info("No results logged yet. Run simulations to build calibration data.")
+        return
+
+    df = pd.read_csv(RESULTS_FILE)
+    if df.empty:
+        st.info("No data available yet.")
+        return
+
+    # Clean and compute bins
+    df["hit"] = (df["ev"] > 0).astype(int)
+    df["ev_bin"] = pd.cut(
+        df["ev"],
+        bins=[-999, 10, 20, 999],
+        labels=["Thin Edge (<10%)", "Moderate Edge (10–20%)", "Strong Edge (>20%)"]
+    )
+
+    # ---- Bin Performance ----
+    st.subheader("📦 EV Bin Performance")
+    bin_perf = df.groupby("ev_bin").agg({
+        "hit": ["mean", "count"],
+        "ev": "mean",
+        "clv": "mean"
+    }).round(3)
+    bin_perf.columns = ["Hit Rate", "Count", "Avg EV", "Avg CLV"]
+    st.dataframe(bin_perf, use_container_width=True)
+
+    # ---- Chart: Calibration Consistency ----
+    st.subheader("📈 Calibration Consistency (EV → Hit Rate)")
+    avg_hit = bin_perf["Hit Rate"].mean() * 100
+    fig, ax = plt.subplots()
+    ax.bar(bin_perf.index.astype(str), bin_perf["Hit Rate"] * 100, color=GOPHER_GOLD, alpha=0.8)
+    ax.axhline(50, color="#444", linestyle="--", linewidth=1)
+    ax.set_facecolor("#111")
+    fig.patch.set_facecolor("#111")
+    ax.tick_params(colors="white")
+    ax.set_ylabel("Hit Rate (%)", color="white")
+    ax.set_xlabel("EV Bin", color="white")
+    st.pyplot(fig)
+
+    # ---- Automatic Tuning Suggestions ----
+    st.subheader("🧭 Tuning Recommendations")
+
+    mean_ev = df["ev"].mean()
+    mean_hit = df["hit"].mean() * 100
+    clv_mean = df["clv"].mean()
+    variance_avg = df["variance"].mean()
+
+    st.write(f"**Average EV:** {mean_ev:.2f}% | **Hit Rate:** {mean_hit:.1f}% | **Avg CLV:** {clv_mean:.2f}")
+
+    if mean_hit < 45:
+        st.warning(
+            "🔴 Model underperforming.\n"
+            "- Decrease offensive pace weighting (–5%)\n"
+            "- Increase defensive strength adjustment (+5%)\n"
+            "- Reduce variance scaling slightly (0.9×)\n"
+            "- Consider expanding sample size per player"
+        )
+    elif 45 <= mean_hit <= 65:
+        st.info(
+            "🟡 Model calibrated.\n"
+            "- Keep parameters stable\n"
+            "- Continue tracking 30+ new results before further adjustment\n"
+            "- Minor fine-tune only if CLV drops for multiple days"
+        )
+    else:
+        st.success(
+            "🟢 Model overperforming.\n"
+            "- Maintain current variance scaling\n"
+            "- Optionally increase Kelly fraction (0.3 → 0.35)\n"
+            "- Capture as much data as possible to confirm edge persistence"
+        )
+
+    # ---- Calibration Trend ----
+    st.subheader("📊 Calibration Stability Over Time")
+    df["date"] = pd.to_datetime(df["timestamp"]).dt.date
+    cal_trend = df.groupby("date")["hit"].mean().rolling(7, min_periods=1).mean() * 100
+
+    fig2, ax2 = plt.subplots()
+    ax2.plot(cal_trend.index, cal_trend.values, color=GOPHER_MAROON, linewidth=2)
+    ax2.axhline(50, color="#444", linestyle="--", linewidth=1)
+    ax2.set_facecolor("#111")
+    fig2.patch.set_facecolor("#111")
+    ax2.tick_params(colors="white")
+    ax2.set_ylabel("7-Day Rolling Hit Rate (%)", color="white")
+    ax2.set_xlabel("Date", color="white")
+    st.pyplot(fig2)
+
+    st.caption(
+        "Rolling hit rate shows how calibration evolves. Flat lines near 50% suggest balance; "
+        "rising trends indicate improving predictive reliability."
+    )
+
+# ---- End of Part 3 ----
+# =============================================================
+#  INSIGHTS TAB – Edge Sustainability & Market Adaptation (Part 4)
+# =============================================================
+
+def insights_tab_ui():
+    """
+    Long-term analytics for edge sustainability, correlation,
+    and market-adaptation tracking.
+    """
+    st.header("🔍 Insights & Edge Sustainability")
+
+    if not os.path.exists(RESULTS_FILE):
+        st.info("No results logged yet. Run a few simulations first.")
+        return
+
+    df = pd.read_csv(RESULTS_FILE)
+    if df.empty:
+        st.info("No data available yet.")
+        return
+
+    # --- Pre-processing ---
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df.sort_values("timestamp", inplace=True)
+    df["hit"] = (df["ev"] > 0).astype(int)
+
+    # =========================================================
+    # 1️⃣  CLV Trend – Are Your Edges Shrinking?
+    # =========================================================
+    st.subheader("💹 CLV Trend Over Time")
+
+    fig1, ax1 = plt.subplots()
+    ax1.plot(df["timestamp"], df["clv"], color=GOPHER_GOLD, linewidth=2, label="CLV (Projection – Line)")
+    ax1.axhline(0, color="#555", linestyle="--")
+    ax1.set_facecolor("#111")
+    fig1.patch.set_facecolor("#111")
+    ax1.tick_params(colors="white")
+    ax1.set_ylabel("CLV", color="white")
+    ax1.set_xlabel("Date", color="white")
+    ax1.legend(facecolor="#111", labelcolor="white")
+    st.pyplot(fig1)
+
+    mean_clv = df["clv"].mean()
+    slope_clv = np.polyfit(range(len(df)), df["clv"], 1)[0] if len(df) > 2 else 0
+    if slope_clv < 0:
+        st.warning("⚠️ Your average CLV is **declining** — the market may be adjusting faster to your edges.")
+    else:
+        st.success("✅ CLV trend stable or improving — your projections remain ahead of market moves.")
+
+    # =========================================================
+    # 2️⃣  Market Adaptation & EV Decay
+    # =========================================================
+    st.subheader("📉 Market Adaptation (EV Decay Analysis)")
+
+    df["rolling_ev"] = df["ev"].rolling(10, min_periods=3).mean()
+    fig2, ax2 = plt.subplots()
+    ax2.plot(df["timestamp"], df["rolling_ev"], color=GOPHER_MAROON, linewidth=2, label="10-Run Rolling EV")
+    ax2.axhline(0, color="#333", linestyle="--")
+    ax2.set_facecolor("#111")
+    fig2.patch.set_facecolor("#111")
+    ax2.tick_params(colors="white")
+    ax2.legend(facecolor="#111", labelcolor="white")
+    ax2.set_ylabel("EV %", color="white")
+    st.pyplot(fig2)
+
+    ev_trend = np.polyfit(range(len(df)), df["rolling_ev"].fillna(0), 1)[0] if len(df) > 2 else 0
+    if ev_trend < 0:
+        st.warning("🔻 EV is trending down. Your model’s predictive advantage may be tightening.")
+    elif ev_trend > 0:
+        st.success("🟢 EV trending upward — market still mispricing your targets.")
+    else:
+        st.info("⏸ No clear EV trend detected yet — collect more data.")
+
+    # =========================================================
+    # 3️⃣  Correlation Learning Between Legs
+    # =========================================================
+    st.subheader("🔗 Correlation Learning")
+
+    corr_data = df[["player", "ev", "clv"]].dropna()
+    if len(corr_data) > 5:
+        corr_matrix = corr_data[["ev", "clv"]].corr().iloc[0, 1]
+        st.metric("EV ↔ CLV Correlation", f"{corr_matrix:.2f}")
+        if corr_matrix > 0.6:
+            st.info("High positive correlation — your projections and line movement align closely.")
+        elif corr_matrix < 0:
+            st.warning("Negative correlation — projections may be misaligned with market adjustments.")
+        else:
+            st.success("Moderate correlation — market partially reflects your model, still exploitable.")
+    else:
+        st.caption("Not enough logged results for correlation learning yet.")
+
+    # =========================================================
+    # 4️⃣  ROI, Volatility & Drawdown Summary
+    # =========================================================
+    st.subheader("💰 ROI / Volatility / Drawdown Summary")
+
+    df["roi"] = df["ev"] / 100
+    df["cum_roi"] = (1 + df["roi"]).cumprod() - 1
+    df["drawdown"] = df["cum_roi"] - df["cum_roi"].cummax()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total ROI", f"{df['cum_roi'].iloc[-1]*100:.2f}%")
+    c2.metric("Avg Volatility", f"{df['variance'].mean():.2f}")
+    c3.metric("Max Drawdown", f"{df['drawdown'].min()*100:.2f}%")
+
+    fig3, ax3 = plt.subplots()
+    ax3.plot(df["timestamp"], df["cum_roi"]*100, color=GOPHER_GOLD, linewidth=2, label="Cumulative ROI %")
+    ax3.fill_between(df["timestamp"], df["drawdown"]*100, color="#7A0019", alpha=0.3, label="Drawdown %")
+    ax3.set_facecolor("#111")
+    fig3.patch.set_facecolor("#111")
+    ax3.tick_params(colors="white")
+    ax3.legend(facecolor="#111", labelcolor="white")
+    ax3.set_ylabel("ROI %", color="white")
+    st.pyplot(fig3)
+
+    st.caption(
+        "ROI % represents compounded expected value performance. "
+        "Drawdown % helps gauge risk exposure and streak sensitivity."
+    )
+
+    # =========================================================
+    # 5️⃣  Summary Health Indicator
+    # =========================================================
+    st.markdown("---")
+    st.subheader("🏁 Model Health Indicator")
+
+    score = (
+        (1 if mean_clv > 0 else 0)
+        + (1 if ev_trend > 0 else 0)
+        + (1 if df['drawdown'].min() > -0.3 else 0)
+    )
+
+    if score == 3:
+        st.success("🟢 Model health excellent — sustainable edge detected.")
+    elif score == 2:
+        st.info("🟡 Model solid but monitor for EV compression over time.")
+    elif score == 1:
+        st.warning("🟠 Model weakening — tighten parameters and review variance scaling.")
+    else:
+        st.error("🔴 Model health poor — consider full recalibration cycle.")
+
+    st.caption(
+        "Health score derived from CLV trend, EV trend, and drawdown resilience. "
+        "Values auto-update with each new result."
+    )
+
+# ---- End of Part 4 ----
