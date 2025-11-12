@@ -1,5 +1,6 @@
 🏀 NBA Prop Model – Streamlit App
 
+
 A professional-grade NBA Player Prop Model built for PRA (Points + Rebounds + Assists) and other markets, combining data-driven projections, risk management, and real-time analytics.
 Designed for long-term profitability through advanced statistical modeling, bankroll discipline, and market calibration.
 
