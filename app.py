@@ -269,6 +269,9 @@ with tab_model:
 
     c1, c2 = st.columns(2)
 
+    # -------------------------
+    # PLAYER INPUTS — LEFT LEG
+    # -------------------------
     with c1:
         p1 = st.text_input("Player 1 Name", key="p1_name")
         m1 = st.selectbox("P1 Market", MARKET_OPTIONS, key="p1_market")
@@ -277,6 +280,9 @@ with tab_model:
         p1_teammate_out = st.checkbox("P1: Key teammate out?", key="p1_to")
         p1_blowout = st.checkbox("P1: Blowout risk high?", key="p1_bo")
 
+    # -------------------------
+    # PLAYER INPUTS — RIGHT LEG
+    # -------------------------
     with c2:
         p2 = st.text_input("Player 2 Name", key="p2_name")
         m2 = st.selectbox("P2 Market", MARKET_OPTIONS, key="p2_market")
@@ -287,47 +293,96 @@ with tab_model:
 
     run = st.button("Run Model ⚡")
 
+    # =========================================================
+    # RUN MODEL
+    # =========================================================
     if run:
+
         if payout_mult <= 1.0:
             st.error("Payout multiplier must be greater than 1.0")
         else:
             run_loader()
 
-            leg1, err1 = (compute_leg_projection(p1, m1, l1, o1, p1_teammate_out, p1_blowout, games_lookback)
-                          if p1 and l1 > 0 else (None, None))
-            leg2, err2 = (compute_leg_projection(p2, m2, l2, o2, p2_teammate_out, p2_blowout, games_lookback)
-                          if p2 and l2 > 0 else (None, None))
+            # -------------------------------------------------
+            # SAFE: Compute legs BEFORE referencing them
+            # -------------------------------------------------
+            leg1, err1 = (compute_leg_projection(
+                p1, m1, l1, o1, p1_teammate_out, p1_blowout, games_lookback
+            ) if p1 and l1 > 0 else (None, None))
+
+            leg2, err2 = (compute_leg_projection(
+                p2, m2, l2, o2, p2_teammate_out, p2_blowout, games_lookback
+            ) if p2 and l2 > 0 else (None, None))
 
             if err1:
                 st.error(f"P1: {err1}")
             if err2:
                 st.error(f"P2: {err2}")
 
+            # ------------------------------------------------
+            # Render both legs
+            # ------------------------------------------------
             col_L, col_R = st.columns(2)
             if leg1:
                 render_leg_card(leg1, col_L, compact_mode)
             if leg2:
                 render_leg_card(leg2, col_R, compact_mode)
 
+            # =========================================================
+            # NEW FEATURE #1:
+            # Compare Model Probability to Implied Market Probability
+            # =========================================================
+            st.markdown("---")
+            st.subheader("📈 Market vs Model — Probability Comparison")
+
+            def implied_probability(mult: float):
+                # Example: 3x payout means risk 1 to win 2 → prob = 1/(1+2)
+                return 1 / mult
+
+            imp_prob = implied_probability(payout_mult)
+            st.markdown(f"**Implied Probability (from payout):** {imp_prob*100:.1f}%")
+
+            if leg1:
+                st.markdown(
+                    f"**{leg1['player']} Model Probability:** {leg1['prob_over']*100:.1f}% "
+                    f"→ Edge: {(leg1['prob_over'] - imp_prob)*100:+.1f}%"
+                )
+
+            if leg2:
+                st.markdown(
+                    f"**{leg2['player']} Model Probability:** {leg2['prob_over']*100:.1f}% "
+                    f"→ Edge: {(leg2['prob_over'] - imp_prob)*100:+.1f}%"
+                )
+
+            # =========================================================
+            # 2-PICK COMBO — Must be after legs exist
+            # =========================================================
             if leg1 and leg2:
+
                 corr = 0.0
                 if leg1["team"] and leg2["team"] and leg1["team"] == leg2["team"]:
-                    corr = 0.25  # same-team positive correlation
+                    corr = 0.25  # same-team correlation
+
                 base_joint = leg1["prob_over"] * leg2["prob_over"]
                 joint = base_joint + corr * (min(leg1["prob_over"], leg2["prob_over"]) - base_joint)
                 joint = float(np.clip(joint, 0.0, 1.0))
 
                 ev_combo = payout_mult * joint - 1.0
+
                 k_frac = kelly_for_combo(joint, payout_mult, fractional_kelly)
                 stake = round(bankroll * k_frac, 2)
                 decision = combo_decision(ev_combo)
 
                 st.markdown("### 🎯 2-Pick Combo (Both Must Hit)")
-                st.markdown(f"- Corr adj: **{corr:+.2f}** (same team boosts correlation)" if corr else "- Corr adj: **0.00**")
+                st.markdown(
+                    f"- Corr adj: **{corr:+.2f}** (same team correlation)"
+                    if corr != 0 else "- Corr adj: **0.00**"
+                )
                 st.markdown(f"- Joint Hit Probability: **{joint*100:.1f}%**")
                 st.markdown(f"- EV on 2-pick: **{ev_combo*100:+.1f}%** per $1")
                 st.markdown(f"- Suggested Stake (Kelly-capped): **${stake:.2f}**")
                 st.markdown(f"- Recommendation: **{decision}**")
+
 # =====================================================
 # Implied Probability & Market Benchmarking
 # =====================================================
