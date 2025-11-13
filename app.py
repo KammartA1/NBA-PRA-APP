@@ -442,9 +442,32 @@ def compute_leg_projection(
     # Standard deviation scaling
     sd = max(1.0, sd_min * np.sqrt(max(minutes, 1.0)) * ht)
 
-    # Probability over the line
-    p_over = 1.0 - norm.cdf(line, mu, sd)
-    p_over = float(np.clip(p_over, 0.05, 0.95))  # keep sane bounds
+   # ======================================
+# HYBRID PROBABILITY ENGINE (Upgrade 4)
+# ======================================
+
+# 1️⃣ Normal distribution probability
+p_norm = 1.0 - norm.cdf(line, mu, sd)
+
+# 2️⃣ Skew-Normal probability
+p_skew = skew_normal_prob(mu, sd, HEAVY_TAIL[market], line)
+
+# Blend: more weight to skew for PRA/PTS
+if market in ["PRA", "Points"]:
+    p_over = 0.30 * p_norm + 0.70 * p_skew
+else:
+    p_over = 0.55 * p_norm + 0.45 * p_skew
+
+# 3️⃣ Micro Monte-Carlo sanity check (fast)
+sim = np.random.normal(mu, sd, 600)  # 600-run micro sim
+p_mc = (sim > line).mean()
+
+# Final hybrid probability
+p_over = (0.8 * p_over) + (0.2 * p_mc)
+
+# Keep reasonable bounds
+p_over = float(np.clip(p_over, 0.03, 0.97))
+
 
     # Even money EV (for informational purposes)
     ev_leg_even = p_over - (1 - p_over)
