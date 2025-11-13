@@ -331,6 +331,18 @@ with tab_model:
 # =====================================================
 # Implied Probability & Market Benchmarking
 # =====================================================
+def implied_probability(payout_mult: float) -> float:
+    """
+    Converts a PrizePicks-style payout multiplier into an implied probability.
+    Example: 3.0x 2-pick = 1/3.0 ≈ 33.3% implied win probability.
+    """
+    try:
+        if payout_mult <= 1:
+            return None
+        return 1.0 / payout_mult
+    except Exception:
+        return None
+
 imp_prob = implied_probability(payout_mult)
 if imp_prob:
     st.markdown(f"- Market implied win probability per leg: **{imp_prob*100:.1f}%**")
