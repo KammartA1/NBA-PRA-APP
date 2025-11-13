@@ -399,19 +399,47 @@ def skew_normal_prob(mu, sd, skew, line):
 # =====================================================
 
 def hybrid_prob_over(line, mu, sd, market):
-    ...
-
     """
-    Hybrid distribution:
-    - Normal core for central mass
-    - Log-normal right tail for skew
-    - Market-weighted blending
+    Stable hybrid distribution:
+    - Normal core
+    - Log-normal right tail for skew (but guarded)
+    - Market weighting
     """
-    normal_p = 1.0 - norm.cdf(line, mu, sd)
+    normal_p = 1 - norm.cdf(line, mu, sd)
 
-    # Guardrail for invalid parameters
-    if mu <= 0 or sd <= 0:
+    # Guard for invalid parameters
+    if mu <= 0 or sd <= 0 or np.isnan(mu) or np.isnan(sd):
         return float(np.clip(normal_p, 0.01, 0.99))
+
+    # ---------- LOGNORMAL BLOCK ----------
+    try:
+        variance = sd ** 2
+        phi = np.sqrt(variance + mu ** 2)
+
+        mu_log = np.log(mu ** 2 / phi)
+        sd_log = np.sqrt(np.log(phi ** 2 / mu ** 2))
+
+        # check validity
+        if np.isnan(mu_log) or np.isnan(sd_log) or sd_log <= 0:
+            lognorm_p = normal_p
+        else:
+            lognorm_p = 1 - norm.cdf(np.log(line + 1e-9), mu_log, sd_log)
+
+    except:
+        lognorm_p = normal_p
+
+    # ---------- MARKET WEIGHTS ----------
+    w = {
+        "PRA": 0.70,
+        "Points": 0.55,
+        "Rebounds": 0.40,
+        "Assists": 0.30
+    }.get(market, 0.50)
+
+    hybrid = w * lognorm_p + (1 - w) * normal_p
+
+    return float(np.clip(hybrid, 0.02, 0.98))
+
 # ======================================================
 # ADVANCED PLAYER CORRELATION ENGINE (Upgrade 4 — Part 6)
 # ======================================================
