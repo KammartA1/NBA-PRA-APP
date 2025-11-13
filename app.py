@@ -646,70 +646,41 @@ def compute_model_drift(history_df):
        - variance_factor_adj  (SD correction)
        - heavy_tail_adj       (market skew correction)
     """
+    try:
+        # Only use completed bets
+        comp = history_df[history_df["Result"].isin(["Hit", "Miss"])].copy()
 
-    # Only use completed bets
-    comp = history_df[history_df["Result"].isin(["Hit", "Miss"])].copy()
+        # Need sample size
+        if comp.empty or len(comp) < 20:
+            return 1.0, 1.0
 
-    # Need at least some sample size
-    if comp.empty or len(comp) < 20:
-        return 1.0, 1.0
+        # Convert EV to numeric
+        comp["EV_float"] = pd.to_numeric(comp["EV"], errors="coerce") / 100.0
+        comp = comp.dropna(subset=["EV_float"])
+        if comp.empty:
+            return 1.0, 1.0
 
-    # Convert EV to numeric (EV recorded in %)
-    comp["EV_float"] = pd.to_numeric(comp["EV"], errors="coerce") / 100.0
-    comp = comp.dropna(subset=["EV_float"])
+        # Predicted vs actual probability
+        predicted = 0.5 + comp["EV_float"].mean()
+        actual = (comp["Result"] == "Hit").mean()
+        gap = actual - predicted
 
-    if comp.empty:
-        return 1.0, 1.0
+        # Decision logic
+        if gap < -0.03:  # model too optimistic
+            variance_adj = 1.06
+            heavy_tail_adj = 1.03
+        elif gap > 0.03:  # model too conservative
+            variance_adj = 0.94
+            heavy_tail_adj = 0.97
+        else:  # within tolerance
+            variance_adj = 1.0
+            heavy_tail_adj = 1.0
 
-    # Predicted win prob based on EV (simple approx)
-    predicted = 0.5 + comp["EV_float"].mean()
+        # Clamp
+        variance_adj = float(np.clip(variance_adj, 0.90, 1.10))
+        heavy_tail_adj = float(np.clip(heavy_tail_adj, 0.90, 1.10))
 
-    # Actual observed hit rate
-    actual = (comp["Result"] == "Hit").mean()
-
-    # Calibration gap
-    gap = actual - predicted
-
-    # --------------------------
-    # Decision rules
-    # --------------------------
-    if gap < -0.03:
-        # Model overestimates → needs to be more conservative
-        variance_adj = 1.06
-        heavy_tail_adj = 1.03
-
-    elif gap > 0.03:
-        # Model underestimates → can be more aggressive
-        variance_adj = 0.94
-        heavy_tail_adj = 0.97
-
-    else:
-        # Within tolerance range
-        variance_adj = 1.0
-        heavy_tail_adj = 1.0
-
-    # Clamp adjustments for stability
-    variance_adj = float(np.clip(variance_adj, 0.90, 1.10))
-    heavy_tail_adj = float(np.clip(heavy_tail_adj, 0.90, 1.10))
-
-    return variance_adj, heavy_tail_adj
-
-
-    """
-    Kelly for 2-pick:
-      - p_joint = joint probability both legs hit
-      - b = payout - 1
-      - q = 1 - p_joint
-      - raw Kelly = (b*p - q)/b
-      - Apply fractional Kelly & max cap
-    """
-    b = payout_mult - 1
-    q = 1 - p_joint
-
-    raw = (b * p_joint - q) / b
-    k = raw * frac
-
-    return float(np.clip(k, 0, MAX_KELLY_PCT))  # apply hard cap
+        return variance_adj, heavy_tail_adj
 # =========================================================
 # PART 4 — UI RENDER ENGINE + LOADERS + DECISION LOGIC
 # =========================================================
