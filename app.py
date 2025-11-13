@@ -689,9 +689,7 @@ def compute_model_drift(history_df):
 
         return variance_adj, heavy_tail_adj
 
-    except Exception:
-        # Final safety fallback
-        return 1.0, 1.0
+
 
 # =========================================================
 # PART 4 — UI RENDER ENGINE + LOADERS + DECISION LOGIC
