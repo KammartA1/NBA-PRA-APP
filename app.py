@@ -290,6 +290,9 @@ with tab_model:
         o2 = st.text_input("P2 Opponent (abbr, optional)", key="p2_opp", help="e.g. BOS, DEN")
         p2_teammate_out = st.checkbox("P2: Key teammate out?", key="p2_to2")
         p2_blowout = st.checkbox("P2: Blowout risk high?", key="p2_bo2")
+# --- SAFETY DEFAULTS ---
+leg1 = None
+leg2 = None
 
     run = st.button("Run Model ⚡")
 
