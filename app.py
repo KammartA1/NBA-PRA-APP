@@ -599,8 +599,8 @@ def hybrid_prob_over(line, mu, sd, market):
     # 4️⃣ Clamp for stability
     return float(np.clip(hybrid, 0.02, 0.98))
 
-# Final model probability using hybrid distribution
-p_over = hybrid_prob_over(line, mu, sd_final, market)
+    # Final model probability using hybrid distribution
+    p_over = hybrid_prob_over(line, mu, sd_final, market)
 
 
     # >>> Hybrid distribution block start <<<
