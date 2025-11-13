@@ -124,12 +124,13 @@ def get_headshot_url(name):
     return f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/{pid}.png" if pid else None
 
 # =====================================================
-# TEAM CONTEXT (ADVANCED)
+# TEAM CONTEXT (ADVANCED MATCHUP METRICS)
 # =====================================================
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def get_team_context():
     try:
+        # Standard per-game and advanced defensive stats
         base = LeagueDashTeamStats(season=current_season(), per_mode_detailed="PerGame").get_data_frames()[0]
         adv = LeagueDashTeamStats(
             season=current_season(),
@@ -142,14 +143,18 @@ def get_team_context():
             per_mode_detailed="PerGame",
         ).get_data_frames()[0][["TEAM_ID","TEAM_ABBREVIATION","DEF_RATING"]]
 
+        # Merge and calculate league averages
         df = base.merge(adv,on=["TEAM_ID","TEAM_ABBREVIATION"],how="left")
         df = df.merge(defn,on=["TEAM_ID","TEAM_ABBREVIATION"],how="left")
 
         league_avg = {col:df[col].mean() for col in ["PACE","DEF_RATING","REB_PCT","AST_PCT"]}
         ctx = {
             r["TEAM_ABBREVIATION"]: {
-                "PACE":r["PACE"],"DEF_RATING":r["DEF_RATING"],
-                "REB_PCT":r["REB_PCT"],"DREB_PCT":r["DREB_PCT"],"AST_PCT":r["AST_PCT"]
+                "PACE":r["PACE"],
+                "DEF_RATING":r["DEF_RATING"],
+                "REB_PCT":r["REB_PCT"],
+                "DREB_PCT":r["DREB_PCT"],
+                "AST_PCT":r["AST_PCT"],
             }
             for _,r in df.iterrows()
         }
@@ -159,8 +164,11 @@ def get_team_context():
 
 TEAM_CTX, LEAGUE_CTX = get_team_context()
 
+
 def get_context_multiplier(opp_abbrev, market="PRA"):
-    if not opp_abbrev or opp_abbrev not in TEAM_CTX or not LEAGUE_CTX: return 1.0
+    """Adjust player projections for opponent context."""
+    if not opp_abbrev or opp_abbrev not in TEAM_CTX or not LEAGUE_CTX:
+        return 1.0
     opp = TEAM_CTX[opp_abbrev]
     pace_f = opp["PACE"]/LEAGUE_CTX["PACE"]
     def_f = LEAGUE_CTX["DEF_RATING"]/opp["DEF_RATING"]
@@ -320,6 +328,36 @@ with tab_model:
                 st.markdown(f"- EV on 2-pick: **{ev_combo*100:+.1f}%** per $1")
                 st.markdown(f"- Suggested Stake (Kelly-capped): **${stake:.2f}**")
                 st.markdown(f"- Recommendation: **{decision}**")
+# =====================================================
+# Implied Probability & Market Benchmarking
+# =====================================================
+imp_prob = implied_probability(payout_mult)
+if imp_prob:
+    st.markdown(f"- Market implied win probability per leg: **{imp_prob*100:.1f}%**")
+    if leg1 and leg2:
+        model_avg_prob = (leg1["prob_over"] + leg2["prob_over"]) / 2
+        edge_vs_market = (model_avg_prob - imp_prob) * 100
+        st.markdown(f"- Model avg prob vs market implied: **{model_avg_prob*100:.1f}% vs {imp_prob*100:.1f}%**")
+        st.markdown(f"- Edge vs market: **{edge_vs_market:+.2f}%**")
+        if edge_vs_market > 0:
+            st.success("✅ Model edge detected over market pricing.")
+        else:
+            st.warning("⚠️ Model below market — market expects better performance.")
+
+# =====================================================
+# Update Market Library with current entries
+# =====================================================
+if p1 and l1 > 0:
+    update_market_library(p1, m1, l1)
+if p2 and l2 > 0:
+    update_market_library(p2, m2, l2)
+
+# Display baselines if available
+for leg in [leg1, leg2]:
+    if leg:
+        mean_b, med_b = get_market_baseline(leg["player"], leg["market"])
+        if mean_b:
+            st.caption(f"📊 Historical market average for {leg['player']} {leg['market']}: mean={mean_b:.1f}, median={med_b:.1f}")
 
 # =========================
 # RESULTS TAB
@@ -475,6 +513,14 @@ with tab_calib:
                 axis=1,
             )
             roi = pnl.sum() / max(1.0, bankroll) * 100
+if not comp.empty:
+    st.markdown("---")
+    st.subheader("Market vs Model Performance Trend")
+    comp["Edge_vs_Market"] = comp["EV_float"] * 100
+    fig2 = px.histogram(comp, x="Edge_vs_Market", nbins=20,
+        title="Distribution of Model Edge vs Market (EV%)",
+        color_discrete_sequence=["#FFCC33"])
+    st.plotly_chart(fig2, use_container_width=True)
 
             st.markdown(
                 f"**Predicted Avg Win Prob (approx):** {pred_win_prob*100:.1f}%"
