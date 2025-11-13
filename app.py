@@ -719,6 +719,31 @@ with tab_model:
                         f"📊 Market Baseline for {leg['player']} {leg['market']}: "
                         f"mean={mean_b:.1f}, median={med_b:.1f}"
                     )
+# =====================================================
+# HISTORY HELPERS
+# =====================================================
+
+def ensure_history():
+    if not os.path.exists(LOG_FILE):
+        df = pd.DataFrame(columns=[
+            "Date","Player","Market","Line","EV",
+            "Stake","Result","CLV","KellyFrac"
+        ])
+        df.to_csv(LOG_FILE, index=False)
+
+def load_history():
+    ensure_history()
+    try:
+        return pd.read_csv(LOG_FILE)
+    except:
+        return pd.DataFrame(columns=[
+            "Date","Player","Market","Line","EV",
+            "Stake","Result","CLV","KellyFrac"
+        ])
+
+def save_history(df):
+    df.to_csv(LOG_FILE, index=False)
+
 # =========================================================
 # PART 6 — RESULTS TAB
 # =========================================================
