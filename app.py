@@ -565,11 +565,16 @@ def combo_decision(ev_combo: float) -> str:
         return "🟡 **Lean — Thin Edge**"
     else:
         return "❌ **Pass — No Edge**"
-# =========================================================
-# PART 5 — MODEL TAB (FULL LOGIC)
-# =========================================================
 
-with tab_model:
+# =====================================================
+# APP TABS (this must appear BEFORE any "with tab_*")
+# =====================================================
+
+tab_model, tab_results, tab_history, tab_calib = st.tabs(
+    ["📊 Model", "📓 Results", "📜 History", "🧠 Calibration"]
+)
+
+    with tab_model:
 
     st.subheader("2-Pick Projection & Edge (Auto stats + manual lines)")
 
