@@ -506,8 +506,10 @@ def compute_leg_projection(
     # 1️⃣ Normal distribution probability
     p_norm = 1.0 - norm.cdf(line, mu, sd)
 
-    # 2️⃣ Skew-normal component
-    p_skew = skew_normal_prob(mu, sd, heavy, line)
+# >>> Hybrid distribution block start <<<
+heavy = HEAVY_TAIL[market]  # FIXED: heavy-tail factor defined
+p_skew = skew_normal_prob(mu, sd, heavy, line)
+
 
     # Blend skew-normal + normal
     if market in ["PRA", "Points"]:
