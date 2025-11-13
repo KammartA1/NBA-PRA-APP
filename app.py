@@ -554,7 +554,7 @@ def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_g
     # HYBRID PROBABILITY ENGINE
     # --------------------------------------------------------
     p_over = hybrid_prob_over(line, mu, sd_final, market)
-
+    
     # Safety guard — ensure p_over valid
     if (
         p_over is None
@@ -562,11 +562,12 @@ def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_g
         or np.isnan(p_over)
         or p_over <= 0
         or p_over >= 1
-):
+    ):
         p_over = 0.5  # fallback neutral only if invalid
-
+    
     # EV vs even odds
     ev_leg_even = p_over - (1 - p_over)
+
 
     
 
