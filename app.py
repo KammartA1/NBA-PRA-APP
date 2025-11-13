@@ -758,6 +758,7 @@ with tab_model:
             )
 
         # =========================================================
+        # =========================================================
         # 2-PICK COMBO — FINAL MODEL OUTPUT
         # =========================================================
         if leg1 and leg2:
@@ -765,8 +766,9 @@ with tab_model:
             # ---------------------------
             # Correlation
             # ---------------------------
-           corr = estimate_player_correlation(leg1, leg2)
-
+            corr = 0.0
+            if leg1["team"] and leg2["team"] and leg1["team"] == leg2["team"]:
+                corr = 0.25  # same-team bump
 
             base_joint = leg1["prob_over"] * leg2["prob_over"]
             joint = base_joint + corr * (
@@ -788,6 +790,7 @@ with tab_model:
             st.markdown(f"- EV (per $1): **{ev_combo*100:+.1f}%**")
             st.markdown(f"- Suggested Stake (Kelly-capped): **${stake:.2f}**")
             st.markdown(f"- **Recommendation:** {decision}")
+
 
         # =========================================================
         # MARKET BASELINE LIBRARY HOOK
