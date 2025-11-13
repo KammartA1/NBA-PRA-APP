@@ -573,13 +573,18 @@ def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_g
     sd_final *= (1 + 0.10 * (heavy - 1))
     sd_final = float(np.clip(sd_final, sd * 0.80, sd * 1.60))
 
-    # --------------------------------------------------------
-    # HYBRID PROBABILITY ENGINE
-    # --------------------------------------------------------
-    p_over = hybrid_prob_over(line, mu, sd_final, market)
+# --------------------------------------------------------
+# HYBRID PROBABILITY ENGINE
+# --------------------------------------------------------
+p_over = hybrid_prob_over(line, mu, sd_final, market)
 
-    # EV vs even odds
-    ev_leg_even = p_over - (1 - p_over)
+# Safety guard — ensure p_over valid
+if p_over is None or not isinstance(p_over, (int, float)) or np.isnan(p_over):
+    p_over = 0.5  # fallback neutral probability (prevents crashes)
+
+# EV vs even odds
+ev_leg_even = p_over - (1 - p_over)
+
 
     # --------------------------------------------------------
     # ALWAYS RETURN EXACTLY TWO VALUES
