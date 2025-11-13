@@ -580,7 +580,7 @@ def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_g
 
     # Safety guard — ensure p_over valid
     if p_over is None or not isinstance(p_over, (int, float)) or np.isnan(p_over):
-    p_over = 0.5  # fallback neutral probability (prevents crashes)
+        p_over = 0.5  # fallback neutral probability (prevents crashes)
 
     # EV vs even odds
     ev_leg_even = p_over - (1 - p_over)
