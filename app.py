@@ -419,38 +419,70 @@ def skew_normal_prob(mu, sd, skew_strength, line):
 
     # ---- 3. Keep probability realistic ----
     return float(np.clip(p_skew, 0.02, 0.98))
+def skew_normal_prob(mu, sd, skew, line):
+    """Right-tailed skew-normal probability."""
+    try:
+        z = (line - mu) / sd
+        base = 1 - norm.cdf(z)
 
-def compute_leg_projection(
-    player: str,
-    market: str,
-    line: float,
-    opp: str,
-    teammate_out: bool,
-    blowout: bool,
-    n_games: int
-):
+        # Apply skew factor (heavier tail → increases p_over)
+        adj = base * (1 + 0.15 * (skew - 1))
+        return float(np.clip(adj, 0.01, 0.99))
+    except:
+        return float(np.clip(base, 0.01, 0.99))
+def hybrid_prob_over(line, mu, sd, market):
     """
-    Full projection pipeline:
-      - pulls player stats
-      - applies opponent context multiplier
-      - applies blowout/minute adjustments
-      - computes mean (mu) and sd
-      - returns p_over, EV, context, message
+    Hybrid distribution:
+    - Normal core for central mass
+    - Log-normal right tail for skew
+    - Market-weighted blending
     """
-    mu_min, sd_min, avg_min, team, msg = get_player_rate_and_minutes(
-        player, n_games, market
-    )
+    normal_p = 1.0 - norm.cdf(line, mu, sd)
 
+    # Guardrail for invalid parameters
+    if mu <= 0 or sd <= 0:
+        return float(np.clip(normal_p, 0.01, 0.99))
+
+    # Convert to log-normal space
+    variance = sd ** 2
+    phi = np.sqrt(variance + mu ** 2)
+    mu_log = np.log(mu ** 2 / phi)
+    sd_log = np.sqrt(np.log(phi ** 2 / mu ** 2))
+
+    try:
+        lognorm_p = 1.0 - norm.cdf(np.log(line + 1e-6), mu_log, sd_log)
+    except:
+        lognorm_p = normal_p
+
+    # Market-specific tail weights
+    if market == "PRA":
+        w = 0.70
+    elif market == "Points":
+        w = 0.55
+    elif market == "Rebounds":
+        w = 0.40
+    else:  # Assists
+        w = 0.30
+
+    hybrid = w * lognorm_p + (1 - w) * normal_p
+
+    return float(np.clip(hybrid, 0.02, 0.98))
+
+def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_games):
+    # --------------------------------------------------------
+    # GET PLAYER RATES
+    # --------------------------------------------------------
+    mu_min, sd_min, avg_min, team, msg = get_player_rate_and_minutes(player, n_games, market)
     if mu_min is None:
         return None, msg
 
-    opp_abbrev = opp.strip().upper() if opp else None
-    ctx_mult = get_context_multiplier(opp_abbrev, market)
+    # --------------------------------------------------------
+    # CONTEXT MULTIPLIER
+    # --------------------------------------------------------
+    ctx_mult = get_context_multiplier(opp.strip().upper() if opp else None, market)
+    heavy = HEAVY_TAIL[market]
 
-    # Heavy-tail adjustment
-    ht = HEAVY_TAIL[market]
-
-    # Minutes adjustment
+    # Baseline minutes + scaling
     minutes = avg_min
     if teammate_out:
         minutes *= 1.05
@@ -458,73 +490,30 @@ def compute_leg_projection(
     if blowout:
         minutes *= 0.90
 
-    # Final mean
+    # Raw mean
     mu = mu_min * minutes * ctx_mult
 
-    # Standard deviation scaling
-    sd = max(1.0, sd_min * np.sqrt(max(minutes, 1.0)) * ht)
+    # Raw SD
+    sd = max(1.0, sd_min * np.sqrt(max(minutes, 1.0)) * heavy)
 
-
-    # =====================================================
-    # EXPECTATION SHIFT ENGINE (Upgrade 4 – Part 3)
-    # =====================================================
-
-    # Baseline before adjustments
-    base_mu = mu
-
-    # 1️⃣ Injury boost scaling
-    if teammate_out:
-        mu *= 1.05   # usage bump for missing teammates
-
-    # 2️⃣ Blowout dampening (soft cap)
-    if blowout:
-        mu *= 0.97
-
-    # 3️⃣ Market-specific rebound / assist expectation shifts
-    if market == "Rebounds":
-        # More weight on opponent defensive rebound rate
-        mu *= np.clip(1.0 / (ctx_mult * 0.90), 0.90, 1.12)
-
-    elif market == "Assists":
-        # Defenses that allow more assists increase expectation
-        mu *= np.clip(ctx_mult * 1.08, 0.92, 1.15)
-
-    # 4️⃣ Skew-aware adjustment
-    tail_factor = HEAVY_TAIL[market]
-    mu *= (1 + 0.015 * (tail_factor - 1))
-
-    # 5️⃣ Pace push (softened)
-    pace_adj = np.clip(ctx_mult, 0.92, 1.10)
-    mu *= pace_adj
-
-    # 6️⃣ Stabilizer – prevents unrealistic jumps
-    mu = float(np.clip(mu, base_mu * 0.80, base_mu * 1.25))
-        # =====================================================
-    # ADAPTIVE VOLATILITY ENGINE (Upgrade 4 — Part 4)
-    # =====================================================
-
-    # Start from baseline SD
+    # --------------------------------------------------------
+    # ADAPTIVE VOLATILITY ENGINE
+    # --------------------------------------------------------
     sd_final = sd
 
-    # 1️⃣ Opponent volatility factor (defense tightness)
-    # Tough defenses reduce variance; weak defenses increase variance
     if opp:
-       opp_abbrev = opp.strip().upper()
-       if opp_abbrev in TEAM_CTX:
+        opp_abbrev = opp.strip().upper()
+        if opp_abbrev in TEAM_CTX:
             opp_def = TEAM_CTX[opp_abbrev]["DEF_RATING"]
             league_def = LEAGUE_CTX["DEF_RATING"]
             def_vol = np.clip(opp_def / league_def, 0.85, 1.20)
             sd_final *= def_vol
 
-    # 2️⃣ Pace volatility — fast pace → higher SD
-    if opp:
-        if opp_abbrev in TEAM_CTX:
             opp_pace = TEAM_CTX[opp_abbrev]["PACE"]
             league_pace = LEAGUE_CTX["PACE"]
             pace_vol = np.clip(opp_pace / league_pace, 0.90, 1.18)
             sd_final *= pace_vol
 
-    # 3️⃣ Market-specific volatility adjustments
     if market == "Rebounds":
         sd_final *= 1.10
     elif market == "Assists":
@@ -534,116 +523,40 @@ def compute_leg_projection(
     elif market == "PRA":
         sd_final *= 1.15
 
-    # 4️⃣ Usage-shift volatility (injury → randomness increases)
     if teammate_out:
         sd_final *= 1.07
-
-    # 5️⃣ Blowout risk increases uncertainty
     if blowout:
         sd_final *= 1.10
 
-    # 6️⃣ Heavy-tail boost
-    tail_factor = HEAVY_TAIL[market]
-    sd_final *= (1 + 0.10 * (tail_factor - 1))
-
-    # Final clamp for safety
+    sd_final *= (1 + 0.10 * (heavy - 1))
     sd_final = float(np.clip(sd_final, sd * 0.80, sd * 1.60))
 
- # ============================================================
-    # HYBRID PROBABILITY ENGINE (Upgrade 4)
-    # ============================================================
-
-# =====================================================
-# HYBRID SKEWED DISTRIBUTION ENGINE (Upgrade 4 — Part 5)
-# =====================================================
-
-def hybrid_prob_over(line, mu, sd, market):
-    """
-    Hybrid distribution:
-    - Normal core for central mass
-    - Log-normal tail for right skew
-    - Weighted by market type
-    """
-
-    # 1️⃣ Normal CDF (baseline)
-    normal_p = 1.0 - norm.cdf(line, mu, sd)
-
-    # 2️⃣ Log-normal right-tail model
-    # Handle impossible params
-    if mu <= 0 or sd <= 0:
-        return float(np.clip(normal_p, 0.01, 0.99))
-
-    # Convert mean/sd → log-space parameters
-    variance = sd ** 2
-    phi = np.sqrt(variance + mu**2)
-    mu_log = np.log(mu**2 / phi)
-    sd_log = np.sqrt(np.log(phi**2 / mu**2))
-
-    try:
-        lognorm_p = 1.0 - norm.cdf(np.log(line + 1e-6), mu_log, sd_log)
-    except:
-        lognorm_p = normal_p  # fallback
-
-    # 3️⃣ Market-weighted blending
-    if market == "PRA":
-        w = 0.70  # PRA is extremely skewed
-    elif market == "Points":
-        w = 0.55  # shooting distributions are moderately skewed
-    elif market == "Rebounds":
-        w = 0.40
-    else:  # Assists
-        w = 0.30
-
-    hybrid = w * lognorm_p + (1 - w) * normal_p
-
-    # 4️⃣ Clamp for stability
-    return float(np.clip(hybrid, 0.02, 0.98))
-
-    # Final model probability using hybrid distribution
+    # --------------------------------------------------------
+    # HYBRID PROBABILITY ENGINE
+    # --------------------------------------------------------
     p_over = hybrid_prob_over(line, mu, sd_final, market)
 
+    # EV vs even odds
+    ev_leg_even = p_over - (1 - p_over)
 
-    # >>> Hybrid distribution block start <<<
-    heavy = HEAVY_TAIL[market]  # FIXED: heavy-tail factor defined
-    p_skew = skew_normal_prob(mu, sd, heavy, line)
-
-
-    # Blend skew-normal + normal
-    if market in ["PRA", "Points"]:
-        p_over = 0.30 * p_norm + 0.70 * p_skew
-    else:
-        p_over = 0.55 * p_norm + 0.45 * p_skew
-
-    # 3️⃣ Micro Monte-Carlo sanity check
-    sim = np.random.normal(mu, sd, 600)  # Fast 600-run micro simulation
-    p_mc = (sim > line).mean()
-
-    # Final hybrid probability blend
-    p_over = 0.80 * p_over + 0.20 * p_mc
-    p_over = float(np.clip(p_over, 0.03, 0.97))
-
-    # --------------------------
-    # EVEN-MONEY EV
-    # --------------------------
-    ev_leg_even = p_over - (1.0 - p_over)
-
-    # --------------------------
-    # RETURN LEG OBJECT
-    # --------------------------
+    # --------------------------------------------------------
+    # ALWAYS RETURN EXACTLY TWO VALUES
+    # --------------------------------------------------------
     return {
         "player": player,
         "market": market,
-        "line": line,
+        "line": float(line),
         "mu": mu,
-        "sd": sd,
+        "sd": sd_final,
         "prob_over": p_over,
         "ev_leg_even": ev_leg_even,
         "team": team,
         "ctx_mult": ctx_mult,
         "msg": msg,
         "teammate_out": teammate_out,
-        "blowout": blowout
+        "blowout": blowout,
     }, None
+
 
 
 
