@@ -484,30 +484,7 @@ def estimate_player_correlation(leg1, leg2):
     corr = float(np.clip(corr, -0.25, 0.40))
     return corr
 
-    # Convert to log-normal space
-    variance = sd ** 2
-    phi = np.sqrt(variance + mu ** 2)
-    mu_log = np.log(mu ** 2 / phi)
-    sd_log = np.sqrt(np.log(phi ** 2 / mu ** 2))
 
-    try:
-        lognorm_p = 1.0 - norm.cdf(np.log(line + 1e-6), mu_log, sd_log)
-    except:
-        lognorm_p = normal_p
-
-    # Market-specific tail weights
-    if market == "PRA":
-        w = 0.70
-    elif market == "Points":
-        w = 0.55
-    elif market == "Rebounds":
-        w = 0.40
-    else:  # Assists
-        w = 0.30
-
-    hybrid = w * lognorm_p + (1 - w) * normal_p
-
-    return float(np.clip(hybrid, 0.02, 0.98))
 
 
 def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_games):
