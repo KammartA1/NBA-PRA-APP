@@ -497,57 +497,56 @@ def compute_leg_projection(
 
     # 6️⃣ Stabilizer – prevents unrealistic jumps
     mu = float(np.clip(mu, base_mu * 0.80, base_mu * 1.25))
-# =====================================================
-# ADAPTIVE VOLATILITY ENGINE (Upgrade 4 — Part 4)
-# =====================================================
+        # =====================================================
+        # ADAPTIVE VOLATILITY ENGINE (Upgrade 4 — Part 4)
+        # =====================================================
 
-# Start from baseline SD
-sd_final = sd
+        # Start from baseline SD
+        sd_final = sd
 
-# 1️⃣ Opponent volatility factor (defense tightness)
-# Tough defenses reduce variance; weak defenses increase variance
-if opp:
-    opp_abbrev = opp.strip().upper()
-    if opp_abbrev in TEAM_CTX:
-        opp_def = TEAM_CTX[opp_abbrev]["DEF_RATING"]
-        league_def = LEAGUE_CTX["DEF_RATING"]
+        # 1️⃣ Opponent volatility factor (defense tightness)
+        # Tough defenses reduce variance; weak defenses increase variance
+        if opp:
+            opp_abbrev = opp.strip().upper()
+            if opp_abbrev in TEAM_CTX:
+                opp_def = TEAM_CTX[opp_abbrev]["DEF_RATING"]
+                league_def = LEAGUE_CTX["DEF_RATING"]
+                def_vol = np.clip(opp_def / league_def, 0.85, 1.20)
+                sd_final *= def_vol
 
-        def_vol = np.clip(opp_def / league_def, 0.85, 1.20)
-        sd_final *= def_vol
+        # 2️⃣ Pace volatility — fast pace → higher SD
+        if opp:
+            if opp_abbrev in TEAM_CTX:
+                opp_pace = TEAM_CTX[opp_abbrev]["PACE"]
+                league_pace = LEAGUE_CTX["PACE"]
+                pace_vol = np.clip(opp_pace / league_pace, 0.90, 1.18)
+                sd_final *= pace_vol
 
-# 2️⃣ Pace volatility (fast-paced games increase variance)
-if opp:
-    if opp_abbrev in TEAM_CTX:
-        opp_pace = TEAM_CTX[opp_abbrev]["PACE"]
-        league_pace = LEAGUE_CTX["PACE"]
+        # 3️⃣ Market-specific volatility adjustments
+        if market == "Rebounds":
+            sd_final *= 1.10
+        elif market == "Assists":
+            sd_final *= 1.06
+        elif market == "Points":
+            sd_final *= 1.12
+        elif market == "PRA":
+            sd_final *= 1.15
 
-        pace_vol = np.clip(opp_pace / league_pace, 0.90, 1.18)
-        sd_final *= pace_vol
+        # 4️⃣ Usage-shift volatility (injury → randomness increases)
+        if teammate_out:
+            sd_final *= 1.07
 
-# 3️⃣ Market-specific volatility (rebounds & assists behave differently)
-if market == "Rebounds":
-    sd_final *= 1.10  # very high game-to-game variance
-elif market == "Assists":
-    sd_final *= 1.06  # playmaking depends on teammates
-elif market == "Points":
-    sd_final *= 1.12  # shooting variance
-elif market == "PRA":
-    sd_final *= 1.15  # compounded volatility
+        # 5️⃣ Blowout risk increases uncertainty
+        if blowout:
+            sd_final *= 1.10
 
-# 4️⃣ Usage shift volatility (injury → more randomness)
-if teammate_out:
-    sd_final *= 1.07
+        # 6️⃣ Heavy-tail boost
+        tail_factor = HEAVY_TAIL[market]
+        sd_final *= (1 + 0.10 * (tail_factor - 1))
 
-# 5️⃣ Blowout volatility (lower minutes = higher uncertainty)
-if blowout:
-    sd_final *= 1.10
+        # Final clamp for safety
+        sd_final = float(np.clip(sd_final, sd * 0.80, sd * 1.60))
 
-# 6️⃣ Heavy-tail boost (captures skew)
-tail_factor = HEAVY_TAIL[market]
-sd_final *= (1 + 0.10 * (tail_factor - 1))
-
-# Final stabilization + clamp
-sd_final = float(np.clip(sd_final, sd * 0.80, sd * 1.60))
 
 
  # ============================================================
