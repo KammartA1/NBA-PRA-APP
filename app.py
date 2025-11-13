@@ -553,8 +553,55 @@ def compute_leg_projection(
     # HYBRID PROBABILITY ENGINE (Upgrade 4)
     # ============================================================
 
-    # 1️⃣ Normal distribution probability
-    p_norm = 1.0 - norm.cdf(line, mu, sd)
+# =====================================================
+# HYBRID SKEWED DISTRIBUTION ENGINE (Upgrade 4 — Part 5)
+# =====================================================
+
+def hybrid_prob_over(line, mu, sd, market):
+    """
+    Hybrid distribution:
+    - Normal core for central mass
+    - Log-normal tail for right skew
+    - Weighted by market type
+    """
+
+    # 1️⃣ Normal CDF (baseline)
+    normal_p = 1.0 - norm.cdf(line, mu, sd)
+
+    # 2️⃣ Log-normal right-tail model
+    # Handle impossible params
+    if mu <= 0 or sd <= 0:
+        return float(np.clip(normal_p, 0.01, 0.99))
+
+    # Convert mean/sd → log-space parameters
+    variance = sd ** 2
+    phi = np.sqrt(variance + mu**2)
+    mu_log = np.log(mu**2 / phi)
+    sd_log = np.sqrt(np.log(phi**2 / mu**2))
+
+    try:
+        lognorm_p = 1.0 - norm.cdf(np.log(line + 1e-6), mu_log, sd_log)
+    except:
+        lognorm_p = normal_p  # fallback
+
+    # 3️⃣ Market-weighted blending
+    if market == "PRA":
+        w = 0.70  # PRA is extremely skewed
+    elif market == "Points":
+        w = 0.55  # shooting distributions are moderately skewed
+    elif market == "Rebounds":
+        w = 0.40
+    else:  # Assists
+        w = 0.30
+
+    hybrid = w * lognorm_p + (1 - w) * normal_p
+
+    # 4️⃣ Clamp for stability
+    return float(np.clip(hybrid, 0.02, 0.98))
+
+# Final model probability using hybrid distribution
+p_over = hybrid_prob_over(line, mu, sd_final, market)
+
 
     # >>> Hybrid distribution block start <<<
     heavy = HEAVY_TAIL[market]  # FIXED: heavy-tail factor defined
