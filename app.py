@@ -378,45 +378,9 @@ def get_player_rate_and_minutes(name: str, n_games: int, market: str):
     return mu_per_min, sd_per_min, avg_min, team, f"{label}: {len(per_min_vals)} games • {avg_min:.1f} min"
 
 # =====================================================
-# HYBRID ENGINE — PART 1: SKEW-NORMAL DISTRIBUTION
-# =====================================================
-from scipy.stats import skewnorm
-
-def skew_normal_prob(mu, sd, tail_weight, line):
-    """
-    Computes probability using a skew-normal distribution.
-    tail_weight > 1 increases right skew (heavy tail) typical for PRA/PTS.
-    """
-    # Convert tail weight into skew factor (alpha)
-    alpha = (tail_weight - 1.0) * 5  # tuned for NBA prop distributions
-    dist = skewnorm(a=alpha, loc=mu, scale=sd)
-
-    p_over = 1.0 - dist.cdf(line)
-    return float(np.clip(p_over, 0.03, 0.97))
-
-
-# =====================================================
-# SKEW-NORMAL PROBABILITY ENGINE (Upgrade 4)
+# SKEW-NORMAL PROBABILITY (Final version)
 # =====================================================
 
-def skew_normal_prob(mu, sd, skew_strength, line):
-    """
-    Computes the probability of exceeding a line using a skew-adjusted 
-    distribution. Does NOT require scipy.stats.skewnorm (Streamlit Cloud safe).
-    """
-
-    # ---- 1. Normal baseline probability ----
-    p_norm = 1 - norm.cdf(line, mu, sd)
-
-    # ---- 2. Apply skew correction ----
-    # skew_strength > 1 → right tail heavier
-    # skew_strength < 1 → left tail heavier
-    skew_adj = (skew_strength - 1) * 0.22  # controlled influence
-
-    p_skew = p_norm + skew_adj
-
-    # ---- 3. Keep probability realistic ----
-    return float(np.clip(p_skew, 0.02, 0.98))
 def skew_normal_prob(mu, sd, skew, line):
     """Right-tailed skew-normal probability."""
     try:
@@ -428,7 +392,15 @@ def skew_normal_prob(mu, sd, skew, line):
         return float(np.clip(adj, 0.01, 0.99))
     except:
         return float(np.clip(base, 0.01, 0.99))
+
+
+# =====================================================
+# HYBRID ENGINE
+# =====================================================
+
 def hybrid_prob_over(line, mu, sd, market):
+    ...
+
     """
     Hybrid distribution:
     - Normal core for central mass
