@@ -397,6 +397,28 @@ def skew_normal_prob(mu, sd, tail_weight, line):
 # =========================================================
 #  PART 3.1 — SINGLE LEG PROJECTION ENGINE
 # =========================================================
+# =====================================================
+# SKEW-NORMAL PROBABILITY ENGINE (Upgrade 4)
+# =====================================================
+
+def skew_normal_prob(mu, sd, skew_strength, line):
+    """
+    Computes the probability of exceeding a line using a skew-adjusted 
+    distribution. Does NOT require scipy.stats.skewnorm (Streamlit Cloud safe).
+    """
+
+    # ---- 1. Normal baseline probability ----
+    p_norm = 1 - norm.cdf(line, mu, sd)
+
+    # ---- 2. Apply skew correction ----
+    # skew_strength > 1 → right tail heavier
+    # skew_strength < 1 → left tail heavier
+    skew_adj = (skew_strength - 1) * 0.22  # controlled influence
+
+    p_skew = p_norm + skew_adj
+
+    # ---- 3. Keep probability realistic ----
+    return float(np.clip(p_skew, 0.02, 0.98))
 
 def compute_leg_projection(
     player: str,
