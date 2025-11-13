@@ -542,7 +542,7 @@ def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_g
 
     # === Self-learning dynamic adjustments ===
     variance_adj, ht_adj = compute_model_drift(load_history())
-    
+    sd_final *= variance_adj
     ht = HEAVY_TAIL[market] * ht_adj
     
     sd = max(
@@ -590,7 +590,8 @@ def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_g
     # HYBRID PROBABILITY ENGINE
     # --------------------------------------------------------
     p_over = hybrid_prob_over(line, mu, sd_final, market)
-    
+    p_over *= heavy_adj
+    p_over = float(np.clip(p_over, 0.02, 0.98))
     # Safety guard — ensure p_over valid
     if (
         p_over is None
@@ -637,56 +638,65 @@ def kelly_for_combo(p_joint: float, payout_mult: float, frac: float):
 # SELF-LEARNING CALIBRATION ENGINE (Upgrade 4 — Part 7)
 # ======================================================
 
+# =====================================================
+# SELF-LEARNING CALIBRATION ENGINE (Upgrade 4 — Part 7)
+# =====================================================
+
 def compute_model_drift(history_df):
     """
     Uses completed bets (Hit/Miss) to detect model miscalibration.
     Returns recommended adjustments:
-    - variance_factor_adj
-    - heavy_tail_adj
+       - variance_factor_adj  (SD correction)
+       - heavy_tail_adj       (market skew correction)
     """
 
+    # Only use completed bets
     comp = history_df[history_df["Result"].isin(["Hit", "Miss"])].copy()
-    if comp.empty or len(comp) < 20:
-        return 1.0, 1.0  # no adjustments until sample size is decent
 
+    # Need at least some sample size
+    if comp.empty or len(comp) < 20:
+        return 1.0, 1.0
+
+    # Convert EV to numeric (EV recorded in %)
     comp["EV_float"] = pd.to_numeric(comp["EV"], errors="coerce") / 100.0
     comp = comp.dropna(subset=["EV_float"])
 
     if comp.empty:
         return 1.0, 1.0
 
-    # Expected hit rate based on EV distribution
+    # Predicted win prob based on EV (simple approx)
     predicted = 0.5 + comp["EV_float"].mean()
 
-    # Actual hit rate
+    # Actual observed hit rate
     actual = (comp["Result"] == "Hit").mean()
 
-    # Gap → model miscalibration signal
-    gap = actual - predicted  # positive = model too conservative
+    # Calibration gap
+    gap = actual - predicted
 
-    # -----------------------------------------------------
-    # Variance Adjustment Logic
-    # -----------------------------------------------------
-    # If actual < predicted → model too optimistic → increase variance
-    # If actual > predicted → model too conservative → reduce variance
-
+    # --------------------------
+    # Decision rules
+    # --------------------------
     if gap < -0.03:
-        # too optimistic
-        variance_adj = 1.06  # widen sd
-        ht_adj = 1.03        # reinforce tail heaviness
+        # Model overestimates → needs to be more conservative
+        variance_adj = 1.06
+        heavy_tail_adj = 1.03
+
     elif gap > 0.03:
-        # too conservative
-        variance_adj = 0.94  # tighten sd
-        ht_adj = 0.97        # reduce tail
+        # Model underestimates → can be more aggressive
+        variance_adj = 0.94
+        heavy_tail_adj = 0.97
+
     else:
+        # Within tolerance range
         variance_adj = 1.0
-        ht_adj = 1.0
+        heavy_tail_adj = 1.0
 
-    # clamp for safety
+    # Clamp adjustments for stability
     variance_adj = float(np.clip(variance_adj, 0.90, 1.10))
-    ht_adj = float(np.clip(ht_adj, 0.90, 1.10))
+    heavy_tail_adj = float(np.clip(heavy_tail_adj, 0.90, 1.10))
 
-    return variance_adj, ht_adj
+    return variance_adj, heavy_tail_adj
+
 
     """
     Kelly for 2-pick:
