@@ -394,9 +394,7 @@ def skew_normal_prob(mu, sd, tail_weight, line):
     p_over = 1.0 - dist.cdf(line)
     return float(np.clip(p_over, 0.03, 0.97))
 
-# =========================================================
-#  PART 3.1 — SINGLE LEG PROJECTION ENGINE
-# =========================================================
+
 # =====================================================
 # SKEW-NORMAL PROBABILITY ENGINE (Upgrade 4)
 # =====================================================
@@ -466,6 +464,60 @@ def hybrid_prob_over(line, mu, sd, market):
 
     hybrid = w * lognorm_p + (1 - w) * normal_p
 
+    return float(np.clip(hybrid, 0.02, 0.98))
+# ======================================================
+# HYBRID PROBABILITY ENGINE (Heavy-tail + skew blend)
+# ======================================================
+def skew_normal_prob(mu: float, sd: float, skew_factor: float, line: float) -> float:
+    """
+    Simple skewed-tail adjustment for props like PRA/points.
+
+    - If skew_factor > 1 → fatter right tail (more chance of big games)
+    - We compress/expand the z-score before applying the normal CDF.
+    """
+    if sd <= 0:
+        sd = 1.0
+
+    z = (line - mu) / sd
+
+    # For right-skew (heavy right tail), effectively 'pull' the line closer
+    # so overs get a little more probability mass.
+    if skew_factor >= 1.0:
+        adj_z = z / skew_factor
+    else:
+        adj_z = z * skew_factor
+
+    return 1.0 - norm.cdf(adj_z)
+
+
+def hybrid_prob_over(line: float, mu: float, sd: float, market: str) -> float:
+    """
+    Blend of normal distribution and skewed distribution:
+    - normal_p  = baseline Gaussian assumption
+    - skew_p    = adjusted for heavy right tails (PRA, points, etc.)
+    - weight    = depends on market type (PRA gets more skew weight)
+    """
+    if sd <= 0:
+        sd = 1.0
+
+    # Baseline normal
+    normal_p = 1.0 - norm.cdf(line, mu, sd)
+
+    # Get heavy-tail factor for this market (fallback 1.25)
+    heavy = HEAVY_TAIL.get(market, 1.25)
+
+    # Skewed probability
+    skew_p = skew_normal_prob(mu, sd, heavy, line)
+
+    # PRA is usually more volatile/right-skewed
+    if market == "PRA":
+        w = 0.65
+    else:
+        w = 0.55
+
+    hybrid = w * skew_p + (1.0 - w) * normal_p
+
+    # Safety clamp
     return float(np.clip(hybrid, 0.02, 0.98))
 
 def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_games):
@@ -794,9 +846,8 @@ with tab_model:
             # ---------------------------
             # Correlation
             # ---------------------------
-            corr = 0.0
-            if leg1["team"] and leg2["team"] and leg1["team"] == leg2["team"]:
-                corr = 0.25  # same-team bump
+           corr = estimate_player_correlation(leg1, leg2)
+
 
             base_joint = leg1["prob_over"] * leg2["prob_over"]
             joint = base_joint + corr * (
