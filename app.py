@@ -540,8 +540,16 @@ def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_g
     # Raw mean
     mu = mu_min * minutes * ctx_mult
 
-    # Raw SD
-    sd = max(1.0, sd_min * np.sqrt(max(minutes, 1.0)) * heavy)
+    # === Self-learning dynamic adjustments ===
+    variance_adj, ht_adj = compute_model_drift(load_history())
+    
+    ht = HEAVY_TAIL[market] * ht_adj
+    
+    sd = max(
+        1.0,
+        sd_min * np.sqrt(max(minutes, 1.0)) * ht * variance_adj
+    )
+
 
     # --------------------------------------------------------
     # ADAPTIVE VOLATILITY ENGINE
