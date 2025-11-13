@@ -635,7 +635,7 @@ def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_g
 
 def kelly_for_combo(p_joint: float, payout_mult: float, frac: float):
 
-    # =====================================================
+# =====================================================
 # SELF-LEARNING CALIBRATION ENGINE (Upgrade 4 — Part 7)
 # =====================================================
 
@@ -681,9 +681,15 @@ def compute_model_drift(history_df):
         heavy_tail_adj = float(np.clip(heavy_tail_adj, 0.90, 1.10))
 
         return variance_adj, heavy_tail_adj
+
+    except Exception:
+        # Final safety fallback
+        return 1.0, 1.0
+
 # =========================================================
 # PART 4 — UI RENDER ENGINE + LOADERS + DECISION LOGIC
 # =========================================================
+
 
 # ---------------------------------------------------------
 # 4.1 — RENDER LEG CARD (fully upgraded version)
