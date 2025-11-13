@@ -574,7 +574,7 @@ tab_model, tab_results, tab_history, tab_calib = st.tabs(
     ["📊 Model", "📓 Results", "📜 History", "🧠 Calibration"]
 )
 
-    with tab_model:
+with tab_model:
 
     st.subheader("2-Pick Projection & Edge (Auto stats + manual lines)")
 
