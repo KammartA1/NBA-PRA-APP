@@ -513,23 +513,29 @@ def estimate_player_correlation(leg1, leg2):
     return corr
 
 
-
-
 def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_games):
+    """
+    Core projection engine for a single leg.
+    Uses:
+      - recent per-minute production
+      - opponent pace/defense context
+      - adaptive volatility
+      - hybrid heavy‑tailed probability model
+    Returns (leg_dict, error_message).
+    """
     # --------------------------------------------------------
-    # GET PLAYER RATES
+    # 1. Player rates from game logs
     # --------------------------------------------------------
     mu_min, sd_min, avg_min, team, msg = get_player_rate_and_minutes(player, n_games, market)
     if mu_min is None:
         return None, msg
 
     # --------------------------------------------------------
-    # CONTEXT MULTIPLIER
+    # 2. Context + minutes scaling
     # --------------------------------------------------------
     ctx_mult = get_context_multiplier(opp.strip().upper() if opp else None, market)
     heavy = HEAVY_TAIL[market]
 
-    # Baseline minutes + scaling
     minutes = avg_min
     if teammate_out:
         minutes *= 1.05
@@ -537,24 +543,16 @@ def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_g
     if blowout:
         minutes *= 0.90
 
-    # Raw mean
+    # Mean outcome
     mu = mu_min * minutes * ctx_mult
 
-    # === Self-learning dynamic adjustments ===
-    variance_adj, ht_adj = compute_model_drift(load_history())
-    sd_final *= variance_adj
-    ht = HEAVY_TAIL[market] * ht_adj
-    
-    sd = max(
-        1.0,
-        sd_min * np.sqrt(max(minutes, 1.0)) * ht * variance_adj
-    )
-
+    # Baseline SD with heavy‑tail factor
+    sd_base = max(1.0, sd_min * np.sqrt(max(minutes, 1.0)) * heavy)
 
     # --------------------------------------------------------
-    # ADAPTIVE VOLATILITY ENGINE
+    # 3. Adaptive volatility by matchup & market
     # --------------------------------------------------------
-    sd_final = sd
+    sd_final = sd_base
 
     if opp:
         opp_abbrev = opp.strip().upper()
@@ -583,6 +581,42 @@ def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_g
     if blowout:
         sd_final *= 1.10
 
+    # small extra scaling from heavy‑tail factor
+    sd_final *= (1 + 0.10 * (heavy - 1))
+    sd_final = float(np.clip(sd_final, sd_base * 0.80, sd_base * 1.60))
+
+    # --------------------------------------------------------
+    # 4. Hybrid probability engine
+    # --------------------------------------------------------
+    p_over = hybrid_prob_over(line, mu, sd_final, market)
+
+    # Safety guard — this should almost never trigger
+    if (
+        p_over is None
+        or not isinstance(p_over, (int, float))
+        or np.isnan(p_over)
+        or p_over <= 0.0
+        or p_over >= 1.0
+    ):
+        p_over = float(np.clip(1.0 - norm.cdf(line, mu, sd_final), 0.02, 0.98))
+
+    # EV vs even odds
+    ev_leg_even = p_over - (1 - p_over)
+
+    return {
+        "player": player,
+        "market": market,
+        "line": float(line),
+        "mu": float(mu),
+        "sd": float(sd_final),
+        "prob_over": float(p_over),
+        "ev_leg_even": float(ev_leg_even),
+        "team": team,
+        "ctx_mult": float(ctx_mult),
+        "msg": msg,
+        "teammate_out": bool(teammate_out),
+        "blowout": bool(blowout),
+    }, None
     sd_final *= (1 + 0.10 * (heavy - 1))
     sd_final = float(np.clip(sd_final, sd * 0.80, sd * 1.60))
 
@@ -648,49 +682,10 @@ def kelly_for_combo(p_joint: float, payout_mult: float, frac: float):
 
 def compute_model_drift(history_df):
     """
-    Uses completed bets (Hit/Miss) to detect model miscalibration.
-    Returns recommended adjustments:
-       - variance_factor_adj  (SD correction)
-       - heavy_tail_adj       (market skew correction)
+    Placeholder self‑learning calibration hook.
+    Currently returns neutral adjustments (1.0, 1.0).
     """
-    try:
-        # Only use completed bets
-        comp = history_df[history_df["Result"].isin(["Hit", "Miss"])].copy()
-
-        # Need sample size
-        if comp.empty or len(comp) < 20:
-            return 1.0, 1.0
-
-        # Convert EV to numeric
-        comp["EV_float"] = pd.to_numeric(comp["EV"], errors="coerce") / 100.0
-        comp = comp.dropna(subset=["EV_float"])
-        if comp.empty:
-            return 1.0, 1.0
-
-        # Predicted vs actual probability
-        predicted = 0.5 + comp["EV_float"].mean()
-        actual = (comp["Result"] == "Hit").mean()
-        gap = actual - predicted
-
-        # Decision logic
-        if gap < -0.03:  # model too optimistic
-            variance_adj = 1.06
-            heavy_tail_adj = 1.03
-        elif gap > 0.03:  # model too conservative
-            variance_adj = 0.94
-            heavy_tail_adj = 0.97
-        else:  # within tolerance
-            variance_adj = 1.0
-            heavy_tail_adj = 1.0
-
-        # Clamp
-        variance_adj = float(np.clip(variance_adj, 0.90, 1.10))
-        heavy_tail_adj = float(np.clip(heavy_tail_adj, 0.90, 1.10))
-
-        return variance_adj, heavy_tail_adj
-
-
-
+    return 1.0, 1.0
 # =========================================================
 # PART 4 — UI RENDER ENGINE + LOADERS + DECISION LOGIC
 # =========================================================
