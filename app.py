@@ -497,53 +497,61 @@ with tab_calib:
     else:
         comp = comp.copy()
         comp["EV_float"] = pd.to_numeric(comp["EV"], errors="coerce") / 100.0
-        comp = comp.dropna(subset=["EV_float"])
-        if comp.empty:
-            st.info("No valid EV values yet.")
-        else:
-            # Approx predicted win prob from EV around 50% baseline
-            pred_win_prob = 0.5 + comp["EV_float"].mean()
-            actual_win_prob = (comp["Result"] == "Hit").mean()
-            gap = (pred_win_prob - actual_win_prob) * 100
+comp = comp.dropna(subset=["EV_float"])
 
-            pnl = comp.apply(
-                lambda r: r["Stake"] * (payout_mult - 1.0)
-                if r["Result"] == "Hit"
-                else -r["Stake"],
-                axis=1,
-            )
-            roi = pnl.sum() / max(1.0, bankroll) * 100
-if not comp.empty:
+if comp.empty:
+    st.info("No valid EV values yet.")
+else:
+    # Approx predicted win prob from EV around 50% baseline
+    pred_win_prob = 0.5 + comp["EV_float"].mean()
+    actual_win_prob = (comp["Result"] == "Hit").mean()
+    gap = (pred_win_prob - actual_win_prob) * 100
+
+    pnl = comp.apply(
+        lambda r: r["Stake"] * (payout_mult - 1.0)
+        if r["Result"] == "Hit"
+        else -r["Stake"],
+        axis=1,
+    )
+    roi = pnl.sum() / max(1.0, bankroll) * 100
+
+    # -------------------------------
+    # Market vs Model Distribution Plot
+    # -------------------------------
     st.markdown("---")
     st.subheader("Market vs Model Performance Trend")
+
     comp["Edge_vs_Market"] = comp["EV_float"] * 100
-    fig2 = px.histogram(comp, x="Edge_vs_Market", nbins=20,
+
+    fig2 = px.histogram(
+        comp,
+        x="Edge_vs_Market",
+        nbins=20,
         title="Distribution of Model Edge vs Market (EV%)",
-        color_discrete_sequence=["#FFCC33"])
+        color_discrete_sequence=["#FFCC33"]
+    )
     st.plotly_chart(fig2, use_container_width=True)
 
-            st.markdown(
-                f"**Predicted Avg Win Prob (approx):** {pred_win_prob*100:.1f}%"
-            )
-            st.markdown(
-                f"**Actual Hit Rate:** {actual_win_prob*100:.1f}%"
-            )
-            st.markdown(
-                f"**Calibration Gap:** {gap:+.1f}% | **ROI:** {roi:+.1f}%"
-            )
+    # -------------------------------
+    # Calibration summary
+    # -------------------------------
+    st.markdown(
+        f"**Predicted Avg Win Prob (approx):** {pred_win_prob*100:.1f}%"
+    )
+    st.markdown(
+        f"**Actual Hit Rate:** {actual_win_prob*100:.1f}%"
+    )
+    st.markdown(
+        f"**Calibration Gap:** {gap:+.1f}% | **ROI:** {roi:+.1f}%"
+    )
 
-            if gap > 5:
-                st.warning(
-                    "Model appears overconfident → consider requiring higher EV before firing."
-                )
-            elif gap < -5:
-                st.info(
-                    "Model appears conservative → thin edges may be slightly under-trusted."
-                )
-            else:
-                st.success("Model and results are reasonably aligned ✅")
-
-st.markdown(
-    "<footer>© 2025 NBA Prop Model | Powered by Kamal</footer>",
-    unsafe_allow_html=True,
-)
+    if gap > 5:
+        st.warning(
+            "Model appears overconfident → consider requiring higher EV before firing."
+        )
+    elif gap < -5:
+        st.info(
+            "Model appears conservative → thin edges may be slightly under-trusted."
+        )
+    else:
+        st.success("Model and results are reasonably aligned ✅")
