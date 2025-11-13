@@ -441,41 +441,41 @@ def compute_leg_projection(
 
     # Standard deviation scaling
     sd = max(1.0, sd_min * np.sqrt(max(minutes, 1.0)) * ht)
-# =====================================================
-# EXPECTATION SHIFT ENGINE (Upgrade 4 – Part 3)
-# =====================================================
+    # =====================================================
+    # EXPECTATION SHIFT ENGINE (Upgrade 4 – Part 3)
+    # =====================================================
 
-# Baseline before adjustments
-base_mu = mu
+    # Baseline before adjustments
+    base_mu = mu
 
-# 1️⃣ Injury boost scaling
-if teammate_out:
-    mu *= 1.05  # usage bump for missing teammates
+    # 1️⃣ Injury boost scaling
+    if teammate_out:
+        mu *= 1.05   # usage bump for missing teammates
 
-# 2️⃣ Blowout dampening (already applied to minutes, but add soft cap)
-if blowout:
-    mu *= 0.97  
+    # 2️⃣ Blowout dampening (soft cap)
+    if blowout:
+        mu *= 0.97
 
-# 3️⃣ Market-specific rebound/assist scaling
-if market == "Rebounds":
-    # More weight on defensive rebound rate of opponent
-    mu *= np.clip(1.0 / (ctx_mult * 0.90), 0.90, 1.12)
+    # 3️⃣ Market-specific rebound / assist expectation shifts
+    if market == "Rebounds":
+        # More weight on opponent defensive rebound rate
+        mu *= np.clip(1.0 / (ctx_mult * 0.90), 0.90, 1.12)
 
-elif market == "Assists":
-    # Defense changes assist creation
-    mu *= np.clip(ctx_mult * 1.08, 0.92, 1.15)
+    elif market == "Assists":
+        # Defenses that allow more assists increase expectation
+        mu *= np.clip(ctx_mult * 1.08, 0.92, 1.15)
 
-# 4️⃣ Skew-aware adjustment: heavy-tail markets get extra right-tail bump
-tail_factor = HEAVY_TAIL[market]
-mu *= (1 + 0.015 * (tail_factor - 1))
+    # 4️⃣ Skew-aware adjustment
+    tail_factor = HEAVY_TAIL[market]
+    mu *= (1 + 0.015 * (tail_factor - 1))
 
-# 5️⃣ Pace vs league average push (context multiplier already included)
-# but we subtle-adjust for extreme pace games
-pace_adj = np.clip(ctx_mult, 0.92, 1.10)
-mu *= pace_adj
+    # 5️⃣ Pace push (softened)
+    pace_adj = np.clip(ctx_mult, 0.92, 1.10)
+    mu *= pace_adj
 
-# 6️⃣ Stabilizer: prevent unrealistic large jumps
-mu = float(np.clip(mu, base_mu * 0.80, base_mu * 1.25))
+    # 6️⃣ Stabilizer – prevents unrealistic jumps
+    mu = float(np.clip(mu, base_mu * 0.80, base_mu * 1.25))
+
 
  # ============================================================
     # HYBRID PROBABILITY ENGINE (Upgrade 4)
