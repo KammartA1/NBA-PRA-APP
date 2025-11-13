@@ -727,7 +727,7 @@ with tab_results:
 
     st.subheader("Results & Personal Tracking")
 
-    df = load_history():
+    df = load_history()
 
     # ------------------------------
     # Display Logged History Table
