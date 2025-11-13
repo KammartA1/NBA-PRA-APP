@@ -442,36 +442,38 @@ def compute_leg_projection(
     # Standard deviation scaling
     sd = max(1.0, sd_min * np.sqrt(max(minutes, 1.0)) * ht)
 
-   # ======================================
-# HYBRID PROBABILITY ENGINE (Upgrade 4)
-# ======================================
+ # ============================================================
+    # HYBRID PROBABILITY ENGINE (Upgrade 4)
+    # ============================================================
 
-# 1️⃣ Normal distribution probability
-p_norm = 1.0 - norm.cdf(line, mu, sd)
+    # 1️⃣ Normal distribution probability
+    p_norm = 1.0 - norm.cdf(line, mu, sd)
 
-# 2️⃣ Skew-Normal probability
-p_skew = skew_normal_prob(mu, sd, HEAVY_TAIL[market], line)
+    # 2️⃣ Skew-normal component
+    p_skew = skew_normal_prob(mu, sd, heavy, line)
 
-# Blend: more weight to skew for PRA/PTS
-if market in ["PRA", "Points"]:
-    p_over = 0.30 * p_norm + 0.70 * p_skew
-else:
-    p_over = 0.55 * p_norm + 0.45 * p_skew
+    # Blend skew-normal + normal
+    if market in ["PRA", "Points"]:
+        p_over = 0.30 * p_norm + 0.70 * p_skew
+    else:
+        p_over = 0.55 * p_norm + 0.45 * p_skew
 
-# 3️⃣ Micro Monte-Carlo sanity check (fast)
-sim = np.random.normal(mu, sd, 600)  # 600-run micro sim
-p_mc = (sim > line).mean()
+    # 3️⃣ Micro Monte-Carlo sanity check
+    sim = np.random.normal(mu, sd, 600)  # Fast 600-run micro simulation
+    p_mc = (sim > line).mean()
 
-# Final hybrid probability
-p_over = (0.8 * p_over) + (0.2 * p_mc)
+    # Final hybrid probability blend
+    p_over = 0.80 * p_over + 0.20 * p_mc
+    p_over = float(np.clip(p_over, 0.03, 0.97))
 
-# Keep reasonable bounds
-p_over = float(np.clip(p_over, 0.03, 0.97))
+    # --------------------------
+    # EVEN-MONEY EV
+    # --------------------------
+    ev_leg_even = p_over - (1.0 - p_over)
 
-
-    # Even money EV (for informational purposes)
-    ev_leg_even = p_over - (1 - p_over)
-
+    # --------------------------
+    # RETURN LEG OBJECT
+    # --------------------------
     return {
         "player": player,
         "market": market,
@@ -484,8 +486,9 @@ p_over = float(np.clip(p_over, 0.03, 0.97))
         "ctx_mult": ctx_mult,
         "msg": msg,
         "teammate_out": teammate_out,
-        "blowout": blowout,
+        "blowout": blowout
     }, None
+
 
 
 # =========================================================
