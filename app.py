@@ -635,7 +635,7 @@ def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_g
 
 def kelly_for_combo(p_joint: float, payout_mult: float, frac: float):
 
-# =====================================================
+    # =====================================================
 # SELF-LEARNING CALIBRATION ENGINE (Upgrade 4 — Part 7)
 # =====================================================
 
