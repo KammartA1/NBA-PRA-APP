@@ -412,6 +412,77 @@ def hybrid_prob_over(line, mu, sd, market):
     # Guardrail for invalid parameters
     if mu <= 0 or sd <= 0:
         return float(np.clip(normal_p, 0.01, 0.99))
+# ======================================================
+# ADVANCED PLAYER CORRELATION ENGINE (Upgrade 4 — Part 6)
+# ======================================================
+def estimate_player_correlation(leg1, leg2):
+    """
+    Produces a dynamic, data-driven correlation estimate.
+
+    Factors used:
+    - Shared team → strongly increases correlation
+    - Shared minutes → synergy boost
+    - Points vs Assists → negative correlation
+    - Rebounds vs Points → mild negative
+    - PRA → slightly positive
+    - Opponent context → affects both legs together
+    """
+    corr = 0.0
+
+    # -----------------------
+    # 1. Same-team baseline
+    # -----------------------
+    if leg1["team"] == leg2["team"] and leg1["team"] is not None:
+        corr += 0.18
+
+    # -----------------------
+    # 2. Minutes dependency
+    # -----------------------
+    try:
+        avg_min1 = leg1["mu"] / max(leg1["mu"]/leg1["line"], 1e-6)
+        avg_min2 = leg2["mu"] / max(leg2["mu"]/leg2["line"], 1e-6)
+    except:
+        avg_min1 = avg_min2 = 28
+
+    if avg_min1 > 30 and avg_min2 > 30:
+        corr += 0.05
+    elif avg_min1 < 22 or avg_min2 < 22:
+        corr -= 0.04
+
+    # -----------------------
+    # 3. Market-type interactions
+    # -----------------------
+    m1, m2 = leg1["market"], leg2["market"]
+
+    if m1 == "Points" and m2 == "Points":
+        corr += 0.08
+
+    if (m1 == "Points" and m2 == "Assists") or (m1 == "Assists" and m2 == "Points"):
+        corr -= 0.10
+
+    if (m1 == "Rebounds" and m2 == "Points") or (m1 == "Points" and m2 == "Rebounds"):
+        corr -= 0.06
+
+    if m1 == "PRA" or m2 == "PRA":
+        corr += 0.03
+
+    # -----------------------
+    # 4. Opponent-defense adjustment
+    # -----------------------
+    ctx1, ctx2 = leg1["ctx_mult"], leg2["ctx_mult"]
+
+    if ctx1 > 1.03 and ctx2 > 1.03:
+        corr += 0.04
+    if ctx1 < 0.97 and ctx2 < 0.97:
+        corr += 0.03
+    if (ctx1 > 1.03 and ctx2 < 0.97) or (ctx1 < 0.97 and ctx2 > 1.03):
+        corr -= 0.05
+
+    # -----------------------
+    # 5. Clamp for stability
+    # -----------------------
+    corr = float(np.clip(corr, -0.25, 0.40))
+    return corr
 
     # Convert to log-normal space
     variance = sd ** 2
