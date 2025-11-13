@@ -377,6 +377,22 @@ def get_player_rate_and_minutes(name: str, n_games: int, market: str):
 
     return mu_per_min, sd_per_min, avg_min, team, f"{label}: {len(per_min_vals)} games • {avg_min:.1f} min"
 
+# =====================================================
+# HYBRID ENGINE — PART 1: SKEW-NORMAL DISTRIBUTION
+# =====================================================
+from scipy.stats import skewnorm
+
+def skew_normal_prob(mu, sd, tail_weight, line):
+    """
+    Computes probability using a skew-normal distribution.
+    tail_weight > 1 increases right skew (heavy tail) typical for PRA/PTS.
+    """
+    # Convert tail weight into skew factor (alpha)
+    alpha = (tail_weight - 1.0) * 5  # tuned for NBA prop distributions
+    dist = skewnorm(a=alpha, loc=mu, scale=sd)
+
+    p_over = 1.0 - dist.cdf(line)
+    return float(np.clip(p_over, 0.03, 0.97))
 
 # =========================================================
 #  PART 3.1 — SINGLE LEG PROJECTION ENGINE
