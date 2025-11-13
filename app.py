@@ -632,8 +632,16 @@ def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_g
 # =========================================================
 #  PART 3.2 — KELLY FORMULA FOR 2-PICK
 # =========================================================
-
 def kelly_for_combo(p_joint: float, payout_mult: float, frac: float):
+    """
+    Kelly criterion for 2-pick entries.
+    """
+    b = payout_mult - 1
+    q = 1 - p_joint
+    raw = (b * p_joint - q) / b
+    k = raw * frac
+    return float(np.clip(k, 0, MAX_KELLY_PCT))  # cap at MAX_KELLY_PCT
+
 # =====================================================
 # SELF-LEARNING CALIBRATION ENGINE (Upgrade 4 — Part 7)
 # =====================================================
