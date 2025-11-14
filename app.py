@@ -1575,11 +1575,10 @@ with tab_model:
             time.sleep(0.25)
 
 # =========================================================
-# MODULE — COMPUTE LEG (UltraMax Full — FIXED)
+# MODULE — COMPUTE LEG (UltraMax Full — FIXED & SYNCED)
 # =========================================================
 
 def compute_leg(player, market, line, opponent, teammate_out, blowout, lookback):
-
     """
     Computes a single prop leg:
         - Resolves player
@@ -1587,7 +1586,7 @@ def compute_leg(player, market, line, opponent, teammate_out, blowout, lookback)
         - Builds per-minute rates
         - Applies Usage Engine v3
         - Applies Opponent Engine v2
-        - Applies Volatility Engine
+        - Applies Volatility Engine v2
         - Produces mu, sd, prob_over
     """
 
@@ -1613,6 +1612,92 @@ def compute_leg(player, market, line, opponent, teammate_out, blowout, lookback)
         return None, "No game logs available."
 
     logs = logs.head(lookback)
+
+    # -------------------------------------------
+    # Build production total for market
+    # -------------------------------------------
+    metrics = MARKET_METRICS.get(market, ["PTS"])
+    logs["MarketVal"] = logs[metrics].sum(axis=1)
+    logs["Minutes"] = logs["MIN"].astype(float)
+
+    valid = logs["Minutes"] > 0
+    if not valid.any():
+        return None, "No valid minute data."
+
+    # -------------------------------------------
+    # Per-minute base
+    # -------------------------------------------
+    base_mu_per_min = (logs.loc[valid, "MarketVal"] / logs.loc[valid, "Minutes"]).mean()
+    base_sd_per_min = (logs.loc[valid, "MarketVal"] / logs.loc[valid, "Minutes"]).std()
+    base_sd_per_min = max(base_sd_per_min, 0.10)
+
+    # -------------------------------------------
+    # Minutes projection
+    # -------------------------------------------
+    proj_minutes = logs["Minutes"].tail(5).mean()
+    proj_minutes = float(np.clip(proj_minutes, 18, 40))
+
+    # -------------------------------------------
+    # Usage Engine
+    # -------------------------------------------
+    role = "primary"
+    team_usage = 1.00
+    teammate_out_level = 1 if teammate_out else 0
+
+    usage_mu = usage_engine_v3(
+        base_mu_per_min,
+        role,
+        team_usage,
+        teammate_out_level
+    )
+
+    # -------------------------------------------
+    # Opponent Engine
+    # -------------------------------------------
+    ctx_mult = opponent_matchup_v2(opponent, market)
+
+    # -------------------------------------------
+    # Final projection mean
+    # -------------------------------------------
+    mu = usage_mu * proj_minutes * ctx_mult
+
+    # -------------------------------------------
+    # Volatility Engine
+    # -------------------------------------------
+    sd = volatility_engine_v2(
+        base_sd_per_min,
+        proj_minutes,
+        market,
+        ctx_mult,
+        usage_mu / max(base_mu_per_min, 0.01),
+        regime_state="normal"
+    )
+
+    # -------------------------------------------
+    # Ensemble probability
+    # -------------------------------------------
+    prob = ensemble_prob_over(
+        mu,
+        sd,
+        line,
+        market,
+        volatility_score=sd / max(mu, 1)
+    )
+
+    leg = {
+        "player": canonical,
+        "market": market,
+        "line": line,
+        "prob_over": prob,
+        "mu": mu,
+        "sd": sd,
+        "ctx_mult": ctx_mult,
+        "team": None,
+        "teammate_out": teammate_out,
+        "blowout": blowout,
+    }
+
+    return leg, None
 
     # -------------------------------------------
     # Build production total for market
