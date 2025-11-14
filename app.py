@@ -1460,6 +1460,44 @@ def module12_two_pick_decision(
         "drift_adj": drift_adj,
         "clv_adj": clv_adj,
     }
+# =========================================================
+# MODULE — HISTORY LOADING / SAVING
+# =========================================================
+
+import os
+import pandas as pd
+
+# Path defined earlier in your file:
+# LOG_FILE = os.path.join(TEMP_DIR, "bets_history.csv")
+
+def load_history():
+    """Loads the user's stored bet history. Returns an empty DataFrame if none exists."""
+    if not os.path.exists(LOG_FILE):
+        return pd.DataFrame(columns=[
+            "Timestamp", "Player", "Market", "Line", "Probability",
+            "EV", "Result", "Stake", "User"
+        ])
+    try:
+        return pd.read_csv(LOG_FILE)
+    except Exception:
+        return pd.DataFrame(columns=[
+            "Timestamp", "Player", "Market", "Line", "Probability",
+            "EV", "Result", "Stake", "User"
+        ])
+
+def save_history(df: pd.DataFrame):
+    """Saves history safely to CSV."""
+    try:
+        df.to_csv(LOG_FILE, index=False)
+    except:
+        pass
+
+def append_history(entry: dict):
+    """Append one bet result to the history file."""
+    df = load_history()
+
+    df = pd.concat([df, pd.DataFrame([entry])], ignore_index=True)
+    save_history(df)
 
 # =====================================================================
 # MODULE 13 — STREAMLIT UI INTEGRATION (FULL ULTRAMAX V4)
