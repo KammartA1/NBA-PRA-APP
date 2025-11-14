@@ -1663,6 +1663,14 @@ with tab_model:
         p2_blowout = st.checkbox("Blowout risk (P2)")
 
     st.markdown("---")
+    
+    games_lookback = st.slider(
+    "Number of Games to Analyze (Lookback)",
+    min_value=3,
+    max_value=20,
+    value=10,
+    step=1
+)
 
     run_btn = st.button("🚀 Run UltraMax Model")
 
@@ -1680,7 +1688,8 @@ with tab_model:
             opponent=p1_opp,
             teammate_out=p1_teammate_out,
             blowout=p1_blowout,
-            lookback= n_games
+            lookback=games_lookback
+
 
 
 
