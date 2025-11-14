@@ -1494,29 +1494,22 @@ def module12_two_pick_decision(
 # MODULE 13 — STREAMLIT UI INTEGRATION (FULL ULTRAMAX V4)
 # =====================================================================
 # =========================================================
-# MODULE — COMPUTE LEG (UltraMax Full)
+# MODULE — COMPUTE LEG (UltraMax Full, FIXED)
 # =========================================================
 
 def compute_leg(player, market, line, opp, teammate_out, blowout, lookback):
-    n_games = lookback
+    """
+    Computes a single prop leg using the UltraMax engines.
+    """
 
-    """
-    Computes a single prop leg:
-        - Resolves player
-        - Pulls game logs
-        - Builds per-minute rates
-        - Applies Usage Engine v3
-        - Applies Opponent Engine v2
-        - Applies Volatility Engine
-        - Produces mu, sd, prob_over
-    """
+    n_games = lookback
 
     # -------------------------------------------
     # Resolve player
     # -------------------------------------------
-    pid, canonical = resolve_player(player_name)
+    pid, canonical = resolve_player(player)
     if not pid:
-        return None, f"Player not found: {player_name}"
+        return None, f"Player not found: {player}"
 
     # -------------------------------------------
     # Pull last N games
@@ -1532,36 +1525,36 @@ def compute_leg(player, market, line, opp, teammate_out, blowout, lookback):
     if logs.empty:
         return None, "No game logs available."
 
-    logs = logs.head(lookback)
+    logs = logs.head(n_games)
 
     # -------------------------------------------
-    # Build production total for market
+    # Market aggregation
     # -------------------------------------------
     metrics = MARKET_METRICS.get(market, ["PTS"])
     logs["MarketVal"] = logs[metrics].sum(axis=1)
     logs["Minutes"] = logs["MIN"].astype(float)
 
-    # -------------------------------------------
-    # Per-minute base
-    # -------------------------------------------
     valid = logs["Minutes"] > 0
     if not valid.any():
         return None, "No valid minute data."
 
+    # -------------------------------------------
+    # Base per-minute production
+    # -------------------------------------------
     base_mu_per_min = (logs.loc[valid, "MarketVal"] / logs.loc[valid, "Minutes"]).mean()
     base_sd_per_min = (logs.loc[valid, "MarketVal"] / logs.loc[valid, "Minutes"]).std()
     base_sd_per_min = max(base_sd_per_min, 0.10)
 
     # -------------------------------------------
-    # Minutes projection (simple but stable)
+    # Minutes projection
     # -------------------------------------------
     proj_minutes = logs["Minutes"].tail(5).mean()
     proj_minutes = float(np.clip(proj_minutes, 18, 40))
 
     # -------------------------------------------
-    # Usage Engine
+    # Usage Engine v3
     # -------------------------------------------
-    role = "primary"  # for now
+    role = "primary"
     team_usage = 1.00
     teammate_out_level = 1 if teammate_out else 0
 
@@ -1573,9 +1566,9 @@ def compute_leg(player, market, line, opp, teammate_out, blowout, lookback):
     )
 
     # -------------------------------------------
-    # Opponent Engine
+    # Opponent Engine v2
     # -------------------------------------------
-    ctx_mult = opponent_matchup_v2(opponent, market)
+    ctx_mult = opponent_matchup_v2(opp, market)
 
     # -------------------------------------------
     # Final projection mean
@@ -1583,7 +1576,7 @@ def compute_leg(player, market, line, opp, teammate_out, blowout, lookback):
     mu = usage_mu * proj_minutes * ctx_mult
 
     # -------------------------------------------
-    # Volatility Engine
+    # Volatility Engine v2
     # -------------------------------------------
     sd = volatility_engine_v2(
         base_sd_per_min,
@@ -1595,7 +1588,7 @@ def compute_leg(player, market, line, opp, teammate_out, blowout, lookback):
     )
 
     # -------------------------------------------
-    # Final probability (hybrid)
+    # Ensemble Probability Engine
     # -------------------------------------------
     prob = ensemble_prob_over(
         mu,
@@ -1605,7 +1598,9 @@ def compute_leg(player, market, line, opp, teammate_out, blowout, lookback):
         volatility_score=sd / max(mu, 1)
     )
 
-    # Build return object
+    # -------------------------------------------
+    # Build output object
+    # -------------------------------------------
     leg = {
         "player": canonical,
         "market": market,
@@ -1620,6 +1615,7 @@ def compute_leg(player, market, line, opp, teammate_out, blowout, lookback):
     }
 
     return leg, None
+
 
 st.markdown("## ⚡ UltraMax V4 — 2-Pick Quant Terminal")
 
