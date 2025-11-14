@@ -1489,7 +1489,7 @@ with tab_model:
         p1_market = st.selectbox("Market 1", MARKET_OPTIONS)
         p1_line = st.number_input("Line 1", min_value=0.0, value=25.0, step=0.5)
 
-        p1_opp = st.text_input("Opponent (Team Abbrev)", help="LAL, DEN, BOS, etc.")
+        p1_opp = st.text_input("P1 Opponent (Team Abbrev)", help="LAL, DEN, BOS, etc.")
         p1_teammate_out = st.checkbox("Key teammate OUT (P1)")
         p1_blowout = st.checkbox("Blowout risk (P1)")
 
@@ -1501,7 +1501,7 @@ with tab_model:
         p2_market = st.selectbox("Market 2", MARKET_OPTIONS)
         p2_line = st.number_input("Line 2", min_value=0.0, value=25.0, step=0.5)
 
-        p2_opp = st.text_input("Opponent (Team Abbrev)", help="LAL, DEN, BOS, etc.")
+        p2_opp = st.text_input("P2 Opponent (Team Abbrev)", help="LAL, DEN, BOS, etc.")
         p2_teammate_out = st.checkbox("Key teammate OUT (P2)")
         p2_blowout = st.checkbox("Blowout risk (P2)")
 
