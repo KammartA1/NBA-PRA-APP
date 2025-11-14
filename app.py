@@ -1536,8 +1536,6 @@ with tab_model:
             lookback=games_lookback
         )
 
-        )
-
         # errors
         if err1:
             st.error(f"Leg 1 Error: {err1}")
