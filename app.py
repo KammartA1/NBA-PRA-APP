@@ -1680,7 +1680,8 @@ with tab_model:
             opponent=p1_opp,
             teammate_out=p1_teammate_out,
             blowout=p1_blowout,
-            lookback=games_lookback
+            lookback= lookback
+
         )
         
         leg2, err2 = compute_leg(
