@@ -107,36 +107,6 @@ st.markdown(
 st.markdown("<div class='main-title'>NBA QUANT TERMINAL — ULTRAMAX V4</div>", unsafe_allow_html=True)
 st.caption("Fully Automated Prop Quant Suite • Hedge-Fund Grade Modeling")
 # =========================================================
-# HISTORY HELPERS (must come before UI uses load_history)
-# =========================================================
-
-def ensure_history():
-    if not os.path.exists(LOG_FILE):
-        df = pd.DataFrame(columns=[
-            "Date","Player","Market","Line","EV",
-            "Stake","Result","CLV","KellyFrac"
-        ])
-        df.to_csv(LOG_FILE, index=False)
-
-def load_history():
-    ensure_history()
-    try:
-        return pd.read_csv(LOG_FILE)
-    except:
-        return pd.DataFrame(columns=[
-            "Date","Player","Market","Line","EV",
-            "Stake","Result","CLV","KellyFrac"
-        ])
-
-def save_history(df):
-    df.to_csv(LOG_FILE, index=False)
-
-
-# =========================================================
-# MODULE 2 — Usage Engine v3 (Fully Populated)
-# =========================================================
-
-# =========================================================
 # MODULE 2 — PLAYER RESOLUTION + MARKET CONFIG + HELPERS
 # UltraMax V4 — Fully Populated
 # =========================================================
@@ -1493,129 +1463,6 @@ def module12_two_pick_decision(
 # =====================================================================
 # MODULE 13 — STREAMLIT UI INTEGRATION (FULL ULTRAMAX V4)
 # =====================================================================
-# =========================================================
-# MODULE — COMPUTE LEG (UltraMax Full, FIXED)
-# =========================================================
-
-def compute_leg(player, market, line, opp, teammate_out, blowout, lookback):
-    """
-    Computes a single prop leg using the UltraMax engines.
-    """
-
-    n_games = lookback
-
-    # -------------------------------------------
-    # Resolve player
-    # -------------------------------------------
-    pid, canonical = resolve_player(player)
-    if not pid:
-        return None, f"Player not found: {player}"
-
-    # -------------------------------------------
-    # Pull last N games
-    # -------------------------------------------
-    try:
-        logs = PlayerGameLog(
-            player_id=pid,
-            season=current_season(),
-        ).get_data_frames()[0]
-    except Exception:
-        return None, "API error retrieving game logs."
-
-    if logs.empty:
-        return None, "No game logs available."
-
-    logs = logs.head(n_games)
-
-    # -------------------------------------------
-    # Market aggregation
-    # -------------------------------------------
-    metrics = MARKET_METRICS.get(market, ["PTS"])
-    logs["MarketVal"] = logs[metrics].sum(axis=1)
-    logs["Minutes"] = logs["MIN"].astype(float)
-
-    valid = logs["Minutes"] > 0
-    if not valid.any():
-        return None, "No valid minute data."
-
-    # -------------------------------------------
-    # Base per-minute production
-    # -------------------------------------------
-    base_mu_per_min = (logs.loc[valid, "MarketVal"] / logs.loc[valid, "Minutes"]).mean()
-    base_sd_per_min = (logs.loc[valid, "MarketVal"] / logs.loc[valid, "Minutes"]).std()
-    base_sd_per_min = max(base_sd_per_min, 0.10)
-
-    # -------------------------------------------
-    # Minutes projection
-    # -------------------------------------------
-    proj_minutes = logs["Minutes"].tail(5).mean()
-    proj_minutes = float(np.clip(proj_minutes, 18, 40))
-
-    # -------------------------------------------
-    # Usage Engine v3
-    # -------------------------------------------
-    role = "primary"
-    team_usage = 1.00
-    teammate_out_level = 1 if teammate_out else 0
-
-    usage_mu = usage_engine_v3(
-        base_mu_per_min,
-        role,
-        team_usage,
-        teammate_out_level
-    )
-
-    # -------------------------------------------
-    # Opponent Engine v2
-    # -------------------------------------------
-    ctx_mult = opponent_matchup_v2(opp, market)
-
-    # -------------------------------------------
-    # Final projection mean
-    # -------------------------------------------
-    mu = usage_mu * proj_minutes * ctx_mult
-
-    # -------------------------------------------
-    # Volatility Engine v2
-    # -------------------------------------------
-    sd = volatility_engine_v2(
-        base_sd_per_min,
-        proj_minutes,
-        market,
-        ctx_mult,
-        usage_mu / max(base_mu_per_min, 0.01),
-        regime_state="normal"
-    )
-
-    # -------------------------------------------
-    # Ensemble Probability Engine
-    # -------------------------------------------
-    prob = ensemble_prob_over(
-        mu,
-        sd,
-        line,
-        market,
-        volatility_score=sd / max(mu, 1)
-    )
-
-    # -------------------------------------------
-    # Build output object
-    # -------------------------------------------
-    leg = {
-        "player": canonical,
-        "market": market,
-        "line": line,
-        "prob_over": prob,
-        "mu": mu,
-        "sd": sd,
-        "ctx_mult": ctx_mult,
-        "team": None,
-        "teammate_out": teammate_out,
-        "blowout": blowout,
-    }
-
-    return leg, None
-
 
 st.markdown("## ⚡ UltraMax V4 — 2-Pick Quant Terminal")
 
@@ -1659,14 +1506,6 @@ with tab_model:
         p2_blowout = st.checkbox("Blowout risk (P2)")
 
     st.markdown("---")
-    
-    games_lookback = st.slider(
-    "Number of Games to Analyze (Lookback)",
-    min_value=3,
-    max_value=20,
-    value=10,
-    step=1
-)
 
     run_btn = st.button("🚀 Run UltraMax Model")
 
@@ -1685,10 +1524,6 @@ with tab_model:
             teammate_out=p1_teammate_out,
             blowout=p1_blowout,
             lookback=games_lookback
-
-
-
-
         )
         
         leg2, err2 = compute_leg(
@@ -2431,8 +2266,7 @@ def enrich_with_model(df, games_lookback):
             opp="",  # not known from API
             teammate_out=False,
             blowout=False,
-            n_games=lookback
-
+            n_games=games_lookback
         )
 
         if leg and not err:
@@ -2612,7 +2446,7 @@ def run_firehose_scan(df):
             opp=None,
             teammate_out=False,
             blowout=False,
-            n_games=lookback
+            n_games=games_lookback
         )
 
         if err or leg is None:
@@ -3532,3 +3366,4 @@ def render_final_dashboard():
 # =========================================================
 
 render_final_dashboard()
+
