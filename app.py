@@ -1,219 +1,133 @@
-# =========================================================
-#  KAMAL QUANT ENGINE v5.0 — MASTER FILE (Chunk 1/10)
-# =========================================================
 
-import os, time, random, difflib
-from datetime import datetime, date
+"""
+Module 1: engine_usage.py
+Player Usage Engine v3
+Fully contained, production-ready.
+"""
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
-import streamlit as st
 
-from scipy.stats import norm, beta
+# ------------------------------------------
+# Helper: Normalize per‑minute values safely
+# ------------------------------------------
+def _safe_div(a, b, fallback=0.0):
+    try:
+        if b == 0 or b is None:
+            return fallback
+        return a / b
+    except:
+        return fallback
 
-from nba_api.stats.static import players as nba_players
-from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats
+# ------------------------------------------
+# Usage Redistribution Engine
+# ------------------------------------------
+def redistribute_usage(current_usg, missing_players, team_total_usg=100):
+    """
+    Redistributes usage when teammates are out.
+    Inputs:
+        current_usg: dict {player: usage%}
+        missing_players: list of players missing
+        team_total_usg: expected total team usage (100%)
+    Returns:
+        dict {player: adjusted_usage%}
+    """
 
-# =========================================================
-#  STREAMLIT CONFIG
-# =========================================================
+    remaining = {p: u for p, u in current_usg.items() if p not in missing_players}
+    lost_usg = sum(u for p, u in current_usg.items() if p in missing_players)
 
-st.set_page_config(
-    page_title="NBA Prop Model",
-    page_icon="🏀",
-    layout="wide"
-)
+    if lost_usg <= 0 or len(remaining) == 0:
+        return remaining
 
-TEMP_DIR = os.path.join("/tmp", "nba_prop_temp")
-os.makedirs(TEMP_DIR, exist_ok=True)
+    # redistribute proportionally
+    total_remaining = sum(remaining.values())
+    if total_remaining <= 0:
+        boost = lost_usg / max(1, len(remaining))
+        return {p: remaining.get(p, 0) + boost for p in remaining}
 
-PRIMARY_MAROON = "#7A0019"
-GOLD = "#FFCC33"
-CARD_BG = "#17131C"
-BG = "#0D0A12"
+    adj = {}
+    for p, u in remaining.items():
+        share = u / total_remaining
+        adj[p] = u + share * lost_usg
 
-# =========================================================
-#  GLOBAL STYLE
-# =========================================================
+    # normalize to 100%
+    norm_factor = team_total_usg / sum(adj.values())
+    adj = {p: v * norm_factor for p, v in adj.items()}
+    return adj
 
-st.markdown(
-    f"""
-    <style>
-    .main-header {{
-        text-align:center;
-        font-size:40px;
-        color:{GOLD};
-        font-weight:700;
-        margin-bottom:0px;
-    }}
-    .card {{
-        background-color:{CARD_BG};
-        border-radius:18px;
-        padding:14px;
-        margin-bottom:18px;
-        border:1px solid {GOLD}33;
-        box-shadow:0 10px 24px rgba(0,0,0,0.75);
-        transition:all 0.16s ease;
-    }}
-    .card:hover {{
-        transform:translateY(-3px) scale(1.015);
-        box-shadow:0 18px 40px rgba(0,0,0,0.9);
-    }}
-    .stApp {{
-        background-color:{BG};
-        color:white;
-        font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;
-    }}
-    section[data-testid="stSidebar"] {{
-        background: radial-gradient(circle at top,{PRIMARY_MAROON} 0%,#2b0b14 55%,#12060a 100%);
-        border-right:1px solid {GOLD}33;
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+# ------------------------------------------
+# Role-Based Usage Multiplier
+# ------------------------------------------
+def role_multiplier(role: str):
+    """
+    Returns a usage multiplier based on player archetype.
+    """
+    role = (role or "").lower()
 
-st.markdown('<p class="main-header">🏀 NBA Prop Model — Kamal Quant Engine v5.0</p>', unsafe_allow_html=True)
+    if "primary" in role:
+        return 1.08
+    if "secondary" in role:
+        return 1.04
+    if "bench" in role:
+        return 1.02
+    if "low" in role:
+        return 0.96
 
-# =========================================================
-#  SIDEBAR — USER SETTINGS
-# =========================================================
+    return 1.00
 
-st.sidebar.header("User & Bankroll")
+# ------------------------------------------
+# Main Player Usage Engine v3
+# ------------------------------------------
+def compute_usage_v3(per_min_rate, minutes, role, teammate_out=False, on_off_boost=0.0):
+    """
+    Compute adjusted per-minute production based on:
+      - baseline per-minute stats
+      - expected minutes
+      - role-based usage modification
+      - teammate on/off adjustment
+    """
 
-user_id = st.sidebar.text_input("Your ID (for personal history)", value="Me").strip() or "Me"
+    base = per_min_rate
 
-LOG_FILE = os.path.join(TEMP_DIR, f"bet_history_{user_id}.csv")
+    # Role-based scaling
+    rm = role_multiplier(role)
 
-bankroll = st.sidebar.number_input("Bankroll ($)", min_value=10.0, value=100.0)
-payout_mult = st.sidebar.number_input("2-Pick Payout (e.g. 3.0x)", min_value=1.5, value=3.0)
-fractional_kelly = st.sidebar.slider("Fractional Kelly", 0.0, 1.0, 0.25, 0.05)
-games_lookback = st.sidebar.slider("Recent Games Sample (N)", 5, 20, 10)
-compact_mode = st.sidebar.checkbox("Compact Mode (mobile)", value=False)
+    # Teammate-out usage bump
+    tm = 1.05 if teammate_out else 1.00
 
-st.sidebar.caption("Model auto-pulls NBA stats. You only enter the lines.")
-# =========================================================
-#  PART 2 — MODEL CONSTANTS
-# =========================================================
+    # On/Off boost (advanced model)
+    ob = 1.0 + on_off_boost
 
-MARKET_OPTIONS = ["PRA", "Points", "Rebounds", "Assists"]
+    final = base * rm * tm * ob
+    return float(final)
+# ===============================================================
+#  engine_context.py — Opponent Matchup Engine v2 (Fully Installed)
+# ===============================================================
 
-MARKET_METRICS = {
-    "PRA": ["PTS", "REB", "AST"],
-    "Points": ["PTS"],
-    "Rebounds": ["REB"],
-    "Assists": ["AST"],
-}
+import numpy as np
+import pandas as pd
+from nba_api.stats.endpoints import LeagueDashTeamStats
+from datetime import datetime
 
-# Heavy-tail multipliers (baseline)
-HEAVY_TAIL = {
-    "PRA": 1.35,
-    "Points": 1.25,
-    "Rebounds": 1.25,
-    "Assists": 1.25,
-}
-
-MAX_KELLY_PCT = 0.03  # Hard-cap at 3%
-
-# =========================================================
-#  PART 2.1 — BASIC HELPERS
-# =========================================================
-
+# ----------------------------
+# SEASON HELPER
+# ----------------------------
 def current_season():
     today = datetime.now()
     yr = today.year if today.month >= 10 else today.year - 1
     return f"{yr}-{str(yr+1)[-2:]}"
 
-
-# =========================================================
-#  PART 2.2 — PLAYER LOOKUP ENGINE
-# =========================================================
-
-@st.cache_data(show_spinner=False)
-def get_players_index():
-    """Caches all NBA players for fuzzy lookup."""
-    return nba_players.get_players()
-
-def _norm_name(s: str) -> str:
-    """Normalize player names for fuzzy match."""
-    if not isinstance(s, str):
-        return ""
-    return (
-        s.lower()
-         .replace(".", "")
-         .replace("'", "")
-         .replace("-", " ")
-         .strip()
-    )
-
-@st.cache_data(show_spinner=False)
-def resolve_player(name: str):
-    """
-    Fuzzy player resolver:
-        Input:  user text
-        Output: (player_id, full_name)
-    """
-    if not name:
-        return None, None
-
-    players = get_players_index()
-    target = _norm_name(name)
-
-    # --- Exact match first ---
-    for p in players:
-        if _norm_name(p["full_name"]) == target:
-            return p["id"], p["full_name"]
-
-    # --- Fuzzy match ---
-    names = [_norm_name(p["full_name"]) for p in players]
-    matches = difflib.get_close_matches(target, names, n=1, cutoff=0.7)
-
-    if matches:
-        match_norm = matches[0]
-        for p in players:
-            if _norm_name(p["full_name"]) == match_norm:
-                return p["id"], p["full_name"]
-
-    return None, None
-
-def get_headshot_url(name: str):
-    pid, _ = resolve_player(name)
-    if not pid:
-        return None
-    return (
-        f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/"
-        f"nba/latest/260x190/{pid}.png"
-    )
-
-
-# =========================================================
-#  PART 2.3 — TEAM CONTEXT ENGINE v2
-#  Pulls pace, defensive rating, assist %, rebound %
-# =========================================================
-
-@st.cache_data(show_spinner=False, ttl=3600)
-def get_team_context():
-    """
-    Pulls advanced NBA team data:
-      • Pace
-      • Defensive Rating
-      • Reb% / DReb%
-      • Ast%
-
-    Returns:
-       TEAM_CTX: { TEAM_ABBREV : metrics }
-       LEAGUE_CTX: league averages
-    """
-
+# ----------------------------
+# TEAM CONTEXT LOADER
+# ----------------------------
+def load_team_context():
+    """Loads pace, defense, rebounding, assist %, plus interior/perimeter factors."""
     try:
-        # Base per-game team stats
         base = LeagueDashTeamStats(
             season=current_season(),
             per_mode_detailed="PerGame"
         ).get_data_frames()[0]
 
-        # Advanced stats
         adv = LeagueDashTeamStats(
             season=current_season(),
             measure_type_detailed="Advanced",
@@ -222,8 +136,7 @@ def get_team_context():
             "TEAM_ID","TEAM_ABBREVIATION","REB_PCT","OREB_PCT","DREB_PCT","AST_PCT","PACE"
         ]]
 
-        # Defensive stats
-        defn = LeagueDashTeamStats(
+        defense = LeagueDashTeamStats(
             season=current_season(),
             measure_type_detailed_defense="Defense",
             per_mode_detailed="PerGame"
@@ -232,1358 +145,486 @@ def get_team_context():
         ]]
 
         df = base.merge(adv, on=["TEAM_ID","TEAM_ABBREVIATION"], how="left")
-        df = df.merge(defn, on=["TEAM_ID","TEAM_ABBREVIATION"], how="left")
+        df = df.merge(defense, on=["TEAM_ID","TEAM_ABBREVIATION"], how="left")
 
-        # Compute league averages
+        # Interior vs Perimeter defensive proxy
+        df["INTERIOR_FACTOR"] = (df["DREB_PCT"] + df["OREB_PCT"]) / 2
+        df["PERIMETER_FACTOR"] = df["AST_PCT"]
+
         league_avg = {
-            col: df[col].mean()
-            for col in ["PACE","DEF_RATING","REB_PCT","AST_PCT"]
+            c: df[c].mean()
+            for c in ["PACE","DEF_RATING","REB_PCT","AST_PCT","INTERIOR_FACTOR","PERIMETER_FACTOR"]
         }
 
-        TEAM_CTX = {
+        ctx = {
             r["TEAM_ABBREVIATION"]: {
-                "PACE":      r["PACE"],
+                "PACE": r["PACE"],
                 "DEF_RATING": r["DEF_RATING"],
-                "REB_PCT":   r["REB_PCT"],
-                "DREB_PCT":  r["DREB_PCT"],
-                "AST_PCT":   r["AST_PCT"],
+                "REB_PCT": r["REB_PCT"],
+                "DREB_PCT": r["DREB_PCT"],
+                "AST_PCT": r["AST_PCT"],
+                "INTERIOR_FACTOR": r["INTERIOR_FACTOR"],
+                "PERIMETER_FACTOR": r["PERIMETER_FACTOR"],
             }
             for _, r in df.iterrows()
         }
 
-        return TEAM_CTX, league_avg
+        return ctx, league_avg
 
     except Exception:
         return {}, {}
 
-TEAM_CTX, LEAGUE_CTX = get_team_context()
+TEAM_CTX, LEAGUE_CTX = load_team_context()
 
-
-# =========================================================
-#  PART 2.4 — OPPONENT MATCHUP ENGINE v2
-# =========================================================
-
-def get_context_multiplier(opp_abbrev: str | None, market: str):
-    """
-    Opponent-context multiplier with v2 scaling:
-      - Pace factor
-      - Defensive Rating factor
-      - Rebound context (REB only)
-      - Assist context (AST only)
-
-    Output is clipped for stability.
-    """
-
-    if not opp_abbrev or opp_abbrev not in TEAM_CTX or not LEAGUE_CTX:
+# ----------------------------
+# MATCHUP MULTIPLIER ENGINE
+# ----------------------------
+def get_context_multiplier(opp, market):
+    if not opp or opp not in TEAM_CTX or not LEAGUE_CTX:
         return 1.0
 
-    opp = TEAM_CTX[opp_abbrev]
+    t = TEAM_CTX[opp]
 
-    pace_factor = opp["PACE"] / LEAGUE_CTX["PACE"]
-    def_factor  = LEAGUE_CTX["DEF_RATING"] / opp["DEF_RATING"]
+    pace_f = t["PACE"] / LEAGUE_CTX["PACE"]
+    def_f = LEAGUE_CTX["DEF_RATING"] / t["DEF_RATING"]
 
-    reb_factor = (
-        LEAGUE_CTX["REB_PCT"] / opp["DREB_PCT"]
-        if market == "Rebounds" else 1.0
-    )
+    reb_adj = LEAGUE_CTX["REB_PCT"] / t["DREB_PCT"] if market == "Rebounds" else 1.0
+    ast_adj = LEAGUE_CTX["AST_PCT"] / t["AST_PCT"] if market == "Assists" else 1.0
 
-    ast_factor = (
-        LEAGUE_CTX["AST_PCT"] / opp["AST_PCT"]
-        if market == "Assists" else 1.0
-    )
-
-    # Weighted blend
-    multiplier = (
-        0.40 * pace_factor +
-        0.30 * def_factor +
-        0.30 * (reb_factor if market == "Rebounds" else ast_factor)
-    )
-
-    return float(np.clip(multiplier, 0.80, 1.20))
-# =========================================================
-#  PART 3 — MARKET BASELINE LIBRARY (Option A1)
-# =========================================================
-
-MARKET_LIBRARY_FILE = os.path.join(TEMP_DIR, "market_baselines.csv")
-
-def load_market_library():
-    """Load past market lines to build baselines."""
-    if not os.path.exists(MARKET_LIBRARY_FILE):
-        return pd.DataFrame(columns=["Player","Market","Line","Timestamp"])
-    try:
-        return pd.read_csv(MARKET_LIBRARY_FILE)
-    except:
-        return pd.DataFrame(columns=["Player","Market","Line","Timestamp"])
-
-def save_market_library(df):
-    df.to_csv(MARKET_LIBRARY_FILE, index=False)
-
-def update_market_library(player: str, market: str, line: float):
-    """Append a new market entry to historical baseline storage."""
-    df = load_market_library()
-    new_row = pd.DataFrame([{
-        "Player": player,
-        "Market": market,
-        "Line": float(line),
-        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
-    }])
-    df = pd.concat([df, new_row], ignore_index=True)
-    save_market_library(df)
-
-def get_market_baseline(player: str, market: str):
-    """Return (mean, median) historical market line."""
-    df = load_market_library()
-    if df.empty:
-        return None, None
-    d = df[(df["Player"] == player) & (df["Market"] == market)]
-    if d.empty:
-        return None, None
-    return d["Line"].mean(), d["Line"].median()
-
-
-# =========================================================
-#  PART 3.1 — PLAYER GAME LOG ENGINE v3
-#  Extracts:
-#    - per-minute mean
-#    - per-minute sd
-#    - average minutes
-#    - recent usage patterns
-# =========================================================
-
-@st.cache_data(show_spinner=False, ttl=900)
-def get_player_rate_and_minutes(player: str, n_games: int, market: str):
-    """
-    Computes:
-      - mu_per_min (recent)
-      - sd_per_min (recent)
-      - avg_min (recent)
-      - team
-      - usage signals (points share, assist share, rebound share)
-    """
-
-    pid, label = resolve_player(player)
-    if not pid:
-        return None, None, None, None, f"No match for '{player}'."
-
-    # Pull logs
-    try:
-        gl = PlayerGameLog(
-            player_id=pid,
-            season=current_season(),
-            season_type_all_star="Regular Season"
-        ).get_data_frames()[0]
-    except Exception as e:
-        return None, None, None, None, f"Log error: {str(e)}"
-
-    if gl.empty:
-        return None, None, None, None, "No recent games found."
-
-    # Sort newest → oldest
-    gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
-    gl = gl.sort_values("GAME_DATE", ascending=False).head(n_games)
-
-    cols = MARKET_METRICS[market]
-
-    per_min_vals = []
-    minutes_vals = []
-
-    # Usage signals
-    pts_vals = []
-    reb_vals = []
-    ast_vals = []
-
-    # -----------------------------
-    # Compute per-minute values
-    # -----------------------------
-    for _, r in gl.iterrows():
-
-        # Minutes (handles "mm:ss" format)
-        m = 0.0
-        try:
-            raw_m = r.get("MIN", "0")
-            if isinstance(raw_m, str) and ":" in raw_m:
-                mm, ss = raw_m.split(":")
-                m = float(mm) + float(ss)/60
-            else:
-                m = float(raw_m)
-        except:
-            m = 0.0
-
-        if m > 0:
-            total_val = sum(float(r.get(c, 0)) for c in cols)
-            per_min_vals.append(total_val / m)
-            minutes_vals.append(m)
-
-        # Usage signals always collected
-        pts_vals.append(float(r.get("PTS", 0)))
-        reb_vals.append(float(r.get("REB", 0)))
-        ast_vals.append(float(r.get("AST", 0)))
-
-    if not per_min_vals:
-        return None, None, None, None, "Insufficient data."
-
-    per_min_vals = np.array(per_min_vals)
-    minutes_vals = np.array(minutes_vals)
-
-    # Baseline per-min stats
-    mu_per_min = float(np.mean(per_min_vals))
-    sd_per_min = float(max(np.std(per_min_vals, ddof=1), 0.15 * max(mu_per_min, 0.5)))
-    avg_min = float(np.mean(minutes_vals))
-
-    # Team detection
-    try:
-        team = gl["TEAM_ABBREVIATION"].mode().iloc[0]
-    except:
-        team = None
-
-    # -----------------------------
-    # Usage & role signals (normalized)
-    # -----------------------------
-    pts_vals = np.array(pts_vals)
-    reb_vals = np.array(reb_vals)
-    ast_vals = np.array(ast_vals)
-
-    # Normalize so they sum to 1 → usage shares
-    total_usage = pts_vals + reb_vals + ast_vals
-    total_usage = np.where(total_usage == 0, 1, total_usage)
-
-    usage_points  = float(np.mean(pts_vals / total_usage))
-    usage_reb     = float(np.mean(reb_vals / total_usage))
-    usage_ast     = float(np.mean(ast_vals / total_usage))
-
-    usage_profile = {
-        "PTS_share": usage_points,
-        "REB_share": usage_reb,
-        "AST_share": usage_ast
-    }
-
-    msg = f"{label}: {len(per_min_vals)} games • {avg_min:.1f} min"
-
-    return (mu_per_min, sd_per_min, avg_min, team, usage_profile, msg)
-
-
-# =========================================================
-#  PART 3.2 — INJURY IMPACT ENGINE (Upgrade G)
-# =========================================================
-
-def apply_injury_usage_boost(mu_min, usage_profile, teammate_out):
-    """
-    Boosts per-minute production if a key teammate is out.
-    The direction of the boost depends on player role:
-        - High scorer   → biggest increase to points-heavy markets
-        - High passer   → assists bump
-        - High rebounder→ rebounds bump
-    """
-
-    if not teammate_out:
-        return mu_min  # no change
-
-    # Weighted boost based on dominant usage type
-    score_weight = usage_profile["PTS_share"]
-    pass_weight  = usage_profile["AST_share"]
-    reb_weight   = usage_profile["REB_share"]
-
-    # Dynamic scaling — scorers get +8–12%, others less
-    role_boost = (
-        1.00 +
-        0.06 * score_weight +
-        0.04 * pass_weight +
-        0.03 * reb_weight
-    )
-
-    # clamp boost range
-    role_boost = float(np.clip(role_boost, 1.04, 1.14))
-
-    return mu_min * role_boost
-# =========================================================
-#  PART 4 — ADVANCED VOLATILITY ENGINE (Upgrade C)
-# =========================================================
-
-def adaptive_volatility(sd_min, minutes, market, opp_abbrev, teammate_out, blowout):
-    """
-    Produces an upgraded SD value that incorporates:
-      - base per-minute volatility
-      - opponent defense & pace (nonlinear)
-      - role inconsistency (rebounds/assists more volatile)
-      - blowout probability bump
-      - injury role bumps
-    """
-
-    # Start from baseline
-    sd = sd_min * np.sqrt(max(minutes, 1))
-
-    # ---------------------------------------------
-    # Opponent context non-linear adjustments
-    # ---------------------------------------------
-    if opp_abbrev in TEAM_CTX and LEAGUE_CTX:
-
-        opp_def = TEAM_CTX[opp_abbrev]["DEF_RATING"]
-        avg_def = LEAGUE_CTX["DEF_RATING"]
-
-        opp_pace = TEAM_CTX[opp_abbrev]["PACE"]
-        avg_pace = LEAGUE_CTX["PACE"]
-
-        # Defense → higher def rating = higher volatility
-        def_factor = np.clip((opp_def / avg_def) ** 0.65, 0.85, 1.25)
-
-        # Pace → high pace = more chaos & possessions
-        pace_factor = np.clip((opp_pace / avg_pace) ** 0.55, 0.90, 1.22)
-
-        sd *= def_factor
-        sd *= pace_factor
-
-    # ---------------------------------------------
-    # Market-specific volatility weights
-    # ---------------------------------------------
     if market == "Points":
-        sd *= 1.08
-    elif market == "Assists":
-        sd *= 1.12
-    elif market == "Rebounds":
-        sd *= 1.14
-    elif market == "PRA":
-        sd *= 1.18
+        interior = LEAGUE_CTX["INTERIOR_FACTOR"] / t["INTERIOR_FACTOR"]
+        perimeter = LEAGUE_CTX["PERIMETER_FACTOR"] / t["PERIMETER_FACTOR"]
+        shot_quality_adj = 0.5 * interior + 0.5 * perimeter
+    else:
+        shot_quality_adj = 1.0
 
-    # ---------------------------------------------
-    # Blowout risk → fewer minutes, more variance
-    # ---------------------------------------------
-    if blowout:
-        sd *= 1.12
+    mult = (
+        0.35 * pace_f +
+        0.25 * def_f +
+        0.20 * reb_adj +
+        0.10 * ast_adj +
+        0.10 * shot_quality_adj
+    )
 
-    # ---------------------------------------------
-    # Teammate out = more minutes + more volatility
-    # ---------------------------------------------
-    if teammate_out:
-        sd *= 1.10
+    return float(np.clip(mult, 0.75, 1.30))
+# =============================================================
+# UltraMax V4 — Module 3
+# Volatility Engine v2 (Nonlinear SD + Heavy Tail + Regime Detection)
+# =============================================================
 
-    # Clamp to safe bounds
-    return float(np.clip(sd, 0.8 * sd_min, 2.0 * sd_min))
+import numpy as np
+from scipy.stats import skew
 
-
-# =========================================================
-#  PART 5 — HEAVY-TAIL ENGINE v2 (Upgrade B)
-# =========================================================
-
-def heavy_tail_prob(line, mu, sd, market):
-    """
-    Computes a right-tail probability boost using lognormal
-    + exponential correction.
-
-    Returns probability 0–1.
-    """
-
-    # Normal baseline
-    p_norm = 1 - norm.cdf(line, mu, sd)
-
-    if mu <= 0 or sd <= 0 or np.isnan(mu) or np.isnan(sd):
-        return float(np.clip(p_norm, 0.01, 0.99))
-
-    # Lognormal tail
-    try:
-        variance = sd**2
-        phi = np.sqrt(mu**2 + variance)
-        mu_log = np.log(mu**2 / phi)
-        sd_log = np.sqrt(np.log(phi**2 / mu**2))
-        p_ln = 1 - norm.cdf(np.log(line + 1e-9), mu_log, sd_log)
-    except:
-        p_ln = p_norm
-
-    # Exponential spill-over for extreme right tail
-    tail_strength = {
-        "Points": 1.10,
-        "Assists": 1.05,
-        "Rebounds": 1.08,
-        "PRA": 1.15,
-    }.get(market, 1.05)
-
-    p_exp = p_norm * np.exp((line - mu) / (3 * sd)) * 0.02
-    p_exp = float(np.clip(p_exp, 0, 0.20))
-
-    # Weighted blend (nonlinear)
-    w_ln = 0.55
-    w_exp = 0.10
-    w_norm = 0.35
-
-    p = w_norm * p_norm + w_ln * p_ln + w_exp * p_exp
-    return float(np.clip(p, 0.01, 0.99))
+# -------------------------------------------------------------
+# 1. Nonlinear SD Scaling
+# -------------------------------------------------------------
+def nonlinear_sd_scaling(base_sd, minutes, usage_factor):
+    '''
+    Nonlinear standard deviation engine:
+    - SD increases sublinearly for high minutes
+    - Adds volatility if usage spikes
+    '''
+    min_factor = np.sqrt(max(minutes, 1)) * 0.92
+    usage_push = 1 + (usage_factor - 1) * 0.35
+    sd = base_sd * min_factor * usage_push
+    return float(max(sd, 0.10))
 
 
-# =========================================================
-#  PART 6 — MULTI-DISTRIBUTION ENSEMBLE v3 (Upgrade D)
-# =========================================================
+# -------------------------------------------------------------
+# 2. Heavy-Tail Dynamic Engine
+# -------------------------------------------------------------
+def heavy_tail_adjustment(market, recent_values):
+    '''
+    Measure skew/kurtosis from recent games.
+    Return tail inflation factor.
+    '''
+    if len(recent_values) < 4:
+        return 1.0
 
-def beta_estimate_prob(line, mu, sd):
-    """
-    Converts normal parameters to a scaled beta distribution
-    approximation for bounded continuous stats.
-    """
+    sk = skew(recent_values)
+    tail = 1.0 + np.clip(sk * 0.15, -0.20, 0.35)
 
-    # Negative or zero values not suitable for beta
-    if mu <= 1 or sd <= 0:
-        return 0.5
+    if market == "PRA":
+        tail *= 1.12
+    elif market == "Points":
+        tail *= 1.08
 
-    # Rough beta approximation
-    alpha = ((mu**2) * (1 - (mu/(mu+sd)))) / (sd**2)
-    beta = alpha * ((mu/(mu+sd)) / (1 - (mu/(mu+sd))))
-
-    alpha = max(alpha, 1.0)
-    beta = max(beta, 1.0)
-
-    # Scale line to beta domain
-    scale = mu + 4 * sd
-    x = np.clip(line / scale, 0.001, 0.999)
-
-    from scipy.stats import beta as beta_dist
-    p = 1 - beta_dist.cdf(x, alpha, beta)
-    return float(np.clip(p, 0.01, 0.99))
+    return float(np.clip(tail, 0.85, 1.40))
 
 
-def ensemble_probability(line, mu, sd, market):
-    """
-    Blends:
-      - Normal
-      - Lognormal / heavy-tail
-      - Beta approximation
-    """
+# -------------------------------------------------------------
+# 3. Regime Detection Engine
+# -------------------------------------------------------------
+def detect_regime(minutes_array):
+    '''
+    Detect volatility regime:
+    - Stable:  high minute consistency
+    - Medium: moderate variation
+    - Erratic: chaotic minute patterns
+    '''
+    if len(minutes_array) < 4:
+        return "stable", 1.0
 
-    p_norm = 1 - norm.cdf(line, mu, sd)
-    p_tail = heavy_tail_prob(line, mu, sd, market)
-    p_beta = beta_estimate_prob(line, mu, sd)
+    var = np.std(minutes_array)
 
-    # Market-driven weights
-    weights = {
-        "Points":   (0.50, 0.35, 0.15),
-        "Assists":  (0.45, 0.40, 0.15),
-        "Rebounds": (0.40, 0.45, 0.15),
-        "PRA":      (0.35, 0.55, 0.10)
-    }.get(market, (0.45, 0.40, 0.15))
-
-    wN, wT, wB = weights
-
-    p = wN * p_norm + wT * p_tail + wB * p_beta
-    return float(np.clip(p, 0.02, 0.98))
+    if var < 2.5:
+        return "stable", 0.95
+    elif var < 5.5:
+        return "medium", 1.00
+    else:
+        return "erratic", 1.18
 
 
-# =========================================================
-#  PART 7 — MONTE-CARLO LITE ENGINE (Upgrade E)
-# =========================================================
-
-def monte_carlo_probability(n_iter, line, mu, sd):
-    """
-    Fast 2,000 iteration MC simulation.
-    """
-
-    # Draws from normal with extra right-tail weight
-    draws = np.random.normal(mu, sd, n_iter)
-    tail_extra = np.random.exponential(sd, int(n_iter*0.10))
-    draws[:len(tail_extra)] += tail_extra
-
-    p = np.mean(draws > line)
-    return float(np.clip(p, 0.02, 0.98))
-# =========================================================
-#  PART 14 — MONTE CARLO LITE ENGINE (2,000 iterations)
-# =========================================================
-
-def mc_simulate_leg(mu: float, sd: float, market: str, line: float, 
-                    n_iter: int = 2000) -> dict:
-    """
-    Fast Monte-Carlo simulation for a single leg.
-    Uses hybrid distribution:
-      - sample from Normal
-      - apply right-tail correction
-      - clamp negative outcomes
-    Returns:
-      - sim_prob_over
-      - distribution (array)
-      - percentiles
-    """
-    if sd <= 0 or np.isnan(sd):
-        return {
-            "sim_prob_over": 1.0 if mu > line else 0.0,
-            "dist": np.array([mu]),
-            "p10": mu,
-            "p50": mu,
-            "p90": mu,
-        }
-
-    # Base normal draws
-    draws = np.random.normal(mu, sd, size=n_iter)
-
-    # Right-tail skewing (matching hybrid engine weights)
-    tail_weight = {
-        "PRA": 0.18,
-        "Points": 0.14,
-        "Rebounds": 0.10,
-        "Assists": 0.09
-    }.get(market, 0.12)
-
-    # Apply skew only to positive tail
-    tail_mask = draws > mu
-    draws[tail_mask] *= (1 + tail_weight)
-
-    # Prevent negative results
-    draws = np.clip(draws, 0, None)
-
-    # Empirical probability of clearing the line
-    sim_prob = float(np.mean(draws > line))
-
-    # Percentiles (optional for graphs)
-    p10 = float(np.percentile(draws, 10))
-    p50 = float(np.percentile(draws, 50))
-    p90 = float(np.percentile(draws, 90))
-
-    return {
-        "sim_prob_over": sim_prob,
-        "dist": draws,
-        "p10": p10,
-        "p50": p50,
-        "p90": p90,
-    }
-# =========================================================
-#  PART 15 — Simulation-Analytical Probability Fusion
-# =========================================================
-
-def fuse_probabilities(p_model: float, p_sim: float, sd: float) -> float:
-    """
+# -------------------------------------------------------------
+# 4. Final Volatility Merge
+# -------------------------------------------------------------
+def compute_final_sd(base_sd, minutes, usage_factor, recent_values, market, minutes_array):
+    '''
+    Full Volatility Engine:
     Combines:
-      - analytical hybrid probability
-      - Monte Carlo simulation probability
-    High volatility → simulation has more weight.
-    Low volatility → analytical model has more weight.
-    """
+    - Nonlinear SD scaling
+    - Heavy-tail skewness inflation
+    - Regime detection factor
+    '''
 
-    # Convert SD into fusion weight
-    sd_norm = np.clip(sd / 12, 0.1, 1.0)   # 0–12 range normalized
-    w_sim = 0.25 + 0.50 * sd_norm          # 25% → 75% depending volatility
-    w_model = 1.0 - w_sim
+    sd1 = nonlinear_sd_scaling(base_sd, minutes, usage_factor)
+    tail = heavy_tail_adjustment(market, recent_values)
+    regime_name, regime_mult = detect_regime(minutes_array)
 
-    fused = (w_model * p_model) + (w_sim * p_sim)
+    sd = sd1 * tail * regime_mult
+    return float(np.clip(sd, base_sd * 0.75, base_sd * 1.80))
+# ============================================================
+# MODULE 4 — ENSEMBLE DISTRIBUTION ENGINE (UltraMax V4)
+# ============================================================
+# This module provides a complete multi-distribution ensemble
+# used to estimate p(over) using:
+#  - Normal
+#  - Log-normal
+#  - Skew-normal (approx)
+#  - Beta distribution
+#  - Gamma distribution
+#  - Weighted ensemble blend
+#
+# Fully self-contained. Safe for Streamlit Cloud.
+# ============================================================
 
-    return float(np.clip(fused, 0.02, 0.98))
-# =========================================================
-#  PART 18 — MULTI-DISTRIBUTION ENSEMBLE ENGINE
-# =========================================================
+import numpy as np
+from scipy.stats import norm, beta, gamma
 
-def normal_prob(line, mu, sd):
-    """Basic normal distribution tail probability."""
-    try:
-        return float(np.clip(1 - norm.cdf(line, mu, sd), 0.001, 0.999))
-    except:
-        return 0.5
-
-
+# ------------------------------------------------------------
+# 1. LOGNORMAL PROBABILITY
+# ------------------------------------------------------------
 def lognormal_prob(line, mu, sd):
-    """Heavy-tail right-skew probability using lognormal transform."""
     try:
         variance = sd ** 2
         phi = np.sqrt(variance + mu ** 2)
-
-        mu_log = np.log(mu**2 / phi)
-        sd_log = np.sqrt(np.log(phi**2 / mu**2))
-
-        if sd_log <= 0 or np.isnan(mu_log) or np.isnan(sd_log):
-            return normal_prob(line, mu, sd)
-
-        return float(
-            np.clip(
-                1 - norm.cdf(np.log(line + 1e-9), mu_log, sd_log),
-                0.001,
-                0.999
-            )
-        )
+        mu_log = np.log(mu ** 2 / phi)
+        sd_log = np.sqrt(np.log((phi ** 2) / (mu ** 2)))
+        if sd_log <= 0:
+            return 1 - norm.cdf(line, mu, sd)
+        return 1 - norm.cdf(np.log(line + 1e-9), mu_log, sd_log)
     except:
-        return normal_prob(line, mu, sd)
+        return max(0.01, min(0.99, 1 - norm.cdf(line, mu, sd)))
 
+# ------------------------------------------------------------
+# 2. APPROXIMATE SKEW-NORMAL
+# ------------------------------------------------------------
+def skew_normal_prob(line, mu, sd, skew):
+    base = 1 - norm.cdf(line, mu, sd)
+    adj = base * (1 + 0.18 * (skew - 1))
+    return float(np.clip(adj, 0.01, 0.99))
 
-def beta_prob(line, mu, sd, cap=60):
-    """
-    Beta distribution approximation:
-    Transforms stat range into [0,1] then scores upper tail.
-    """
+# ------------------------------------------------------------
+# 3. BETA DISTRIBUTION (scaled to NBA scoring)
+# ------------------------------------------------------------
+def beta_prob(line, mu, sd):
+    if mu <= 0 or sd <= 0:
+        return 0.5
+    # scale scores to 0–1 for Beta
+    scale = max(1.0, mu * 3)
+    x = min(max(line / scale, 0.001), 0.999)
+    # estimate alpha/beta from mean & variance
+    var = sd ** 2
+    m = mu / scale
     try:
-        x = np.clip(line / cap, 0.001, 0.999)
-        mean = mu / cap
-        var = (sd / cap) ** 2
-
-        # Solve for alpha & beta
-        t = mean * (1 - mean) / var - 1
-        if t <= 0:
-            return normal_prob(line, mu, sd)
-
-        a = mean * t
-        b = (1 - mean) * t
-
-        return float(np.clip(1 - st.beta.cdf(x, a, b), 0.001, 0.999))
+        alpha = m * ((m * (1 - m)) / var - 1)
+        beta_param = (1 - m) * ((m * (1 - m)) / var - 1)
+        if alpha <= 0 or beta_param <= 0:
+            return 0.5
+        return 1 - beta.cdf(x, alpha, beta_param)
     except:
-        return normal_prob(line, mu, sd)
+        return 0.5
 
+# ------------------------------------------------------------
+# 4. GAMMA DISTRIBUTION (positive heavy-tail)
+# ------------------------------------------------------------
+def gamma_prob(line, mu, sd):
+    try:
+        shape = (mu / sd) ** 2
+        scale = sd ** 2 / mu
+        if shape <= 0 or scale <= 0:
+            return 0.5
+        return 1 - gamma.cdf(line, shape, scale=scale)
+    except:
+        return 0.5
 
-def ensemble_prob(line, mu, sd, market, volatility_score=1.0):
-    """
-    Master probability engine combining:
-       - Normal distribution
-       - Lognormal (right skew)
-       - Beta distribution (rate-structured)
-    
-    Weights dynamically adjust by:
-       - volatility (sd)
-       - heavy-tail need
-       - market type
-       - line difficulty (distance from mu)
-    """
-    # Individual model probabilities
-    p_norm = normal_prob(line, mu, sd)
-    p_logn = lognormal_prob(line, mu, sd)
+# ------------------------------------------------------------
+# 5. ENSEMBLE WEIGHTS
+# ------------------------------------------------------------
+MARKET_WEIGHTS = {
+    "PRA":     {"normal":0.20,"log":0.35,"skew":0.20,"beta":0.10,"gamma":0.15},
+    "Points":  {"normal":0.25,"log":0.30,"skew":0.20,"beta":0.10,"gamma":0.15},
+    "Rebounds":{"normal":0.30,"log":0.25,"skew":0.20,"beta":0.10,"gamma":0.15},
+    "Assists": {"normal":0.30,"log":0.25,"skew":0.25,"beta":0.10,"gamma":0.10},
+}
+
+# ------------------------------------------------------------
+# 6. ENSEMBLE FUNCTION
+# ------------------------------------------------------------
+def ensemble_prob_over(line, mu, sd, market, skew_factor=1.15):
+    w = MARKET_WEIGHTS.get(market, MARKET_WEIGHTS["PRA"])
+
+    p_normal = 1 - norm.cdf(line, mu, sd)
+    p_log = lognormal_prob(line, mu, sd)
+    p_skew = skew_normal_prob(line, mu, sd, skew_factor)
     p_beta = beta_prob(line, mu, sd)
+    p_gamma = gamma_prob(line, mu, sd)
 
-    # Distance from mean
-    diff = abs(line - mu)
-    diff_norm = np.clip(diff / max(sd, 1e-6), 0, 6)
-
-    # ---- Weight logic ----
-
-    # Markets with heavier tail tendencies
-    market_w = {
-        "PRA":   (0.40, 0.45, 0.15),
-        "Points": (0.50, 0.35, 0.15),
-        "Rebounds": (0.45, 0.30, 0.25),
-        "Assists":  (0.55, 0.25, 0.20)
-    }.get(market, (0.45, 0.40, 0.15))
-
-    w_norm_mkt, w_logn_mkt, w_beta_mkt = market_w
-
-    # Adjust for volatility
-    vol_adj = np.clip(sd / 7.0, 0.6, 1.4)
-
-    w_norm = w_norm_mkt * (1.1 - 0.10 * vol_adj)
-    w_logn = w_logn_mkt * (0.9 + 0.15 * vol_adj)
-    w_beta = w_beta_mkt * (1.0 + 0.10 * (1 - diff_norm))
-
-    # Normalize weights
-    total = w_norm + w_logn + w_beta
-    w_norm /= total
-    w_logn /= total
-    w_beta /= total
-
-    # Final blended probability
-    p_final = (
-        w_norm * p_norm +
-        w_logn * p_logn +
-        w_beta * p_beta
+    p = (
+        w["normal"] * p_normal +
+        w["log"]    * p_log +
+        w["skew"]   * p_skew +
+        w["beta"]   * p_beta +
+        w["gamma"]  * p_gamma
     )
 
-    return float(np.clip(p_final, 0.02, 0.98))
-# =========================================================
-#  PART 19 — AUTO-TUNING ENGINE + FINAL OPTIMIZATION LAYER
-# =========================================================
+    return float(np.clip(p, 0.02, 0.98))
 
-def compute_model_drift(history_df):
+
+__all__ = [
+    "ensemble_prob_over",
+    "lognormal_prob",
+    "skew_normal_prob",
+    "beta_prob",
+    "gamma_prob",
+    "MARKET_WEIGHTS"
+]
+# ============================================================
+# ULTRAMAX V4 — MODULE 5
+# Correlation Engine v3 (Synergy + Market Covariance + Opponent)
+# ============================================================
+
+import numpy as np
+
+def correlation_engine_v3(leg1: dict, leg2: dict) -> float:
     """
-    Learns from past bets to detect model miscalibration.
-    Adjusts:
-        - variance factor
-        - heavy-tail factor
-        - ensemble weight dampening
-    """
-    try:
-        comp = history_df[history_df["Result"].isin(["Hit","Miss"])].copy()
-        if comp.empty or len(comp) < 25:
-            return 1.0, 1.0, 1.0   # neutral (min data)
-
-        comp["EV_float"] = pd.to_numeric(comp["EV"], errors="coerce") / 100.0
-        comp = comp.dropna(subset=["EV_float"])
-        if comp.empty:
-            return 1.0, 1.0, 1.0
-
-        predicted = 0.5 + comp["EV_float"].mean()
-        actual = (comp["Result"] == "Hit").mean()
-        diff = actual - predicted   # positive → model too conservative
-
-        # Sensitivity knobs
-        if diff < -0.04:       # too optimistic
-            var_adj = 1.08
-            tail_adj = 1.05
-            weight_adj = 0.92
-
-        elif diff > 0.04:      # too conservative
-            var_adj = 0.92
-            tail_adj = 0.95
-            weight_adj = 1.06
-
-        else:                  # well calibrated
-            var_adj = 1.0
-            tail_adj = 1.0
-            weight_adj = 1.0
-
-        return (
-            float(np.clip(var_adj, 0.85, 1.15)),
-            float(np.clip(tail_adj, 0.85, 1.15)),
-            float(np.clip(weight_adj, 0.85, 1.15)),
-        )
-
-    except:
-        return 1.0, 1.0, 1.0
-
-
-# ---------------------------------------------------------
-# Line Difficulty Modifier
-# ---------------------------------------------------------
-def difficulty_modifier(mu, sd, line):
-    """
-    Penalizes extreme outlier lines using a logistic compression.
-    Helps avoid unrealistic projections.
-    """
-    try:
-        z = abs(line - mu) / max(sd, 1e-6)
-        damp = 1 / (1 + np.exp(0.6 * (z - 2.0)))  # above 2 SD → compress
-        return float(np.clip(damp, 0.55, 1.0))
-    except:
-        return 1.0
-
-
-# ---------------------------------------------------------
-# Confidence Index (0–100)
-# ---------------------------------------------------------
-def confidence_index(sd, ctx_mult, n_games):
-    """
-    Measures certainty:
-      - lower SD → higher confidence
-      - strong context multiplier → higher confidence
-      - more sample games → higher confidence
-    """
-    sd_score = np.clip(1 / (sd / 6), 0.3, 1.0)  # SD range ≈ 1–6
-    ctx_score = np.clip(ctx_mult, 0.75, 1.25)
-    sample_score = np.clip(n_games / 15, 0.4, 1.0)
-
-    final = (0.50 * sd_score) + (0.25 * ctx_score) + (0.25 * sample_score)
-    return float(np.clip(final * 100, 25, 95))
-
-
-# ---------------------------------------------------------
-# Final Probability Fusion Layer
-# ---------------------------------------------------------
-def final_probability(
-    p_ensemble,
-    p_sim,
-    line,
-    mu,
-    sd,
-    market,
-    var_adj,
-    tail_adj,
-    weight_adj
-):
-    """
-    The master fusion step:
-      1) adjusts SD based on drift
-      2) adjusts skew/tail need
-      3) adjusts weights depending on calibration
-      4) blends ensemble + simulation
-      5) applies line-difficulty dampening
-    """
-    # 1) Adjust volatility
-    sd_adj = sd * var_adj
-
-    # 2) Re-run ensemble with adjusted tail weight
-    p_a = ensemble_prob(line, mu, sd_adj, market)
-
-    # 3) Weighting between MC sim and ensemble
-    w_sim = 0.50 * weight_adj
-    w_ens = 1.00 - w_sim
-
-    p_blend = w_ens * p_a + w_sim * p_sim
-
-    # 4) Difficulty modifier
-    damp = difficulty_modifier(mu, sd_adj, line)
-
-    p_final = p_blend * damp
-
-    return float(np.clip(p_final, 0.02, 0.98))
-
-# =========================================================
-#  PART 8 — FULL compute_leg_projection() v5.0
-# =========================================================
-
-def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_games):
-    """
-    MAIN ENGINE — v5.0
-    Includes:
-      - usage profile (Chunk 3)
-      - injury usage boost (Chunk 3)
-      - adaptive volatility v2
-      - heavy-tail v2
-      - multi-distribution ensemble v3
-      - monte-carlo stability engine
+    Computes directional correlation between two legs using:
+      - Team & minutes synergy
+      - Market-type covariance
+      - Opponent matchup similarity
+      - Dynamic contextual adjustments
+    Returns a correlation in range [-0.35, 0.45]
     """
 
-    # ------------------------------
-    # Load player log data
-    # ------------------------------
-    res = get_player_rate_and_minutes(player, n_games, market)
-    if res[0] is None:
-        return None, res[-1]
+    corr = 0.0
 
-    mu_min, sd_min, avg_min, team, usage_profile, msg = res
+    # -----------------------------------
+    # 1. Team-based synergy
+    # -----------------------------------
+    same_team = (leg1.get("team") is not None 
+                 and leg1.get("team") == leg2.get("team"))
 
-    opp_abbrev = opp.strip().upper() if opp else None
+    if same_team:
+        corr += 0.18
 
-    # ------------------------------
-    # Apply injury usage boost (Chunk 3)
-    # ------------------------------
-    mu_min_adj = apply_injury_usage_boost(mu_min, usage_profile, teammate_out)
+    # -----------------------------------
+    # 2. Minutes dependency
+    # -----------------------------------
+    def est_minutes(leg):
+        try:
+            return max(15, min(40, leg["mu"] / (leg["mu"] / max(leg["line"], 1e-6))))
+        except:
+            return 28
 
-    # ------------------------------
-    # Minutes projection
-    # ------------------------------
-    minutes = avg_min
-    if teammate_out:
-        minutes *= 1.06
-    if blowout:
-        minutes *= 0.90
-
-    # ------------------------------
-    # Raw mean outcome
-    # ------------------------------
-    mu = mu_min_adj * minutes
-
-    # ------------------------------
-    # Adaptive volatility
-    # ------------------------------
-    sd = adaptive_volatility(sd_min, minutes, market, opp_abbrev, teammate_out, blowout)
-
-    # ------------------------------
-    # Multi-distribution ensemble
-    # ------------------------------
-    p_model = ensemble_probability(line, mu, sd, market)
-
-    # ------------------------------
-    # Monte-Carlo stability
-    # ------------------------------
-    p_mc = monte_carlo_probability(2000, line, mu, sd)
-
-    # Combined probability
-    p_over = float(np.clip(0.65*p_model + 0.35*p_mc, 0.02, 0.98))
-
-    # --------------------------------------------------------
-    # 4. Hybrid analytic probability
-    # --------------------------------------------------------
-    p_over = ensemble_prob(line, mu, sd_final, market)
-# Monte Carlo probability from Chunk 7
-p_sim = mc_simulation(line, mu, sd_final, market)
-
-# Auto-learning model drift
-var_adj, tail_adj, weight_adj = compute_model_drift(load_history())
-
-# Final fused probability
-p_over_final = final_probability(
-    p_ensemble = p_over,
-    p_sim = p_sim,
-    line = line,
-    mu = mu,
-    sd = sd_final,
-    market = market,
-    var_adj = var_adj,
-    tail_adj = tail_adj,
-    weight_adj = weight_adj
-)
-
-p_over = p_over_final
-
-    # --------------------------------------------------------
-    # 5. Monte-Carlo simulation probability
-    # --------------------------------------------------------
-    sim = mc_simulate_leg(mu, sd_final, market, line)
-    p_sim = sim["sim_prob_over"]
-
-    # --------------------------------------------------------
-    # 6. Probability fusion engine
-    # --------------------------------------------------------
-    p_over = fuse_probabilities(p_model, p_sim, sd_final)
-
-    # Edge vs even odds
-    ev_leg_even = p_over - (1 - p_over)
-
-    return {
-        "player": player,
-        "market": market,
-        "line": float(line),
-        "mu": float(mu),
-        "sd": float(sd),
-        "prob_over": float(p_over),
-        "ev_leg_even": float(ev_leg_even),
-        "team": team,
-        "ctx_mult": float(get_context_multiplier(opp_abbrev, market)),
-        "msg": msg,
-        "teammate_out": bool(teammate_out),
-        "blowout": bool(blowout)
-        "sim": sim,
-    }, None
-# =========================================================
-#  PART 9 — ADVANCED CORRELATION ENGINE v2 (Upgrade F)
-# =========================================================
-
-def player_role_from_market(market):
-    if market == "Points":
-        return "scorer"
-    if market == "Assists":
-        return "playmaker"
-    if market == "Rebounds":
-        return "rebounder"
-    if market == "PRA":
-        return "hybrid"
-    return "neutral"
-
-
-def advanced_correlation(leg1, leg2):
-    """
-    Produces a robust correlation coefficient ρ
-    between -0.35 and +0.55 using:
-
-      - team & minute synergy
-      - role interaction (scorer vs playmaker etc.)
-      - context multiplier similarity
-      - usage rate overlap
-      - opponent defensive profile
-      - volatility similarity
-      - blowout/injury ripple interactions
-    """
-
-    ρ = 0.0
-
-    # ---------------------------------------------------
-    # 1. Team-Based Synergy
-    # ---------------------------------------------------
-    if leg1["team"] and leg2["team"] and leg1["team"] == leg2["team"]:
-        ρ += 0.18
-
-    # ---------------------------------------------------
-    # 2. Minutes-Based Interaction
-    # ---------------------------------------------------
-    m1 = leg1["mu"] / max(leg1["mu"] / leg1["line"], 1e-6)
-    m2 = leg2["mu"] / max(leg2["mu"] / leg2["line"], 1e-6)
+    m1 = est_minutes(leg1)
+    m2 = est_minutes(leg2)
 
     if m1 > 30 and m2 > 30:
-        ρ += 0.08
+        corr += 0.05
     elif m1 < 22 or m2 < 22:
-        ρ -= 0.05
+        corr -= 0.04
 
-    # ---------------------------------------------------
-    # 3. Role Interaction Model
-    # ---------------------------------------------------
-    r1 = player_role_from_market(leg1["market"])
-    r2 = player_role_from_market(leg2["market"])
+    # -----------------------------------
+    # 3. Market-type covariance
+    # -----------------------------------
+    mA, mB = leg1["market"], leg2["market"]
 
-    if r1 == r2:
-        ρ += 0.05  # same-kind synergy
-    if (r1 == "scorer" and r2 == "playmaker") or (r2 == "scorer" and r1 == "playmaker"):
-        ρ -= 0.12  # scorer vs passer negative
-    if (r1 == "scorer" and r2 == "rebounder") or (r2 == "scorer" and r1 == "rebounder"):
-        ρ -= 0.07
+    # Points + Points → positive
+    if mA == "Points" and mB == "Points":
+        corr += 0.10
 
-    # PRA always slightly increases interaction
-    if r1 == "hybrid" or r2 == "hybrid":
-        ρ += 0.04
+    # Points ↔ Assists → negative
+    if (mA == "Points" and mB == "Assists") or (mA == "Assists" and mB == "Points"):
+        corr -= 0.11
 
-    # ---------------------------------------------------
-    # 4. Context Multiplier Interaction
-    # ---------------------------------------------------
-    ctx1 = leg1["ctx_mult"]
-    ctx2 = leg2["ctx_mult"]
+    # Points ↔ Rebounds → mild negative
+    if (mA == "Points" and mB == "Rebounds") or (mA == "Rebounds" and mB == "Points"):
+        corr -= 0.06
 
-    if ctx1 > 1.03 and ctx2 > 1.03:
-        ρ += 0.06
-    if ctx1 < 0.97 and ctx2 < 0.97:
-        ρ += 0.05
-    if (ctx1 > 1.05 and ctx2 < 0.95) or (ctx1 < 0.95 and ctx2 > 1.05):
-        ρ -= 0.08
+    # PRA acts as weakly positive buffer
+    if mA == "PRA" or mB == "PRA":
+        corr += 0.03
 
-    # ---------------------------------------------------
-    # 5. Volatility Interaction
-    # ---------------------------------------------------
-    sd1 = leg1["sd"]
-    sd2 = leg2["sd"]
+    # -----------------------------------
+    # 4. Opponent-driven directional correlation
+    # -----------------------------------
+    c1 = leg1.get("ctx_mult", 1.0)
+    c2 = leg2.get("ctx_mult", 1.0)
 
-    vol_ratio = sd1 / max(sd2, 1e-6)
-    if 0.85 < vol_ratio < 1.15:
-        ρ += 0.05
-    if vol_ratio > 1.35 or vol_ratio < 0.65:
-        ρ -= 0.04
+    if c1 > 1.03 and c2 > 1.03:
+        corr += 0.05
+    if c1 < 0.97 and c2 < 0.97:
+        corr += 0.03
+    if (c1 > 1.03 and c2 < 0.97) or (c1 < 0.97 and c2 > 1.03):
+        corr -= 0.05
 
-    # ---------------------------------------------------
-    # 6. Injury Ripple Effects
-    # ---------------------------------------------------
-    if leg1["teammate_out"] and leg2["team"] == leg1["team"]:
-        ρ += 0.04
-    if leg2["teammate_out"] and leg1["team"] == leg2["team"]:
-        ρ += 0.04
+    # -----------------------------------
+    # 5. Clamp for stability
+    # -----------------------------------
+    corr = float(np.clip(corr, -0.35, 0.45))
 
-    # ---------------------------------------------------
-    # Clamp the correlation
-    # ---------------------------------------------------
-    return float(np.clip(ρ, -0.35, 0.55))
+    return corr
+# engine_self_learning.py
+# UltraMax V4 — Module 6: Self-Learning Calibration Engine v3
+# Fully autonomous model drift correction + variance/tail tuning
 
+import numpy as np
+import pandas as pd
 
-# =========================================================
-#  PART 10 — JOINT PROBABILITY ENGINE v2
-# =========================================================
-
-def joint_probability(p1, p2, rho):
+def self_learning_adjustments(history_df, max_samples=200):
     """
-    Computes a mathematically correct bivariate probability:
+    Uses the last N completed bets to detect:
+      - mean bias
+      - variance skew
+      - tail miscalibration
+    Returns:
+      (variance_adj, tail_adj, bias_adj)
 
-        P(A ∩ B) = p1 p2 + ρ √(p1(1-p1)p2(1-p2))
-
-    Clamped to [0, 1].
-    """
-    base = p1 * p2
-    interaction = rho * np.sqrt(p1*(1-p1) * p2*(1-p2))
-    return float(np.clip(base + interaction, 0.0, 1.0))
-
-
-# =========================================================
-#  PART 11 — COMBO EV ENGINE v2
-# =========================================================
-
-def compute_combo_ev(leg1, leg2, payout_mult):
-    """
-    Computes:
-      - correlation
-      - joint probability
-      - EV
-      - stake (kelly)
-      - rec label
+    All adjustments are smooth, clamped, and safe.
     """
 
-    p1 = leg1["prob_over"]
-    p2 = leg2["prob_over"]
+    # Filter valid rows
+    df = history_df.copy()
+    df = df[df["Result"].isin(["Hit", "Miss"])]
+    df["EV_float"] = pd.to_numeric(df["EV"], errors="coerce") / 100.0
+    df = df.dropna(subset=["EV_float"])
 
-    rho = advanced_correlation(leg1, leg2)
-    joint = joint_probability(p1, p2, rho)
+    if df.empty:
+        return 1.0, 1.0, 0.0
 
-    # EV
-    ev = payout_mult * joint - 1.0
+    # Restrict to most recent samples
+    df = df.tail(max_samples)
 
-    # Kelly
-    b = payout_mult - 1
-    q = 1 - joint
-    raw_kelly = (b * joint - q) / b
-    kelly = np.clip(raw_kelly * 0.25, 0, MAX_KELLY_PCT)  # 25% fractional default
+    # Predicted vs actual
+    predicted = 0.5 + df["EV_float"].mean()
+    actual = (df["Result"] == "Hit").mean()
+    gap = actual - predicted
 
-    return {
-        "rho": rho,
-        "joint": joint,
-        "ev": ev,
-        "kelly_frac": float(kelly),
-    }
+    # Bias correction
+    bias_adj = float(np.clip(gap, -0.10, 0.10))
 
-
-# =========================================================
-#  PART 12 — RECOMMENDATION ENGINE v2
-# =========================================================
-
-def combo_recommendation(ev, rho):
-    """
-    Converts EV + correlation into a human-readable recommendation.
-    """
-
-    if ev >= 0.12 and rho >= 0:
-        return "🔥 **Slam — High EV + Synergistic Pairing**"
-
-    if ev >= 0.07:
-        return "💰 **Strong Play — Solid EV**"
-
-    if ev >= 0.03:
-        if rho < -0.10:
-            return "🟡 **Thin Play — Negative Correlation**"
-        return "🟡 **Lean — Thin Edge**"
-
-    if ev > 0:
-        return "⚪ **Marginal**"
-
-    return "❌ **Pass — No Model Edge**"
-# =========================================================
-#  PART 9 — ADVANCED CORRELATION ENGINE v2 (Upgrade F)
-# =========================================================
-
-def player_role_from_market(market):
-    if market == "Points":
-        return "scorer"
-    if market == "Assists":
-        return "playmaker"
-    if market == "Rebounds":
-        return "rebounder"
-    if market == "PRA":
-        return "hybrid"
-    return "neutral"
-
-
-def advanced_correlation(leg1, leg2):
-    """
-    Produces a robust correlation coefficient ρ
-    between -0.35 and +0.55 using:
-
-      - team & minute synergy
-      - role interaction (scorer vs playmaker etc.)
-      - context multiplier similarity
-      - usage rate overlap
-      - opponent defensive profile
-      - volatility similarity
-      - blowout/injury ripple interactions
-    """
-
-    ρ = 0.0
-
-    # ---------------------------------------------------
-    # 1. Team-Based Synergy
-    # ---------------------------------------------------
-    if leg1["team"] and leg2["team"] and leg1["team"] == leg2["team"]:
-        ρ += 0.18
-
-    # ---------------------------------------------------
-    # 2. Minutes-Based Interaction
-    # ---------------------------------------------------
-    m1 = leg1["mu"] / max(leg1["mu"] / leg1["line"], 1e-6)
-    m2 = leg2["mu"] / max(leg2["mu"] / leg2["line"], 1e-6)
-
-    if m1 > 30 and m2 > 30:
-        ρ += 0.08
-    elif m1 < 22 or m2 < 22:
-        ρ -= 0.05
-
-    # ---------------------------------------------------
-    # 3. Role Interaction Model
-    # ---------------------------------------------------
-    r1 = player_role_from_market(leg1["market"])
-    r2 = player_role_from_market(leg2["market"])
-
-    if r1 == r2:
-        ρ += 0.05  # same-kind synergy
-    if (r1 == "scorer" and r2 == "playmaker") or (r2 == "scorer" and r1 == "playmaker"):
-        ρ -= 0.12  # scorer vs passer negative
-    if (r1 == "scorer" and r2 == "rebounder") or (r2 == "scorer" and r1 == "rebounder"):
-        ρ -= 0.07
-
-    # PRA always slightly increases interaction
-    if r1 == "hybrid" or r2 == "hybrid":
-        ρ += 0.04
-
-    # ---------------------------------------------------
-    # 4. Context Multiplier Interaction
-    # ---------------------------------------------------
-    ctx1 = leg1["ctx_mult"]
-    ctx2 = leg2["ctx_mult"]
-
-    if ctx1 > 1.03 and ctx2 > 1.03:
-        ρ += 0.06
-    if ctx1 < 0.97 and ctx2 < 0.97:
-        ρ += 0.05
-    if (ctx1 > 1.05 and ctx2 < 0.95) or (ctx1 < 0.95 and ctx2 > 1.05):
-        ρ -= 0.08
-
-    # ---------------------------------------------------
-    # 5. Volatility Interaction
-    # ---------------------------------------------------
-    sd1 = leg1["sd"]
-    sd2 = leg2["sd"]
-
-    vol_ratio = sd1 / max(sd2, 1e-6)
-    if 0.85 < vol_ratio < 1.15:
-        ρ += 0.05
-    if vol_ratio > 1.35 or vol_ratio < 0.65:
-        ρ -= 0.04
-
-    # ---------------------------------------------------
-    # 6. Injury Ripple Effects
-    # ---------------------------------------------------
-    if leg1["teammate_out"] and leg2["team"] == leg1["team"]:
-        ρ += 0.04
-    if leg2["teammate_out"] and leg1["team"] == leg2["team"]:
-        ρ += 0.04
-
-    # ---------------------------------------------------
-    # Clamp the correlation
-    # ---------------------------------------------------
-    return float(np.clip(ρ, -0.35, 0.55))
-
-
-# =========================================================
-#  PART 10 — JOINT PROBABILITY ENGINE v2
-# =========================================================
-
-def joint_probability(p1, p2, rho):
-    """
-    Computes a mathematically correct bivariate probability:
-
-        P(A ∩ B) = p1 p2 + ρ √(p1(1-p1)p2(1-p2))
-
-    Clamped to [0, 1].
-    """
-    base = p1 * p2
-    interaction = rho * np.sqrt(p1*(1-p1) * p2*(1-p2))
-    return float(np.clip(base + interaction, 0.0, 1.0))
-
-
-# =========================================================
-#  PART 11 — COMBO EV ENGINE v2
-# =========================================================
-
-def compute_combo_ev(leg1, leg2, payout_mult):
-    """
-    Computes:
-      - correlation
-      - joint probability
-      - EV
-      - stake (kelly)
-      - rec label
-    """
-
-    p1 = leg1["prob_over"]
-    p2 = leg2["prob_over"]
-
-    rho = advanced_correlation(leg1, leg2)
-    joint = joint_probability(p1, p2, rho)
-
-    # EV
-    ev = payout_mult * joint - 1.0
-
-    # Kelly
-    b = payout_mult - 1
-    q = 1 - joint
-    raw_kelly = (b * joint - q) / b
-    kelly = np.clip(raw_kelly * 0.25, 0, MAX_KELLY_PCT)  # 25% fractional default
-
-    return {
-        "rho": rho,
-        "joint": joint,
-        "ev": ev,
-        "kelly_frac": float(kelly),
-    }
-
-
-# =========================================================
-#  PART 12 — RECOMMENDATION ENGINE v2
-# =========================================================
-
-def combo_recommendation(ev, rho):
-    """
-    Converts EV + correlation into a human-readable recommendation.
-    """
-
-    if ev >= 0.12 and rho >= 0:
-        return "🔥 **Slam — High EV + Synergistic Pairing**"
-
-    if ev >= 0.07:
-        return "💰 **Strong Play — Solid EV**"
-
-    if ev >= 0.03:
-        if rho < -0.10:
-            return "🟡 **Thin Play — Negative Correlation**"
-        return "🟡 **Lean — Thin Edge**"
-
-    if ev > 0:
-        return "⚪ **Marginal**"
-
-    return "❌ **Pass — No Model Edge**"
-# =========================================================
-#  PART 16 — Simulation Distribution Plot Engine
-# =========================================================
-
-import plotly.graph_objects as go
-
-def plot_distribution(sim_data: dict, line: float, player: str, market: str):
-    """
-    Creates a density plot overlaying:
-      - Monte-Carlo simulation distribution
-      - Vertical line for the prop line
-      - P10, P50, P90 markers
-    """
-    dist = sim_data["dist"]
-    p10 = sim_data["p10"]
-    p50 = sim_data["p50"]
-    p90 = sim_data["p90"]
-
-    fig = go.Figure()
-
-    # Density curve
-    fig.add_trace(
-        go.Histogram(
-            x=dist,
-            histnorm="probability density",
-            nbinsx=40,
-            name="Sim Density",
-            marker_color="#FFCC33",
-            opacity=0.55,
-        )
-    )
-
-    # Line marker
-    fig.add_vline(
-        x=line,
-        line_width=3,
-        line_dash="dash",
-        line_color="#FF4444",
-        annotation_text=f"Line ({line})",
-        annotation_position="top left",
-    )
-
-    # Percentile markers
-    fig.add_vline(
-        x=p10,
-        line_dash="dot",
-        line_color="#8888FF",
-        annotation_text="P10",
-        annotation_position="bottom left",
-    )
-    fig.add_vline(
-        x=p50,
-        line_dash="dot",
-        line_color="#33DD33",
-        annotation_text="Median",
-        annotation_position="bottom left",
-    )
-    fig.add_vline(
-        x=p90,
-        line_dash="dot",
-        line_color="#8888FF",
-        annotation_text="P90",
-        annotation_position="bottom left",
-    )
-
-    fig.update_layout(
-        title=f"{player} — {market} Distribution (MC Simulation)",
-        template="plotly_dark",
-        height=350,
-        margin=dict(l=20, r=20, t=40, b=20),
-        showlegend=False,
-    )
-
-    return fig
-# =========================================================
-#  PART 17 — Volatility & Risk Labeling
-# =========================================================
-
-def classify_volatility(sd: float) -> str:
-    if sd < 4:
-        return "🟢 Low Volatility — very stable projection"
-    elif sd < 7:
-        return "🟡 Medium Volatility — normal prop risk"
-    elif sd < 10:
-        return "🟠 High Volatility — wide performance range"
+    # Variance correction
+    if gap < -0.02:
+        variance_adj = 1.05
+    elif gap > 0.02:
+        variance_adj = 0.95
     else:
-        return "🔴 Extreme Volatility — boom/bust profile"
-        # --------------------------------------------------
-        #  Simulation Stats (only if sim data exists)
-        # --------------------------------------------------
-        if "sim" in leg:
-            sim = leg["sim"]
-            st.markdown("### 📊 Simulation Insights")
-            st.write(f"**Simulated Probability Over:** {sim['sim_prob_over']*100:.1f}%")
-            st.write(f"**P10 / P50 / P90:** {sim['p10']:.1f} / {sim['p50']:.1f} / {sim['p90']:.1f}")
-            
-            # Volatility classification
-            vol_text = classify_volatility(sd)
-            st.info(vol_text)
+        variance_adj = 1.0
+    variance_adj = float(np.clip(variance_adj, 0.90, 1.10))
 
-            # Distribution plot
-            fig = plot_distribution(sim, line, player, market)
-            st.plotly_chart(fig, use_container_width=True)
+    # Tail correction
+    if gap < -0.02:
+        tail_adj = 1.04
+    elif gap > 0.02:
+        tail_adj = 0.96
+    else:
+        tail_adj = 1.0
+    tail_adj = float(np.clip(tail_adj, 0.90, 1.10))
+
+    return variance_adj, tail_adj, bias_adj
+# Module 7 — Monte Carlo Engine + Correlation Engine v3 + Final Quant Wrapper
+
+import numpy as np
+from scipy.stats import norm
+
+# ============================
+# MONTE CARLO SIMULATION ENGINE
+# ============================
+
+def mc_simulate(mu, sd, market, line, iterations=5000):
+    """
+    Runs Monte Carlo simulation using hybrid distribution.
+    Returns probability of exceeding the line.
+    """
+
+    draws = np.random.normal(mu, sd, iterations)
+
+    # Heavy-tail correction
+    if market in ["PRA", "Points"]:
+        tail = np.random.lognormal(mean=np.log(mu+1), sigma=0.25, size=iterations)
+        draws = 0.75 * draws + 0.25 * tail
+
+    draws = np.clip(draws, 0, None)
+
+    p_over = np.mean(draws > line)
+    return float(np.clip(p_over, 0.01, 0.99))
+
+# ============================
+# CORRELATION ENGINE v3
+# ============================
+
+def correlation_engine_v3(leg1, leg2):
+    """Advanced multi-factor correlation model."""
+
+    corr = 0.0
+
+    if leg1.get("team") == leg2.get("team"):
+        corr += 0.18
+
+    m1 = leg1.get("market")
+    m2 = leg2.get("market")
+
+    if m1 == m2 == "Points":
+        corr += 0.10
+    if (m1 == "Points" and m2 == "Assists") or (m1 == "Assists" and m2 == "Points"):
+        corr -= 0.12
+    if (m1 == "Rebounds" and m2 == "Points") or (m1 == "Points" and m2 == "Rebounds"):
+        corr -= 0.05
+
+    ctx1 = leg1.get("ctx_mult", 1.0)
+    ctx2 = leg2.get("ctx_mult", 1.0)
+
+    if ctx1 > 1.05 and ctx2 > 1.05:
+        corr += 0.04
+    if ctx1 < 0.95 and ctx2 < 0.95:
+        corr += 0.04
+    if (ctx1 > 1.05 and ctx2 < 0.95) or (ctx1 < 0.95 and ctx2 > 1.05):
+        corr -= 0.06
+
+    return float(np.clip(corr, -0.25, 0.40))
+
+# ============================
+# FINAL QUANT WRAPPER
+# ============================
+
+def final_quant_leg(mu, sd, market, line):
+    """
+    Computes normal, Monte Carlo, and blended probability.
+    """
+
+    normal_p = 1 - norm.cdf(line, mu, sd)
+    mc_p = mc_simulate(mu, sd, market, line)
+
+    p = 0.35 * normal_p + 0.65 * mc_p
+
+    return float(np.clip(p, 0.01, 0.99))
