@@ -1470,6 +1470,26 @@ import pandas as pd
 # Path defined earlier in your file:
 # LOG_FILE = os.path.join(TEMP_DIR, "bets_history.csv")
 
+def ensure_history():
+    """
+    Ensures the history CSV exists with the expected columns.
+    If it doesn't exist or is unreadable, it gets initialized.
+    """
+    cols = [
+        "Timestamp",
+        "Player",
+        "Market",
+        "Line",
+        "Probability",
+        "EV",
+        "Result",
+        "Stake",
+        "User",
+    ]
+
+    if not os.path.exists(LOG_FILE):
+        df = pd.DataFrame(columns=cols)
+        df.to_csv(LOG_FILE, index=False)
 def load_history():
     """Loads the user's stored bet history. Returns an empty DataFrame if none exists."""
     if not os.path.exists(LOG_FILE):
