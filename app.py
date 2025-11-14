@@ -104,7 +104,7 @@ st.markdown(
 # HEADER
 # =========================================================
 
-st.markdown("<div class='main-title'>NBA QUANT TERMINAL — ULTRAMAX V4</div>", unsafe_allow_html=True)
+st.markdown("<div class='main-title'>NBA QUANT ENGINE — ULTRAMAX V4</div>", unsafe_allow_html=True)
 st.caption("Fully Automated Prop Quant Suite • Hedge-Fund Grade Modeling")
 # =========================================================
 # MODULE 2 — PLAYER RESOLUTION + MARKET CONFIG + HELPERS
