@@ -1680,7 +1680,9 @@ with tab_model:
             opponent=p1_opp,
             teammate_out=p1_teammate_out,
             blowout=p1_blowout,
-            lookback= lookback
+            lookback= n_games
+
+
 
         )
         
