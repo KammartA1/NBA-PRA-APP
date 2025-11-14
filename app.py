@@ -1460,6 +1460,7 @@ def module12_two_pick_decision(
         "drift_adj": drift_adj,
         "clv_adj": clv_adj,
     }
+
 # =====================================================================
 # MODULE 13 — STREAMLIT UI INTEGRATION (FULL ULTRAMAX V4)
 # =====================================================================
@@ -1517,7 +1518,7 @@ with tab_model:
 
         # compute legs
         leg1, err1 = compute_leg(
-            player_name=p1_name,
+            player=p1_name,
             market=p1_market,
             line=p1_line,
             opponent=p1_opp,
@@ -1525,9 +1526,10 @@ with tab_model:
             blowout=p1_blowout,
             lookback=games_lookback
         )
+
         
         leg2, err2 = compute_leg(
-            player_name=p2_name,
+            player=p2_name,
             market=p2_market,
             line=p2_line,
             opponent=p2_opp,
