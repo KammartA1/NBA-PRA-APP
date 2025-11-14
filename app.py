@@ -1517,13 +1517,25 @@ with tab_model:
 
         # compute legs
         leg1, err1 = compute_leg(
-            p1_name, p1_market, p1_line, p1_opp,
-            p1_teammate_out, p1_blowout, games_lookback
+            player_name=p1_name,
+            market=p1_market,
+            line=p1_line,
+            opponent=p1_opp,
+            teammate_out=p1_teammate_out,
+            blowout=p1_blowout,
+            lookback=games_lookback
+        )
+        
+        leg2, err2 = compute_leg(
+            player_name=p2_name,
+            market=p2_market,
+            line=p2_line,
+            opponent=p2_opp,
+            teammate_out=p2_teammate_out,
+            blowout=p2_blowout,
+            lookback=games_lookback
         )
 
-        leg2, err2 = compute_leg(
-            p2_name, p2_market, p2_line, p2_opp,
-            p2_teammate_out, p2_blowout, games_lookback
         )
 
         # errors
