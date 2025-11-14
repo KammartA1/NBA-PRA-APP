@@ -1574,59 +1574,134 @@ with tab_model:
         with st.spinner("Running UltraMax Engine…"):
             time.sleep(0.25)
 
-        # compute legs
-        leg1, err1 = compute_leg(
-            player=p1_name,
-            market=p1_market,
-            line=p1_line,
-            opponent=p1_opp,
-            teammate_out=p1_teammate_out,
-            blowout=p1_blowout,
-            lookback=games_lookback
-        )
+# =========================================================
+# MODULE — COMPUTE LEG (UltraMax Full — FIXED)
+# =========================================================
 
-        
-        leg2, err2 = compute_leg(
-            player=p2_name,
-            market=p2_market,
-            line=p2_line,
-            opponent=p2_opp,
-            teammate_out=p2_teammate_out,
-            blowout=p2_blowout,
-            lookback=games_lookback
-        )
+def compute_leg(player, market, line, opponent, teammate_out, blowout, lookback):
 
-        # errors
-        if err1:
-            st.error(f"Leg 1 Error: {err1}")
-        if err2:
-            st.error(f"Leg 2 Error: {err2}")
+    """
+    Computes a single prop leg:
+        - Resolves player
+        - Pulls game logs
+        - Builds per-minute rates
+        - Applies Usage Engine v3
+        - Applies Opponent Engine v2
+        - Applies Volatility Engine
+        - Produces mu, sd, prob_over
+    """
 
-        # render both leg cards
-        if leg1:
-            render_leg_card_ultramax(leg1)
-        if leg2:
-            render_leg_card_ultramax(leg2)
+    # -------------------------------------------
+    # Resolve player
+    # -------------------------------------------
+    pid, canonical = resolve_player(player)
+    if not pid:
+        return None, f"Player not found: {player}"
 
-        st.markdown("---")
-        st.subheader("📈 Market vs Model Probability Check")
+    # -------------------------------------------
+    # Pull last N games
+    # -------------------------------------------
+    try:
+        logs = PlayerGameLog(
+            player_id=pid,
+            season=current_season(),
+        ).get_data_frames()[0]
+    except Exception:
+        return None, "API error retrieving game logs."
 
-        implied = 1.0 / payout_mult
-        st.write(f"**Market implied probability:** {implied*100:.1f}%")
+    if logs.empty:
+        return None, "No game logs available."
 
-        if leg1:
-            m1 = leg1['prob_over']
-            st.write(
-                f"**{leg1['player']} model probability:** {m1*100:.1f}% "
-                f"→ Edge: {(m1 - implied)*100:+.1f}%"
-            )
+    logs = logs.head(lookback)
 
-        if leg2:
-            m2 = leg2['prob_over']
-            st.write(
-                f"**{leg2['player']} model probability:** {m2*100:.1f}% "
-                f"→ Edge: {(m2 - implied)*100:+.1f}%"
-            )
+    # -------------------------------------------
+    # Build production total for market
+    # -------------------------------------------
+    metrics = MARKET_METRICS.get(market, ["PTS"])
+    logs["MarketVal"] = logs[metrics].sum(axis=1)
+
+    # clean minutes
+    try:
+        logs["Minutes"] = logs["MIN"].astype(float)
+    except:
+        logs["Minutes"] = 0
+
+    # -------------------------------------------
+    # Per-minute base
+    # -------------------------------------------
+    valid = logs["Minutes"] > 0
+    if not valid.any():
+        return None, "No valid minute data."
+
+    pm_values = logs.loc[valid, "MarketVal"] / logs.loc[valid, "Minutes"]
+
+    base_mu_per_min = float(pm_values.mean())
+    base_sd_per_min = float(max(pm_values.std(), 0.10))
+
+    # -------------------------------------------
+    # Minutes projection
+    # -------------------------------------------
+    proj_minutes = float(np.clip(logs["Minutes"].tail(5).mean(), 18, 40))
+
+    # -------------------------------------------
+    # Usage Engine
+    # -------------------------------------------
+    teammate_out_level = 1 if teammate_out else 0
+
+    usage_mu = usage_engine_v3(
+        base_mu_per_min,
+        team_usage_rate=1.00,
+        teammate_out_level=teammate_out_level
+    )
+
+    # -------------------------------------------
+    # Opponent Engine
+    # -------------------------------------------
+    ctx_mult = opponent_matchup_v2(opponent, market)
+
+    # -------------------------------------------
+    # Final mean
+    # -------------------------------------------
+    mu = usage_mu * proj_minutes * ctx_mult
+
+    # -------------------------------------------
+    # Volatility Engine
+    # -------------------------------------------
+    sd = volatility_engine_v2(
+        base_sd_per_min,
+        proj_minutes,
+        market,
+        ctx_mult,
+        usage_mu / max(base_mu_per_min, 0.01),
+        regime_state="normal"
+    )
+
+    # -------------------------------------------
+    # Probability
+    # -------------------------------------------
+    prob = ensemble_prob_over(
+        mu,
+        sd,
+        line,
+        market,
+        volatility_score=sd / max(mu, 1)
+    )
+
+    leg = {
+        "player": canonical,
+        "market": market,
+        "line": float(line),
+        "prob_over": float(prob),
+        "mu": float(mu),
+        "sd": float(sd),
+        "ctx_mult": float(ctx_mult),
+        "team": None,
+        "teammate_out": teammate_out,
+        "blowout": blowout,
+    }
+
+    return leg, None
+
 
         # =====================================================
         # JOINT PROBABILITY + CORRELATION
