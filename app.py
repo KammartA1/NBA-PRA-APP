@@ -2268,7 +2268,7 @@ def enrich_with_model(df, games_lookback):
             opp="",  # not known from API
             teammate_out=False,
             blowout=False,
-            n_games=games_lookback
+            games=games_lookback
         )
 
         if leg and not err:
