@@ -1463,6 +1463,131 @@ def module12_two_pick_decision(
 # =====================================================================
 # MODULE 13 — STREAMLIT UI INTEGRATION (FULL ULTRAMAX V4)
 # =====================================================================
+# =========================================================
+# MODULE — COMPUTE LEG (UltraMax Full)
+# =========================================================
+
+def compute_leg(player_name, market, line, opponent, teammate_out, blowout, lookback):
+    """
+    Computes a single prop leg:
+        - Resolves player
+        - Pulls game logs
+        - Builds per-minute rates
+        - Applies Usage Engine v3
+        - Applies Opponent Engine v2
+        - Applies Volatility Engine
+        - Produces mu, sd, prob_over
+    """
+
+    # -------------------------------------------
+    # Resolve player
+    # -------------------------------------------
+    pid, canonical = resolve_player(player_name)
+    if not pid:
+        return None, f"Player not found: {player_name}"
+
+    # -------------------------------------------
+    # Pull last N games
+    # -------------------------------------------
+    try:
+        logs = PlayerGameLog(
+            player_id=pid,
+            season=current_season(),
+        ).get_data_frames()[0]
+    except Exception:
+        return None, "API error retrieving game logs."
+
+    if logs.empty:
+        return None, "No game logs available."
+
+    logs = logs.head(lookback)
+
+    # -------------------------------------------
+    # Build production total for market
+    # -------------------------------------------
+    metrics = MARKET_METRICS.get(market, ["PTS"])
+    logs["MarketVal"] = logs[metrics].sum(axis=1)
+    logs["Minutes"] = logs["MIN"].astype(float)
+
+    # -------------------------------------------
+    # Per-minute base
+    # -------------------------------------------
+    valid = logs["Minutes"] > 0
+    if not valid.any():
+        return None, "No valid minute data."
+
+    base_mu_per_min = (logs.loc[valid, "MarketVal"] / logs.loc[valid, "Minutes"]).mean()
+    base_sd_per_min = (logs.loc[valid, "MarketVal"] / logs.loc[valid, "Minutes"]).std()
+    base_sd_per_min = max(base_sd_per_min, 0.10)
+
+    # -------------------------------------------
+    # Minutes projection (simple but stable)
+    # -------------------------------------------
+    proj_minutes = logs["Minutes"].tail(5).mean()
+    proj_minutes = float(np.clip(proj_minutes, 18, 40))
+
+    # -------------------------------------------
+    # Usage Engine
+    # -------------------------------------------
+    role = "primary"  # for now
+    team_usage = 1.00
+    teammate_out_level = 1 if teammate_out else 0
+
+    usage_mu = usage_engine_v3(
+        base_mu_per_min,
+        role,
+        team_usage,
+        teammate_out_level
+    )
+
+    # -------------------------------------------
+    # Opponent Engine
+    # -------------------------------------------
+    ctx_mult = opponent_matchup_v2(opponent, market)
+
+    # -------------------------------------------
+    # Final projection mean
+    # -------------------------------------------
+    mu = usage_mu * proj_minutes * ctx_mult
+
+    # -------------------------------------------
+    # Volatility Engine
+    # -------------------------------------------
+    sd = volatility_engine_v2(
+        base_sd_per_min,
+        proj_minutes,
+        market,
+        ctx_mult,
+        usage_mu / max(base_mu_per_min, 0.01),
+        regime_state="normal"
+    )
+
+    # -------------------------------------------
+    # Final probability (hybrid)
+    # -------------------------------------------
+    prob = ensemble_prob_over(
+        mu,
+        sd,
+        line,
+        market,
+        volatility_score=sd / max(mu, 1)
+    )
+
+    # Build return object
+    leg = {
+        "player": canonical,
+        "market": market,
+        "line": line,
+        "prob_over": prob,
+        "mu": mu,
+        "sd": sd,
+        "ctx_mult": ctx_mult,
+        "team": None,
+        "teammate_out": teammate_out,
+        "blowout": blowout,
+    }
+
+    return leg, None
 
 st.markdown("## ⚡ UltraMax V4 — 2-Pick Quant Terminal")
 
