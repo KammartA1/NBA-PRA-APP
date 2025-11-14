@@ -1497,7 +1497,9 @@ def module12_two_pick_decision(
 # MODULE — COMPUTE LEG (UltraMax Full)
 # =========================================================
 
-def compute_leg(player_name, market, line, opponent, teammate_out, blowout, lookback):
+def compute_leg(player, market, line, opp, teammate_out, blowout, lookback):
+    n_games = lookback
+
     """
     Computes a single prop leg:
         - Resolves player
