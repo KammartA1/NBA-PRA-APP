@@ -107,6 +107,36 @@ st.markdown(
 st.markdown("<div class='main-title'>NBA QUANT TERMINAL — ULTRAMAX V4</div>", unsafe_allow_html=True)
 st.caption("Fully Automated Prop Quant Suite • Hedge-Fund Grade Modeling")
 # =========================================================
+# HISTORY HELPERS (must come before UI uses load_history)
+# =========================================================
+
+def ensure_history():
+    if not os.path.exists(LOG_FILE):
+        df = pd.DataFrame(columns=[
+            "Date","Player","Market","Line","EV",
+            "Stake","Result","CLV","KellyFrac"
+        ])
+        df.to_csv(LOG_FILE, index=False)
+
+def load_history():
+    ensure_history()
+    try:
+        return pd.read_csv(LOG_FILE)
+    except:
+        return pd.DataFrame(columns=[
+            "Date","Player","Market","Line","EV",
+            "Stake","Result","CLV","KellyFrac"
+        ])
+
+def save_history(df):
+    df.to_csv(LOG_FILE, index=False)
+
+
+# =========================================================
+# MODULE 2 — Usage Engine v3 (Fully Populated)
+# =========================================================
+
+# =========================================================
 # MODULE 2 — PLAYER RESOLUTION + MARKET CONFIG + HELPERS
 # UltraMax V4 — Fully Populated
 # =========================================================
