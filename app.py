@@ -33,7 +33,7 @@ from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats
 # =========================================================
 
 st.set_page_config(
-    page_title="NBA Quant Terminal — UltraMax V4",
+    page_title="NBA Quant Engine — UltraMax V4",
     page_icon="🏀",
     layout="wide",
 )
