@@ -1519,6 +1519,39 @@ def append_history(entry: dict):
     df = pd.concat([df, pd.DataFrame([entry])], ignore_index=True)
     save_history(df)
 # =========================================================
+# MODULE — RENDER LEG CARD (UltraMax UI Component)
+# =========================================================
+
+def render_leg_card_ultramax(leg: dict):
+    """
+    Renders a single leg result card in Streamlit UI.
+    """
+    import streamlit as st
+
+    player = leg.get("player", "Unknown")
+    market = leg.get("market", "Unknown")
+    line = leg.get("line", 0)
+    mu = leg.get("mu", 0)
+    sd = leg.get("sd", 0)
+    prob = leg.get("prob_over", 0)
+    ctx = leg.get("ctx_mult", 1.00)
+
+    with st.container(border=True):
+        st.markdown(f"### **{player} — {market}**")
+        st.write(f"**Line:** {line}")
+        st.write(f"**Model Mean:** {mu:.2f}")
+        st.write(f"**Volatility (SD):** {sd:.2f}")
+        st.write(f"**Context Multiplier:** {ctx:.3f}")
+        st.write(f"**Prob OVER:** {prob*100:.1f}%")
+
+        if prob >= 0.60:
+            st.success("Strong positive expectation")
+        elif prob >= 0.53:
+            st.info("Mild edge detected")
+        else:
+            st.warning("No clear edge")
+
+# =========================================================
 # MODULE — COMPUTE LEG (UltraMax Full — CLEAN + FIXED)
 # =========================================================
 
