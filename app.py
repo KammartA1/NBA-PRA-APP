@@ -1,4 +1,6 @@
 # =====================================================================
+# app.py - NBA Quant App (Master File)
+# =====================================================================
 # ================================================================
 # PART 1 - STREAMLIT APP HEADER + CSS + LAYOUT
 # UltraMax NBA Prop Quant Engine - Version B3 Architecture
@@ -554,7 +556,7 @@ def normalize_prizepicks(raw_json):
 # "team": team,
 # "opponent": opponent,
 # "source": "PrizePicks"
-                })
+# })
         except:
             continue
 
@@ -731,7 +733,7 @@ SLEEPER_TRANSLATE = {
 # "pr": "PR",
 # "pa": "PA",
 # "ra": "RA",
-}
+# }
 
 def normalize_sleeper_market(mkt: str):
     m = mkt.lower().strip()
@@ -775,7 +777,7 @@ def normalize_sleeper(raw):
 # "team": team,
 # "opponent": opponent,
 # "source": "Sleeper"
-            })
+# })
         except:
             continue
 
@@ -900,7 +902,7 @@ MARKET_MAP = {
 
 # "3pm": "Threes",
 # "three_pointers_made": "Threes",
-}
+# }
 
 def canonical_market(mkt: str):
     if not mkt:
@@ -942,7 +944,7 @@ def merge_line(final_dict, book_name, entry):
 # "team": team,
 # "opponent": opponent,
 # "books": {book_name: float(line)}
-        }
+# }
     else:
         # merge additional book
         final_dict[key]["books"][book_name] = float(line)
@@ -1022,7 +1024,7 @@ ROLE_IMPACT = {
 # "secondary": 1.12,   # strong scorer but not full initiator
 # "tertiary": 0.98,    # role player with occasional usage bumps
 # "low": 0.82          # catch-and-shoot / screen-setters
-}
+# }
 
 
 # -----------------------------------------
@@ -1215,26 +1217,26 @@ ROLE_PROFILES = {
 # "ast_chance_min": 0.22,
 # "touch_time_min": 5.0,
 # "weight": 1.00
-    },
+# },
 # "secondary": {
 # "usage_min": 0.22,
 # "ast_chance_min": 0.12,
 # "touch_time_min": 3.0,
 # "weight": 0.82
-    },
+# },
 # "tertiary": {
 # "usage_min": 0.16,
 # "ast_chance_min": 0.06,
 # "touch_time_min": 1.8,
 # "weight": 0.64
-    },
+# },
 # "low": {
 # "usage_min": 0.00,
 # "ast_chance_min": 0.00,
 # "touch_time_min": 0.00,
 # "weight": 0.45
-    }
-}
+# }
+# }
 
 
 # -------------------------------------------------------------
@@ -1365,19 +1367,19 @@ TEAM_PACE_TABLE = {
 # "PHX": 100.1, "MIL": 100.0, "DAL": 99.9, "NYK": 94.5, "MIA": 95.1,
     # fallback if team not found
 # "DEFAULT": 98.5
-}
+# }
 
 TEAM_OFF_RTG = {
 # "LAL": 116.1, "GSW": 115.2, "MIN": 118.1, "DEN": 119.6,
 # "PHX": 116.8, "MIL": 118.9, "DAL": 117.2, "NYK": 114.1,
 # "DEFAULT": 115.0
-}
+# }
 
 TEAM_DEF_RTG = {
 # "LAL": 113.9, "GSW": 118.2, "MIN": 108.7, "DEN": 113.2,
 # "PHX": 115.7, "MIL": 117.9, "DAL": 116.6, "NYK": 112.1,
 # "DEFAULT": 113.5
-}
+# }
 
 
 # -------------------------------------------------------------
@@ -1506,7 +1508,7 @@ ROLE_CLUSTER = {
 # "rebound_big": 0.92,
 # "connector": 0.90,
 # "low_usage": 0.82,
-}
+# }
 
 # --------------------------------------------------------
 # POSITIONAL SYNERGY MATRIX
@@ -1542,7 +1544,7 @@ SYNERGY_MATRIX = {
     ("C",  "SF"): 1.03,
     ("C",  "PF"): 1.12,
     ("C",  "C"):  1.00,
-}
+# }
 
 # --------------------------------------------------------
 # STARTER vs BENCH usage baseline
@@ -1559,7 +1561,7 @@ FALLBACK_SHOT_RATES = {
 # "SF": 0.20,
 # "PF": 0.17,
 # "C":  0.13
-}
+# }
 
 def compute_fallback_multiplier(position):
     # 
@@ -1582,7 +1584,7 @@ ON_OFF_IMPACT = {
 # "connector": 1.03,
 # "rebound_big": 1.02,
 # "finisher_big": 1.00,
-}
+# }
 
 
 def on_off_usage_boost(player_role, missing_roles):
@@ -1850,8 +1852,8 @@ OPP_DEF_PROFILES = {
 # "REB": 1.08,
 # "AST": 1.04,
 # "PRA": 1.07,
-        }
-    },
+# }
+# },
 
 # "BOS": {
 # "pace_factor": 0.97,
@@ -1864,8 +1866,8 @@ OPP_DEF_PROFILES = {
 # "REB": 0.95,
 # "AST": 0.92,
 # "PRA": 0.92,
-        }
-    },
+# }
+# },
 
 # "BRK": {
 # "pace_factor": 1.01,
@@ -1878,8 +1880,8 @@ OPP_DEF_PROFILES = {
 # "REB": 1.07,
 # "AST": 1.03,
 # "PRA": 1.04,
-        }
-    },
+# }
+# },
 
 # "CHA": {
 # "pace_factor": 1.06,
@@ -1892,8 +1894,8 @@ OPP_DEF_PROFILES = {
 # "REB": 1.12,
 # "AST": 1.08,
 # "PRA": 1.10,
-        }
-    },
+# }
+# },
 
 # "CHI": {
 # "pace_factor": 0.98,
@@ -1906,12 +1908,12 @@ OPP_DEF_PROFILES = {
 # "REB": 1.03,
 # "AST": 0.99,
 # "PRA": 1.00,
-        }
-    },
+# }
+# },
 
     # You will receive all 30 team profiles by the end of Module 4.
     # (Over 1,200 lines once expanded in full UltraMax version.)
-}
+# }
 
 # ------------------------------
 # Safety default for missing team
@@ -1927,8 +1929,8 @@ DEFAULT_OPP_CONTEXT = {
 # "REB": 1.00,
 # "AST": 1.00,
 # "PRA": 1.00,
-    }
-}
+# }
+# }
 
 # ======================================================================
 # MODULE 4 - PHASE 2
@@ -1958,7 +1960,7 @@ def normalize_team_code(team: str) -> str:
 # "PHO": "PHX",
 # "OK": "OKC",
 # "CLV": "CLE",
-    }
+# }
     return fixes.get(t, t)
 
 
@@ -1986,8 +1988,8 @@ def get_opponent_context(team: str) -> dict:
 # "REB": profile.get("market_mod", {}).get("REB", 1.00),
 # "AST": profile.get("market_mod", {}).get("AST", 1.00),
 # "PRA": profile.get("market_mod", {}).get("PRA", 1.00),
-        }
-    }
+# }
+# }
 
     return safe_profile
 
@@ -2157,7 +2159,7 @@ def extract_base_volatility(game_logs, market: str):
 # "sd_raw": 3.0,
 # "sd_clamped": 3.0,
 # "values": np.array([3.0])
-        }
+# }
 
     arr = vals.values
 
@@ -2188,7 +2190,7 @@ def extract_base_volatility(game_logs, market: str):
 # "sd_raw": sd_raw,
 # "sd_clamped": sd_clamped,
 # "values": arr
-    }
+# }
 # =====================================================================
 # MODULE 5 - PHASE 2
 # REGIME-AWARE VOLATILITY ENGINE
@@ -2238,7 +2240,7 @@ def regime_multiplier(regime: str, market: str):
 # "stable": 1.00,
 # "unstable": 1.17,
 # "cold": 1.32
-    }.get(regime, 1.00)
+# }.get(regime, 1.00)
 
     # Market-specific adjustments (because markets behave differently)
     if m == "PTS":
@@ -2341,7 +2343,7 @@ def volatility_engine_phase2(
 # "regime_mult": regime_mult,
 # "minutes_mult": minutes_mult,
 # "usage_mult": usage_mult
-    }
+# }
 # =====================================================================
 # MODULE 5 - PHASE 3
 # NONLINEAR VOLATILITY RESHAPING ENGINE
@@ -2494,7 +2496,7 @@ def volatility_engine_phase3(
 # "chaos_mult": chaos_mult,
 # "blow_mult": blow_mult,
 # "role_mult": role_mult,
-    }
+# }
 # =====================================================================
 # MODULE 5 - PHASE 4
 # FINAL VOLATILITY FUSION + ERROR MODELING + DISTRIBUTION MORPHING
@@ -2602,7 +2604,7 @@ def volatility_engine_phase4(
 # "morph_sd": morph_sd,
 # "error_corrected_sd": error_corrected_sd,
 # "final_sd": final_sd
-    }
+# }
 # =====================================================================
 # MODULE 6 - ENSEMBLE PROBABILITY ENGINE (FULL)
 # Blends 5+ statistical models to estimate OVER probability
@@ -2774,7 +2776,7 @@ BASE_CORR_MATRIX = {
     ("PRA", "REB"): 0.55,
     ("PRA", "AST"): 0.58,
     ("PRA", "PRA"): 1.00,
-}
+# }
 
 
 # ---------------------------------------------------------------------
@@ -3146,7 +3148,7 @@ HISTORICAL_CORR_PRIOR = {
 # "same_team_low_usage": 0.12,
 # "opposing_primary": -0.05,
 # "neutral_default": 0.00,
-}
+# }
 
 
 # ------------------------------------------------------------
@@ -3273,7 +3275,7 @@ CROSS_MARKET_COV = {
     ("PRA", "PTS"): 0.60,
     ("PRA", "REB"): 0.55,
     ("PRA", "AST"): 0.52,
-}
+# }
 
 def _cross_covariance_factor(market1, market2):
     key = (market1.upper(), market2.upper())
@@ -3437,7 +3439,7 @@ def _init_drift_memory():
 # "rolling_bias": 1.00,        # drift multiplier
 # "rolling_clv": 1.00,         # clv multiplier
 # "last_update_ts": time.time()
-        }
+# }
 
 
 # ---------------------------------------------------------------------
@@ -3474,7 +3476,7 @@ def log_drift_and_clv(
 # "market": market,
 # "ev_error": float(ev_error),
 # "clv_edge": float(clv_edge)
-    })
+# })
 
     # Trim to keep memory light
     if len(mem["records"]) > 2000:
@@ -3569,7 +3571,7 @@ def get_drift_clv_stats():
 # "drift_mult": drift,
 # "clv_mult": clv,
 # "n_records": len(st.session_state["drift_memory"]["records"])
-    }
+# }
 # =====================================================================
 # MODULE 8 - DRIFT & CLV SELF-LEARNING ENGINE (PHASE 2)
 # Segmented drift multipliers (PTS/REB/AST/PRA) + decay weighting
@@ -3594,8 +3596,8 @@ def _init_segmented_drift():
 # "primary": [],
 # "secondary": [],
 # "bench": []
-            }
-        }
+# }
+# }
 
 
 # ---------------------------------------------------------------------
@@ -3784,7 +3786,7 @@ def log_clv(initial_line, closing_line, market):
     st.session_state["clv_memory"].append({
 # "delta": delta,
 # "market": market
-    })
+# })
 
     # cap memory for safety
     if len(st.session_state["clv_memory"]) > 1500:
@@ -3895,7 +3897,7 @@ def detect_volatility_state(sd, market):
 # "Rebounds": 3.0,
 # "Assists": 2.4,
 # "PRA": 8.0
-    }
+# }
 
     base = baselines.get(market, 5.0)
 
@@ -4088,7 +4090,7 @@ def add_calibration_record(
 # "drift_mult": float(drift_mult),
 # "clv_mult": float(clv_mult),
 # "unified_bias_mult": float(unified_bias_mult),
-    }
+# }
 
     data["records"].append(record)
 
@@ -4497,7 +4499,7 @@ def unified_calibration_multiplier():
 # "variance_mult": variance_mult,
 # "trend_mult": trend_mult,
 # "clv_adj": clv_adj,
-    }
+# }
 # =====================================================================
 # MODULE 10 - MONTE CARLO ENGINE V3
 # Phase 1: Core Setup + Normal Distribution Simulation
@@ -4570,7 +4572,7 @@ def monte_carlo_leg_simulation_phase1(mu, sd, line, market,
 # "market": market,
 # "tail_mult": tail_mult,
 # "normal_samples": normal_samples
-    }
+# }
 # =====================================================================
 # MODULE 10 - PHASE 2
 # Lognormal Distribution Expansion (Right-Tail Modelling)
@@ -4948,7 +4950,7 @@ def joint_mc_phase1_prepare(leg1_core, leg2_core, iterations=10000):
 # "leg1_sd": float(leg1_core["sd"]),
 # "leg2_mu": float(leg2_core["mu"]),
 # "leg2_sd": float(leg2_core["sd"]),
-    }
+# }
 # =====================================================================
 # MODULE 11 - PHASE 2
 # Correlation Injection using Cholesky Transform
@@ -5041,7 +5043,7 @@ def joint_mc_phase2_correlate(prepped, base_corr, iterations=10000):
 # "leg1_line": prepped["leg1_line"],
 # "leg2_line": prepped["leg2_line"],
 # "corr_used": corr
-    }
+# }
 # =====================================================================
 # MODULE 11 - PHASE 3
 # Joint Probability + EV Calculation (Correlated MC Output)
@@ -5124,7 +5126,7 @@ def joint_mc_phase3_joint_probability(corr_pack, payout_mult=3.0):
 # "corr_used": corr_used,
 # "joint_hits": joint_hits,
 # "joint_distribution": joint_distribution
-    }
+# }
 # =====================================================================
 # MODULE 11 - PHASE 4
 # Final Packaging ? Streamlit-safe output object
@@ -5205,7 +5207,7 @@ def joint_mc_phase4_finalize(
 # "line": float(leg1_data["line"]),
 # "market": leg1_data["market"],
 # "dist": leg1_data["dist"]
-    }
+# }
 
     leg2_pack = {
 # "mu": float(leg2_data["mu"]),
@@ -5213,7 +5215,7 @@ def joint_mc_phase4_finalize(
 # "line": float(leg2_data["line"]),
 # "market": leg2_data["market"],
 # "dist": leg2_data["dist"]
-    }
+# }
 
     # ===============================================================
     # 4. Final output object
@@ -5227,7 +5229,7 @@ def joint_mc_phase4_finalize(
 # "joint_hits_mask": joint_hits,
 # "distribution": joint_dist,
 # "lines": (leg1_pack["line"], leg2_pack["line"])
-    }
+# }
 
     return final_pack
 
@@ -5387,7 +5389,7 @@ def module12_phase1_initialize(
 # "lines": mc_pack["lines"],
 # "distribution": joint_dist,
 # "joint_hits_mask": joint_hits_mask,
-    }
+# }
 
     return normalized_pack
 # ======================================================================
@@ -5760,7 +5762,7 @@ def module12_phase5_finalize(
 # "drift_adj": drift_adj,
 # "clv_adj": clv_adj,
 # "timestamp": time.time()
-    })
+# })
 
     # ==========================================================
     # All done - return the UltraMax full decision object
@@ -7167,7 +7169,7 @@ def module12_phase6_build_report(final_pack):
         - Defensive matchup overrides (Module 22)
 
     Output:
-        {
+# {
 # "scoring_def": float,
 # "paint_def": float,
 # "perimeter_def": float,
@@ -7175,7 +7177,7 @@ def module12_phase6_build_report(final_pack):
 # "rebound_def": float,
 # "turnover_def": float,
 # "overall_def": float
-        }
+# }
     # 
 #     prof = OPP_DEF_PROFILE.get(team_code.upper())
 #     if prof is None:
@@ -7465,12 +7467,12 @@ def module12_phase6_build_report(final_pack):
         include_variance       - adds volatility-based correction
 
     Output dict:
-        {
+# {
 # "scoring_tilt",
 # "rebound_tilt",
 # "assist_tilt",
 # "overall_tilt"
-        }
+# }
     # 
 # 
 #     # =====================================================
@@ -7963,18 +7965,18 @@ game-script multipliers that adjust:
     Takes:
         base_minutes (float): raw projection from Module 5 volatility engine
         blowout_data (dict): output from Phase 2
-            {
+# {
 # "blowout_probability": float,
 # "category": str,
 # ...
-            }
+# }
     
     Returns:
-        {
+# {
 # "adj_minutes": float,
 # "suppression_factor": float,
 # "risk_bucket": str
-        }
+# }
     # 
 # 
 #     p = blowout_data["blowout_probability"]
@@ -8042,10 +8044,10 @@ game-script multipliers that adjust:
 # This models that redistribution.
 
     Returns:
-        {
+# {
 # "mu_per_min_adj": float,
 # "usage_shift": float
-        }
+# }
     # 
 # 
 #     p = blowout_data["blowout_probability"]
@@ -8096,13 +8098,13 @@ game-script multipliers that adjust:
 # Generates weighted probabilities for different game scripts.
 
     Returns:
-        {
+# {
 # "competitive": float,
 # "slow_grind": float,
 # "shootout": float,
 # "early_blowout": float,
 # "late_blowout": float
-        }
+# }
     # 
 # 
 #     p_blowout = blowout_data["blowout_probability"]
@@ -8160,12 +8162,12 @@ game-script multipliers that adjust:
         - Scenario weight
 
     Returns:
-        {
+# {
 # "minutes_dist": np.array,
 # "mu_dist": np.array,
 # "mean_minutes": float,
 # "mean_mu": float
-        }
+# }
     # 
 # 
 #     script_probs = generate_game_script_distribution(
@@ -8273,14 +8275,14 @@ game-script multipliers that adjust:
         - iterations                  ? 8,000+ MC samples
 
     Output:
-        {
+# {
 # "proj_minutes": float,
 # "proj_mu": float,
 # "minutes_dist": np.array,
 # "mu_dist": np.array,
 # "scenario_score": float,
 # "rotation_score": float
-        }
+# }
     # 
 # 
 #     # -------------------------------------------------------------
@@ -8513,13 +8515,13 @@ game-script multipliers that adjust:
         - starter vs bench vs fringe role
 
     Outputs:
-        {
+# {
 # "minutes_dist": array,
 # "mean_minutes": float,
 # "stdev_minutes": float,
 # "p_low_min": float,
 # "p_high_min": float
-        }
+# }
     # 
 # 
 #     # --------------------------------------------------------
@@ -8753,7 +8755,7 @@ game-script multipliers that adjust:
 
     Output:
         dict with:
-            {
+# {
 # "min_dist": np.ndarray,
 # "mu_min": float,
 # "sd_min": float,
@@ -8761,7 +8763,7 @@ game-script multipliers that adjust:
 # "coach_var": float,
 # "injury_level": float,
 # "depth_factor": float
-            }
+# }
     # 
 # 
 #     # ------------------------------------------------------------
@@ -9709,7 +9711,7 @@ game-script multipliers that adjust:
 # "line": float,
 # "platform": "PrizePicks" | "Sleeper",
 # "team": "DEN",
-       }
+# }
     # 
 # 
 #     lines = get_live_lines()
@@ -9763,12 +9765,12 @@ game-script multipliers that adjust:
 #     
     Streamlit component for searching + autofilling live lines.
     Returns:
-        {
+# {
 # "player": "Nikola Jokic",
 # "market": "Points",
 # "line": 27.5,
 # "platform": "PrizePicks"
-        }
+# }
     # 
 # 
 #     name_input = st.text_input(label)
@@ -10015,11 +10017,11 @@ game-script multipliers that adjust:
 #         payout_mult             --> fixed 3.0 for PP power plays
         
     Returns:
-        {
+# {
 # "should_recompute": bool,
 # "new_leg1_line": float or None,
 # "new_leg2_line": float or None
-        }
+# }
     # 
 # 
 #     live_data = st.session_state.get("last_live_data", [])
@@ -10334,7 +10336,7 @@ game-script multipliers that adjust:
 # margin-bottom:18px;
 # box-shadow:0 4px 12px rgba(0,0,0,0.25);
 # ">
-        {inner_html}
+# {inner_html}
 # </div>
     # 
 # 
@@ -10419,17 +10421,17 @@ game-script multipliers that adjust:
 # ">{player}</h3>
 
 # <div style="margin-top:6px; font-size:16px; color:{ULTRAMAX_COLORS['text_secondary']}">
-            {market} ? Line {line}
+# {market} ? Line {line}
 # </div>
 
 # <div style="margin-top:12px;">
-            {line_badge}
-            {prob_badge}
-            {mu_badge}
-            {sd_badge}
-            {ctx_badge}
-            {out_badge}
-            {blow_badge}
+# {line_badge}
+# {prob_badge}
+# {mu_badge}
+# {sd_badge}
+# {ctx_badge}
+# {out_badge}
+# {blow_badge}
 # </div>
 
 # <hr style="
@@ -10532,12 +10534,12 @@ game-script multipliers that adjust:
 # </div>
 
 # <div style="margin-top:14px;">
-            {jp_badge}
-            {ev_badge}
-            {corr_badge}
-            {raw_badge}
-            {stake_badge}
-            {decision_badge}
+# {jp_badge}
+# {ev_badge}
+# {corr_badge}
+# {raw_badge}
+# {stake_badge}
+# {decision_badge}
 # </div>
 
 # <hr style="
@@ -12184,12 +12186,12 @@ game-script multipliers that adjust:
       - combined weighted score
 
     Returns dict:
-    {
+# {
 # "primary": float,
 # "secondary": float,
 # "big": float,
 # "weighted_def": float   (final difficulty value 0.30 - 0.90)
-    }
+# }
     # 
 # 
 #     team = DEF_TEAM_DB.get(team_abbrev.upper())
@@ -12700,7 +12702,7 @@ game-script multipliers that adjust:
 #     
     Local placeholder DB - will be replaced by live sync in Module 18.
     Structure:
-    {
+# {
 # "PrizePicks": [
             {"player":"LeBron James","market":"Points","line":26.5,"team":"LAL","opp":"DEN"},
 # ...
@@ -12709,7 +12711,7 @@ game-script multipliers that adjust:
             {"player":"Nikola Jokic","market":"PRA","line":47.5,"team":"DEN","opp":"MIN"},
 # ...
         ]
-    }
+# }
     # 
 #     return {
 #         "PrizePicks": [],
@@ -13169,12 +13171,12 @@ game-script multipliers that adjust:
 # def build_correlation_matrix(legs):
 #     
     legs = list of dicts:
-      {
+# {
 # "player_name": ...,
 # "stat_type": ...,
 # "mean": ...,
 # "std": ...
-      }
+# }
     # 
 # 
 #     n = len(legs)
@@ -13241,12 +13243,12 @@ game-script multipliers that adjust:
 # def simulate_combo_distribution(legs, n_sims=DEFAULT_SIMULATIONS):
 #     
     legs = list of dicts:
-      {
+# {
 # "player_name": ...,
 # "stat_type": ...,
 # "mean": ...,
 # "std": ...
-      }
+# }
     # 
 # 
 #     means = np.array([leg["mean"] for leg in legs])
@@ -15039,16 +15041,16 @@ game-script multipliers that adjust:
 # <style>
     .main {
 # background-color: #0e1117;
-    }
+# }
     h1, h2, h3, h4, label {
 # color: white !important;
-    }
+# }
     table, th, td {
 # color: white !important;
-    }
+# }
     .stMetricLabel {
 # color: #cccccc !important;
-    }
+# }
 # </style>
 # , unsafe_allow_html=True)
 # 
