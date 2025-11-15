@@ -6344,7 +6344,7 @@ def compute_opponent_context(team: str, market: str):
 # ---------------------------------------------------------------------
 def opponent_team_multiplier(team: str, market: str):
     """
-    Safe external wrapper — ensures no crashes regardless of input.
+    Safe external wrapper  ensures no crashes regardless of input.
     This is the function used by:
        compute_leg()
        volatility_engine_v2()
