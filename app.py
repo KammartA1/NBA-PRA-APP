@@ -9944,12 +9944,12 @@ game-script multipliers that adjust:
 # 
 #         st.markdown(
 #             f
-            <div style="padding:12px; border-radius:10px; background:#1e1e1e; margin-bottom:10px;">
-                <b style="color:#4FC3F7;">{move['player']}</b><br>
+# <div style="padding:12px; border-radius:10px; background:#1e1e1e; margin-bottom:10px;">
+# <b style="color:#4FC3F7;">{move['player']}</b><br>
                 Market: <b>{move['market']}</b><br>
                 Line: <b>{move['old_line']} ? {move['new_line']}</b> ({direction})<br>
                 Platform: <b>{move['platform']}</b>
-            </div>
+# </div>
             # ,
 #             unsafe_allow_html=True
 #         )
@@ -10305,7 +10305,7 @@ game-script multipliers that adjust:
 # Generic capsule badge for EV, Probabilities, Lines, etc.
     # 
 #     return f
-    <div style="
+# <div style="
         display:inline-block;
         padding:4px 10px;
         margin:2px;
@@ -10316,7 +10316,7 @@ game-script multipliers that adjust:
         color:white;
     ">
         {label}: {value}
-    </div>
+# </div>
     # 
 # 
 # # -----------------------------------------------------------
@@ -10327,7 +10327,7 @@ game-script multipliers that adjust:
 # All cards use this structural container.
     # 
 #     return f
-    <div style="
+# <div style="
         width:{width};
         background:{ULTRAMAX_COLORS['surface']};
         border:1px solid {ULTRAMAX_COLORS['border']};
@@ -10337,7 +10337,7 @@ game-script multipliers that adjust:
         box-shadow:0 4px 12px rgba(0,0,0,0.25);
     ">
         {inner_html}
-    </div>
+# </div>
     # 
 # 
 # # -----------------------------------------------------------
@@ -10411,20 +10411,20 @@ game-script multipliers that adjust:
 #     # HTML layout
 #     # --------------------------
 #     html = f
-    <div style="color:{ULTRAMAX_COLORS['text_primary']};">
+# <div style="color:{ULTRAMAX_COLORS['text_primary']};">
 
-        <h3 style="
+# <h3 style="
             margin:0;
             padding:0;
             color:{ULTRAMAX_COLORS['primary']};
             font-weight:700;
         ">{player}</h3>
 
-        <div style="margin-top:6px; font-size:16px; color:{ULTRAMAX_COLORS['text_secondary']}">
+# <div style="margin-top:6px; font-size:16px; color:{ULTRAMAX_COLORS['text_secondary']}">
             {market} ? Line {line}
-        </div>
+# </div>
 
-        <div style="margin-top:12px;">
+# <div style="margin-top:12px;">
             {line_badge}
             {prob_badge}
             {mu_badge}
@@ -10432,24 +10432,24 @@ game-script multipliers that adjust:
             {ctx_badge}
             {out_badge}
             {blow_badge}
-        </div>
+# </div>
 
-        <hr style="
+# <hr style="
             border:0;
             border-top:1px solid {ULTRAMAX_COLORS['border']};
             margin-top:18px;
             margin-bottom:12px;
         " />
 
-        <div style="font-size:14px; color:{ULTRAMAX_COLORS['text_secondary']}">
-            <strong>Projection Summary:</strong><br/>
+# <div style="font-size:14px; color:{ULTRAMAX_COLORS['text_secondary']}">
+# <strong>Projection Summary:</strong><br/>
             ? Expected = <b>{mu:.2f}</b><br/>
             ? Volatility = <b>{sd:.2f}</b><br/>
             ? Opponent Context Multiplier = <b>{ctx:.2f}</b><br/>
             ? Probability Over = <b>{prob*100:.1f}%</b><br/>
-        </div>
+# </div>
 
-    </div>
+# </div>
     # 
 # 
 #     st.markdown(card_container(html), unsafe_allow_html=True)
@@ -10517,48 +10517,48 @@ game-script multipliers that adjust:
 #     # HTML Layout
 #     # --------------------------
 #     html = f
-    <div style="color:{ULTRAMAX_COLORS['text_primary']};">
+# <div style="color:{ULTRAMAX_COLORS['text_primary']};">
 
-        <h2 style="
+# <h2 style="
             margin:0;
             padding:0;
             color:{ULTRAMAX_COLORS['primary']};
             font-weight:700;
         ">
 # Combo Summary
-        </h2>
+# </h2>
 
-        <div style="margin-top:8px; font-size:15px;">
-            <b>{l1_name}</b> - {l1_mkt} {l1_line}<br/>
-            <b>{l2_name}</b> - {l2_mkt} {l2_line}
-        </div>
+# <div style="margin-top:8px; font-size:15px;">
+# <b>{l1_name}</b> - {l1_mkt} {l1_line}<br/>
+# <b>{l2_name}</b> - {l2_mkt} {l2_line}
+# </div>
 
-        <div style="margin-top:14px;">
+# <div style="margin-top:14px;">
             {jp_badge}
             {ev_badge}
             {corr_badge}
             {raw_badge}
             {stake_badge}
             {decision_badge}
-        </div>
+# </div>
 
-        <hr style="
+# <hr style="
             border:0;
             border-top:1px solid {ULTRAMAX_COLORS['border']};
             margin-top:18px;
             margin-bottom:12px;
         " />
 
-        <div style="font-size:14px; color:{ULTRAMAX_COLORS['text_secondary']}">
-            <strong>Combo Insights:</strong><br/>
+# <div style="font-size:14px; color:{ULTRAMAX_COLORS['text_secondary']}">
+# <strong>Combo Insights:</strong><br/>
             ? Joint probability (after drift + CLV): <b>{jp*100:.2f}%</b><br/>
             ? Raw probability before adjustments: <b>{p_raw*100:.2f}%</b><br/>
             ? Correlation applied: <b>{corr:+.3f}</b><br/>
             ? EV per $1: <b>{ev*100:+.2f}%</b><br/>
             ? Kelly stake: <b>${stake:.2f}</b><br/>
-        </div>
+# </div>
 
-    </div>
+# </div>
     # 
 # 
 #     st.markdown(card_container(html), unsafe_allow_html=True)
@@ -11626,7 +11626,7 @@ game-script multipliers that adjust:
 # def compute_def_matchup_multiplier(team: str, position: str) -> float:
 #     
     Computes a base defensive multiplier:
-        < 1.00 ? difficult matchup
+# < 1.00 ? difficult matchup
         > 1.00 ? favorable matchup
 
     Inputs:
@@ -13403,20 +13403,20 @@ game-script multipliers that adjust:
 #     def leg_card(player, line, projection, hit_prob, ev, flag, matchup_score, color):
 #         st.markdown(
 #             f
-            <div style="
+# <div style="
                 padding:12px;
                 border-radius:10px;
                 background:{color};
                 margin-bottom:12px;
                 border:1px solid #333;
             ">
-                <h4 style="margin:0;">{player}</h4>
-                <p style="margin:4px 0;">Line: <b>{line}</b> | Projection: <b>{projection:.1f}</b></p>
-                <p style="margin:4px 0;">Hit Probability: <b>{hit_prob*100:.1f}%</b></p>
-                <p style="margin:4px 0;">EV: <b>{ev:+.2f}%</b></p>
-                <p style="margin:4px 0;">Matchup: <b>{matchup_score}</b></p>
-                <p style="margin:4px 0;color:#e63946;">{flag}</p>
-            </div>
+# <h4 style="margin:0;">{player}</h4>
+# <p style="margin:4px 0;">Line: <b>{line}</b> | Projection: <b>{projection:.1f}</b></p>
+# <p style="margin:4px 0;">Hit Probability: <b>{hit_prob*100:.1f}%</b></p>
+# <p style="margin:4px 0;">EV: <b>{ev:+.2f}%</b></p>
+# <p style="margin:4px 0;">Matchup: <b>{matchup_score}</b></p>
+# <p style="margin:4px 0;color:#e63946;">{flag}</p>
+# </div>
             # ,
 #             unsafe_allow_html=True
 #         )
@@ -13695,7 +13695,7 @@ game-script multipliers that adjust:
 #         )
 #         st.markdown(
 #             f
-            <div style="
+# <div style="
                 background:{color};
                 padding:8px;
                 border-radius:8px;
@@ -13705,7 +13705,7 @@ game-script multipliers that adjust:
                 font-weight:bold;
             ">
                 {label}: {score:.2f}
-            </div>
+# </div>
             # ,
 #             unsafe_allow_html=True
 #         )
@@ -13908,7 +13908,7 @@ game-script multipliers that adjust:
 # 
 #         st.markdown(
 #             f
-            <div style="
+# <div style="
                 width:100%;
                 padding:18px;
                 border-radius:12px;
@@ -13921,7 +13921,7 @@ game-script multipliers that adjust:
                 margin-bottom:18px;
             ">
                 Blowout Risk: {prob*100:.1f}%
-            </div>
+# </div>
             # ,
 #             unsafe_allow_html=True
 #         )
@@ -14144,7 +14144,7 @@ game-script multipliers that adjust:
 # 
 #         st.markdown(
 #             f
-            <div style="
+# <div style="
                 padding:16px;
                 border-radius:12px;
                 background:{color}33;
@@ -14156,7 +14156,7 @@ game-script multipliers that adjust:
                 margin-bottom:20px;
             ">
                 Rotation Volatility: {score:.1f}/100
-            </div>
+# </div>
             # ,
 #             unsafe_allow_html=True
 #         )
@@ -14716,11 +14716,11 @@ game-script multipliers that adjust:
 #         delta = line - best_line
 # 
 #         table_html += f
-        <tr style="border-bottom:1px solid #222;">
-            <td style="padding:6px;">{book}</td>
-            <td style="color:{color}; font-weight:bold; text-align:center;">{line}</td>
-            <td style="text-align:center;">{delta:+.1f}</td>
-        </tr>
+# <tr style="border-bottom:1px solid #222;">
+# <td style="padding:6px;">{book}</td>
+# <td style="color:{color}; font-weight:bold; text-align:center;">{line}</td>
+# <td style="text-align:center;">{delta:+.1f}</td>
+# </tr>
         # 
 # 
 #     table_html += "</table>"
@@ -14964,15 +14964,15 @@ game-script multipliers that adjust:
 # def render_failsafe_banner():
 #     if st.session_state.get("failsafe_mode", False):
 #         st.markdown(
-        <div style='padding:10px; border-radius:8px; background:#f1c40f33; border-left:6px solid #f1c40f;'>
-            <b>Failsafe Mode Enabled:</b> Heavy computations lowered, Monte Carlo reduced, and stability checks active.
-        </div>
+# <div style='padding:10px; border-radius:8px; background:#f1c40f33; border-left:6px solid #f1c40f;'>
+# <b>Failsafe Mode Enabled:</b> Heavy computations lowered, Monte Carlo reduced, and stability checks active.
+# </div>
         # , unsafe_allow_html=True)
 #     else:
 #         st.markdown(
-        <div style='padding:10px; border-radius:8px; background:#2ecc7133; border-left:6px solid #2ecc71;'>
-            <b>Failsafe Mode Disabled:</b> Full power mode. Maximum computation enabled.
-        </div>
+# <div style='padding:10px; border-radius:8px; background:#2ecc7133; border-left:6px solid #2ecc71;'>
+# <b>Failsafe Mode Disabled:</b> Full power mode. Maximum computation enabled.
+# </div>
         # , unsafe_allow_html=True)
 # 
 # 
@@ -15038,7 +15038,7 @@ game-script multipliers that adjust:
 # # GLOBAL CSS STYLING
 # # --------------------------------------------------------------------
 # st.markdown(
-<style>
+# <style>
     .main {
         background-color: #0e1117;
     }
@@ -15051,7 +15051,7 @@ game-script multipliers that adjust:
     .stMetricLabel {
         color: #cccccc !important;
     }
-</style>
+# </style>
 # , unsafe_allow_html=True)
 # 
 # 
