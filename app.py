@@ -10306,14 +10306,14 @@ game-script multipliers that adjust:
     # 
 #     return f
 # <div style="
-        display:inline-block;
-        padding:4px 10px;
-        margin:2px;
-        background:{color};
-        border-radius:8px;
-        font-size:13px;
-        font-weight:600;
-        color:white;
+# display:inline-block;
+# padding:4px 10px;
+# margin:2px;
+# background:{color};
+# border-radius:8px;
+# font-size:13px;
+# font-weight:600;
+# color:white;
     ">
         {label}: {value}
 # </div>
@@ -10328,13 +10328,13 @@ game-script multipliers that adjust:
     # 
 #     return f
 # <div style="
-        width:{width};
-        background:{ULTRAMAX_COLORS['surface']};
-        border:1px solid {ULTRAMAX_COLORS['border']};
-        border-radius:12px;
-        padding:18px;
-        margin-bottom:18px;
-        box-shadow:0 4px 12px rgba(0,0,0,0.25);
+# width:{width};
+# background:{ULTRAMAX_COLORS['surface']};
+# border:1px solid {ULTRAMAX_COLORS['border']};
+# border-radius:12px;
+# padding:18px;
+# margin-bottom:18px;
+# box-shadow:0 4px 12px rgba(0,0,0,0.25);
     ">
         {inner_html}
 # </div>
@@ -10414,10 +10414,10 @@ game-script multipliers that adjust:
 # <div style="color:{ULTRAMAX_COLORS['text_primary']};">
 
 # <h3 style="
-            margin:0;
-            padding:0;
-            color:{ULTRAMAX_COLORS['primary']};
-            font-weight:700;
+# margin:0;
+# padding:0;
+# color:{ULTRAMAX_COLORS['primary']};
+# font-weight:700;
         ">{player}</h3>
 
 # <div style="margin-top:6px; font-size:16px; color:{ULTRAMAX_COLORS['text_secondary']}">
@@ -10435,10 +10435,10 @@ game-script multipliers that adjust:
 # </div>
 
 # <hr style="
-            border:0;
-            border-top:1px solid {ULTRAMAX_COLORS['border']};
-            margin-top:18px;
-            margin-bottom:12px;
+# border:0;
+# border-top:1px solid {ULTRAMAX_COLORS['border']};
+# margin-top:18px;
+# margin-bottom:12px;
         " />
 
 # <div style="font-size:14px; color:{ULTRAMAX_COLORS['text_secondary']}">
@@ -10520,10 +10520,10 @@ game-script multipliers that adjust:
 # <div style="color:{ULTRAMAX_COLORS['text_primary']};">
 
 # <h2 style="
-            margin:0;
-            padding:0;
-            color:{ULTRAMAX_COLORS['primary']};
-            font-weight:700;
+# margin:0;
+# padding:0;
+# color:{ULTRAMAX_COLORS['primary']};
+# font-weight:700;
         ">
 # Combo Summary
 # </h2>
@@ -10543,10 +10543,10 @@ game-script multipliers that adjust:
 # </div>
 
 # <hr style="
-            border:0;
-            border-top:1px solid {ULTRAMAX_COLORS['border']};
-            margin-top:18px;
-            margin-bottom:12px;
+# border:0;
+# border-top:1px solid {ULTRAMAX_COLORS['border']};
+# margin-top:18px;
+# margin-bottom:12px;
         " />
 
 # <div style="font-size:14px; color:{ULTRAMAX_COLORS['text_secondary']}">
@@ -13404,11 +13404,11 @@ game-script multipliers that adjust:
 #         st.markdown(
 #             f
 # <div style="
-                padding:12px;
-                border-radius:10px;
-                background:{color};
-                margin-bottom:12px;
-                border:1px solid #333;
+# padding:12px;
+# border-radius:10px;
+# background:{color};
+# margin-bottom:12px;
+# border:1px solid #333;
             ">
 # <h4 style="margin:0;">{player}</h4>
 # <p style="margin:4px 0;">Line: <b>{line}</b> | Projection: <b>{projection:.1f}</b></p>
@@ -13696,13 +13696,13 @@ game-script multipliers that adjust:
 #         st.markdown(
 #             f
 # <div style="
-                background:{color};
-                padding:8px;
-                border-radius:8px;
-                width:140px;
-                text-align:center;
-                margin-bottom:5px;
-                font-weight:bold;
+# background:{color};
+# padding:8px;
+# border-radius:8px;
+# width:140px;
+# text-align:center;
+# margin-bottom:5px;
+# font-weight:bold;
             ">
                 {label}: {score:.2f}
 # </div>
@@ -13909,16 +13909,16 @@ game-script multipliers that adjust:
 #         st.markdown(
 #             f
 # <div style="
-                width:100%;
-                padding:18px;
-                border-radius:12px;
-                background:{color}33;
-                border:2px solid {color};
-                text-align:center;
-                font-size:30px;
-                font-weight:800;
-                margin-top:12px;
-                margin-bottom:18px;
+# width:100%;
+# padding:18px;
+# border-radius:12px;
+# background:{color}33;
+# border:2px solid {color};
+# text-align:center;
+# font-size:30px;
+# font-weight:800;
+# margin-top:12px;
+# margin-bottom:18px;
             ">
                 Blowout Risk: {prob*100:.1f}%
 # </div>
@@ -14145,15 +14145,15 @@ game-script multipliers that adjust:
 #         st.markdown(
 #             f
 # <div style="
-                padding:16px;
-                border-radius:12px;
-                background:{color}33;
-                border:2px solid {color};
-                text-align:center;
-                font-size:28px;
-                font-weight:bold;
-                margin-top:10px;
-                margin-bottom:20px;
+# padding:16px;
+# border-radius:12px;
+# background:{color}33;
+# border:2px solid {color};
+# text-align:center;
+# font-size:28px;
+# font-weight:bold;
+# margin-top:10px;
+# margin-bottom:20px;
             ">
                 Rotation Volatility: {score:.1f}/100
 # </div>
@@ -15040,16 +15040,16 @@ game-script multipliers that adjust:
 # st.markdown(
 # <style>
     .main {
-        background-color: #0e1117;
+# background-color: #0e1117;
     }
     h1, h2, h3, h4, label {
-        color: white !important;
+# color: white !important;
     }
     table, th, td {
-        color: white !important;
+# color: white !important;
     }
     .stMetricLabel {
-        color: #cccccc !important;
+# color: #cccccc !important;
     }
 # </style>
 # , unsafe_allow_html=True)
