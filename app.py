@@ -12431,6 +12431,104 @@ def apply_defensive_context(mu: float,
 tab_model, tab_results, tab_history, tab_calibration = st.tabs(
     ["📊 Model", "📈 Results", "📜 History", "🧬 Calibration"]
 )
+# =====================================================================
+# MODULE 17 — PROJECTION OVERRIDE ENGINE UI PANEL
+# Phase 2 — Streamlit Override Editor
+# =====================================================================
+
+with st.sidebar.expander("🛠 Projection Overrides", expanded=False):
+
+    st.markdown("### 🔧 Manual Override Controls")
+
+    st.write(
+        "Use these controls to override projections for special situations:\n"
+        "- Injury return\n"
+        "- Minutes restriction\n"
+        "- Role change\n"
+        "- Heat check\n"
+        "- Back-to-back fatigue\n"
+        "- Trade adjustments\n"
+    )
+
+    # ------------------------------------------------
+    # Player & Market Selection
+    # ------------------------------------------------
+    override_player = st.text_input("Player Name (required)").strip()
+    override_market = st.selectbox(
+        "Market",
+        ["Points", "Rebounds", "Assists", "PRA"],
+    )
+
+    st.markdown("### ⏱ Minutes Overrides")
+    ov_minutes = st.number_input("Set Minutes (optional)", min_value=0.0, max_value=48.0, value=0.0)
+    ov_minutes_floor = st.number_input("Minutes Floor", min_value=0.0, max_value=48.0, value=0.0)
+    ov_minutes_ceiling = st.number_input("Minutes Ceiling", min_value=0.0, max_value=48.0, value=0.0)
+
+    st.markdown("### 🔥 Usage Overrides")
+    ov_usage_mult = st.number_input("Usage Multiplier (1.15 = +15%)", value=1.00)
+    ov_usage_floor = st.number_input("Usage Floor", value=0.00)
+    ov_usage_ceiling = st.number_input("Usage Ceiling", value=5.00)
+
+    st.markdown("### 📊 Market-Specific Adjustments")
+    ov_mu_mult = st.number_input("μ Multiplier", value=1.00)
+    ov_sd_mult = st.number_input("σ Multiplier", value=1.00)
+    ov_mu_override = st.number_input("Hard μ Override (optional)", value=0.0)
+    ov_sd_override = st.number_input("Hard σ Override (optional)", value=0.0)
+
+    st.markdown("### ⚠ Contextual Flags")
+    flag_minutes_restriction = st.checkbox("Minutes Restriction")
+    flag_injury_return = st.checkbox("Injury Return")
+    flag_role_change = st.checkbox("Role Change")
+    flag_heat_check = st.checkbox("Heat Check")
+    flag_fatigue_b2b = st.checkbox("Back-to-Back Fatigue")
+    flag_trade = st.checkbox("Trade Adjustment")
+
+    ov_note = st.text_input("Internal Note (optional)")
+
+    # ------------------------------------------------
+    # Register Override
+    # ------------------------------------------------
+    if st.button("💾 Apply Override"):
+
+        if override_player == "":
+            st.error("Player name is required to apply override.")
+        else:
+            override = ProjectionOverride(
+                minutes = ov_minutes if ov_minutes > 0 else None,
+                minutes_floor = ov_minutes_floor if ov_minutes_floor > 0 else None,
+                minutes_ceiling = ov_minutes_ceiling if ov_minutes_ceiling > 0 else None,
+                usage_mult = ov_usage_mult if ov_usage_mult != 1.0 else None,
+                usage_floor = ov_usage_floor if ov_usage_floor > 0 else None,
+                usage_ceiling = ov_usage_ceiling if ov_usage_ceiling > 0 else None,
+                mu_mult = ov_mu_mult if ov_mu_mult != 1.0 else None,
+                sd_mult = ov_sd_mult if ov_sd_mult != 1.0 else None,
+                override_mu = ov_mu_override if ov_mu_override > 0 else None,
+                override_sd = ov_sd_override if ov_sd_override > 0 else None,
+                is_minutes_restricted = flag_minutes_restriction,
+                is_injury_return = flag_injury_return,
+                is_role_change = flag_role_change,
+                is_heat_check = flag_heat_check,
+                is_fatigue_b2b = flag_fatigue_b2b,
+                is_trade_adjustment = flag_trade,
+                note = ov_note
+            )
+
+            register_override(override_player, override_market, override)
+            st.success(f"Override applied to {override_player} — {override_market}")
+
+    # ------------------------------------------------
+    # Display Active Overrides
+    # ------------------------------------------------
+    st.markdown("### 📌 Active Overrides")
+
+    if len(override_db) == 0:
+        st.info("No overrides applied.")
+    else:
+        for p, markets in override_db.items():
+            st.markdown(f"**{p.title()}**")
+            for m, ov in markets.items():
+                st.write(f"- Market: **{m.title()}**")
+                st.write(f"  - {ov}")
 
 # ================================================================
 # TAB: MODEL
