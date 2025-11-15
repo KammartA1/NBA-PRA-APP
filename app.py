@@ -326,7 +326,7 @@ HISTORY_FILE = os.path.join(DATA_DIR, "bet_history.csv")
 if not os.path.exists(HISTORY_FILE):
 # pd.DataFrame(columns=[
 # "timestamp","player","market","line","prob_over","ev","decision"
-    ]).to_csv(HISTORY_FILE, index=False)
+# ]).to_csv(HISTORY_FILE, index=False)
 
 # -------------------------------------------------------
 # GLOBAL CONSTANTS
