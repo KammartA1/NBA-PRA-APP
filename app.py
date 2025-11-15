@@ -1,4 +1,6 @@
 # =====================================================================
+# app.py - NBA Quant App (Master File)
+# =====================================================================
 # ================================================================
 # PART 1 - STREAMLIT APP HEADER + CSS + LAYOUT
 # UltraMax NBA Prop Quant Engine - Version B3 Architecture
@@ -20,7 +22,7 @@ st.set_page_config(
     page_icon="?",
     layout="wide",
     initial_sidebar_state="expanded"
-)
+# )
 
 # ------------------------------------------------
 # Global Custom CSS
@@ -122,7 +124,7 @@ with st.sidebar:
         value=500,
         step=25,
         help="Used in Module 12 to compute Kelly stake sizing."
-    )
+# )
 
     fractional_kelly = st.slider(
 # "Fractional Kelly Multiplier",
@@ -131,7 +133,7 @@ with st.sidebar:
         value=0.50,
         step=0.05,
         help="Reduces Kelly risk. 0.50 = Half Kelly."
-    )
+# )
 
     st.markdown("---")
 
@@ -148,7 +150,7 @@ with st.sidebar:
 # 1.00,
 # 0.01,
         help="Controls long-term bias correction. Used in Module 12."
-    )
+# )
 
     clv_adj = st.slider(
 # "CLV (Closing Line Value) Sharpening",
@@ -157,7 +159,7 @@ with st.sidebar:
 # 1.00,
 # 0.01,
         help="Boosts accuracy if model historically beats closing lines."
-    )
+# )
 
     st.markdown("---")
 
@@ -174,7 +176,7 @@ with st.sidebar:
 # 1.00,
 # 0.01,
         help="Scales standard deviations for all markets."
-    )
+# )
 
     heavy_tail_adj = st.slider(
 # "Heavy Tail Expansion",
@@ -183,7 +185,7 @@ with st.sidebar:
 # 1.00,
 # 0.01,
         help="Controls right-tail outcomes in Monte Carlo (Module 10)."
-    )
+# )
 
     st.markdown("---")
 
@@ -196,7 +198,7 @@ with st.sidebar:
 # "Enable Manual Overrides",
         value=False,
         help="Lets you manually override any projection value in Module 17."
-    )
+# )
 
     override_mu = st.number_input(
 # "Override Mean (?)",
@@ -205,7 +207,7 @@ with st.sidebar:
         value=0.0,
         step=0.5,
         help="Only applied when overrides are active."
-    )
+# )
 
     override_sd = st.number_input(
 # "Override Std (?)",
@@ -214,7 +216,7 @@ with st.sidebar:
         value=0.0,
         step=0.25,
         help="Only applied when overrides are active."
-    )
+# )
 
     st.markdown("---")
 
@@ -228,13 +230,13 @@ with st.sidebar:
 # "Sync PrizePicks Lines",
         value=True,
         help="Fetches live lines from PrizePicks API."
-    )
+# )
 
     enable_sleeper_sync = st.checkbox(
 # "Sync Sleeper Lines",
         value=False,
         help="Fetches projections from Sleeper Picks."
-    )
+# )
 
     st.markdown("---")
 
@@ -247,13 +249,13 @@ with st.sidebar:
 # "Enable History Logging",
         value=True,
         help="Logs results to CSV for tracking long-term EV accuracy."
-    )
+# )
 
     history_filename = st.text_input(
 # "History File Name",
         value="ultramax_history.csv",
         help="CSV that stores past runs. Used in calibration."
-    )
+# )
 
     st.markdown("---")
 
@@ -266,12 +268,12 @@ with st.sidebar:
     show_defensive_matchups = st.checkbox(
 # "Show Defensive Matchup Breakdown",
         value=True
-    )
+# )
 
     show_team_context = st.checkbox(
 # "Show Team Context Factors",
         value=True
-    )
+# )
 
     st.markdown("---")
 
@@ -336,13 +338,13 @@ MARKET_OPTIONS = [
 # "Points", "Rebounds", "Assists",
 # "PRA", "PR", "PA", "RA",
 # "3PM", "Stocks"
-]
+# ]
 
 TEAM_ABBREVIATIONS = [
 # "ATL","BOS","BKN","CHA","CHI","CLE","DAL","DEN","DET",
 # "GSW","HOU","IND","LAC","LAL","MEM","MIA","MIL","MIN","NOP",
 # "NYK","OKC","ORL","PHI","PHX","POR","SAC","SAS","TOR","UTA","WAS"
-]
+# ]
 
 # How long to keep API data before refresh
 PP_TTL_SECONDS = 3600   # 1 hour cache for PrizePicks
@@ -386,7 +388,7 @@ def resolve_player(name: str):
     matches = [
         p for p in nba_players.get_players()
         if name in p["full_name"].lower()
-    ]
+# ]
 
     if not matches:
         return None, None
@@ -414,13 +416,13 @@ PRIZEPICKS_HEADERS = [
     {"User-Agent": "Mozilla/5.0 (Macintosh)"},
     {"User-Agent": "Mozilla/5.0 (Windows NT 10.0)"},
     {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
-]
+# ]
 
 PRIZEPICKS_URLS = [
 # "https://api.prizepicks.com/projections",                     # LAYER 1
 # "https://partner-api.prizepicks.com/projections",             # LAYER 2
 # "https://prizepicks.com/projections",                         # LAYER 3 (HTML)
-]
+# ]
 
 def pp_rotate_header():
     return random.choice(PRIZEPICKS_HEADERS)
@@ -631,7 +633,7 @@ SLEEPER_HEADERS = [
     {"User-Agent": "Mozilla/5.0 (Macintosh)"},
     {"User-Agent": "Mozilla/5.0 (Windows NT 10.0)"},
     {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"},
-]
+# ]
 
 
 def sleeper_header():
@@ -1461,7 +1463,7 @@ def compute_environment_quality(pace_adj, tpls, odc):
         (pace_adj / 98.0) * 0.40 +
         tpls * 0.35 +
         odc * 0.25
-    )
+# )
 
     return float(np.clip(env, 0.80, 1.25))
 
@@ -1648,7 +1650,7 @@ def compute_lineup_redistribution(position, player_role, teammate_out_level, mis
         on_off_mult *
         fallback_mult *
 # injury_mult
-    )
+# )
 
     return float(np.clip(final, 0.85, 1.42))
 
@@ -1743,7 +1745,7 @@ def usage_engine_v3_final(
         player_role=player_role,
         teammate_out_level=teammate_out_level,
         missing_roles=missing_roles
-    )
+# )
 
     # ------------------------------------------------------
     # 5 - FINAL MULTIPLIER COMPOSITION
@@ -1754,7 +1756,7 @@ def usage_engine_v3_final(
         lineup_adj ** 0.55 *
         pace_adj ** 0.25 *
         focus_adj ** 0.30
-    )
+# )
 
     # ------------------------------------------------------
     # 6 - APPLY USAGE ENGINE TO BASE
@@ -1825,7 +1827,7 @@ def usage_engine_v3(
         missing_roles=missing_roles,
         pace_factor=float(pace_factor),
         offensive_focus=float(offensive_focus),
-    )
+# )
 # ======================================================================
 # MODULE 4 - PHASE 1
 # OPPONENT DEFENSE ENGINE V2.0 - BASE TEAM PROFILES
@@ -2095,7 +2097,7 @@ def opponent_matchup_v2(opponent_team: str, market: str, position: str = "G"):
         (pos_mult ** 0.50) *
         (pace_mult ** 0.35) *
         (def_mult ** 0.40)
-    )
+# )
 
     # -------------------------------
     # 7. Extreme matchup limiter
@@ -2458,7 +2460,7 @@ def volatility_engine_phase3(
 # phase2_sd,
         power=exponent,
         steepness=steepness
-    )
+# )
 
     # ---------------------------------------------
     # 3. Late-game chaos volatility injection
@@ -2968,7 +2970,7 @@ def correlation_engine_phase2(leg1, leg2, base_corr_phase1):
         (pace_factor ** 0.40) *
         (def_factor ** 0.50) *
         (vol_factor ** 0.30)
-    )
+# )
 
     # ---------------------------------------------------
     # Final clamp (Phase 2)
@@ -3112,7 +3114,7 @@ def correlation_engine_phase3(leg1, leg2, base_corr_phase2):
         injury_factor *
         rotation_factor *
 # script_factor
-    )
+# )
 
     # ----------------------------------------------
     # Nonlinear shaping to prevent runaway effects
@@ -3240,7 +3242,7 @@ def correlation_engine_phase4(leg1, leg2, corr_phase3):
 # corr_phase3,
 # corr_prior,
 # confidence
-    )
+# )
 
     # --- Nonlinear range soft clamp
     if corr_smoothed > 0:
@@ -3303,7 +3305,7 @@ def _historical_corr_learning(leg1, leg2):
     df = hist[
         ((hist["Market1"] == m1) & (hist["Market2"] == m2)) |
         ((hist["Market1"] == m2) & (hist["Market2"] == m1))
-    ]
+# ]
 
     if df.empty:
         return 1.00
@@ -3735,7 +3737,7 @@ def get_combined_drift_multiplier(market, role):
         (global_drift ** 0.45) *
         (market_drift ** 0.35) *
         (role_drift ** 0.25)
-    )
+# )
 
     return float(np.clip(combined, 0.85, 1.25))
 # =====================================================================
@@ -3865,7 +3867,7 @@ def get_combined_clv_multiplier(market):
     combined = (
         (global_clv ** 0.55) *
         (market_clv ** 0.45)
-    )
+# )
 
     return float(np.clip(combined, 0.85, 1.22))
 # =====================================================================
@@ -3958,7 +3960,7 @@ def unified_bias_multiplier(
         (drift_mult ** drift_a) *
         (clv_mult ** clv_b) *
         (vol_mult ** vol_c)
-    )
+# )
 
     # Stability bounds - prevents runaway bias
     unified = float(np.clip(unified, 0.80, 1.28))
@@ -3989,7 +3991,7 @@ def compute_final_bias_multiplier(
         sd=sd,
         drift_mult=drift_mult,
         clv_mult=clv_mult
-    )
+# )
 # =====================================================================
 # MODULE 9 - PHASE 1: Calibration Storage Layer
 # =====================================================================
@@ -4626,7 +4628,7 @@ def monte_carlo_leg_simulation_phase2(core):
             mean=mu_log,
             sigma=sd_log,
             size=MC_ITERATIONS
-        )
+# )
 
     except Exception:
         # Fail-safe: fallback to normal samples
@@ -4697,7 +4699,7 @@ def monte_carlo_leg_simulation_phase3(core):
 # skew_samples,
 # 0,
         mu * 10  # players rarely exceed 10? mean rate
-    )
+# )
 
     # ============================================================
     # 3. Add to core dictionary
@@ -4779,7 +4781,7 @@ def monte_carlo_leg_simulation_phase4(core, market):
         w_norm * normal_samples +
         w_logn * lognormal_samples +
         w_skew * skew_samples
-    )
+# )
 
     # ============================================================
     # 3. Clamp outlier values to avoid model blow-ups
@@ -5096,7 +5098,7 @@ def joint_mc_phase3_joint_probability(corr_pack, payout_mult=3.0):
     joint_hits = np.logical_and(
         x_sim > leg1_line,
         y_sim > leg2_line
-    )
+# )
 
     # ==============================================================
     # 3. Joint probability
@@ -5309,7 +5311,7 @@ def module12_phase1_initialize(
 # "joint_hits_mask",
 # "distribution",
 # "lines"
-    ]
+# ]
 
     for k in required_keys:
         if k not in mc_pack:
@@ -5341,7 +5343,7 @@ def module12_phase1_initialize(
     if joint_dist.shape[0] != 2:
         raise ValueError(
 # "Module 12 Phase 1: distribution must have shape (2, N) - two legs."
-        )
+# )
 
     joint_hits_mask = mc_pack["joint_hits_mask"]
     if not isinstance(joint_hits_mask, np.ndarray):
@@ -5722,7 +5724,7 @@ def module12_phase5_finalize(
 # leg1_mu, leg1_sd, leg1_line, leg1_dist,
 # leg2_mu, leg2_sd, leg2_line, leg2_dist,
 # corr_value
-    )
+# )
 
     # Add metadata
     joint_pack["payout_mult"] = payout_mult
@@ -5733,7 +5735,7 @@ def module12_phase5_finalize(
     ev_pack = module12_phase3_ev(
         joint_pack["p_joint_final"],
 # payout_mult
-    )
+# )
 
     # Merge dictionaries
     merged = {**joint_pack, **ev_pack}
@@ -5745,7 +5747,7 @@ def module12_phase5_finalize(
 # merged,
         bankroll=bankroll,
         fractional_kelly=fractional_kelly
-    )
+# )
 
     # ==========================================================
     # Step 5 - Enrich final pack with leg-level metadata
@@ -5840,12 +5842,12 @@ def module12_phase6_build_report(final_pack):
     drift_msg = (
 # "Model drift suggests stabilizing conditions." if abs(drift_adj - 1) < 0.05
         else "Strong drift detected - volatility regime shifting."
-    )
+# )
 
     clv_msg = (
 # "Sharp-side CLV boost applied." if clv_adj > 1.0
         else "CLV suggests neutral market conditions."
-    )
+# )
 
     # ----------------------------------------------------
     # 5. Probability Commentary
@@ -5853,7 +5855,7 @@ def module12_phase6_build_report(final_pack):
     prob_msg = (
 # f"Joint hit probability: **{p_joint*100:.1f}%** "
 # f"(raw: {p_joint_raw*100:.1f}%)"
-    )
+# )
 
     # ----------------------------------------------------
     # 6. Kelly Commentary
@@ -5862,7 +5864,7 @@ def module12_phase6_build_report(final_pack):
         stake_msg = (
 # f"Recommended stake (Kelly-scaled): **${stake:.2f}**\n"
             f"Fractional Kelly applied: {final_pack.get('fractional_kelly', 'N/A')}"
-        )
+# )
     else:
         stake_msg = "Kelly size recommends **no play** due to weak EV."
 
@@ -5872,12 +5874,12 @@ def module12_phase6_build_report(final_pack):
     leg1_text = (
         f"**{leg1.get('player','Leg 1')} - {leg1.get('market','')}**\n"
 # f"Line: **{leg1.get('line','?')}**, Model Mean: **{leg1.get('mu','?'):.2f}**"
-    )
+# )
 
     leg2_text = (
         f"**{leg2.get('player','Leg 2')} - {leg2.get('market','')}**\n"
 # f"Line: **{leg2.get('line','?')}**, Model Mean: **{leg2.get('mu','?'):.2f}**"
-    )
+# )
 
     # ----------------------------------------------------
     # 8. Build Full Report
@@ -12708,7 +12710,7 @@ game-script multipliers that adjust:
 # "Sleeper": [
 # {"player":"Nikola Jokic","market":"PRA","line":47.5,"team":"DEN","opp":"MIN"},
 # ...
-        ]
+# ]
 # }
     # 
 #     return {
@@ -15187,5 +15189,3 @@ elif page == "? Overrides":
 
 elif page == "? Error Logs":
     render_error_logs()
-
-
