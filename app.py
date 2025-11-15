@@ -1523,26 +1523,15 @@ def append_history(entry: dict):
 # =========================================================
 
 def compute_leg(player, market, line, opponent, teammate_out, blowout, lookback):
-    """
-    Clean, fully corrected compute_leg used by UltraMax.
-    """
-
-    # -----------------------------
     # Resolve player
-    # -----------------------------
     pid, canonical = resolve_player(player)
     if not pid:
         return None, f"Player not found: {player}"
 
-    # -----------------------------
     # Pull logs
-    # -----------------------------
     try:
-        logs = PlayerGameLog(
-            player_id=pid,
-            season=current_season(),
-        ).get_data_frames()[0]
-    except:
+        logs = PlayerGameLog(player_id=pid, season=current_season()).get_data_frames()[0]
+    except Exception:
         return None, "API error retrieving game logs."
 
     if logs.empty:
@@ -1550,59 +1539,42 @@ def compute_leg(player, market, line, opponent, teammate_out, blowout, lookback)
 
     logs = logs.head(lookback)
 
-    # -----------------------------
-    # Market value
-    # -----------------------------
+    # Build total for market
     metrics = MARKET_METRICS.get(market, ["PTS"])
     logs["MarketVal"] = logs[metrics].sum(axis=1)
-
-    # Minutes clean
-    try:
-        logs["Minutes"] = logs["MIN"].astype(float)
-    except:
-        logs["Minutes"] = 0
+    logs["Minutes"] = logs["MIN"].astype(float)
 
     valid = logs["Minutes"] > 0
     if not valid.any():
-        return None, "No valid minutes data."
+        return None, "No valid minute data."
 
-    # -----------------------------
-    # Per-minute base
-    # -----------------------------
-    pm = logs.loc[valid, "MarketVal"] / logs.loc[valid, "Minutes"]
+    # Per-minute rates
+    base_mu_per_min = (logs.loc[valid, "MarketVal"] / logs.loc[valid, "Minutes"]).mean()
+    base_sd_per_min = (logs.loc[valid, "MarketVal"] / logs.loc[valid, "Minutes"]).std()
+    base_sd_per_min = max(base_sd_per_min, 0.10)
 
-    base_mu_per_min = float(pm.mean())
-    base_sd_per_min = float(max(pm.std(), 0.10))
-
-    # -----------------------------
     # Minutes projection
-    # -----------------------------
     proj_minutes = float(np.clip(logs["Minutes"].tail(5).mean(), 18, 40))
 
-    # -----------------------------
-    # Usage Engine
-    # -----------------------------
+    # Usage Engine v3  ✅ FIXED CALL
+    role = "primary"
+    team_usage = 1.00
     teammate_out_level = 1 if teammate_out else 0
 
     usage_mu = usage_engine_v3(
-        base_mu_per_min,
-        team_usage_rate=1.00,
+        mu_per_min=base_mu_per_min,
+        role=role,
+        team_usage_rate=team_usage,
         teammate_out_level=teammate_out_level
     )
 
-    # -----------------------------
     # Opponent Engine
-    # -----------------------------
     ctx_mult = opponent_matchup_v2(opponent, market)
 
-    # -----------------------------
     # Final mean
-    # -----------------------------
     mu = usage_mu * proj_minutes * ctx_mult
 
-    # -----------------------------
     # Volatility Engine
-    # -----------------------------
     sd = volatility_engine_v2(
         base_sd_per_min,
         proj_minutes,
@@ -1612,9 +1584,7 @@ def compute_leg(player, market, line, opponent, teammate_out, blowout, lookback)
         regime_state="normal"
     )
 
-    # -----------------------------
-    # Probability (ensemble)
-    # -----------------------------
+    # Probability
     prob = ensemble_prob_over(
         mu,
         sd,
@@ -1623,7 +1593,7 @@ def compute_leg(player, market, line, opponent, teammate_out, blowout, lookback)
         volatility_score=sd / max(mu, 1)
     )
 
-    return {
+    leg = {
         "player": canonical,
         "market": market,
         "line": float(line),
@@ -1634,7 +1604,10 @@ def compute_leg(player, market, line, opponent, teammate_out, blowout, lookback)
         "team": None,
         "teammate_out": teammate_out,
         "blowout": blowout,
-    }, None
+    }
+
+    return leg, None
+
 
 # =====================================================================
 # MODULE 13 — STREAMLIT UI INTEGRATION (FULL ULTRAMAX V4)
