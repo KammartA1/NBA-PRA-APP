@@ -1,9 +1,9 @@
 # =====================================================================
-# app.py — NBA Quant App (Master File)
+# app.py - NBA Quant App (Master File)
 # =====================================================================
 # ================================================================
-# PART 1 — STREAMLIT APP HEADER + CSS + LAYOUT
-# UltraMax NBA Prop Quant Engine — Version B3 Architecture
+# PART 1 - STREAMLIT APP HEADER + CSS + LAYOUT
+# UltraMax NBA Prop Quant Engine - Version B3 Architecture
 # ================================================================
 
 import streamlit as st
@@ -19,7 +19,7 @@ from datetime import datetime
 # ------------------------------------------------
 st.set_page_config(
     page_title="UltraMax NBA Prop Quant Engine",
-    page_icon="🔥",
+    page_icon="?",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -94,8 +94,8 @@ st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 # App Header
 # ------------------------------------------------
 st.markdown("""
-# 🔥 UltraMax NBA Prop Quant Engine — V4 (B3 Full Architecture)
-### High-Probability Sports Modeling • Automated Line Sync • Monte Carlo EV • Hedge-Fund Level Analytics
+# ? UltraMax NBA Prop Quant Engine - V4 (B3 Full Architecture)
+### High-Probability Sports Modeling ? Automated Line Sync ? Monte Carlo EV ? Hedge-Fund Level Analytics
 
 Use the tabs above to:
 - **Run 2-Pick UltraMax model**
@@ -106,18 +106,18 @@ Use the tabs above to:
 """)
 
 # ================================================================
-# PART 2 — SIDEBAR CONFIGURATION (BANKROLL + MODEL CONTROLS)
-# UltraMax NBA Prop Quant Engine — V4 (B3)
+# PART 2 - SIDEBAR CONFIGURATION (BANKROLL + MODEL CONTROLS)
+# UltraMax NBA Prop Quant Engine - V4 (B3)
 # ================================================================
 
 with st.sidebar:
 
-    st.markdown("## ⚙️ Engine Control Panel")
+    st.markdown("## ?? Engine Control Panel")
 
     # ------------------------------------------------------------
     # BANKROLL MANAGEMENT
     # ------------------------------------------------------------
-    st.markdown("### 💰 Bankroll Settings")
+    st.markdown("### ? Bankroll Settings")
 
     bankroll = st.number_input(
         "Bankroll ($)",
@@ -141,9 +141,9 @@ with st.sidebar:
 
     # ------------------------------------------------------------
     # MODEL SELF-LEARNING PARAMETERS
-    # Module 8 — Drift & CLV adjustments
+    # Module 8 - Drift & CLV adjustments
     # ------------------------------------------------------------
-    st.markdown("### 🧬 Model Learning Parameters")
+    st.markdown("### ? Model Learning Parameters")
 
     drift_adj = st.slider(
         "Model Drift Adjustment",
@@ -169,7 +169,7 @@ with st.sidebar:
     # GLOBAL VOLATILITY + HEAVY TAIL ADJUSTMENTS
     # Syncs with Module 5 + Module 10
     # ------------------------------------------------------------
-    st.markdown("### 🌪️ Volatility Controls")
+    st.markdown("### ?? Volatility Controls")
 
     global_vol_adj = st.slider(
         "Global Volatility Multiplier",
@@ -194,7 +194,7 @@ with st.sidebar:
     # ------------------------------------------------------------
     # PROJECTION OVERRIDES (Module 17)
     # ------------------------------------------------------------
-    st.markdown("### 🎯 Projection Overrides")
+    st.markdown("### ? Projection Overrides")
 
     enable_overrides = st.checkbox(
         "Enable Manual Overrides",
@@ -203,7 +203,7 @@ with st.sidebar:
     )
 
     override_mu = st.number_input(
-        "Override Mean (μ)",
+        "Override Mean (?)",
         min_value=0.0,
         max_value=100.0,
         value=0.0,
@@ -212,7 +212,7 @@ with st.sidebar:
     )
 
     override_sd = st.number_input(
-        "Override Std (σ)",
+        "Override Std (?)",
         min_value=0.0,
         max_value=40.0,
         value=0.0,
@@ -226,7 +226,7 @@ with st.sidebar:
     # PRIZEPICKS / SLEEPER LINE SYNC SETTINGS
     # Module 18
     # ------------------------------------------------------------
-    st.markdown("### 🔄 Line Providers")
+    st.markdown("### ? Line Providers")
 
     enable_pp_sync = st.checkbox(
         "Sync PrizePicks Lines",
@@ -245,7 +245,7 @@ with st.sidebar:
     # ------------------------------------------------------------
     # HISTORY + LOGGING CONTROLS (Module 20)
     # ------------------------------------------------------------
-    st.markdown("### 🗂️ History & Logging")
+    st.markdown("### ?? History & Logging")
 
     enable_history = st.checkbox(
         "Enable History Logging",
@@ -265,7 +265,7 @@ with st.sidebar:
     # DEFENSIVE MATCHUP & TEAM CONTEXT DISPLAY OPTIONS
     # Module 13 + Module 22
     # ------------------------------------------------------------
-    st.markdown("### 🛡 Defensive & Context Layers")
+    st.markdown("### ? Defensive & Context Layers")
 
     show_defensive_matchups = st.checkbox(
         "Show Defensive Matchup Breakdown",
@@ -282,11 +282,11 @@ with st.sidebar:
     # ------------------------------------------------------------
     # RUN BUTTON
     # ------------------------------------------------------------
-    run_model = st.button("🚀 Run UltraMax Model")
+    run_model = st.button("? Run UltraMax Model")
 
 
 # ======================================================================
-# MODULE 1 — GLOBAL IMPORTS, CONSTANTS, DIRECTORIES, CACHING UTILITIES
+# MODULE 1 - GLOBAL IMPORTS, CONSTANTS, DIRECTORIES, CACHING UTILITIES
 # ======================================================================
 
 import os
@@ -402,15 +402,15 @@ def resolve_player(name: str):
 
 
 # =====================================================================
-# MODULES — CORE ENGINES (2–22)
+# MODULES - CORE ENGINES (2-22)
 # =====================================================================
 
 
 # ---------------------------------------------------------
-# MODULE 2 — Game Log Fetcher (NBA API Client)
+# MODULE 2 - Game Log Fetcher (NBA API Client)
 # ---------------------------------------------------------
 # ======================================================================
-# MODULE 2A — PRIZEPICKS 4-LAYER PROXY SCRAPER ENGINE
+# MODULE 2A - PRIZEPICKS 4-LAYER PROXY SCRAPER ENGINE
 # ======================================================================
 
 PRIZEPICKS_HEADERS = [
@@ -444,7 +444,7 @@ def pp_safe_request(url):
 
 
 # ======================================================================
-# LAYER 1 — Primary JSON API
+# LAYER 1 - Primary JSON API
 # ======================================================================
 
 def pp_layer_1_json():
@@ -459,7 +459,7 @@ def pp_layer_1_json():
 
 
 # ======================================================================
-# LAYER 2 — Mirror JSON API
+# LAYER 2 - Mirror JSON API
 # ======================================================================
 
 def pp_layer_2_mirror():
@@ -473,7 +473,7 @@ def pp_layer_2_mirror():
 
 
 # ======================================================================
-# LAYER 3 — HTML Scrape + Regex Extraction
+# LAYER 3 - HTML Scrape + Regex Extraction
 # ======================================================================
 
 import re
@@ -499,7 +499,7 @@ def pp_layer_3_html():
 
 
 # ======================================================================
-# LAYER 4 — Local Cache Fallback
+# LAYER 4 - Local Cache Fallback
 # ======================================================================
 
 def pp_load_cache():
@@ -511,7 +511,7 @@ def pp_write_cache(data):
 
 
 # ======================================================================
-# DATA NORMALIZATION — Convert PrizePicks Raw Data → Clean Format
+# DATA NORMALIZATION - Convert PrizePicks Raw Data ? Clean Format
 # ======================================================================
 
 def normalize_prizepicks(raw_json):
@@ -566,7 +566,7 @@ def normalize_prizepicks(raw_json):
 
 
 # ======================================================================
-# MASTER FUNCTION — GET PRIZEPICKS LINES (ALL 4 LAYERS)
+# MASTER FUNCTION - GET PRIZEPICKS LINES (ALL 4 LAYERS)
 # ======================================================================
 
 def get_prizepicks_lines(force_refresh=False):
@@ -614,14 +614,14 @@ def get_prizepicks_lines(force_refresh=False):
         return clean
 
     # ------------------------
-    # LAYER 4 — CACHE
+    # LAYER 4 - CACHE
     # ------------------------
     if cache:
         return cache["data"]
 
     return []
 # ======================================================================
-# MODULE 2B — SLEEPER 3-LAYER LIVE LINE SCRAPER ENGINE
+# MODULE 2B - SLEEPER 3-LAYER LIVE LINE SCRAPER ENGINE
 # ======================================================================
 
 SLEEPER_BASE_URL = "https://api.sleeper.app/v1"
@@ -659,7 +659,7 @@ def sleeper_safe_request(url):
 
 
 # ======================================================================
-# LAYER 1 — MAIN SLEEPER PROJECTIONS ENDPOINT
+# LAYER 1 - MAIN SLEEPER PROJECTIONS ENDPOINT
 # ======================================================================
 
 def sleeper_layer_1_api():
@@ -673,7 +673,7 @@ def sleeper_layer_1_api():
 
 
 # ======================================================================
-# LAYER 2 — ALTERNATE STAT FEED
+# LAYER 2 - ALTERNATE STAT FEED
 # ======================================================================
 
 def sleeper_layer_2_alt():
@@ -687,7 +687,7 @@ def sleeper_layer_2_alt():
 
 
 # ======================================================================
-# LAYER 3 — HTML SCRAPE (JS EMBED)
+# LAYER 3 - HTML SCRAPE (JS EMBED)
 # ======================================================================
 
 def sleeper_layer_3_html():
@@ -787,13 +787,13 @@ def normalize_sleeper(raw):
 
 
 # ======================================================================
-# MASTER FUNCTION — GET SLEEPER LINES (3-LAYER FALLBACK)
+# MASTER FUNCTION - GET SLEEPER LINES (3-LAYER FALLBACK)
 # ======================================================================
 
 def get_sleeper_lines(force_refresh=False):
     """
     3-layer Sleeper feed with:
-        - JSON → Mirror JSON → HTML Embedded JSON
+        - JSON ? Mirror JSON ? HTML Embedded JSON
         - Safe error handling
         - Cache fallback
     """
@@ -834,7 +834,7 @@ def get_sleeper_lines(force_refresh=False):
 
     return []
 # ======================================================================
-# MODULE 2C — UNIVERSAL LINE NORMALIZER + UNIFIED LIVE LINE FEED
+# MODULE 2C - UNIVERSAL LINE NORMALIZER + UNIFIED LIVE LINE FEED
 # ======================================================================
 
 import re
@@ -853,7 +853,7 @@ def canonicalize_name(name: str):
     """
     Convert player name to canonical form:
     - lowercase
-    - remove accents (Jokić → Jokic)
+    - remove accents (Joki? ? Jokic)
     - remove extra spaces
     - underscores for spaces
     """
@@ -1013,7 +1013,7 @@ def get_unified_lines(force_refresh=False):
 
 
 # ======================================================================
-# MODULE 3 — USAGE ENGINE V3 (UltraMax V4 Edition)
+# MODULE 3 - USAGE ENGINE V3 (UltraMax V4 Edition)
 # ======================================================================
 
 import numpy as np
@@ -1068,10 +1068,10 @@ def team_usage_factor(team_usage_rate):
 def teammate_out_factor(level: int):
     """
     Redistribution scoring:
-        level 0 → no change
-        level 1 → +4–6%
-        level 2 → +7–12%
-        level 3 → +13–18%
+        level 0 ? no change
+        level 1 ? +4-6%
+        level 2 ? +7-12%
+        level 3 ? +13-18%
     """
     if level <= 0:
         return 1.00
@@ -1146,14 +1146,14 @@ def usage_engine_v3(mu_per_min,
       - mu_per_min          base per-minute production
       - role                primary / secondary / tertiary / low
       - team_usage_rate     possession and pace factor
-      - teammate_out_level  redistribution level 0–3
-      - onball_rating       creator rating (0–0.30)
-      - offball_rating      movement scorer rating (0–0.25)
+      - teammate_out_level  redistribution level 0-3
+      - onball_rating       creator rating (0-0.30)
+      - offball_rating      movement scorer rating (0-0.25)
       - team_tempo          adjusted pace index
       - opp_tempo           opponent pace index
       - blowout             bool
       - back_to_back        bool
-      - fatigue_factor      0.94–1.05
+      - fatigue_factor      0.94-1.05
 
     Output:
       - adjusted per-minute production rate
@@ -1203,9 +1203,9 @@ def usage_engine_v3(mu_per_min,
 
     return final
 # ======================================================================
-# MODULE 3 — PHASE 2
+# MODULE 3 - PHASE 2
 # ROLE ENGINE EXPANSION (Dynamic Role Classification)
-# UltraMax V4 — Advanced Role Detection System
+# UltraMax V4 - Advanced Role Detection System
 # ======================================================================
 
 import numpy as np
@@ -1340,7 +1340,7 @@ def classify_dynamic_role(
 # -------------------------------------------------------------
 def dynamic_role_multiplier(base_role: str, confidence: float):
     """
-    Converts dynamic role + confidence → multiplier
+    Converts dynamic role + confidence ? multiplier
     """
 
     role_base = ROLE_IMPACT.get(base_role, 1.00)
@@ -1353,9 +1353,9 @@ def dynamic_role_multiplier(base_role: str, confidence: float):
 
     return boosted
 # ======================================================================
-# MODULE 3 — PHASE 3
+# MODULE 3 - PHASE 3
 # TEAM USAGE ENGINE EXPANSION (Pace, Possession Load, Injury Drift)
-# UltraMax V4 — Team Context + Usage Redistribution Layer
+# UltraMax V4 - Team Context + Usage Redistribution Layer
 # ======================================================================
 
 import numpy as np
@@ -1412,7 +1412,7 @@ def defensive_adjusted_pace(team_abbrev, opponent_abbrev):
 # -------------------------------------------------------------
 def compute_team_possession_load(pace, off_rating):
     """
-    Converts pace + offensive rating → team possession load.
+    Converts pace + offensive rating ? team possession load.
     Low pace + bad offense = slow environment (hurts usage)
     High pace + elite offense = fast environment (boosts usage)
     """
@@ -1445,11 +1445,11 @@ def injury_drift_factor(teammate_out_level):
 # -------------------------------------------------------------
 def opponent_def_context(opponent_abbrev):
     """
-    Converts defensive rating → multiplier affecting usage
+    Converts defensive rating ? multiplier affecting usage
     """
     def_rtg = TEAM_DEF_RTG.get(opponent_abbrev, TEAM_DEF_RTG["DEFAULT"])
 
-    score = 1.00 + ((113.0 - def_rtg) / 40.0)  # lower defense → higher usage
+    score = 1.00 + ((113.0 - def_rtg) / 40.0)  # lower defense ? higher usage
     return float(np.clip(score, 0.88, 1.12))
 
 
@@ -1493,7 +1493,7 @@ def team_usage_rate_multiplier(team_abbrev, opponent_abbrev, teammate_out_level)
 
     return final_mult
 # ======================================================================
-# MODULE 3 — PHASE 4
+# MODULE 3 - PHASE 4
 # LINEUP-BASED USAGE REDISTRIBUTION ENGINE (On/Off, Synergy, Role Clusters)
 # ======================================================================
 
@@ -1579,7 +1579,7 @@ def compute_fallback_multiplier(position):
 # ON/OFF USAGE SWINGS (simple but powerful)
 # --------------------------------------------------------
 ON_OFF_IMPACT = {
-    # Player archetype is OUT → usage rebalanced
+    # Player archetype is OUT ? usage rebalanced
     "primary_creator": 1.10,
     "secondary_creator": 1.06,
     "off_ball_scorer": 1.04,
@@ -1591,7 +1591,7 @@ ON_OFF_IMPACT = {
 
 def on_off_usage_boost(player_role, missing_roles):
     """
-    If a player is a PG and missing players are creators → big boost.
+    If a player is a PG and missing players are creators ? big boost.
     """
     if not missing_roles:
         return 1.00
@@ -1618,7 +1618,7 @@ def compute_lineup_redistribution(position, player_role, teammate_out_level, mis
     Inputs:
        - position: PG/SG/SF/PF/C
        - player_role: primary_creator, off_ball_scorer, etc
-       - teammate_out_level: 0–3
+       - teammate_out_level: 0-3
        - missing_roles: list of roles of missing teammates
     """
 
@@ -1658,7 +1658,7 @@ def compute_lineup_redistribution(position, player_role, teammate_out_level, mis
 
 
 # --------------------------------------------------------
-# Helper — convert roles to positions (rough)
+# Helper - convert roles to positions (rough)
 # --------------------------------------------------------
 def position_from_role(role):
     if "creator" in role:
@@ -1673,8 +1673,8 @@ def position_from_role(role):
         return "C"
     return "SF"
 # ======================================================================
-# MODULE 3 — PHASE 5
-# USAGE ENGINE V3 — FINAL ASSEMBLY (UltraMax Version)
+# MODULE 3 - PHASE 5
+# USAGE ENGINE V3 - FINAL ASSEMBLY (UltraMax Version)
 # Combines:
 #   - Phase 1: Base per-minute productivity normalization
 #   - Phase 2: Role curve shaping
@@ -1705,32 +1705,32 @@ def usage_engine_v3_final(
     - Stabilizes & clamps output for realistic distribution
 
     Inputs:
-       mu_per_min_base      — baseline per-minute production
-       position             — PG/SG/SF/PF/C
-       player_role          — primary_creator, connector, rebound_big, etc
-       team_usage_rate      — pace/possession share scaling
-       teammate_out_level   — 0–3 severity of injuries
-       missing_roles        — list of roles missing from lineup
-       pace_factor          — additional pace adjustment for certain games
-       offensive_focus      — how much offense flows through this player (team strategy)
+       mu_per_min_base      - baseline per-minute production
+       position             - PG/SG/SF/PF/C
+       player_role          - primary_creator, connector, rebound_big, etc
+       team_usage_rate      - pace/possession share scaling
+       teammate_out_level   - 0-3 severity of injuries
+       missing_roles        - list of roles missing from lineup
+       pace_factor          - additional pace adjustment for certain games
+       offensive_focus      - how much offense flows through this player (team strategy)
 
     Output:
-       adjusted_per_min     — final per-minute projection
+       adjusted_per_min     - final per-minute projection
     """
 
     # ------------------------------------------------------
-    # 1 — BASE NORMALIZATION (Phase 1)
+    # 1 - BASE NORMALIZATION (Phase 1)
     # ------------------------------------------------------
     mu_base = max(mu_per_min_base, 0.04)
 
     # ------------------------------------------------------
-    # 2 — ROLE CURVE (Phase 2)
+    # 2 - ROLE CURVE (Phase 2)
     # ------------------------------------------------------
     role_adj = ROLE_IMPACT.get(player_role.lower(), 1.00)
     role_adj = _smooth_curve(role_adj, power=1.20)
 
     # ------------------------------------------------------
-    # 3 — TEAM CONTEXT (Phase 3)
+    # 3 - TEAM CONTEXT (Phase 3)
     # ------------------------------------------------------
     team_adj = team_usage_factor(team_usage_rate)
     team_adj = _smooth_curve(team_adj, power=1.10)
@@ -1740,7 +1740,7 @@ def usage_engine_v3_final(
     focus_adj = float(np.clip(offensive_focus, 0.90, 1.12))
 
     # ------------------------------------------------------
-    # 4 — LINEUP REDISTRIBUTION (Phase 4)
+    # 4 - LINEUP REDISTRIBUTION (Phase 4)
     # ------------------------------------------------------
     lineup_adj = compute_lineup_redistribution(
         position=position,
@@ -1750,7 +1750,7 @@ def usage_engine_v3_final(
     )
 
     # ------------------------------------------------------
-    # 5 — FINAL MULTIPLIER COMPOSITION
+    # 5 - FINAL MULTIPLIER COMPOSITION
     # ------------------------------------------------------
     combined_multiplier = (
         role_adj ** 0.40 *
@@ -1761,7 +1761,7 @@ def usage_engine_v3_final(
     )
 
     # ------------------------------------------------------
-    # 6 — APPLY USAGE ENGINE TO BASE
+    # 6 - APPLY USAGE ENGINE TO BASE
     # ------------------------------------------------------
     mu_final = mu_base * combined_multiplier
 
@@ -1770,8 +1770,8 @@ def usage_engine_v3_final(
 
     return mu_final
 # ======================================================================
-# MODULE 3 — PHASE 6
-# USAGE ENGINE V3 — KERNEL WRAPPER + SAFETY LAYER
+# MODULE 3 - PHASE 6
+# USAGE ENGINE V3 - KERNEL WRAPPER + SAFETY LAYER
 # Connects all sub-phases into final stable function usage_engine_v3()
 # ======================================================================
 
@@ -1831,8 +1831,8 @@ def usage_engine_v3(
         offensive_focus=float(offensive_focus),
     )
 # ======================================================================
-# MODULE 4 — PHASE 1
-# OPPONENT DEFENSE ENGINE V2.0 — BASE TEAM PROFILES
+# MODULE 4 - PHASE 1
+# OPPONENT DEFENSE ENGINE V2.0 - BASE TEAM PROFILES
 # ======================================================================
 
 # Each team receives a "defensive context profile":
@@ -1935,8 +1935,8 @@ DEFAULT_OPP_CONTEXT = {
 }
 
 # ======================================================================
-# MODULE 4 — PHASE 2
-# OPPONENT DEFENSE ENGINE V2.0 — NORMALIZATION + SAFETY LAYER
+# MODULE 4 - PHASE 2
+# OPPONENT DEFENSE ENGINE V2.0 - NORMALIZATION + SAFETY LAYER
 # ======================================================================
 
 def normalize_team_code(team: str) -> str:
@@ -2015,7 +2015,7 @@ def get_positional_modifier(ctx: dict, position: str) -> float:
     Returns positional matchup multiplier:
        - G (guards)
        - W (wings)
-       - F (forwards → treated as wings)
+       - F (forwards ? treated as wings)
        - C (centers/bigs)
     """
     if not position:
@@ -2035,7 +2035,7 @@ def get_positional_modifier(ctx: dict, position: str) -> float:
     return 1.00
 
 # ======================================================================
-# MODULE 4 — PHASE 3
+# MODULE 4 - PHASE 3
 # OPPONENT MATCHUP ENGINE V2 (CORE MULTIPLIER)
 # ======================================================================
 
@@ -2109,7 +2109,7 @@ def opponent_matchup_v2(opponent_team: str, market: str, position: str = "G"):
 
     return base_mult
 # =====================================================================
-# MODULE 5 — PHASE 1
+# MODULE 5 - PHASE 1
 # BASE VOLATILITY EXTRACTION ENGINE
 # =====================================================================
 
@@ -2156,7 +2156,7 @@ def extract_base_volatility(game_logs, market: str):
     vals = vals.dropna()
 
     if len(vals) < 3:
-        # not enough samples → fallback to safe defaults
+        # not enough samples ? fallback to safe defaults
         return {
             "sd_raw": 3.0,
             "sd_clamped": 3.0,
@@ -2194,13 +2194,13 @@ def extract_base_volatility(game_logs, market: str):
         "values": arr
     }
 # =====================================================================
-# MODULE 5 — PHASE 2
+# MODULE 5 - PHASE 2
 # REGIME-AWARE VOLATILITY ENGINE
 # =====================================================================
 
 def classify_regime(last_values: np.ndarray):
     """
-    Classifies a volatility/production regime based on last 6–10 games.
+    Classifies a volatility/production regime based on last 6-10 games.
     Returns one of:
         - "hot"
         - "cold"
@@ -2279,7 +2279,7 @@ def minutes_volatility_adjustment(minutes_array):
 def usage_shock_adjustment(teammate_out_level: int, base_mu: float):
     """
     Large usage jumps create additional volatility.
-    teammate_out_level ∈ {0,1,2,3}
+    teammate_out_level ? {0,1,2,3}
     """
 
     if teammate_out_level == 0:
@@ -2347,7 +2347,7 @@ def volatility_engine_phase2(
         "usage_mult": usage_mult
     }
 # =====================================================================
-# MODULE 5 — PHASE 3
+# MODULE 5 - PHASE 3
 # NONLINEAR VOLATILITY RESHAPING ENGINE
 # =====================================================================
 
@@ -2382,7 +2382,7 @@ def late_game_chaos_multiplier(minutes_proj: float):
     """
     Late-game chaos boosts volatility for players:
         - < 28 min: unpredictable role/change
-        - 28–34 min: baseline chaos
+        - 28-34 min: baseline chaos
         - 34+ min: low chaos (stable rotations)
     """
     if minutes_proj >= 35:
@@ -2417,9 +2417,9 @@ def blowout_volatility_adjustment(blowout_flag: bool, market: str):
 def role_risk_profile(role: str):
     """
     Role-based variance shaping.
-    Primary scorers → slightly more stable
-    Secondary → normal variance
-    Tertiary/bench → chaotic
+    Primary scorers ? slightly more stable
+    Secondary ? normal variance
+    Tertiary/bench ? chaotic
     """
 
     role = str(role).lower()
@@ -2500,7 +2500,7 @@ def volatility_engine_phase3(
         "role_mult": role_mult,
     }
 # =====================================================================
-# MODULE 5 — PHASE 4
+# MODULE 5 - PHASE 4
 # FINAL VOLATILITY FUSION + ERROR MODELING + DISTRIBUTION MORPHING
 # =====================================================================
 
@@ -2524,9 +2524,9 @@ def market_error_baseline(market: str):
 def distribution_morph_factor(mu: float, sd: float, market: str):
     """
     Adjust variance depending on:
-      • how inflated the mean is
-      • if the market tends toward fat-right tails
-      • if rebounds/assists produce clustered zero/low values
+      ? how inflated the mean is
+      ? if the market tends toward fat-right tails
+      ? if rebounds/assists produce clustered zero/low values
     """
 
     ratio = sd / max(mu, 1e-6)
@@ -2542,7 +2542,7 @@ def distribution_morph_factor(mu: float, sd: float, market: str):
         return float(np.clip(1.0 + (ratio - 0.25) * 0.55, 0.85, 1.30))
 
     elif m == "AST":
-        # Assists produce clustered low values → need stabilization
+        # Assists produce clustered low values ? need stabilization
         return float(np.clip(1.0 + (ratio - 0.18) * 0.25, 0.90, 1.15))
 
     else:  # PRA
@@ -2560,7 +2560,7 @@ def final_error_adjustment(mu: float, sd: float, market: str):
 
     base_err = market_error_baseline(market)
 
-    # high means create compressed variance — correction expands it
+    # high means create compressed variance - correction expands it
     mean_pressure = float(np.clip(mu / 25, 0.80, 1.40))
 
     # sd pressure: if sd too low relative to mean, inflate it
@@ -2578,7 +2578,7 @@ def volatility_engine_phase4(
     market: str
 ):
     """
-    Phase 4 — Market Error Modeling + Distribution Morphing.
+    Phase 4 - Market Error Modeling + Distribution Morphing.
     
     Produces the FINAL SD used in Module 10 Monte Carlo.
     """
@@ -2608,7 +2608,7 @@ def volatility_engine_phase4(
         "final_sd": final_sd
     }
 # =====================================================================
-# MODULE 6 — ENSEMBLE PROBABILITY ENGINE (FULL)
+# MODULE 6 - ENSEMBLE PROBABILITY ENGINE (FULL)
 # Blends 5+ statistical models to estimate OVER probability
 # =====================================================================
 
@@ -2678,18 +2678,18 @@ def ensemble_prob_over(mu, sd, line, market, volatility_score):
     FULL ENSEMBLE MODEL
     ----------------------------------------------------
     Blends:
-      • Standard Normal
-      • Skew-normal
-      • Lognormal tail
-      • Variance-compensated normal
-      • Right-tail expanded normal
+      ? Standard Normal
+      ? Skew-normal
+      ? Lognormal tail
+      ? Variance-compensated normal
+      ? Right-tail expanded normal
 
     Inputs:
-      mu                 — final projection mean (from M5)
-      sd                 — final projection SD (from M5 Phase 4)
-      line               — market line
-      market             — PTS / REB / AST / PRA
-      volatility_score   — sd/mu ratio (used for weighting)
+      mu                 - final projection mean (from M5)
+      sd                 - final projection SD (from M5 Phase 4)
+      line               - market line
+      market             - PTS / REB / AST / PRA
+      volatility_score   - sd/mu ratio (used for weighting)
 
     Output:
       final_prob_over (float)
@@ -2747,7 +2747,7 @@ def ensemble_prob_over(mu, sd, line, market, volatility_score):
     return float(np.clip(final, 0.01, 0.99))
 
 # =====================================================================
-# MODULE 7 — CORRELATION ENGINE (PHASE 1)
+# MODULE 7 - CORRELATION ENGINE (PHASE 1)
 # Baseline Stat-Type Correlation Matrix (PTS / REB / AST / PRA)
 # =====================================================================
 
@@ -2782,7 +2782,7 @@ BASE_CORR_MATRIX = {
 
 
 # ---------------------------------------------------------------------
-# 2. Helper — fetch baseline correlation between two markets
+# 2. Helper - fetch baseline correlation between two markets
 # ---------------------------------------------------------------------
 def _get_base_stat_corr(market_a, market_b):
     a = market_a.upper()
@@ -2811,7 +2811,7 @@ def correlation_engine_phase1(leg1, leg2):
     -----------------------------------------
     Returns baseline correlation between legs
     based purely on:
-        • Market type (PTS/REB/AST/PRA)
+        ? Market type (PTS/REB/AST/PRA)
     -----------------------------------------
     Used as:
         base_corr = correlation_engine_phase1(leg1, leg2)
@@ -2827,7 +2827,7 @@ def correlation_engine_phase1(leg1, leg2):
 
     return base_corr
 # =====================================================================
-# MODULE 7 — CORRELATION ENGINE (PHASE 2)
+# MODULE 7 - CORRELATION ENGINE (PHASE 2)
 # Context-Adjusted Correlation: minutes, usage, pace, opponent, volatility
 # =====================================================================
 
@@ -2835,7 +2835,7 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------
-# 1. Helper — Minutes Coupling
+# 1. Helper - Minutes Coupling
 # Higher minute overlap -> higher correlation
 # ---------------------------------------------------------------------
 def _minutes_coupling(mins1, mins2):
@@ -2848,8 +2848,8 @@ def _minutes_coupling(mins1, mins2):
 
 
 # ---------------------------------------------------------------------
-# 2. Helper — Usage Coupling
-# If both players have elevated usage → higher correlation
+# 2. Helper - Usage Coupling
+# If both players have elevated usage ? higher correlation
 # ---------------------------------------------------------------------
 def _usage_coupling(u1, u2):
     base = (u1 + u2) / 2
@@ -2858,9 +2858,9 @@ def _usage_coupling(u1, u2):
 
 
 # ---------------------------------------------------------------------
-# 3. Helper — Pace Environment
-# Fast games → higher positive covariance
-# Slow grind games → reduce covariance
+# 3. Helper - Pace Environment
+# Fast games ? higher positive covariance
+# Slow grind games ? reduce covariance
 # ---------------------------------------------------------------------
 def _pace_factor(team1_pace, team2_pace):
     pace = (team1_pace + team2_pace) / 2
@@ -2871,7 +2871,7 @@ def _pace_factor(team1_pace, team2_pace):
 
 
 # ---------------------------------------------------------------------
-# 4. Helper — Opponent Defensive Style Correlation Multiplier
+# 4. Helper - Opponent Defensive Style Correlation Multiplier
 # Based on whether the opponent allows correlated stat patterns
 # ---------------------------------------------------------------------
 def _opponent_def_corr_boost(def_profile1, def_profile2, market1, market2):
@@ -2885,7 +2885,7 @@ def _opponent_def_corr_boost(def_profile1, def_profile2, market1, market2):
     boost = 1.0
 
     if market1 == "PTS" and market2 == "AST":
-        # Teams that collapse paint → higher PTS+AST correlation
+        # Teams that collapse paint ? higher PTS+AST correlation
         if def_profile1.get("allows_high_pts") and def_profile1.get("allows_high_ast"):
             boost += 0.08
 
@@ -2900,7 +2900,7 @@ def _opponent_def_corr_boost(def_profile1, def_profile2, market1, market2):
 
 
 # ---------------------------------------------------------------------
-# 5. Helper — Volatility Synchronization
+# 5. Helper - Volatility Synchronization
 # High volatility players tend to have more correlated outcomes
 # ---------------------------------------------------------------------
 def _volatility_sync(sd1, sd2):
@@ -2910,25 +2910,25 @@ def _volatility_sync(sd1, sd2):
 
 
 # ---------------------------------------------------------------------
-# 6. PHASE 2 — Contextual correlation engine
+# 6. PHASE 2 - Contextual correlation engine
 # Combines:
-#     • Baseline stat-type correlation (Phase 1)
-#     • Minutes coupling
-#     • Usage coupling
-#     • Pace environment
-#     • Opponent defensive profile
-#     • Volatility overlap
+#     ? Baseline stat-type correlation (Phase 1)
+#     ? Minutes coupling
+#     ? Usage coupling
+#     ? Pace environment
+#     ? Opponent defensive profile
+#     ? Volatility overlap
 # ---------------------------------------------------------------------
 def correlation_engine_phase2(leg1, leg2, base_corr_phase1):
     """
     Phase 2:
     -------------------------------------------------------
     Take baseline correlation and adjust it based on:
-        • minutes overlap
-        • usage similarity
-        • pace context
-        • opponent defensive tendencies
-        • volatility overlap
+        ? minutes overlap
+        ? usage similarity
+        ? pace context
+        ? opponent defensive tendencies
+        ? volatility overlap
     -------------------------------------------------------
     """
 
@@ -2982,7 +2982,7 @@ def correlation_engine_phase2(leg1, leg2, base_corr_phase1):
 
     return corr
 # =====================================================================
-# MODULE 7 — CORRELATION ENGINE (PHASE 3)
+# MODULE 7 - CORRELATION ENGINE (PHASE 3)
 # Volatility-Weighted Correlation + Shock Modeling + Covariance Dynamics
 # =====================================================================
 
@@ -3015,7 +3015,7 @@ def _blowout_drift(blow1, blow2):
 
 # -----------------------------------------------------------
 # 3. Injury Shock Adjustment
-# If either leg has "teammate out", usage spikes → correlation rises.
+# If either leg has "teammate out", usage spikes ? correlation rises.
 # -----------------------------------------------------------
 def _injury_shock(teammate_out1, teammate_out2):
     if teammate_out1 and teammate_out2:
@@ -3031,7 +3031,7 @@ def _injury_shock(teammate_out1, teammate_out2):
 # -----------------------------------------------------------
 def _rotation_volatility(team_rot1, team_rot2):
     """
-    team_rot = value between 0.8–1.2
+    team_rot = value between 0.8-1.2
         0.80 = very stable
         1.20 = chaotic rotation
     """
@@ -3055,27 +3055,27 @@ def _game_script_covariance(style1, style2):
 
 
 # -----------------------------------------------------------
-# 6. Phase 3 — Final correlation synthesis
+# 6. Phase 3 - Final correlation synthesis
 # This takes:
 #     base_corr_phase2 (already adjusted)
 # and integrates:
-#     • volatility imbalance
-#     • shock events
-#     • rotation chaos
-#     • game script synergy
-#     • nonlinear shaping
+#     ? volatility imbalance
+#     ? shock events
+#     ? rotation chaos
+#     ? game script synergy
+#     ? nonlinear shaping
 # -----------------------------------------------------------
 def correlation_engine_phase3(leg1, leg2, base_corr_phase2):
     """
     Phase 3:
     -------------------------------------------------------
     Applies final weighting:
-        • volatility imbalance
-        • blowout shocks
-        • injury shocks
-        • rotation chaos
-        • game script synergy
-        • nonlinear curve shaping
+        ? volatility imbalance
+        ? blowout shocks
+        ? injury shocks
+        ? rotation chaos
+        ? game script synergy
+        ? nonlinear curve shaping
     -------------------------------------------------------
     """
 
@@ -3128,13 +3128,13 @@ def correlation_engine_phase3(leg1, leg2, base_corr_phase2):
 
     # ----------------------------------------------
     # FINAL CLAMP (Phase 3 cap)
-    # Next phases (4–5) apply smoothing + learning.
+    # Next phases (4-5) apply smoothing + learning.
     # ----------------------------------------------
     corr = float(np.clip(corr, -0.40, 0.80))
 
     return corr
 # =====================================================================
-# MODULE 7 — CORRELATION ENGINE (PHASE 4)
+# MODULE 7 - CORRELATION ENGINE (PHASE 4)
 # Self-Learning Correlation Smoothing & Historical Covariance Calibration
 # =====================================================================
 
@@ -3159,7 +3159,7 @@ HISTORICAL_CORR_PRIOR = {
 # ------------------------------------------------------------
 def _bayesian_shrink(corr_phase3, corr_prior, confidence):
     """
-    confidence: 0–1 scale
+    confidence: 0-1 scale
         1.0 = rely on data
         0.0 = rely fully on priors
     """
@@ -3196,8 +3196,8 @@ def _select_corr_prior(leg1, leg2):
 # ------------------------------------------------------------
 def _correlation_confidence_model(leg1, leg2):
     """
-    Higher confidence → rely more on Phase 3
-    Lower confidence → shrink toward prior
+    Higher confidence ? rely more on Phase 3
+    Lower confidence ? shrink toward prior
     """
 
     sd1 = float(leg1.get("sd", 5.0))
@@ -3206,11 +3206,11 @@ def _correlation_confidence_model(leg1, leg2):
     minutes1 = float(leg1.get("proj_minutes", 28))
     minutes2 = float(leg2.get("proj_minutes", 28))
 
-    # Lower volatility + stable minutes → higher confidence
+    # Lower volatility + stable minutes ? higher confidence
     vol_score = 1.0 / (1.0 + abs(sd1 - sd2))
     min_score = ((minutes1 + minutes2) / 60.0) ** 0.75
 
-    # Teammate injuries increase instability → reduce confidence
+    # Teammate injuries increase instability ? reduce confidence
     inj_penalty = 0.90 if (leg1.get("teammate_out") or leg2.get("teammate_out")) else 1.00
 
     confidence = vol_score * min_score * inj_penalty
@@ -3225,10 +3225,10 @@ def correlation_engine_phase4(leg1, leg2, corr_phase3):
     Phase 4:
     -------------------------------------------------------
     Applies:
-        • Bayesian priors
-        • Confidence weighting
-        • Uncertainty smoothing
-        • Nonlinear range correction
+        ? Bayesian priors
+        ? Confidence weighting
+        ? Uncertainty smoothing
+        ? Nonlinear range correction
     -------------------------------------------------------
     Produces a stable, realistic, learned correlation.
     """
@@ -3257,7 +3257,7 @@ def correlation_engine_phase4(leg1, leg2, corr_phase3):
 
     return corr_final
 # =====================================================================
-# MODULE 7 — CORRELATION ENGINE (PHASE 5)
+# MODULE 7 - CORRELATION ENGINE (PHASE 5)
 # Dynamic Learning + Cross-Market Covariance Modeling (FINAL CORRELATION)
 # =====================================================================
 
@@ -3357,11 +3357,11 @@ def correlation_engine_phase5(leg1, leg2, corr_phase4):
     Phase 5:
     -------------------------------------------------------
     Applies:
-        • Cross-market covariance learning
-        • Historical correlation adjustment
-        • Market synergy weighting
-        • Stabilization dampening
-        • Final nonlinear soft clamp
+        ? Cross-market covariance learning
+        ? Historical correlation adjustment
+        ? Market synergy weighting
+        ? Stabilization dampening
+        ? Final nonlinear soft clamp
     -------------------------------------------------------
     Produces:
         The TRUE correlation used for Monte Carlo + EV
@@ -3412,7 +3412,7 @@ def correlation_engine_phase5(leg1, leg2, corr_phase4):
 
     return corr
 # =====================================================================
-# MODULE 8 — DRIFT & CLV SELF-LEARNING ENGINE (PHASE 1)
+# MODULE 8 - DRIFT & CLV SELF-LEARNING ENGINE (PHASE 1)
 # Infrastructure for tracking model drift + CLV accuracy over time
 # =====================================================================
 
@@ -3427,12 +3427,12 @@ import streamlit as st
 def _init_drift_memory():
     """
     Creates memory containers inside Streamlit session_state to track:
-        • projection drift
-        • EV vs actual outcomes
-        • CLV (closing line value)
-        • long-term model slope & bias direction
+        ? projection drift
+        ? EV vs actual outcomes
+        ? CLV (closing line value)
+        ? long-term model slope & bias direction
 
-    This is the foundation for Phases 2–4.
+    This is the foundation for Phases 2-4.
     """
 
     if "drift_memory" not in st.session_state:
@@ -3458,18 +3458,18 @@ def log_drift_and_clv(
     Adds one observation into the drift memory system.
 
     Inputs:
-        model_prob     — model’s predicted probability
-        actual_result  — 1 if over hit, 0 if under
-        opening_line   — line when user played it
-        closing_line   — final line before lock
-        market         — PTS / REB / AST / PRA
+        model_prob     - model's predicted probability
+        actual_result  - 1 if over hit, 0 if under
+        opening_line   - line when user played it
+        closing_line   - final line before lock
+        market         - PTS / REB / AST / PRA
     """
 
     _init_drift_memory()
     mem = st.session_state["drift_memory"]
 
-    ev_error = actual_result - model_prob       # positive → underconfident, negative → overconfident
-    clv_edge = closing_line - opening_line      # positive → beat the line, negative → lost CLV
+    ev_error = actual_result - model_prob       # positive ? underconfident, negative ? overconfident
+    clv_edge = closing_line - opening_line      # positive ? beat the line, negative ? lost CLV
 
     mem["records"].append({
         "timestamp": time.time(),
@@ -3493,7 +3493,7 @@ def compute_drift_multiplier(window=120):
     Looks at up to the last N (default 120) recorded predictions.
 
     Produces:
-        drift_mult — correction applied to final probability
+        drift_mult - correction applied to final probability
                       ( >1.00 = model too conservative )
                       ( <1.00 = model too aggressive )
     """
@@ -3511,8 +3511,8 @@ def compute_drift_multiplier(window=120):
     except:
         drift = 0.00
 
-    # Convert drift → multiplier
-    # Positive drift means model was underconfident → boost p
+    # Convert drift ? multiplier
+    # Positive drift means model was underconfident ? boost p
     mult = 1.00 + drift * 0.65
 
     # Clamp to safe range
@@ -3526,10 +3526,10 @@ def compute_drift_multiplier(window=120):
 def compute_clv_multiplier(window=150):
     """
     Looks at line movement (CLV) to determine:
-        • whether model is beating the market
-        • how aggressively we can trust projections
+        ? whether model is beating the market
+        ? how aggressively we can trust projections
 
-    If CLV is consistently positive → model gets a confidence boost.
+    If CLV is consistently positive ? model gets a confidence boost.
     """
 
     _init_drift_memory()
@@ -3575,7 +3575,7 @@ def get_drift_clv_stats():
         "n_records": len(st.session_state["drift_memory"]["records"])
     }
 # =====================================================================
-# MODULE 8 — DRIFT & CLV SELF-LEARNING ENGINE (PHASE 2)
+# MODULE 8 - DRIFT & CLV SELF-LEARNING ENGINE (PHASE 2)
 # Segmented drift multipliers (PTS/REB/AST/PRA) + decay weighting
 # =====================================================================
 
@@ -3610,10 +3610,10 @@ def log_segmented_drift(model_prob, actual, market, role):
     Adds drift samples into properly segmented pools.
 
     Inputs:
-        model_prob — predicted p(over)
-        actual     — 1 or 0
-        market     — PTS, REB, AST, PRA
-        role       — primary / secondary / bench
+        model_prob - predicted p(over)
+        actual     - 1 or 0
+        market     - PTS, REB, AST, PRA
+        role       - primary / secondary / bench
     """
 
     _init_segmented_drift()
@@ -3647,7 +3647,7 @@ def log_segmented_drift(model_prob, actual, market, role):
 
 
 # ---------------------------------------------------------------------
-# 3. Helper — decay-weighted mean drift
+# 3. Helper - decay-weighted mean drift
 # ---------------------------------------------------------------------
 def _decay_weighted_mean(values, decay=0.975):
     """
@@ -3685,7 +3685,7 @@ def get_market_drift_multiplier(market):
     else:
         drift = _decay_weighted_mean(seg["pra"])
 
-    # Convert drift → multiplier
+    # Convert drift ? multiplier
     mult = 1.0 + drift * 0.60
     mult = float(np.clip(mult, 0.88, 1.22))
     return mult
@@ -3723,11 +3723,11 @@ def get_role_drift_multiplier(role):
 def get_combined_drift_multiplier(market, role):
     """
     Combines:
-        • global drift
-        • market-specific drift
-        • role-specific drift
+        ? global drift
+        ? market-specific drift
+        ? role-specific drift
 
-    This becomes the final drift factor in Modules 10–12.
+    This becomes the final drift factor in Modules 10-12.
     """
 
     global_drift = compute_drift_multiplier()
@@ -3743,7 +3743,7 @@ def get_combined_drift_multiplier(market, role):
 
     return float(np.clip(combined, 0.85, 1.25))
 # =====================================================================
-# MODULE 8 — PHASE 3: CLOSING LINE VALUE (CLV) SELF-LEARNING ENGINE
+# MODULE 8 - PHASE 3: CLOSING LINE VALUE (CLV) SELF-LEARNING ENGINE
 # =====================================================================
 
 import numpy as np
@@ -3763,18 +3763,18 @@ def _init_clv():
 def log_clv(initial_line, closing_line, market):
     """
     Log CLV difference:
-        positive delta → sharp side
-        negative delta → bad side
+        positive delta ? sharp side
+        negative delta ? bad side
 
     Example:
         Model projected PRA = 32.5
         You took o31.5
-        Closing line = 33.5 → +2 (good)
+        Closing line = 33.5 ? +2 (good)
 
     Inputs:
-        initial_line — the line at time of bet/model calculation
-        closing_line — the closing market line before game starts
-        market       — PTS, REB, AST, PRA (stored for segmentation later)
+        initial_line - the line at time of bet/model calculation
+        closing_line - the closing market line before game starts
+        market       - PTS, REB, AST, PRA (stored for segmentation later)
     """
 
     _init_clv()
@@ -3802,11 +3802,11 @@ def compute_clv_multiplier():
     """
     Convert CLV results into a stable model probability multiplier.
 
-    CLV → sharp indicator
+    CLV ? sharp indicator
         Positive CLV (closing line moves TOWARD your projection)
         means your model had the correct side.
 
-    Returns a number 0.85–1.25.
+    Returns a number 0.85-1.25.
     """
 
     _init_clv()
@@ -3819,8 +3819,8 @@ def compute_clv_multiplier():
     mean_clv = float(np.mean(deltas))
 
     # Apply nonlinear soft scaling
-    # +1 CLV → ~ +6% multiplier
-    # -1 CLV → ~ -6% multiplier
+    # +1 CLV ? ~ +6% multiplier
+    # -1 CLV ? ~ -6% multiplier
     clv_mult = 1.0 + mean_clv * 0.06
 
     # stability clamp
@@ -3873,7 +3873,7 @@ def get_combined_clv_multiplier(market):
 
     return float(np.clip(combined, 0.85, 1.22))
 # =====================================================================
-# MODULE 8 — PHASE 4: Unified Bias Engine (Drift × CLV × Volatility)
+# MODULE 8 - PHASE 4: Unified Bias Engine (Drift ? CLV ? Volatility)
 # =====================================================================
 
 import numpy as np
@@ -3890,8 +3890,8 @@ def detect_volatility_state(sd, market):
         - high-volatility regime
 
     Used to scale drift + CLV effects:
-        High volatility → weaker confidence in bias corrections
-        Low volatility → stronger corrections
+        High volatility ? weaker confidence in bias corrections
+        Low volatility ? stronger corrections
     """
     # Market-specific volatility ranges
     baselines = {
@@ -3919,8 +3919,8 @@ def volatility_bias_multiplier(sd, market):
     """
     Converts volatility regime into a stabilizer multiplier.
 
-    Low volatility → more confidence → >1 multiplier  
-    High volatility → less confidence → <1 multiplier  
+    Low volatility ? more confidence ? >1 multiplier  
+    High volatility ? less confidence ? <1 multiplier  
     """
     state = detect_volatility_state(sd, market)
 
@@ -3964,14 +3964,14 @@ def unified_bias_multiplier(
         (vol_mult ** vol_c)
     )
 
-    # Stability bounds — prevents runaway bias
+    # Stability bounds - prevents runaway bias
     unified = float(np.clip(unified, 0.80, 1.28))
 
     return unified
 
 
 # ---------------------------------------------------------------
-# 4. High-level helper used by Modules 10–12
+# 4. High-level helper used by Modules 10-12
 # ---------------------------------------------------------------
 def compute_final_bias_multiplier(
     market,
@@ -3995,7 +3995,7 @@ def compute_final_bias_multiplier(
         clv_mult=clv_mult
     )
 # =====================================================================
-# MODULE 9 — PHASE 1: Calibration Storage Layer
+# MODULE 9 - PHASE 1: Calibration Storage Layer
 # =====================================================================
 
 import os
@@ -4107,7 +4107,7 @@ def add_calibration_record(
 def get_recent_calibration(n=200):
     """
     Returns the last N calibration records.
-    Used by phases 2–4 for:
+    Used by phases 2-4 for:
       - drift learning
       - CLV learning
       - bias correction
@@ -4116,7 +4116,7 @@ def get_recent_calibration(n=200):
     data = load_calibration_data()
     return data["records"][-n:]
 # =====================================================================
-# MODULE 9 — PHASE 2: Drift Learning Engine
+# MODULE 9 - PHASE 2: Drift Learning Engine
 # =====================================================================
 
 import numpy as np
@@ -4129,12 +4129,12 @@ def compute_drift_multiplier(records, window=300):
     If your model overestimates:
        predicted over = 58%
        actual hit rate = 51%
-       → drift < 1.0
+       ? drift < 1.0
 
     If your model underestimates:
        predicted over = 53%
        actual hit rate = 57%
-       → drift > 1.0
+       ? drift > 1.0
 
     This normalizes projected probabilities over time.
 
@@ -4143,7 +4143,7 @@ def compute_drift_multiplier(records, window=300):
       - window: how many recent bets to learn from
 
     Output:
-      - drift multiplier (0.85 — 1.20 safe range)
+      - drift multiplier (0.85 - 1.20 safe range)
     """
 
     if len(records) < 20:
@@ -4185,7 +4185,7 @@ def get_drift_adjustment():
     records = data["records"]
     return compute_drift_multiplier(records)
 # =====================================================================
-# MODULE 9 — PHASE 3: Closing Line Value (CLV) Learning Engine
+# MODULE 9 - PHASE 3: Closing Line Value (CLV) Learning Engine
 # =====================================================================
 
 import numpy as np
@@ -4202,11 +4202,11 @@ def compute_clv_multiplier(records, window=300):
     CLV = line_close - line_taken (for overs)
           line_taken - line_close (for unders, but we are mostly overs)
 
-    Positive CLV → good → boost probability
-    Negative CLV → bad  → reduce probability
+    Positive CLV ? good ? boost probability
+    Negative CLV ? bad  ? reduce probability
 
     Returns:
-        clv_mult (0.90 — 1.12)
+        clv_mult (0.90 - 1.12)
     """
 
     # Need data to compute anything
@@ -4231,8 +4231,8 @@ def compute_clv_multiplier(records, window=300):
     avg_clv = np.mean(clv_values)
 
     # Convert CLV to probability multiplier
-    # Every +0.5 points of CLV → ~3% confidence boost
-    # Every -0.5 points of CLV → ~3% reduction
+    # Every +0.5 points of CLV ? ~3% confidence boost
+    # Every -0.5 points of CLV ? ~3% reduction
     raw_mult = 1.0 + (avg_clv / 0.50) * 0.03
 
     # Stability clamp
@@ -4245,11 +4245,11 @@ def compute_clv_confidence(records, window=300):
     """
     Measures how *consistent* CLV is over time.
 
-    If 70%+ of bets beat the closing line → high confidence.
-    If <45% beat the closing line → low confidence.
+    If 70%+ of bets beat the closing line ? high confidence.
+    If <45% beat the closing line ? low confidence.
 
     Returns:
-        confidence (0.50 — 1.25)
+        confidence (0.50 - 1.25)
     """
 
     if len(records) < 20:
@@ -4299,7 +4299,7 @@ def get_clv_adjustment():
 
     return final_adj
 # =====================================================================
-# MODULE 9 — PHASE 4: Unified Calibration Engine
+# MODULE 9 - PHASE 4: Unified Calibration Engine
 # =====================================================================
 
 import numpy as np
@@ -4328,11 +4328,11 @@ def learn_drift(records, window=350):
 
     Drift = result - mu.
 
-    Positive drift → model underestimates players (should boost mu)
-    Negative drift → model overestimates players (should reduce mu)
+    Positive drift ? model underestimates players (should boost mu)
+    Negative drift ? model overestimates players (should reduce mu)
 
     Returns:
-        drift_mult (0.88 — 1.12)
+        drift_mult (0.88 - 1.12)
     """
     drift_vals = []
 
@@ -4351,7 +4351,7 @@ def learn_drift(records, window=350):
     avg = np.mean(drift_vals)
 
     # Map drift into multiplier
-    raw_mult = 1.0 + (avg / 5.0) * 0.12   # ±5 drift swings → ±12%
+    raw_mult = 1.0 + (avg / 5.0) * 0.12   # ?5 drift swings ? ?12%
 
     return float(np.clip(raw_mult, 0.88, 1.12))
 
@@ -4360,14 +4360,14 @@ def learn_variance(records, window=350):
     """
     Measures how often model SD is accurate.
 
-    If actual results fall too often outside mu ± 2*sd,
-    the variance is underestimated → widen SD.
+    If actual results fall too often outside mu ? 2*sd,
+    the variance is underestimated ? widen SD.
 
-    If actual results rarely exceed mu ± sd,
-    variance is too large → tighten SD.
+    If actual results rarely exceed mu ? sd,
+    variance is too large ? tighten SD.
 
     Returns:
-        variance_mult (0.85 — 1.25)
+        variance_mult (0.85 - 1.25)
     """
     errors = []
 
@@ -4385,7 +4385,7 @@ def learn_variance(records, window=350):
 
     avg = np.mean(errors)
 
-    # 1.0 → perfect, ~1.6 → variance underestimated, ~0.5 → overestimated
+    # 1.0 ? perfect, ~1.6 ? variance underestimated, ~0.5 ? overestimated
     raw_mult = avg ** 0.65
 
     return float(np.clip(raw_mult, 0.85, 1.25))
@@ -4395,13 +4395,13 @@ def learn_bias(records, window=350):
     """
     Determines systematic directional bias:
 
-    High bias → consistently projecting too high
-    Low bias → consistently projecting too low
+    High bias ? consistently projecting too high
+    Low bias ? consistently projecting too low
 
     Looks at average (prediction - line).
 
     Returns:
-        bias_adj (−3.0 → +3.0 shift to mu)
+        bias_adj (?3.0 ? +3.0 shift to mu)
     """
     diffs = []
 
@@ -4429,11 +4429,11 @@ def learn_trend(records, window=350):
     """
     Learns short-term performance trend of the model.
 
-    If last 50 bets massively outperform CLV and hit-rate → momentum ↑
-    If last 50 bets run cold → momentum ↓
+    If last 50 bets massively outperform CLV and hit-rate ? momentum ?
+    If last 50 bets run cold ? momentum ?
 
     Returns:
-        trend_mult (0.92 — 1.10)
+        trend_mult (0.92 - 1.10)
     """
     recent = records[-50:]
     if len(recent) < 20:
@@ -4503,7 +4503,7 @@ def unified_calibration_multiplier():
         "clv_adj": clv_adj,
     }
 # =====================================================================
-# MODULE 10 — MONTE CARLO ENGINE V3
+# MODULE 10 - MONTE CARLO ENGINE V3
 # Phase 1: Core Setup + Normal Distribution Simulation
 # =====================================================================
 
@@ -4518,7 +4518,7 @@ def monte_carlo_leg_simulation_phase1(mu, sd, line, market,
                                       heavy_tail_adj=1.0,
                                       bias_adj=0.0):
     """
-    Monte Carlo v3 Engine — Phase 1
+    Monte Carlo v3 Engine - Phase 1
     ------------------------------------------------------------
     Handles:
         - Input clamping
@@ -4576,20 +4576,20 @@ def monte_carlo_leg_simulation_phase1(mu, sd, line, market,
         "normal_samples": normal_samples
     }
 # =====================================================================
-# MODULE 10 — PHASE 2
+# MODULE 10 - PHASE 2
 # Lognormal Distribution Expansion (Right-Tail Modelling)
 # =====================================================================
 
 def monte_carlo_leg_simulation_phase2(core):
     """
-    Monte Carlo v3 Engine — Phase 2
+    Monte Carlo v3 Engine - Phase 2
     ------------------------------------------------------------
     Handles:
         - Conversion to log-space
         - Lognormal sampling
         - Tail protections
     Inputs:
-        core → dictionary from Phase 1
+        core ? dictionary from Phase 1
     Outputs:
         Adds:
             - lognormal_samples
@@ -4637,7 +4637,7 @@ def monte_carlo_leg_simulation_phase2(core):
         lognormal_samples = normal_samples.copy()
 
     # ============================================================
-    # 4. Clip outliers — prevents Streamlit graph blow-ups
+    # 4. Clip outliers - prevents Streamlit graph blow-ups
     # ============================================================
     lognormal_samples = np.clip(lognormal_samples, 0, safe_mu * 12)
 
@@ -4646,20 +4646,20 @@ def monte_carlo_leg_simulation_phase2(core):
 
     return core
 # =====================================================================
-# MODULE 10 — PHASE 3
+# MODULE 10 - PHASE 3
 # Skew Extension (Asymmetric Right-Tail Boost Engine)
 # =====================================================================
 
 def monte_carlo_leg_simulation_phase3(core):
     """
-    Monte Carlo v3 Engine — Phase 3
+    Monte Carlo v3 Engine - Phase 3
     ------------------------------------------------------------
     Adds asymmetric skewed distribution:
         - heavy right-tail boosting
         - controlled volatility shaping
         - NBA-stat realistic blowout protection
     Inputs:
-        core → dictionary containing:
+        core ? dictionary containing:
             - mu
             - sd
             - normal_samples
@@ -4700,7 +4700,7 @@ def monte_carlo_leg_simulation_phase3(core):
     skew_samples = np.clip(
         skew_samples,
         0,
-        mu * 10  # players rarely exceed 10× mean rate
+        mu * 10  # players rarely exceed 10? mean rate
     )
 
     # ============================================================
@@ -4710,13 +4710,13 @@ def monte_carlo_leg_simulation_phase3(core):
 
     return core
 # =====================================================================
-# MODULE 10 — PHASE 4
+# MODULE 10 - PHASE 4
 # Blended Ensemble Distribution Engine
 # =====================================================================
 
 def monte_carlo_leg_simulation_phase4(core, market):
     """
-    Monte Carlo v3 Engine — Phase 4
+    Monte Carlo v3 Engine - Phase 4
     ------------------------------------------------------------
     Produces blended ensemble distribution using:
         - Normal distribution (Phase 1)
@@ -4725,7 +4725,7 @@ def monte_carlo_leg_simulation_phase4(core, market):
     Blends using market-specific weights:
         PRA, Points, Rebounds, Assists all have different tail behavior.
     Inputs:
-        core → dictionary containing:
+        core ? dictionary containing:
             - mu
             - sd
             - normal_samples
@@ -4744,10 +4744,10 @@ def monte_carlo_leg_simulation_phase4(core, market):
     # 1. Market-specific weights
     # ------------------------------------------------------------
     # Rationale:
-    #   PRA = most volatile → heavier lognormal tail
-    #   Points = explosive → balanced skew + lognormal
-    #   Rebounds = narrow distribution → heavier normal
-    #   Assists = more consistent → normal dominant
+    #   PRA = most volatile ? heavier lognormal tail
+    #   Points = explosive ? balanced skew + lognormal
+    #   Rebounds = narrow distribution ? heavier normal
+    #   Assists = more consistent ? normal dominant
     # ============================================================
 
     if market == "PRA":
@@ -4797,7 +4797,7 @@ def monte_carlo_leg_simulation_phase4(core, market):
 
     return core
 # =====================================================================
-# MODULE 10 — PHASE 5
+# MODULE 10 - PHASE 5
 # Final Probability + EV Computation from Monte Carlo Ensemble
 # =====================================================================
 
@@ -4813,14 +4813,14 @@ def monte_carlo_leg_simulation_phase5(core, line):
         - Final packaged dict
 
     Inputs:
-        core → dictionary containing:
+        core ? dictionary containing:
             - blended_dist ( REQUIRED )
             - mu
             - sd
             - line
             - market
 
-        line → projection line for the market
+        line ? projection line for the market
     
     Outputs:
         Updated core dict with:
@@ -4867,7 +4867,7 @@ def monte_carlo_leg_simulation_phase5(core, line):
     return core
 
 # =====================================================================
-# MODULE 11 — PHASE 1
+# MODULE 11 - PHASE 1
 # Joint Monte Carlo Engine v2
 # Input Validation + Distribution Normalization
 # =====================================================================
@@ -4880,15 +4880,15 @@ def joint_mc_phase1_prepare(leg1_core, leg2_core, iterations=10000):
     for both legs before correlation injection.
 
     Inputs:
-        leg1_core → dictionary from Module 10 containing:
+        leg1_core ? dictionary from Module 10 containing:
             - sims  (10,000 MCA samples)
             - mu
             - sd
             - line
 
-        leg2_core → same structure as above for the second leg
+        leg2_core ? same structure as above for the second leg
 
-        iterations → number of samples to use (default = 10,000)
+        iterations ? number of samples to use (default = 10,000)
 
     Outputs:
         {
@@ -4954,7 +4954,7 @@ def joint_mc_phase1_prepare(leg1_core, leg2_core, iterations=10000):
         "leg2_sd": float(leg2_core["sd"]),
     }
 # =====================================================================
-# MODULE 11 — PHASE 2
+# MODULE 11 - PHASE 2
 # Correlation Injection using Cholesky Transform
 # =====================================================================
 
@@ -4966,14 +4966,14 @@ def joint_mc_phase2_correlate(prepped, base_corr, iterations=10000):
     using a Cholesky decomposition approach.
 
     Inputs:
-        prepped → dictionary from Phase 1 containing:
+        prepped ? dictionary from Phase 1 containing:
             - x_raw, y_raw (raw MC samples)
             - leg1_mu, leg1_sd
             - leg2_mu, leg2_sd
             - leg1_line, leg2_line
 
-        base_corr → float (initial correlation estimate from Module 7)
-        iterations → number of samples (default 10k)
+        base_corr ? float (initial correlation estimate from Module 7)
+        iterations ? number of samples (default 10k)
 
     Outputs:
         {
@@ -5047,7 +5047,7 @@ def joint_mc_phase2_correlate(prepped, base_corr, iterations=10000):
         "corr_used": corr
     }
 # =====================================================================
-# MODULE 11 — PHASE 3
+# MODULE 11 - PHASE 3
 # Joint Probability + EV Calculation (Correlated MC Output)
 # =====================================================================
 
@@ -5063,7 +5063,7 @@ def joint_mc_phase3_joint_probability(corr_pack, payout_mult=3.0):
         - Final correlation used
 
     Inputs:
-        corr_pack — dict returned from Phase 2:
+        corr_pack - dict returned from Phase 2:
             {
                 "x_sim": array,
                 "y_sim": array,
@@ -5072,7 +5072,7 @@ def joint_mc_phase3_joint_probability(corr_pack, payout_mult=3.0):
                 "corr_used": float
             }
 
-        payout_mult — Payout multiplier (e.g. 3.0 for PP Power Play)
+        payout_mult - Payout multiplier (e.g. 3.0 for PP Power Play)
 
     Outputs:
         {
@@ -5130,9 +5130,9 @@ def joint_mc_phase3_joint_probability(corr_pack, payout_mult=3.0):
         "joint_distribution": joint_distribution
     }
 # =====================================================================
-# MODULE 11 — PHASE 4
-# Final Packaging → Streamlit-safe output object
-# Connects Module 11 → Module 12 cleanly
+# MODULE 11 - PHASE 4
+# Final Packaging ? Streamlit-safe output object
+# Connects Module 11 ? Module 12 cleanly
 # =====================================================================
 
 def joint_mc_phase4_finalize(
@@ -5147,7 +5147,7 @@ def joint_mc_phase4_finalize(
     Final packaging, validation, and Streamlit-safe formatting.
 
     Inputs:
-        leg1_data: dict from Modules 1–10 containing:
+        leg1_data: dict from Modules 1-10 containing:
             {
                 "mu": float,
                 "sd": float,
@@ -5177,9 +5177,9 @@ def joint_mc_phase4_finalize(
         ----------------------------------------------------------------
 
     This will be fed directly into:
-        → Module 12 (UltraMax Decision Engine)
-        → Module 13 (UI Results Panel)
-        → Module 14 (Graphing / Histograms)
+        ? Module 12 (UltraMax Decision Engine)
+        ? Module 13 (UI Results Panel)
+        ? Module 14 (Graphing / Histograms)
     """
 
     # ===============================================================
@@ -5236,8 +5236,8 @@ def joint_mc_phase4_finalize(
     return final_pack
 
 # ======================================================================
-# MODULE 12 — ULTRAMAX TWO-PICK DECISION ENGINE
-# PHASE 1 — Initialization, Validation, Input Contract
+# MODULE 12 - ULTRAMAX TWO-PICK DECISION ENGINE
+# PHASE 1 - Initialization, Validation, Input Contract
 # ======================================================================
 
 def module12_phase1_initialize(
@@ -5249,11 +5249,11 @@ def module12_phase1_initialize(
     clv_adj: float,
 ):
     """
-    Module 12 — Phase 1
+    Module 12 - Phase 1
     -------------------------------------------------------------
     This phase validates ALL upstream inputs from Module 11,
     cleans them, clamps them for numerical stability, and prepares
-    a normalized package for downstream phases (Phases 2–6).
+    a normalized package for downstream phases (Phases 2-6).
 
     Inputs:
         mc_pack:
@@ -5271,9 +5271,9 @@ def module12_phase1_initialize(
 
         payout_mult: float
         bankroll: float
-        fractional_kelly: float (0–1)
-        drift_adj: float (~0.95–1.05)
-        clv_adj: float (~0.95–1.10)
+        fractional_kelly: float (0-1)
+        drift_adj: float (~0.95-1.05)
+        clv_adj: float (~0.95-1.10)
 
     Output:
         A complete, validated dictionary:
@@ -5295,11 +5295,11 @@ def module12_phase1_initialize(
         ---------------------------------------------------------
 
     This feeds **directly into**:
-        → Phase 2 (Drift & CLV sharpening)
-        → Phase 3 (EV computation)
-        → Phase 4 (Kelly sizing)
-        → Phase 5 (Result labeling)
-        → Phase 6 (Final output)
+        ? Phase 2 (Drift & CLV sharpening)
+        ? Phase 3 (EV computation)
+        ? Phase 4 (Kelly sizing)
+        ? Phase 5 (Result labeling)
+        ? Phase 6 (Final output)
     """
 
     # ============================================================
@@ -5317,7 +5317,7 @@ def module12_phase1_initialize(
 
     for k in required_keys:
         if k not in mc_pack:
-            raise KeyError(f"Module 12 Phase 1: Missing key from Module 11 → {k}")
+            raise KeyError(f"Module 12 Phase 1: Missing key from Module 11 ? {k}")
 
     # ============================================================
     # 2. Extract & validate correlation
@@ -5344,7 +5344,7 @@ def module12_phase1_initialize(
 
     if joint_dist.shape[0] != 2:
         raise ValueError(
-            "Module 12 Phase 1: distribution must have shape (2, N) — two legs."
+            "Module 12 Phase 1: distribution must have shape (2, N) - two legs."
         )
 
     joint_hits_mask = mc_pack["joint_hits_mask"]
@@ -5395,13 +5395,13 @@ def module12_phase1_initialize(
 
     return normalized_pack
 # ======================================================================
-# MODULE 12 — TWO-PICK DECISION ENGINE
-# PHASE 2 — Drift + CLV Sharpening
+# MODULE 12 - TWO-PICK DECISION ENGINE
+# PHASE 2 - Drift + CLV Sharpening
 # ======================================================================
 
 def module12_phase2_apply_adjustments(normalized_pack):
     """
-    Module 12 — Phase 2
+    Module 12 - Phase 2
     ---------------------------------------------------------
     Applies:
         - Drift correction (model bias smoothing)
@@ -5410,7 +5410,7 @@ def module12_phase2_apply_adjustments(normalized_pack):
         - Safety clipping
 
     Inputs:
-        normalized_pack — output from Phase 1:
+        normalized_pack - output from Phase 1:
             {
                 "p_joint_raw": float,
                 "drift_adj": float,
@@ -5444,7 +5444,7 @@ def module12_phase2_apply_adjustments(normalized_pack):
     # 2. Nonlinear stabilization
     # ------------------------------------------------------
     # This prevents extreme jumps from small drift/CLV swings.
-    # α controls curvature; 0.055 = calibrated sweet spot.
+    # ? controls curvature; 0.055 = calibrated sweet spot.
     alpha = 0.055
     p = p ** (1 - alpha) * (p_raw ** alpha)
 
@@ -5468,13 +5468,13 @@ def module12_phase2_apply_adjustments(normalized_pack):
 
     return out
 # ======================================================================
-# MODULE 12 — TWO-PICK DECISION ENGINE
-# PHASE 3 — EV (Expected Value) Computation
+# MODULE 12 - TWO-PICK DECISION ENGINE
+# PHASE 3 - EV (Expected Value) Computation
 # ======================================================================
 
 def module12_phase3_ev_engine(adjusted_pack, payout_mult):
     """
-    Module 12 — Phase 3
+    Module 12 - Phase 3
     ---------------------------------------------------------
     Computes:
         - Market implied probability
@@ -5483,7 +5483,7 @@ def module12_phase3_ev_engine(adjusted_pack, payout_mult):
         - Edge classification (tier)
 
     Inputs:
-        adjusted_pack — output from Phase 2:
+        adjusted_pack - output from Phase 2:
             {
                 "p_joint_final": float,
                 "p_joint_raw": float,
@@ -5492,7 +5492,7 @@ def module12_phase3_ev_engine(adjusted_pack, payout_mult):
                 ...
             }
 
-        payout_mult — final payout multiplier:
+        payout_mult - final payout multiplier:
                        PrizePicks PowerPlay = 3.0
 
     Outputs:
@@ -5532,15 +5532,15 @@ def module12_phase3_ev_engine(adjusted_pack, payout_mult):
     # 4. Edge Classification
     # ------------------------------------------------------
     if ev >= 0.15:
-        edge = "🔥 **ELITE EDGE — Hammer Spot**"
+        edge = "? **ELITE EDGE - Hammer Spot**"
     elif ev >= 0.10:
-        edge = "🟢 **Strong Edge**"
+        edge = "? **Strong Edge**"
     elif ev >= 0.05:
-        edge = "🟡 **Moderate Edge**"
+        edge = "? **Moderate Edge**"
     elif ev >= 0.02:
-        edge = "⚪ **Thin Edge**"
+        edge = "? **Thin Edge**"
     else:
-        edge = "❌ **No Edge**"
+        edge = "? **No Edge**"
 
     # ------------------------------------------------------
     # 5. Build return payload
@@ -5553,13 +5553,13 @@ def module12_phase3_ev_engine(adjusted_pack, payout_mult):
 
     return out
 # ======================================================================
-# MODULE 12 — TWO-PICK DECISION ENGINE
-# PHASE 4 — Kelly Staking Engine (Risk-Managed)
+# MODULE 12 - TWO-PICK DECISION ENGINE
+# PHASE 4 - Kelly Staking Engine (Risk-Managed)
 # ======================================================================
 
 def module12_phase4_kelly(ev_pack, bankroll, fractional_kelly=0.50):
     """
-    Module 12 — Phase 4
+    Module 12 - Phase 4
     ---------------------------------------------------------
     Inputs:
         ev_pack:
@@ -5575,9 +5575,9 @@ def module12_phase4_kelly(ev_pack, bankroll, fractional_kelly=0.50):
             Total bankroll (float)
 
         fractional_kelly:
-            0.00 → no Kelly
-            0.50 → half Kelly (recommended)
-            1.00 → full Kelly (NOT RECOMMENDED)
+            0.00 ? no Kelly
+            0.50 ? half Kelly (recommended)
+            1.00 ? full Kelly (NOT RECOMMENDED)
 
     Outputs:
         {
@@ -5594,7 +5594,7 @@ def module12_phase4_kelly(ev_pack, bankroll, fractional_kelly=0.50):
     # ------------------------------------------------------
     # Kelly base formula at even-money payout multiplier:
     #
-    #   Kelly = (bp − q) / b
+    #   Kelly = (bp ? q) / b
     #
     # Where:
     #     b = payout_mult - 1
@@ -5621,7 +5621,7 @@ def module12_phase4_kelly(ev_pack, bankroll, fractional_kelly=0.50):
     # Stabilizing Rules
     # ------------------------------------------------------
 
-    # Rule 1 — EV too small → scale down
+    # Rule 1 - EV too small ? scale down
     if ev < 0.02:
         k *= 0.30     # reduce by 70%
     elif ev < 0.05:
@@ -5629,13 +5629,13 @@ def module12_phase4_kelly(ev_pack, bankroll, fractional_kelly=0.50):
     elif ev > 0.15:
         k *= 1.25     # boost when signal extremely strong
 
-    # Rule 2 — Never allow negative Kelly
+    # Rule 2 - Never allow negative Kelly
     k = max(k, 0.0)
 
-    # Rule 3 — Hard cap at 3% bankroll
+    # Rule 3 - Hard cap at 3% bankroll
     k = min(k, 0.03)
 
-    # Rule 4 — Round for stability
+    # Rule 4 - Round for stability
     k = float(np.clip(k, 0.0, 0.03))
 
     # ------------------------------------------------------
@@ -5647,15 +5647,15 @@ def module12_phase4_kelly(ev_pack, bankroll, fractional_kelly=0.50):
     # Stake label for the UI
     # ------------------------------------------------------
     if stake >= bankroll * 0.025:
-        stake_label = "🔥 Aggressive Stake (High Confidence)"
+        stake_label = "? Aggressive Stake (High Confidence)"
     elif stake >= bankroll * 0.015:
-        stake_label = "🟢 Solid Stake"
+        stake_label = "? Solid Stake"
     elif stake >= bankroll * 0.008:
-        stake_label = "🟡 Small Stake"
+        stake_label = "? Small Stake"
     elif stake > 0:
-        stake_label = "⚪ Token Stake"
+        stake_label = "? Token Stake"
     else:
-        stake_label = "❌ No Bet"
+        stake_label = "? No Bet"
 
     # ------------------------------------------------------
     # Build output package
@@ -5667,8 +5667,8 @@ def module12_phase4_kelly(ev_pack, bankroll, fractional_kelly=0.50):
 
     return out
 # ======================================================================
-# MODULE 12 — TWO-PICK DECISION ENGINE
-# PHASE 5 — Final UltraMax Decision Pack (Master Merge Layer)
+# MODULE 12 - TWO-PICK DECISION ENGINE
+# PHASE 5 - Final UltraMax Decision Pack (Master Merge Layer)
 # ======================================================================
 
 def module12_phase5_finalize(
@@ -5684,26 +5684,26 @@ def module12_phase5_finalize(
     clv_adj
 ):
     """
-    Module 12 — Phase 5 Finalization
+    Module 12 - Phase 5 Finalization
     ---------------------------------------------------------
     Merges all phases into one unified UltraMax decision pack.
 
     Inputs:
-      leg1, leg2       — dictionaries from compute_leg()
-      leg1_mc, leg2_mc — Monte Carlo results from Module 10
-      corr_value       — correlation (from Module 7)
-      payout_mult      — e.g. 3.0 for 2-pick power play
-      bankroll         — bankroll dollars
-      fractional_kelly — 0.0–1.0 (risk control)
-      drift_adj        — learned drift correction
-      clv_adj          — CLV correction factor
+      leg1, leg2       - dictionaries from compute_leg()
+      leg1_mc, leg2_mc - Monte Carlo results from Module 10
+      corr_value       - correlation (from Module 7)
+      payout_mult      - e.g. 3.0 for 2-pick power play
+      bankroll         - bankroll dollars
+      fractional_kelly - 0.0-1.0 (risk control)
+      drift_adj        - learned drift correction
+      clv_adj          - CLV correction factor
 
     Returns:
-      full_pack — the complete decision object consumed by UI
+      full_pack - the complete decision object consumed by UI
     """
 
     # ==========================================================
-    # Step 1 — Enforce structure & safety
+    # Step 1 - Enforce structure & safety
     # ==========================================================
     try:
         leg1_line = float(leg1["line"])
@@ -5720,7 +5720,7 @@ def module12_phase5_finalize(
     leg2_dist = np.array(leg2_mc["dist"], dtype=float)
 
     # ==========================================================
-    # Step 2 — Run Phase 2 (joint probability)
+    # Step 2 - Run Phase 2 (joint probability)
     # ==========================================================
     joint_pack = module12_phase2_joint_prob(
         leg1_mu, leg1_sd, leg1_line, leg1_dist,
@@ -5732,7 +5732,7 @@ def module12_phase5_finalize(
     joint_pack["payout_mult"] = payout_mult
 
     # ==========================================================
-    # Step 3 — Run Phase 3 (EV + advantage classification)
+    # Step 3 - Run Phase 3 (EV + advantage classification)
     # ==========================================================
     ev_pack = module12_phase3_ev(
         joint_pack["p_joint_final"],
@@ -5743,7 +5743,7 @@ def module12_phase5_finalize(
     merged = {**joint_pack, **ev_pack}
 
     # ==========================================================
-    # Step 4 — Kelly staking engine
+    # Step 4 - Kelly staking engine
     # ==========================================================
     final_pack = module12_phase4_kelly(
         merged,
@@ -5752,7 +5752,7 @@ def module12_phase5_finalize(
     )
 
     # ==========================================================
-    # Step 5 — Enrich final pack with leg-level metadata
+    # Step 5 - Enrich final pack with leg-level metadata
     # ==========================================================
     final_pack.update({
         "leg1": leg1,
@@ -5767,12 +5767,12 @@ def module12_phase5_finalize(
     })
 
     # ==========================================================
-    # All done — return the UltraMax full decision object
+    # All done - return the UltraMax full decision object
     # ==========================================================
     return final_pack
 # ======================================================================
-# MODULE 12 — TWO-PICK DECISION ENGINE
-# PHASE 6 — Final UI Report Builder (UltraMax Summary Generator)
+# MODULE 12 - TWO-PICK DECISION ENGINE
+# PHASE 6 - Final UI Report Builder (UltraMax Summary Generator)
 # ======================================================================
 
 def module12_phase6_build_report(final_pack):
@@ -5804,46 +5804,46 @@ def module12_phase6_build_report(final_pack):
     # 1. Recommendation Strength Label
     # ----------------------------------------------------
     if ev >= 0.12:
-        strength = "🔥 **MAX PLAY — Hedge-Fund Level Edge**"
+        strength = "? **MAX PLAY - Hedge-Fund Level Edge**"
     elif ev >= 0.07:
-        strength = "🟢 **PLAY — Solid Quant Edge**"
+        strength = "? **PLAY - Solid Quant Edge**"
     elif ev >= 0.03:
-        strength = "🟡 **LEAN — Thin But Positive Edge**"
+        strength = "? **LEAN - Thin But Positive Edge**"
     else:
-        strength = "❌ **PASS — No Edge**"
+        strength = "? **PASS - No Edge**"
 
     # ----------------------------------------------------
     # 2. Correlation Commentary
     # ----------------------------------------------------
     if corr > 0.25:
-        corr_note = "High positive correlation — outcomes move together strongly."
+        corr_note = "High positive correlation - outcomes move together strongly."
     elif corr > 0.10:
-        corr_note = "Moderate positive correlation — slight combo risk."
+        corr_note = "Moderate positive correlation - slight combo risk."
     elif corr > -0.05:
-        corr_note = "Neutral correlation — ideal for 2-pick combos."
+        corr_note = "Neutral correlation - ideal for 2-pick combos."
     elif corr > -0.20:
-        corr_note = "Mild negative correlation — can help reduce variance."
+        corr_note = "Mild negative correlation - can help reduce variance."
     else:
-        corr_note = "Strong negative correlation — massive variance reducer."
+        corr_note = "Strong negative correlation - massive variance reducer."
 
     # ----------------------------------------------------
     # 3. EV Commentary
     # ----------------------------------------------------
     if ev >= 0.12:
-        ev_note = "Top-tier EV — this type of advantage rarely appears."
+        ev_note = "Top-tier EV - this type of advantage rarely appears."
     elif ev >= 0.07:
-        ev_note = "Strong EV — stable long-term edge."
+        ev_note = "Strong EV - stable long-term edge."
     elif ev >= 0.03:
-        ev_note = "Thin EV — playable but not ideal."
+        ev_note = "Thin EV - playable but not ideal."
     else:
-        ev_note = "Negative EV — not recommended."
+        ev_note = "Negative EV - not recommended."
 
     # ----------------------------------------------------
     # 4. CLV & Drift Commentary
     # ----------------------------------------------------
     drift_msg = (
         "Model drift suggests stabilizing conditions." if abs(drift_adj - 1) < 0.05
-        else "Strong drift detected — volatility regime shifting."
+        else "Strong drift detected - volatility regime shifting."
     )
 
     clv_msg = (
@@ -5874,12 +5874,12 @@ def module12_phase6_build_report(final_pack):
     # 7. Leg Descriptions
     # ----------------------------------------------------
     leg1_text = (
-        f"**{leg1.get('player','Leg 1')} — {leg1.get('market','')}**\n"
+        f"**{leg1.get('player','Leg 1')} - {leg1.get('market','')}**\n"
         f"Line: **{leg1.get('line','?')}**, Model Mean: **{leg1.get('mu','?'):.2f}**"
     )
 
     leg2_text = (
-        f"**{leg2.get('player','Leg 2')} — {leg2.get('market','')}**\n"
+        f"**{leg2.get('player','Leg 2')} - {leg2.get('market','')}**\n"
         f"Line: **{leg2.get('line','?')}**, Model Mean: **{leg2.get('mu','?'):.2f}**"
     )
 
@@ -5887,13 +5887,13 @@ def module12_phase6_build_report(final_pack):
     # 8. Build Full Report
     # ----------------------------------------------------
     report = f"""
-# 🧠 UltraMax Decision Summary
+# ? UltraMax Decision Summary
 
 ### {strength}
 
 ---
 
-### 📊 **Core Metrics**
+### ? **Core Metrics**
 - Joint Probability (final): **{p_joint*100:.2f}%**
 - Joint Probability (raw): **{p_joint_raw*100:.2f}%**
 - Expected Value (EV): **{ev*100:+.2f}%**
@@ -5902,14 +5902,14 @@ def module12_phase6_build_report(final_pack):
 
 ---
 
-### 🏀 **Leg Details**
+### ? **Leg Details**
 {leg1_text}
 
 {leg2_text}
 
 ---
 
-### 📈 **Advanced Analysis**
+### ? **Advanced Analysis**
 - {ev_note}  
 - {corr_note}  
 - {drift_msg}  
@@ -5918,16 +5918,16 @@ def module12_phase6_build_report(final_pack):
 
 ---
 
-### 💰 **Risk & Bankroll Strategy**
+### ? **Risk & Bankroll Strategy**
 {stake_msg}
 
 ---
 
-### 🔧 Diagnostics
+### ? Diagnostics
 
 # =====================================================================
-# MODULE 13 — TEAM CONTEXT ENGINE
-# PHASE 1 — Team Metadata & Baseline Context Tables
+# MODULE 13 - TEAM CONTEXT ENGINE
+# PHASE 1 - Team Metadata & Baseline Context Tables
 # =====================================================================
 
 import pandas as pd
@@ -5988,7 +5988,7 @@ PACE_MEAN = sum(TEAM_PACE.values()) / len(TEAM_PACE)
 
 
 # ================================================================
-# 3. TEAM DEFENSIVE STRENGTH BASELINES (Normalized 0.80–1.20 scale)
+# 3. TEAM DEFENSIVE STRENGTH BASELINES (Normalized 0.80-1.20 scale)
 # Used by: Opponent Engine, Defensive Matchup Engine
 # ================================================================
 TEAM_DEFENSE = {
@@ -6079,15 +6079,15 @@ TEAM_ALLOWANCE = {
 }
 
 # =====================================================================
-# ✓ Phase 1 Complete
+# ? Phase 1 Complete
 # This now supports: Opponent Engine, Defensive Matchups,
 # Game Script Engine, Pace Model, Blowout Model,
 # Rotational Volatility, and PRA weighting.
 # =====================================================================
 
 # =====================================================================
-# MODULE 13 — TEAM CONTEXT ENGINE
-# PHASE 2 — Team Context Resolver, Validation & Safe-Lookup Layer
+# MODULE 13 - TEAM CONTEXT ENGINE
+# PHASE 2 - Team Context Resolver, Validation & Safe-Lookup Layer
 # =====================================================================
 
 import re
@@ -6108,7 +6108,7 @@ def _clean_team_input(raw: str) -> str:
 
 
 # ---------------------------------------------------------------------
-# 2. Fuzzy lookup table (allows: “LAL”, "LAKERS", "LOSANGELESLAKERS")
+# 2. Fuzzy lookup table (allows: "LAL", "LAKERS", "LOSANGELESLAKERS")
 # ---------------------------------------------------------------------
 _TEAM_FUZZY = {}
 
@@ -6117,7 +6117,7 @@ for abbr, name in TEAM_MAP.items():
     # Core abbreviation
     _TEAM_FUZZY[abbr] = abbr
 
-    # Full name (LOS ANGELES LAKERS → LOSANGELESL**)
+    # Full name (LOS ANGELES LAKERS ? LOSANGELESL**)
     cleaned_full = _clean_team_input(name)
     _TEAM_FUZZY[cleaned_full] = abbr
 
@@ -6172,7 +6172,7 @@ def resolve_team(team_input: str):
     if cleaned in _TEAM_FUZZY:
         return _TEAM_FUZZY[cleaned], None
 
-    # No match — return gracefully
+    # No match - return gracefully
     return None, f"Team not recognized: {team_input}"
 
 
@@ -6235,21 +6235,21 @@ def get_team_context(team: str):
 
 
 # =====================================================================
-# ✓ Phase 2 complete.
+# ? Phase 2 complete.
 # Upstream engines are now protected from all bad team inputs.
 # Phase 3 will build the actual matchup-blending engine.
 # =====================================================================
 
 # =====================================================================
-# MODULE 13 — TEAM CONTEXT ENGINE
-# PHASE 3 — Opponent Context Blend Engine (Team-Level Impact)
+# MODULE 13 - TEAM CONTEXT ENGINE
+# PHASE 3 - Opponent Context Blend Engine (Team-Level Impact)
 # =====================================================================
 
 # This module blends team defensive profile, pace, fouling,
 # and market-specific opponent tendencies into one multiplier.
 
 # ---------------------------------------------------------------------
-# 1. Market → context weights (how much each market depends on each factor)
+# 1. Market ? context weights (how much each market depends on each factor)
 # ---------------------------------------------------------------------
 MARKET_CONTEXT_WEIGHTS = {
     "Points": {
@@ -6308,7 +6308,7 @@ def compute_opponent_context(team: str, market: str):
     # Resolve team context safely
     ctx = get_team_context(team)
 
-    # If unresolved team — neutral context; no crash
+    # If unresolved team - neutral context; no crash
     if ctx["team"] is None:
         return 1.00
 
@@ -6359,14 +6359,14 @@ def opponent_team_multiplier(team: str, market: str):
 
 
 # =====================================================================
-# ✓ Phase 3 complete.
+# ? Phase 3 complete.
 # This module now produces a stable opponent multiplier for all markets.
 # Next: Phase 4 = Game Environment Context (pace drift, blowout model)
 # =====================================================================
 
 # =====================================================================
-# MODULE 13 — TEAM CONTEXT ENGINE
-# PHASE 4 — GAME ENVIRONMENT ENGINE (PACE, BLOWOUT, GAME SCRIPTS)
+# MODULE 13 - TEAM CONTEXT ENGINE
+# PHASE 4 - GAME ENVIRONMENT ENGINE (PACE, BLOWOUT, GAME SCRIPTS)
 # =====================================================================
 
 # This module shapes the game-level environment multipliers
@@ -6408,7 +6408,7 @@ def blowout_multiplier(spread: float):
 
 
 # ---------------------------------------------------------------------
-# 3. Vegas total → pace inference
+# 3. Vegas total ? pace inference
 # ---------------------------------------------------------------------
 def vegas_total_to_pace(total: float):
     """
@@ -6455,7 +6455,7 @@ def fatigue_multiplier(is_b2b: bool, rest_days: int):
     if rest_days >= 3:
         return NBA_REST_BOOST
 
-    # Normal 1–2 day rest
+    # Normal 1-2 day rest
     return 1.00
 
 
@@ -6472,7 +6472,7 @@ def home_away_multiplier(is_home: bool):
 def game_script_multiplier(pace: float, defense_intensity: float):
     """
     pace: inferred pace
-    defense_intensity: from team context (0.85–1.20)
+    defense_intensity: from team context (0.85-1.20)
     """
 
     # Normalize pace relative to league average
@@ -6497,7 +6497,7 @@ def compute_game_environment(
     opponent_def_rating: float,
 ):
     """
-    Produces a 0.80–1.30 environment multiplier used by:
+    Produces a 0.80-1.30 environment multiplier used by:
     - compute_leg()
     - volatility_engine_v2()
     - MC scoring
@@ -6506,7 +6506,7 @@ def compute_game_environment(
     - correlation engine
     """
 
-    # Vegas → pace
+    # Vegas ? pace
     pace = vegas_total_to_pace(vegas_total)
 
     # Defensive intensity (team level)
@@ -6585,13 +6585,13 @@ def game_environment(team: str, opponent: str, vegas_total: float, spread: float
 
 
 # =====================================================================
-# ✓ Phase 4 Complete
-# Next up: Module 13 — Phase 5 (Team-to-Game Context Fusion)
+# ? Phase 4 Complete
+# Next up: Module 13 - Phase 5 (Team-to-Game Context Fusion)
 # =====================================================================
 
 # =====================================================================
-# MODULE 13 — TEAM CONTEXT ENGINE
-# PHASE 5 — TEAM–GAME CONTEXT FUSION ENGINE
+# MODULE 13 - TEAM CONTEXT ENGINE
+# PHASE 5 - TEAM-GAME CONTEXT FUSION ENGINE
 # =====================================================================
 
 def fuse_team_and_environment(
@@ -6601,7 +6601,7 @@ def fuse_team_and_environment(
     spread: float
 ):
     """
-    Produces a final ~0.75 – 1.35 multiplier used by the
+    Produces a final ~0.75 - 1.35 multiplier used by the
     projection engine, volatility engine, and correlation engine.
 
     This is the MASTER CONTEXT MULTIPLIER for the entire system.
@@ -6638,7 +6638,7 @@ def fuse_team_and_environment(
 
     # ---------------------------------------------------------
     # 3. Offensive rating multiplier
-    # Team with high ORtg → boosts projections
+    # Team with high ORtg ? boosts projections
     # ---------------------------------------------------------
     off_rating = team_ctx["off"]
 
@@ -6654,7 +6654,7 @@ def fuse_team_and_environment(
 
     # ---------------------------------------------------------
     # 4. Defensive pressure multiplier
-    # Opponent stronger defense → reduces projections
+    # Opponent stronger defense ? reduces projections
     # ---------------------------------------------------------
     def_rating = opp_ctx["def"]
 
@@ -6727,13 +6727,13 @@ def fuse_team_and_environment(
 
 
 # =====================================================================
-# ✓ Phase 5 COMPLETE
-# Next: Module 13 — Phase 6 (Context Injection Layer for compute_leg)
+# ? Phase 5 COMPLETE
+# Next: Module 13 - Phase 6 (Context Injection Layer for compute_leg)
 # =====================================================================
 
 # =====================================================================
-# MODULE 13 — TEAM CONTEXT ENGINE
-# PHASE 6 — CONTEXT INJECTION LAYER FOR compute_leg()
+# MODULE 13 - TEAM CONTEXT ENGINE
+# PHASE 6 - CONTEXT INJECTION LAYER FOR compute_leg()
 # =====================================================================
 
 def apply_team_context_to_projection(
@@ -6764,47 +6764,47 @@ def apply_team_context_to_projection(
     final_mult = ctx["final_mult"]
 
     # ---------------------------------------------------------
-    # Apply to mean (μ)
+    # Apply to mean (?)
     # ---------------------------------------------------------
     mu_adj = mu * final_mult
 
     # ---------------------------------------------------------
     # Apply volatility adjustments  
-    # Higher pace → higher variance  
-    # Strong defense → suppress mean but increase variance  
-    # Blowout → reduces both  
+    # Higher pace ? higher variance  
+    # Strong defense ? suppress mean but increase variance  
+    # Blowout ? reduces both  
     # ---------------------------------------------------------
     vol_mult = 1.0
 
-    # Pace → more possessions → higher variance
+    # Pace ? more possessions ? higher variance
     vol_mult *= np.interp(
         ctx["pace_mult"], 
         [0.88, 1.00, 1.18],
         [0.92, 1.00, 1.12]
     )
 
-    # Defensive difficulty → adds uncertainty
+    # Defensive difficulty ? adds uncertainty
     vol_mult *= np.interp(
         ctx["def_rating_mult"],
         [0.88, 1.00, 1.10],
         [1.08, 1.00, 0.92]
     )
 
-    # Blowout → reduces variance sharply
+    # Blowout ? reduces variance sharply
     vol_mult *= np.interp(
         ctx["blowout_mult"],
         [0.78, 1.00],
         [0.85, 1.00]
     )
 
-    # Team form → stable teams produce lower variance
+    # Team form ? stable teams produce lower variance
     vol_mult *= np.interp(
         ctx["form_mult"],
         [0.92, 1.00, 1.08],
         [1.05, 1.00, 0.94]
     )
 
-    # Fatigue → increases randomness
+    # Fatigue ? increases randomness
     vol_mult *= np.interp(
         ctx["fatigue_mult"],
         [0.92, 1.00, 1.05],
@@ -6825,8 +6825,8 @@ def apply_team_context_to_projection(
     return mu_adj, sd_adj, ctx
 
 # =====================================================================
-# MODULE 14 — OPPONENT DEFENSIVE PROFILE DATABASE (CORE TABLE v1)
-# PHASE 1 — STATIC DB FOR PROJECTION ENGINES
+# MODULE 14 - OPPONENT DEFENSIVE PROFILE DATABASE (CORE TABLE v1)
+# PHASE 1 - STATIC DB FOR PROJECTION ENGINES
 # =====================================================================
 
 import numpy as np
@@ -6834,21 +6834,21 @@ import numpy as np
 # ---------------------------------------------------------------------
 # BASE DEFENSIVE DATABASE
 # Each team receives:
-#   - pace_rank           (1–30, lower = faster)
-#   - def_rating_rank     (1–30, lower = better defense)
+#   - pace_rank           (1-30, lower = faster)
+#   - def_rating_rank     (1-30, lower = better defense)
 #   - paint_def_rank      (FG% allowed at rim)
 #   - perimeter_def_rank  (3PT defense)
 #   - assist_def_rank     (assists allowed)
 #   - rebound_rank        (rebounds allowed)
 #   - turnover_rank       (turnovers forced)
-# Output values: multipliers centered at 1.00 (0.90–1.12 typical)
+# Output values: multipliers centered at 1.00 (0.90-1.12 typical)
 # ---------------------------------------------------------------------
 
 def _scale(rank, low=0.90, mid=1.00, high=1.12):
     """
-    Converts a 1–30 defensive rank into a multiplier.
-    Better defense → lower multiplier.
-    Worse defense → higher multiplier.
+    Converts a 1-30 defensive rank into a multiplier.
+    Better defense ? lower multiplier.
+    Worse defense ? higher multiplier.
     """
     return np.interp(rank, [1, 15, 30], [low, mid, high])
 
@@ -6949,8 +6949,8 @@ OPP_DEF_PROFILE = {
     # --------------------------------------------------------------
 }
 # =====================================================================
-# MODULE 14 — OPPONENT DEFENSIVE PROFILE DATABASE
-# PHASE 2 — Remaining Teams (20 Teams)
+# MODULE 14 - OPPONENT DEFENSIVE PROFILE DATABASE
+# PHASE 2 - Remaining Teams (20 Teams)
 # =====================================================================
 
 OPP_DEF_PROFILE.update({
@@ -7157,7 +7157,7 @@ OPP_DEF_PROFILE.update({
 
 })
 # =====================================================================
-# MODULE 14 — PHASE 3
+# MODULE 14 - PHASE 3
 # COMPOSITE DEFENSIVE SCORE GENERATORS
 # =====================================================================
 
@@ -7293,7 +7293,7 @@ DEF_COMPOSITES = {
 }
 
 # =====================================================================
-# MODULE 14 — PHASE 4
+# MODULE 14 - PHASE 4
 # DYNAMIC DEFENSIVE CONTEXT OVERRIDES ENGINE
 # =====================================================================
 
@@ -7318,15 +7318,15 @@ def apply_dynamic_def_context(
     composite database (Phase 3).
 
     Inputs:
-        team_code           — defensive team (e.g., "MEM")
-        opponent_team       — optional, influences pace & scheme adjustments
-        key_defenders_out   — 0–3 (starter wings/bigs missing)
-        back_to_back        — True/False (fatigue adjustment)
-        home                — True/False (defensive intensity bump)
-        slow_trend          — >1.0 means recent slow pace, <1.0 means fast
-        fast_trend          — >1.0 means recent fast pace, <1.0 means slower
-        rotation_depth      — 7–11 (shorter rotation = stronger defense)
-        matchup_anomaly    — special-case overrides (e.g., Gobert vs elite big)
+        team_code           - defensive team (e.g., "MEM")
+        opponent_team       - optional, influences pace & scheme adjustments
+        key_defenders_out   - 0-3 (starter wings/bigs missing)
+        back_to_back        - True/False (fatigue adjustment)
+        home                - True/False (defensive intensity bump)
+        slow_trend          - >1.0 means recent slow pace, <1.0 means fast
+        fast_trend          - >1.0 means recent fast pace, <1.0 means slower
+        rotation_depth      - 7-11 (shorter rotation = stronger defense)
+        matchup_anomaly    - special-case overrides (e.g., Gobert vs elite big)
 
     Returns dictionary:
         "scoring_adj"
@@ -7379,7 +7379,7 @@ def apply_dynamic_def_context(
     # -----------------------------------------
     # 5. Rotation depth adjustments
     # -----------------------------------------
-    # Short rotations → tighter defense
+    # Short rotations ? tighter defense
     if rotation_depth <= 7:
         depth_adj = 0.92
     elif rotation_depth == 8:
@@ -7428,7 +7428,7 @@ def apply_dynamic_def_context(
     }
 
 # =====================================================================
-# MODULE 14 — PHASE 5
+# MODULE 14 - PHASE 5
 # DEFENSIVE TILT ENGINE (BAYESIAN ROLLING TREND ADJUSTOR)
 # =====================================================================
 
@@ -7458,15 +7458,15 @@ def compute_def_tilt(
     Computes whether a defense is HOT or COLD using Bayesian updates.
 
     Inputs:
-        last5_ppp_allowed      — points per possession allowed (L5 games)
-        season_ppp_allowed     — season average PPP allowed
-        last5_reb_rate_allowed — rebound rate allowed (L5)
-        season_reb_rate_allowed— season average rebound rate allowed
-        last5_ast_rate_allowed — assist percentage allowed (L5)
-        season_ast_rate_allowed— season average assist % allowed
-        slow_trend_factor      — long-term trending pace effect
-        fast_trend_factor      — short-term pace spike effect
-        include_variance       — adds volatility-based correction
+        last5_ppp_allowed      - points per possession allowed (L5 games)
+        season_ppp_allowed     - season average PPP allowed
+        last5_reb_rate_allowed - rebound rate allowed (L5)
+        season_reb_rate_allowed- season average rebound rate allowed
+        last5_ast_rate_allowed - assist percentage allowed (L5)
+        season_ast_rate_allowed- season average assist % allowed
+        slow_trend_factor      - long-term trending pace effect
+        fast_trend_factor      - short-term pace spike effect
+        include_variance       - adds volatility-based correction
 
     Output dict:
         {
@@ -7547,7 +7547,7 @@ def compute_def_tilt(
     }
 
 # =====================================================================
-# MODULE 14 — PHASE 6
+# MODULE 14 - PHASE 6
 # DEFENSIVE SCHEME CLASSIFICATION ENGINE
 # =====================================================================
 
@@ -7605,7 +7605,7 @@ def classify_defensive_scheme(
         scheme_scores["drop"] += 0.6
 
     # ==========================================================
-    # 2. SWITCH DEFENSE (1–5 switching or at least 2–5)
+    # 2. SWITCH DEFENSE (1-5 switching or at least 2-5)
     # ==========================================================
     if switch_rate > 0.45:
         scheme_scores["switch"] += (switch_rate * 1.6)
@@ -7655,7 +7655,7 @@ def classify_defensive_scheme(
     scheme = max(scheme_scores, key=scheme_scores.get)
 
     # =====================================================================
-    # MARKET MULTIPLIERS — Scheme → Player Market Impact
+    # MARKET MULTIPLIERS - Scheme ? Player Market Impact
     # =====================================================================
     """
     Defensive scheme affects each market differently:
@@ -7749,7 +7749,7 @@ def classify_defensive_scheme(
     }
 
 # =====================================================================
-# MODULE 15 — PHASE 1
+# MODULE 15 - PHASE 1
 # BLOWOUT RISK ENGINE + GAME SCRIPT MODEL (Core Inputs)
 # =====================================================================
 
@@ -7781,7 +7781,7 @@ def _norm(x, min_x, max_x):
 
 
 # --------------------------------------------------------------
-# PHASE 1 — Core Blowout Model Inputs & Feature Engineering
+# PHASE 1 - Core Blowout Model Inputs & Feature Engineering
 # --------------------------------------------------------------
 def compute_blowout_features(
     vegas_spread,          # Favorite - Underdog (ex: -12.5 = blowout risk)
@@ -7794,17 +7794,17 @@ def compute_blowout_features(
     win_prob_A,            # Vegas implied win probability
     recent_margin_avg_A,   # Avg point differential last 5 games
     recent_margin_avg_B,   # Opponent same metric
-    injuries_A,            # Injury impact score 0–1
+    injuries_A,            # Injury impact score 0-1
     injuries_B             # Same
 ):
     """
     Produces the feature set that Phase 2 uses to compute
     blowout probability.
 
-    All values normalized 0–1.
+    All values normalized 0-1.
     """
 
-    # Spread — strongest predictor
+    # Spread - strongest predictor
     spread_norm = _norm(abs(vegas_spread), 0, 18)  # typical blowout threshold ~12+
 
     # ORtg mismatch
@@ -7845,7 +7845,7 @@ def compute_blowout_features(
     return features
 
 # =====================================================================
-# MODULE 15 — PHASE 2
+# MODULE 15 - PHASE 2
 # BLOWOUT PROBABILITY MODEL (Logistic + NBA Curve Tuning)
 # =====================================================================
 
@@ -7865,22 +7865,22 @@ def compute_blowout_probability(features):
     Converts normalized features from Phase 1 into a blowout probability.
 
     This blends:
-        • logistic regression curve
-        • NBA historical tuning curves
-        • capped danger zones for extreme spreads (≥ 14.5)
-        • adjustments for pace & injury imbalance
+        ? logistic regression curve
+        ? NBA historical tuning curves
+        ? capped danger zones for extreme spreads (? 14.5)
+        ? adjustments for pace & injury imbalance
     """
 
     # ---------------------------------------------------------
     # 1. Extract features
     # ---------------------------------------------------------
-    s  = features["spread_norm"]       # 0–1
-    o  = features["ortg_norm"]         # 0–1
-    d  = features["drtg_norm"]         # 0–1
-    p  = features["pace_norm"]         # 0–1
-    w  = features["win_prob_norm"]     # 0–1
-    f  = features["form_norm"]         # 0–1
-    inj = features["injury_delta"]     # 0–1
+    s  = features["spread_norm"]       # 0-1
+    o  = features["ortg_norm"]         # 0-1
+    d  = features["drtg_norm"]         # 0-1
+    p  = features["pace_norm"]         # 0-1
+    w  = features["win_prob_norm"]     # 0-1
+    f  = features["form_norm"]         # 0-1
+    inj = features["injury_delta"]     # 0-1
 
     # ---------------------------------------------------------
     # 2. Weighted feature sum
@@ -7901,14 +7901,14 @@ def compute_blowout_probability(features):
     # ---------------------------------------------------------
     base_prob = _sigmoid(z - 3.2)  
     # Subtracting a calibration constant (3.2) ensures:
-    #   - Spread 3 → normal
-    #   - Spread 10+ → high risk
-    #   - Spread 14+ → extreme
+    #   - Spread 3 ? normal
+    #   - Spread 10+ ? high risk
+    #   - Spread 14+ ? extreme
 
     # ---------------------------------------------------------
     # 4. NBA-Tuned Hard Caps (improves accuracy)
     # ---------------------------------------------------------
-    # Spread > 12.5 historically = 52–60% blowout rate
+    # Spread > 12.5 historically = 52-60% blowout rate
     high_risk_cap = float(np.clip(base_prob, 0.02, 0.92))
 
     # ---------------------------------------------------------
@@ -7955,7 +7955,7 @@ def compute_blowout_probability(features):
     }
 
 # =====================================================================
-# MODULE 15 — PHASE 3
+# MODULE 15 - PHASE 3
 # MINUTE SUPPRESSION ENGINE (Projects minutes under blowout conditions)
 # =====================================================================
 
@@ -7990,22 +7990,22 @@ def compute_minutes_adjustment(base_minutes, blowout_data):
     # 1. Base suppression curve (NBA historical minute loss pattern)
     # --------------------------------------------------------------
     # Typical minute losses:
-    #   • Low blowout risk (< 15%) → 0–4% suppression
-    #   • Moderate (15–30%)       → 5–10% suppression
-    #   • Elevated (30–55%)       → 10–18% suppression
-    #   • Severe (55%+)           → 18–32% suppression
+    #   ? Low blowout risk (< 15%) ? 0-4% suppression
+    #   ? Moderate (15-30%)       ? 5-10% suppression
+    #   ? Elevated (30-55%)       ? 10-18% suppression
+    #   ? Severe (55%+)           ? 18-32% suppression
     
     if p < 0.15:
         base_supp = 0.03 * p / 0.15      # up to 3%
         risk_bucket = "Low"
     elif p < 0.30:
-        base_supp = 0.05 + (p - 0.15) * (0.10 - 0.05) / 0.15  # 5–10%
+        base_supp = 0.05 + (p - 0.15) * (0.10 - 0.05) / 0.15  # 5-10%
         risk_bucket = "Moderate"
     elif p < 0.55:
-        base_supp = 0.10 + (p - 0.30) * (0.18 - 0.10) / 0.25  # 10–18%
+        base_supp = 0.10 + (p - 0.30) * (0.18 - 0.10) / 0.25  # 10-18%
         risk_bucket = "Elevated"
     else:
-        base_supp = 0.18 + (p - 0.55) * (0.32 - 0.18) / 0.45  # 18–32%
+        base_supp = 0.18 + (p - 0.55) * (0.32 - 0.18) / 0.45  # 18-32%
         base_supp = float(np.clip(base_supp, 0.18, 0.32))
         risk_bucket = "Severe"
 
@@ -8088,7 +8088,7 @@ def compute_usage_shift_under_blowout(mu_per_min, blowout_data):
     }
 
 # =====================================================================
-# MODULE 15 — PHASE 4
+# MODULE 15 - PHASE 4
 # GAME SCRIPT MONTE CARLO (Scenario-Based Minutes + Usage Model)
 # =====================================================================
 
@@ -8116,7 +8116,7 @@ def generate_game_script_distribution(blowout_data, pace_factor, injury_factor=1
     # ----------------------------------------------
     # 1. Base Scenario Probabilities
     # ----------------------------------------------
-    # Competitive (40–70% depending on blowout prob)
+    # Competitive (40-70% depending on blowout prob)
     p_competitive = np.clip(0.70 - 0.55 * p_blowout, 0.20, 0.70)
 
     # Slow defensive grind increases when pace_factor < 0.97
@@ -8251,7 +8251,7 @@ def run_game_script_monte_carlo(
     }
 
 # =====================================================================
-# MODULE 15 — PHASE 5
+# MODULE 15 - PHASE 5
 # UNIFIED SCENARIO-WEIGHTED PROJECTION ENGINE
 # =====================================================================
 
@@ -8270,13 +8270,13 @@ def merge_scenario_projections(
     Final unified scenario-weighted projection merging:
     ---------------------------------------------------
     Inputs:
-        - base_minutes                → from player logs
-        - mu_per_min                  → base production per minute
-        - blowout_data                → Module 15 (Phase 1–3)
-        - pace_factor                 → Module 13 (team context)
-        - rotation_volatility_score   → Module 19 (rotation chaos)
-        - injury_factor               → from usage engine
-        - iterations                  → 8,000+ MC samples
+        - base_minutes                ? from player logs
+        - mu_per_min                  ? base production per minute
+        - blowout_data                ? Module 15 (Phase 1-3)
+        - pace_factor                 ? Module 13 (team context)
+        - rotation_volatility_score   ? Module 19 (rotation chaos)
+        - injury_factor               ? from usage engine
+        - iterations                  ? 8,000+ MC samples
 
     Output:
         {
@@ -8310,7 +8310,7 @@ def merge_scenario_projections(
     # -------------------------------------------------------------
     # 2. Apply Rotation Volatility Influence
     # -------------------------------------------------------------
-    # rotation_volatility_score is 0.0–1.0
+    # rotation_volatility_score is 0.0-1.0
     # Higher volatility = more uncertainty in minutes.
 
     # minutes volatility expansion
@@ -8354,7 +8354,7 @@ def merge_scenario_projections(
     }
 
 # =====================================================================
-# MODULE 16 — PHASE 1
+# MODULE 16 - PHASE 1
 # ROTATIONAL VOLATILITY ENGINE (CORE INPUTS + ROLE STABILITY)
 # =====================================================================
 
@@ -8393,7 +8393,7 @@ INJURY_VOL_MULT = {
     1: 1.10,   # 1 rotation player questionable/probable
     2: 1.25,   # 1 starter out or 2 role players out
     3: 1.45,   # 2 starters out
-    4: 1.70    # 3+ rotation pieces out → extreme chaos
+    4: 1.70    # 3+ rotation pieces out ? extreme chaos
 }
 
 # ------------------------------------------------------------
@@ -8421,7 +8421,7 @@ PLAYSTYLE_VOL = {
 }
 
 # ------------------------------------------------------------
-# MAIN RVE COMPUTATION — PHASE 1 (Foundational Layer)
+# MAIN RVE COMPUTATION - PHASE 1 (Foundational Layer)
 # ------------------------------------------------------------
 def compute_rve_phase1(
     role_type: str,
@@ -8434,14 +8434,14 @@ def compute_rve_phase1(
     Core rotational volatility:
     -----------------------------------------------------
     Inputs:
-       role_type      → alpha/primary/secondary/bench/fringe
-       team_profile   → stable_team / normal_team / chaotic_team
-       injuries_out   → 0–4+ rotation injuries
-       position       → PG / SG / SF / PF / C
-       playstyle      → defensive scheme / pace tag
+       role_type      ? alpha/primary/secondary/bench/fringe
+       team_profile   ? stable_team / normal_team / chaotic_team
+       injuries_out   ? 0-4+ rotation injuries
+       position       ? PG / SG / SF / PF / C
+       playstyle      ? defensive scheme / pace tag
 
     Returns:
-        base_volatility_score (0.05 → 1.50 scale)
+        base_volatility_score (0.05 ? 1.50 scale)
     """
 
     # -----------------------------------------
@@ -8490,7 +8490,7 @@ def compute_rve_phase1(
     }
 
 # =====================================================================
-# MODULE 16 — PHASE 2
+# MODULE 16 - PHASE 2
 # ROTATION VOLATILITY MONTE CARLO SIMULATION (RVE-MC)
 # =====================================================================
 
@@ -8612,7 +8612,7 @@ def rve_minutes_distribution(
     }
 
 # =====================================================================
-# MODULE 16 — PHASE 3
+# MODULE 16 - PHASE 3
 # ROTATIONAL ROLE STABILITY ENGINE (RRSE)
 # =====================================================================
 
@@ -8635,7 +8635,7 @@ def rrse_role_stability_score(player_min_log, player_team, injuries, depth_chart
         depth_chart      : dict mapping positions to depth (Module 13-17)
 
     Output:
-        float role_vol_score (0.05 → 1.25 range)
+        float role_vol_score (0.05 ? 1.25 range)
     """
 
     # ----------------------------------------------------
@@ -8651,7 +8651,7 @@ def rrse_role_stability_score(player_min_log, player_team, injuries, depth_chart
     # ----------------------------------------------------
     # 2. Depth chart stability
     # ----------------------------------------------------
-    # If player is backed by weak bench → more stable role
+    # If player is backed by weak bench ? more stable role
     bench_strength = depth_chart.get("bench_strength", 0.50)
     bench_strength = np.clip(bench_strength, 0.25, 1.10)
 
@@ -8722,7 +8722,7 @@ def rrse_role_stability_score(player_min_log, player_team, injuries, depth_chart
     return role_vol_score
 
 # =====================================================================
-# MODULE 16 — PHASE 4
+# MODULE 16 - PHASE 4
 # ROTATIONAL MINUTES MONTE CARLO ENGINE (RVE-MC, 10,000 sims)
 # =====================================================================
 
@@ -8861,7 +8861,7 @@ def rotational_minutes_mc(
     }
 
 # =====================================================================
-# MODULE 16 — PHASE 5
+# MODULE 16 - PHASE 5
 # ROTATIONAL VOLATILITY SCORE ENGINE (RVS)
 # =====================================================================
 
@@ -8893,7 +8893,7 @@ def rotational_volatility_score(
         matchup_rotation_sensitivity : bench usage vs matchup
 
     Output:
-        volatility_score (0.60 → 2.20)
+        volatility_score (0.60 ? 2.20)
     """
 
     # ------------------------------------------------------------
@@ -8930,7 +8930,7 @@ def rotational_volatility_score(
     return smooth
 
 # =====================================================================
-# MODULE 16 — PHASE 6
+# MODULE 16 - PHASE 6
 # FINAL MINUTES INTEGRATION LAYER
 # =====================================================================
 
@@ -9047,8 +9047,8 @@ def integrate_minutes_projection(
 
 
 # =====================================================================
-# MODULE 17 — PROJECTION OVERRIDE ENGINE
-# Phase 1 — Override Router & Base Override Schema
+# MODULE 17 - PROJECTION OVERRIDE ENGINE
+# Phase 1 - Override Router & Base Override Schema
 # =====================================================================
 
 from dataclasses import dataclass
@@ -9161,49 +9161,49 @@ def apply_projection_override(
     # -------------------------
     if ov.minutes is not None:
         minutes = ov.minutes
-        notes.append(f"Minutes override → {minutes}")
+        notes.append(f"Minutes override ? {minutes}")
 
     if ov.minutes_floor is not None:
         minutes = max(minutes, ov.minutes_floor)
-        notes.append(f"Minutes floor → {ov.minutes_floor}")
+        notes.append(f"Minutes floor ? {ov.minutes_floor}")
 
     if ov.minutes_ceiling is not None:
         minutes = min(minutes, ov.minutes_ceiling)
-        notes.append(f"Minutes ceiling → {ov.minutes_ceiling}")
+        notes.append(f"Minutes ceiling ? {ov.minutes_ceiling}")
 
     # -------------------------
     # Usage override
     # -------------------------
     if ov.usage_mult is not None:
         usage_mult *= ov.usage_mult
-        notes.append(f"Usage multiplier → {ov.usage_mult}")
+        notes.append(f"Usage multiplier ? {ov.usage_mult}")
 
     if ov.usage_floor is not None:
         usage_mult = max(usage_mult, ov.usage_floor)
-        notes.append(f"Usage floor → {ov.usage_floor}")
+        notes.append(f"Usage floor ? {ov.usage_floor}")
 
     if ov.usage_ceiling is not None:
         usage_mult = min(usage_mult, ov.usage_ceiling)
-        notes.append(f"Usage ceiling → {ov.usage_ceiling}")
+        notes.append(f"Usage ceiling ? {ov.usage_ceiling}")
 
     # -------------------------
     # Market mu/sd override
     # -------------------------
     if ov.mu_mult is not None:
         mu *= ov.mu_mult
-        notes.append(f"μ multiplier → {ov.mu_mult}")
+        notes.append(f"? multiplier ? {ov.mu_mult}")
 
     if ov.sd_mult is not None:
         sd *= ov.sd_mult
-        notes.append(f"σ multiplier → {ov.sd_mult}")
+        notes.append(f"? multiplier ? {ov.sd_mult}")
 
     if ov.override_mu is not None:
         mu = ov.override_mu
-        notes.append(f"Hard μ override → {mu}")
+        notes.append(f"Hard ? override ? {mu}")
 
     if ov.override_sd is not None:
         sd = ov.override_sd
-        notes.append(f"Hard σ override → {sd}")
+        notes.append(f"Hard ? override ? {sd}")
 
     # -------------------------
     # Contextual flags
@@ -9247,13 +9247,13 @@ def apply_projection_override(
     return mu, sd, minutes, usage_mult, True, note_summary
 
 # =====================================================================
-# MODULE 17 — PROJECTION OVERRIDE ENGINE UI PANEL
-# Phase 2 — Streamlit Override Editor
+# MODULE 17 - PROJECTION OVERRIDE ENGINE UI PANEL
+# Phase 2 - Streamlit Override Editor
 # =====================================================================
 
-with st.sidebar.expander("🛠 Projection Overrides", expanded=False):
+with st.sidebar.expander("? Projection Overrides", expanded=False):
 
-    st.markdown("### 🔧 Manual Override Controls")
+    st.markdown("### ? Manual Override Controls")
 
     st.write(
         "Use these controls to override projections for special situations:\n"
@@ -9274,23 +9274,23 @@ with st.sidebar.expander("🛠 Projection Overrides", expanded=False):
         ["Points", "Rebounds", "Assists", "PRA"],
     )
 
-    st.markdown("### ⏱ Minutes Overrides")
+    st.markdown("### ? Minutes Overrides")
     ov_minutes = st.number_input("Set Minutes (optional)", min_value=0.0, max_value=48.0, value=0.0)
     ov_minutes_floor = st.number_input("Minutes Floor", min_value=0.0, max_value=48.0, value=0.0)
     ov_minutes_ceiling = st.number_input("Minutes Ceiling", min_value=0.0, max_value=48.0, value=0.0)
 
-    st.markdown("### 🔥 Usage Overrides")
+    st.markdown("### ? Usage Overrides")
     ov_usage_mult = st.number_input("Usage Multiplier (1.15 = +15%)", value=1.00)
     ov_usage_floor = st.number_input("Usage Floor", value=0.00)
     ov_usage_ceiling = st.number_input("Usage Ceiling", value=5.00)
 
-    st.markdown("### 📊 Market-Specific Adjustments")
-    ov_mu_mult = st.number_input("μ Multiplier", value=1.00)
-    ov_sd_mult = st.number_input("σ Multiplier", value=1.00)
-    ov_mu_override = st.number_input("Hard μ Override (optional)", value=0.0)
-    ov_sd_override = st.number_input("Hard σ Override (optional)", value=0.0)
+    st.markdown("### ? Market-Specific Adjustments")
+    ov_mu_mult = st.number_input("? Multiplier", value=1.00)
+    ov_sd_mult = st.number_input("? Multiplier", value=1.00)
+    ov_mu_override = st.number_input("Hard ? Override (optional)", value=0.0)
+    ov_sd_override = st.number_input("Hard ? Override (optional)", value=0.0)
 
-    st.markdown("### ⚠ Contextual Flags")
+    st.markdown("### ? Contextual Flags")
     flag_minutes_restriction = st.checkbox("Minutes Restriction")
     flag_injury_return = st.checkbox("Injury Return")
     flag_role_change = st.checkbox("Role Change")
@@ -9303,7 +9303,7 @@ with st.sidebar.expander("🛠 Projection Overrides", expanded=False):
     # ------------------------------------------------
     # Register Override
     # ------------------------------------------------
-    if st.button("💾 Apply Override"):
+    if st.button("? Apply Override"):
 
         if override_player == "":
             st.error("Player name is required to apply override.")
@@ -9329,12 +9329,12 @@ with st.sidebar.expander("🛠 Projection Overrides", expanded=False):
             )
 
             register_override(override_player, override_market, override)
-            st.success(f"Override applied to {override_player} — {override_market}")
+            st.success(f"Override applied to {override_player} - {override_market}")
 
     # ------------------------------------------------
     # Display Active Overrides
     # ------------------------------------------------
-    st.markdown("### 📌 Active Overrides")
+    st.markdown("### ? Active Overrides")
 
     if len(override_db) == 0:
         st.info("No overrides applied.")
@@ -9346,8 +9346,8 @@ with st.sidebar.expander("🛠 Projection Overrides", expanded=False):
                 st.write(f"  - {ov}")
 
 ============================================================
-MODULE 18 — Live Line Sync Engine (PrizePicks + Sleeper)
-Phase 1 — Architecture + Core Layer
+MODULE 18 - Live Line Sync Engine (PrizePicks + Sleeper)
+Phase 1 - Architecture + Core Layer
 ============================================================
 import time
 import json
@@ -9357,7 +9357,7 @@ from functools import lru_cache
 
 
 # ============================================================
-# 🔧 CONFIG
+# ? CONFIG
 # ============================================================
 
 PRIZEPICKS_API = "https://api.prizepicks.com/projections"
@@ -9367,7 +9367,7 @@ LINE_CACHE_TTL = 60  # refresh every 60 seconds
 
 
 # ============================================================
-# 📌 Market Normalization Maps
+# ? Market Normalization Maps
 # ============================================================
 
 PRIZEPICKS_MARKET_MAP = {
@@ -9444,7 +9444,7 @@ def fetch_sleeper_raw():
 ============================================================
 def parse_prizepicks(json_raw):
     """
-    Converts PrizePicks projections → unified schema list.
+    Converts PrizePicks projections ? unified schema list.
     """
     if not json_raw or "data" not in json_raw:
         return []
@@ -9491,7 +9491,7 @@ def parse_prizepicks(json_raw):
 ============================================================
 def parse_sleeper(json_raw):
     """
-    Placeholder parser — implemented in Phase 2.
+    Placeholder parser - implemented in Phase 2.
     """
     return []
 ============================================================
@@ -9524,7 +9524,7 @@ def get_live_lines():
  STREAMLIT DEBUG PANEL (Phase 1)
 ============================================================
 def render_live_line_debug():
-    st.markdown("## 🔌 Live Lines — Debug (Phase 1)")
+    st.markdown("## ? Live Lines - Debug (Phase 1)")
 
     lines = get_live_lines()
     if not lines:
@@ -9535,11 +9535,11 @@ def render_live_line_debug():
         st.json(ln)
 
 ============================================================
-MODULE 18 — Live Line Sync Engine
-Phase 2 — Sleeper API Full Integration
+MODULE 18 - Live Line Sync Engine
+Phase 2 - Sleeper API Full Integration
 ============================================================
 # ============================================================
-# 🧩 Sleeper Market Mapping
+# ? Sleeper Market Mapping
 # ============================================================
 
 SLEEPER_MARKET_MAP = {
@@ -9554,7 +9554,7 @@ SLEEPER_MARKET_MAP = {
 
 
 # ============================================================
-# 🔄 Sleeper Raw Fetcher
+# ? Sleeper Raw Fetcher
 # ============================================================
 
 def fetch_sleeper_raw():
@@ -9571,7 +9571,7 @@ def fetch_sleeper_raw():
 
 
 # ============================================================
-# 🔄 Sleeper Player Lookup Table (once per app cache)
+# ? Sleeper Player Lookup Table (once per app cache)
 # ============================================================
 
 @st.cache_data(ttl=3600)
@@ -9588,11 +9588,11 @@ def get_sleeper_players():
     # data = {player_id: {player_attributes}}
     return data
 ============================================================
-🧠 Sleeper Normalization Engine
+? Sleeper Normalization Engine
 ============================================================
 def parse_sleeper(json_raw):
     """
-    Converts Sleeper projection JSON → unified prop schema list.
+    Converts Sleeper projection JSON ? unified prop schema list.
     """
     if not json_raw:
         return []
@@ -9638,7 +9638,7 @@ def parse_sleeper(json_raw):
     return output
 
 ============================================================
-🧠 Merge, Deduplicate, and Return All Live Lines
+? Merge, Deduplicate, and Return All Live Lines
 (Enhanced Version for PrizePicks + Sleeper)
 ============================================================
 @st.cache_data(ttl=LINE_CACHE_TTL)
@@ -9672,27 +9672,27 @@ def get_live_lines():
     return list(unique.values())
 
 ============================================================
-🔍 Optional: Live Line Viewer
+? Optional: Live Line Viewer
 ============================================================
 def render_live_line_debug():
-    st.markdown("## 🔌 Live Lines Debug — PrizePicks + Sleeper")
+    st.markdown("## ? Live Lines Debug - PrizePicks + Sleeper")
 
     lines = get_live_lines()
 
     if not lines:
-        st.error("⚠ No live lines synced.")
+        st.error("? No live lines synced.")
         return
 
     for ln in lines[:100]:
         st.json(ln)
 ============================================================
-MODULE 18 — Phase 3
-Auto-Match Live Lines → Model UI
+MODULE 18 - Phase 3
+Auto-Match Live Lines ? Model UI
 ============================================================
 import difflib
 
 # ============================================================
-# 🔎 Fuzzy Player Matcher
+# ? Fuzzy Player Matcher
 # ============================================================
 
 def best_player_match(query, available_names, cutoff=0.65):
@@ -9705,7 +9705,7 @@ def best_player_match(query, available_names, cutoff=0.65):
     matches = difflib.get_close_matches(query, available_names, n=1, cutoff=cutoff)
     return matches[0] if matches else None
 ============================================================
-🎯 Build Player → Markets → Lines Index
+? Build Player ? Markets ? Lines Index
 ============================================================
 @st.cache_data(ttl=LINE_CACHE_TTL)
 def build_live_index():
@@ -9737,7 +9737,7 @@ def build_live_index():
     return index
 
 ============================================================
-⚙️ Auto-Fill Logic Engine
+?? Auto-Fill Logic Engine
 ============================================================
 def autofill_player_from_live_lines(player_query):
     """
@@ -9750,20 +9750,20 @@ def autofill_player_from_live_lines(player_query):
     index = build_live_index()
     all_names = list(index.keys())
 
-    # Step 1 — fuzzy match name
+    # Step 1 - fuzzy match name
     best = best_player_match(player_query, all_names)
 
     if not best:
         return None
 
-    # Step 2 — return the player's full market-list
+    # Step 2 - return the player's full market-list
     return {
         "player": best,
         "markets": index[best]  # dict: { "Points": {...}, "Rebounds": {...}, ... }
     }
 
 ============================================================
-🧩 Streamlit Auto-Fill Dropdown Component
+? Streamlit Auto-Fill Dropdown Component
 ============================================================
 def render_autofill_component(label="Player Search"):
     """
@@ -9812,7 +9812,7 @@ def render_autofill_component(label="Player Search"):
     }
 
 ============================================================
-🚀 Auto-Fill → Model Integration Helper
+? Auto-Fill ? Model Integration Helper
 ============================================================
 def try_autofill_into_leg(prefix: str):
     """
@@ -9821,7 +9821,7 @@ def try_autofill_into_leg(prefix: str):
     inside UI:
        p1 = try_autofill_into_leg("P1")
     """
-    st.markdown(f"### 🔄 Auto-Fill for {prefix}")
+    st.markdown(f"### ? Auto-Fill for {prefix}")
 
     data = render_autofill_component(f"{prefix} Player Search")
 
@@ -9841,7 +9841,7 @@ def try_autofill_into_leg(prefix: str):
     }
 
 ============================================================
-MODULE 18 — Phase 4
+MODULE 18 - Phase 4
 Background Auto-Refresh Engine (Live Line Updates)
 ============================================================
 import time
@@ -9849,7 +9849,7 @@ import hashlib
 import streamlit as st
 
 # ============================================================
-# 🔁 Helper: Hash any Python object for fast change detection
+# ? Helper: Hash any Python object for fast change detection
 # ============================================================
 
 def compute_hash(obj) -> str:
@@ -9863,7 +9863,7 @@ def compute_hash(obj) -> str:
     except:
         return ""
 ============================================================
-🔄 Background Auto-Refresh System
+? Background Auto-Refresh System
 ============================================================
 def auto_refresh_live_lines(refresh_interval: int = 30):
     """
@@ -9894,13 +9894,13 @@ def auto_refresh_live_lines(refresh_interval: int = 30):
     st_autorefresh = st.experimental_rerun if moved else None
 
     # Display timer
-    st.caption(f"📡 Live line data refreshes every **{refresh_interval} seconds**.")
+    st.caption(f"? Live line data refreshes every **{refresh_interval} seconds**.")
 
     # Return status
     return moved, new_lines
 
 ============================================================
-🚨 Line Movement Detection Engine
+? Line Movement Detection Engine
 ============================================================
 def detect_line_movements(old, new):
     """
@@ -9929,7 +9929,7 @@ def detect_line_movements(old, new):
     return movements
 
 ============================================================
-⚡ Streamlit Display Component (Alerts + Color Highlights)
+? Streamlit Display Component (Alerts + Color Highlights)
 ============================================================
 def show_line_movements(movements):
     """
@@ -9940,25 +9940,25 @@ def show_line_movements(movements):
         st.success("No line movement detected since last refresh.")
         return
 
-    st.markdown("## 🔥 **LIVE LINE MOVEMENTS DETECTED**")
+    st.markdown("## ? **LIVE LINE MOVEMENTS DETECTED**")
 
     for move in movements:
         delta = move["new_line"] - move["old_line"]
-        direction = "⬆️ Increased" if delta > 0 else "⬇️ Decreased"
+        direction = "?? Increased" if delta > 0 else "?? Decreased"
 
         st.markdown(
             f"""
             <div style="padding:12px; border-radius:10px; background:#1e1e1e; margin-bottom:10px;">
                 <b style="color:#4FC3F7;">{move['player']}</b><br>
                 Market: <b>{move['market']}</b><br>
-                Line: <b>{move['old_line']} → {move['new_line']}</b> ({direction})<br>
+                Line: <b>{move['old_line']} ? {move['new_line']}</b> ({direction})<br>
                 Platform: <b>{move['platform']}</b>
             </div>
             """,
             unsafe_allow_html=True
         )
 ============================================================
-🚀 UI Control Panel Component
+? UI Control Panel Component
 ============================================================
 def render_live_line_refresh_control():
     """
@@ -9966,7 +9966,7 @@ def render_live_line_refresh_control():
     selecting refresh interval.
     """
 
-    st.markdown("### ⚙️ Live Line Auto-Refresh Settings")
+    st.markdown("### ?? Live Line Auto-Refresh Settings")
 
     enable = st.checkbox("Enable Auto-Refresh", value=True)
     interval = st.slider("Refresh Interval (seconds)", 10, 120, 30, step=5)
@@ -9974,7 +9974,7 @@ def render_live_line_refresh_control():
     return enable, interval
 
 ============================================================
-🎯 FULL STREAMLIT INTEGRATION HOOK
+? FULL STREAMLIT INTEGRATION HOOK
 Called in your main UI (Model Tab)
 ============================================================
 def live_line_background_process():
@@ -9999,7 +9999,7 @@ def live_line_background_process():
             st.info("No changes detected in live lines yet.")
 
 ============================================================
-MODULE 18 — Phase 5
+MODULE 18 - Phase 5
 Automatic Recompute on Line Movement
 # =====================================================================
 def auto_recompute_on_line_change(
@@ -10016,8 +10016,8 @@ def auto_recompute_on_line_change(
     Inputs:
         p1_name, p1_market      --> user selection leg 1
         p2_name, p2_market      --> user selection leg 2
-        current_leg1_line       --> model’s last known line
-        current_leg2_line       --> model’s last known line
+        current_leg1_line       --> model's last known line
+        current_leg2_line       --> model's last known line
         payout_mult             --> fixed 3.0 for PP power plays
         
     Returns:
@@ -10081,7 +10081,7 @@ def auto_execute_ultramax(
     line movement requires re-running projections.
     """
 
-    st.markdown("### ⚡ Auto-Update Triggered — Recomputing Model...")
+    st.markdown("### ? Auto-Update Triggered - Recomputing Model...")
 
     # -------------------------
     # Run leg 1
@@ -10133,7 +10133,7 @@ def auto_execute_ultramax(
     ev_combo = combo["ev"]
     kelly = combo["kelly_stake"]
 
-    st.markdown("### 🔗 Auto Updated Combo Output")
+    st.markdown("### ? Auto Updated Combo Output")
     st.write(f"Joint Probability: **{joint_prob*100:.1f}%**")
     st.write(f"EV: **{ev_combo*100:+.1f}%**")
     st.write(f"Kelly Stake: **${kelly:.2f}**")
@@ -10141,7 +10141,7 @@ def auto_execute_ultramax(
     return leg1, leg2
 
 ============================================================
-MODULE 18 — PHASE 6
+MODULE 18 - PHASE 6
 REAL-TIME EDGE ALERT + NOTIFICATION ENGINE
 ============================================================
 import time
@@ -10156,8 +10156,8 @@ if "edge_alert_queue" not in st.session_state:
 
 def push_edge_alert(message: str, level: str = "info"):
     """
-    Pushes an alert into Streamlit’s internal queue.
-    Level ∈ {"success", "warning", "error", "info"}
+    Pushes an alert into Streamlit's internal queue.
+    Level ? {"success", "warning", "error", "info"}
     """
 
     st.session_state.edge_alert_queue.append({
@@ -10211,7 +10211,7 @@ def detect_new_edges(old_ev, new_ev, old_line, new_line, player, market):
     # -----------------------------
     if old_ev < 0.03 and new_ev >= 0.03:
         push_edge_alert(
-            f"🔥 NEW EDGE FOUND for {player} {market}: EV jumped to {new_ev*100:.1f}%",
+            f"? NEW EDGE FOUND for {player} {market}: EV jumped to {new_ev*100:.1f}%",
             "success"
         )
 
@@ -10220,7 +10220,7 @@ def detect_new_edges(old_ev, new_ev, old_line, new_line, player, market):
     # -----------------------------
     if old_ev >= 0.03 and new_ev < 0.03:
         push_edge_alert(
-            f"⚠️ EDGE LOST for {player} {market}: EV fell to {new_ev*100:.1f}%",
+            f"?? EDGE LOST for {player} {market}: EV fell to {new_ev*100:.1f}%",
             "warning"
         )
 
@@ -10229,7 +10229,7 @@ def detect_new_edges(old_ev, new_ev, old_line, new_line, player, market):
     # -----------------------------
     if abs(new_line - old_line) >= 0.5:
         push_edge_alert(
-            f"⚡ STEAM MOVE DETECTED for {player} {market}: Line moved from {old_line} to {new_line}",
+            f"? STEAM MOVE DETECTED for {player} {market}: Line moved from {old_line} to {new_line}",
             "info"
         )
 
@@ -10238,13 +10238,13 @@ def detect_new_edges(old_ev, new_ev, old_line, new_line, player, market):
     # -----------------------------
     if new_line > old_line:
         push_edge_alert(
-            f"💰 CLV GAIN: Market raised {player} {market} line from {old_line} → {new_line}",
+            f"? CLV GAIN: Market raised {player} {market} line from {old_line} ? {new_line}",
             "success"
         )
 
     if new_line < old_line:
         push_edge_alert(
-            f"❗ Market dropped {player} {market} line {old_line} → {new_line} (CLV loss)",
+            f"? Market dropped {player} {market} line {old_line} ? {new_line} (CLV loss)",
             "warning"
         )
 
@@ -10280,8 +10280,8 @@ def edge_monitor_hook(
     )
 
 ============================================================
-MODULE 19 — RENDER COMPONENTS
-PHASE 1 — CORE CARD FRAMEWORK
+MODULE 19 - RENDER COMPONENTS
+PHASE 1 - CORE CARD FRAMEWORK
 ============================================================
 import streamlit as st
 from datetime import datetime
@@ -10345,7 +10345,7 @@ def card_container(inner_html: str, width: str = "100%"):
     """
 
 # -----------------------------------------------------------
-# Utility — EV color selection
+# Utility - EV color selection
 # -----------------------------------------------------------
 def ev_color(ev: float):
     if ev >= 0.10: return ULTRAMAX_COLORS["success"]
@@ -10353,7 +10353,7 @@ def ev_color(ev: float):
     return ULTRAMAX_COLORS["danger"]
 
 # -----------------------------------------------------------
-# Utility — Probability color
+# Utility - Probability color
 # -----------------------------------------------------------
 def prob_color(p: float):
     if p >= 0.60: return ULTRAMAX_COLORS["success"]
@@ -10361,7 +10361,7 @@ def prob_color(p: float):
     return ULTRAMAX_COLORS["danger"]
 
 # -----------------------------------------------------------
-# Phase 1 only defines the framework —
+# Phase 1 only defines the framework -
 # Phase 2 will add the full Leg Card layout.
 # Phase 3 will add Combo Card.
 # Phase 4 will add expandable metrics.
@@ -10369,7 +10369,7 @@ def prob_color(p: float):
 # -----------------------------------------------------------
 
 # ============================================================
-# MODULE 19 — PHASE 2  
+# MODULE 19 - PHASE 2  
 # LEG CARD RENDERING (Single Player UI Component)
 # ============================================================
 
@@ -10377,7 +10377,7 @@ def render_leg_card_ultramax(leg: dict):
     """
     Renders a single-leg card for UltraMax V4.
     Inputs:
-        leg — dict with keys:
+        leg - dict with keys:
             player, market, line, prob_over,
             mu, sd, ctx_mult,
             teammate_out, blowout
@@ -10399,17 +10399,17 @@ def render_leg_card_ultramax(leg: dict):
     # --------------------------
     prob_badge = badge("Model Prob", f"{prob*100:.1f}%", prob_color(prob))
     line_badge = badge("Line", f"{line}", ULTRAMAX_COLORS["primary"])
-    mu_badge   = badge("μ", f"{mu:.2f}", ULTRAMAX_COLORS["text_secondary"])
-    sd_badge   = badge("σ", f"{sd:.2f}", ULTRAMAX_COLORS["text_secondary"])
+    mu_badge   = badge("?", f"{mu:.2f}", ULTRAMAX_COLORS["text_secondary"])
+    sd_badge   = badge("?", f"{sd:.2f}", ULTRAMAX_COLORS["text_secondary"])
     ctx_badge  = badge("Ctx Mult", f"{ctx:.2f}", ULTRAMAX_COLORS["warning"])
 
     out_badge = ""
     if teammate_out:
-        out_badge = badge("Teammate OUT", "↑ Usage", ULTRAMAX_COLORS["warning"])
+        out_badge = badge("Teammate OUT", "? Usage", ULTRAMAX_COLORS["warning"])
 
     blow_badge = ""
     if blowout:
-        blow_badge = badge("Blowout Risk", "↓ Minutes", ULTRAMAX_COLORS["danger"])
+        blow_badge = badge("Blowout Risk", "? Minutes", ULTRAMAX_COLORS["danger"])
 
     # --------------------------
     # HTML layout
@@ -10425,7 +10425,7 @@ def render_leg_card_ultramax(leg: dict):
         ">{player}</h3>
 
         <div style="margin-top:6px; font-size:16px; color:{ULTRAMAX_COLORS['text_secondary']}">
-            {market} • Line {line}
+            {market} ? Line {line}
         </div>
 
         <div style="margin-top:12px;">
@@ -10447,10 +10447,10 @@ def render_leg_card_ultramax(leg: dict):
 
         <div style="font-size:14px; color:{ULTRAMAX_COLORS['text_secondary']}">
             <strong>Projection Summary:</strong><br/>
-            • Expected = <b>{mu:.2f}</b><br/>
-            • Volatility = <b>{sd:.2f}</b><br/>
-            • Opponent Context Multiplier = <b>{ctx:.2f}</b><br/>
-            • Probability Over = <b>{prob*100:.1f}%</b><br/>
+            ? Expected = <b>{mu:.2f}</b><br/>
+            ? Volatility = <b>{sd:.2f}</b><br/>
+            ? Opponent Context Multiplier = <b>{ctx:.2f}</b><br/>
+            ? Probability Over = <b>{prob*100:.1f}%</b><br/>
         </div>
 
     </div>
@@ -10459,7 +10459,7 @@ def render_leg_card_ultramax(leg: dict):
     st.markdown(card_container(html), unsafe_allow_html=True)
 
 # ============================================================
-# MODULE 19 — PHASE 3  
+# MODULE 19 - PHASE 3  
 # COMBO CARD RENDERING (2-Leg Summary)
 # ============================================================
 
@@ -10467,14 +10467,14 @@ def render_combo_card_ultramax(combo: dict, leg1: dict, leg2: dict):
     """
     Renders the full 2-leg combo card.
     Inputs:
-        combo — dict returned from module12_two_pick_decision
+        combo - dict returned from module12_two_pick_decision
             joint_prob_mc
             joint_ev
             stake
             decision
             corr_used
             p_joint_raw
-        leg1, leg2 — individual leg dicts
+        leg1, leg2 - individual leg dicts
     """
 
     # Unpack combo metrics
@@ -10533,8 +10533,8 @@ def render_combo_card_ultramax(combo: dict, leg1: dict, leg2: dict):
         </h2>
 
         <div style="margin-top:8px; font-size:15px;">
-            <b>{l1_name}</b> — {l1_mkt} {l1_line}<br/>
-            <b>{l2_name}</b> — {l2_mkt} {l2_line}
+            <b>{l1_name}</b> - {l1_mkt} {l1_line}<br/>
+            <b>{l2_name}</b> - {l2_mkt} {l2_line}
         </div>
 
         <div style="margin-top:14px;">
@@ -10555,11 +10555,11 @@ def render_combo_card_ultramax(combo: dict, leg1: dict, leg2: dict):
 
         <div style="font-size:14px; color:{ULTRAMAX_COLORS['text_secondary']}">
             <strong>Combo Insights:</strong><br/>
-            • Joint probability (after drift + CLV): <b>{jp*100:.2f}%</b><br/>
-            • Raw probability before adjustments: <b>{p_raw*100:.2f}%</b><br/>
-            • Correlation applied: <b>{corr:+.3f}</b><br/>
-            • EV per $1: <b>{ev*100:+.2f}%</b><br/>
-            • Kelly stake: <b>${stake:.2f}</b><br/>
+            ? Joint probability (after drift + CLV): <b>{jp*100:.2f}%</b><br/>
+            ? Raw probability before adjustments: <b>{p_raw*100:.2f}%</b><br/>
+            ? Correlation applied: <b>{corr:+.3f}</b><br/>
+            ? EV per $1: <b>{ev*100:+.2f}%</b><br/>
+            ? Kelly stake: <b>${stake:.2f}</b><br/>
         </div>
 
     </div>
@@ -10568,7 +10568,7 @@ def render_combo_card_ultramax(combo: dict, leg1: dict, leg2: dict):
     st.markdown(card_container(html), unsafe_allow_html=True)
 
 # ============================================================
-# MODULE 19 — PHASE 4
+# MODULE 19 - PHASE 4
 # FULL MODEL OUTPUT SECTION (Leg Cards + Combo Card)
 # ============================================================
 
@@ -10589,7 +10589,7 @@ def run_ultramax_pipeline(
       8. Optional warnings
     """
 
-    st.markdown("## 📊 UltraMax Model Results")
+    st.markdown("## ? UltraMax Model Results")
 
     # ----------------------------------------------------
     # Compute Individual Legs
@@ -10620,18 +10620,18 @@ def run_ultramax_pipeline(
     # Handle Errors
     # ----------------------------------------------------
     if err1:
-        st.error(f"❌ Leg 1 Error: {err1}")
+        st.error(f"? Leg 1 Error: {err1}")
     if err2:
-        st.error(f"❌ Leg 2 Error: {err2}")
+        st.error(f"? Leg 2 Error: {err2}")
 
     if (err1 or err2) or (not leg1 or not leg2):
-        st.warning("⚠ Cannot proceed: check player names, market, or API issues.")
+        st.warning("? Cannot proceed: check player names, market, or API issues.")
         return
 
     # ----------------------------------------------------
     # Render Individual Leg Cards
     # ----------------------------------------------------
-    st.markdown("### 🧩 Individual Legs")
+    st.markdown("### ? Individual Legs")
     render_leg_card_ultramax(leg1)
     render_leg_card_ultramax(leg2)
 
@@ -10663,37 +10663,37 @@ def run_ultramax_pipeline(
     # ----------------------------------------------------
     # Render Combo Summary
     # ----------------------------------------------------
-    st.markdown("### 🔗 Combo Analysis")
+    st.markdown("### ? Combo Analysis")
     render_combo_card_ultramax(combo_out, leg1, leg2)
 
     # ----------------------------------------------------
     # Contextual Warnings / Advisories
     # ----------------------------------------------------
-    st.markdown("### ⚠ Model Notes & Risk Checks")
+    st.markdown("### ? Model Notes & Risk Checks")
 
     if p1_teammate_out or p2_teammate_out:
-        st.info("🩹 **Injury Boost Activated:** Model has redistributed touches accordingly.")
+        st.info("? **Injury Boost Activated:** Model has redistributed touches accordingly.")
 
     if p1_blowout or p2_blowout:
-        st.warning("💥 **Blowout Flag:** Model applied reduction to projected minutes.")
+        st.warning("? **Blowout Flag:** Model applied reduction to projected minutes.")
 
     if abs(base_corr) > 0.35:
-        st.warning(f"📈 **High Correlation:** Legs move together strongly (ρ = {base_corr:+.2f})")
+        st.warning(f"? **High Correlation:** Legs move together strongly (? = {base_corr:+.2f})")
 
     if leg1["sd"] > 8 or leg2["sd"] > 8:
-        st.warning("🌪 **High Volatility:** One or more legs have elevated outcome variance.")
+        st.warning("? **High Volatility:** One or more legs have elevated outcome variance.")
 
-    st.success("✔ UltraMax evaluation complete.")
+    st.success("? UltraMax evaluation complete.")
 
 # ============================================================
-# MODULE 19 — PHASE 5
+# MODULE 19 - PHASE 5
 # RUN BUTTON + PIPELINE EXECUTION IN UI
 # ============================================================
 
 # -----------------------
 # Model Execution Section
 # -----------------------
-st.markdown("### 🚀 Run UltraMax Model")
+st.markdown("### ? Run UltraMax Model")
 
 run_button = st.button("Run Model", type="primary")
 
@@ -10741,7 +10741,7 @@ if run_button:
 
     err = validate_inputs()
     if err:
-        st.error(f"⚠ Input Error: {err}")
+        st.error(f"? Input Error: {err}")
     else:
         with st.spinner("Running UltraMax Pipeline..."):
             time.sleep(0.3)
@@ -10770,8 +10770,8 @@ if run_button:
     st.markdown("---")
 
 # ================================================================
-# MODULE 20 — Phase 1
-# HISTORY TRACKING (CSV / LOCAL STORAGE) — FOUNDATION LAYER
+# MODULE 20 - Phase 1
+# HISTORY TRACKING (CSV / LOCAL STORAGE) - FOUNDATION LAYER
 # ================================================================
 
 import os
@@ -10900,7 +10900,7 @@ def clear_history():
     df.to_csv(HISTORY_FILE, index=False)
 
 # ================================================================
-# MODULE 20 — Phase 3
+# MODULE 20 - Phase 3
 # FULL HISTORY TAB UI (SORTABLE TABLE + FILTERS + EXPORT)
 # ================================================================
 
@@ -10941,7 +10941,7 @@ def filter_history(df: pd.DataFrame):
     if "timestamp" in df.columns:
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
 
-    st.sidebar.markdown("### 🔎 History Filters")
+    st.sidebar.markdown("### ? History Filters")
 
     # --------------------------
     # Player search
@@ -11007,7 +11007,7 @@ def render_history_tab():
       - Clear history button
     """
 
-    st.header("📜 UltraMax Run History")
+    st.header("? UltraMax Run History")
 
     # Load
     df = load_history_df()
@@ -11020,13 +11020,13 @@ def render_history_tab():
     df_filtered = filter_history(df)
 
     # Display
-    st.markdown("### 📊 Filtered History")
+    st.markdown("### ? Filtered History")
     st.dataframe(df_filtered, use_container_width=True)
 
     # Download CSV
     csv = df_filtered.to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="📥 Download Filtered CSV",
+        label="? Download Filtered CSV",
         data=csv,
         file_name="ultramax_history_filtered.csv",
         mime="text/csv"
@@ -11034,7 +11034,7 @@ def render_history_tab():
 
     # Clear history (with confirmation)
     st.markdown("---")
-    st.markdown("### ⚠️ Clear Full History")
+    st.markdown("### ?? Clear Full History")
 
     if st.button("Delete All History"):
         st.warning("This will permanently delete ALL historical runs.")
@@ -11043,7 +11043,7 @@ def render_history_tab():
             st.success("History cleared successfully. Refresh page.")
 
 # ================================================================
-# MODULE 21 — Phase 1
+# MODULE 21 - Phase 1
 # CALIBRATION UI CONTROLLER (Core Logic + Persistence Layer)
 # ================================================================
 
@@ -11073,7 +11073,7 @@ DEFAULT_CALIBRATION = {
 def load_calibration():
     """
     Loads calibration parameters from local JSON file.
-    If file missing or corrupted → return defaults.
+    If file missing or corrupted ? return defaults.
     """
 
     if not os.path.exists(CALIBRATION_FILE):
@@ -11117,13 +11117,13 @@ def save_calibration(params: dict):
 def get_calibration_params():
     """
     Public entry point:
-    Modules 10–12 call this to retrieve calibration settings.
+    Modules 10-12 call this to retrieve calibration settings.
     """
     return load_calibration()
 
 
 # ------------------------------------------------------------
-# CONTROLLER CLASS (Used in Phase 2–4 for full UI control)
+# CONTROLLER CLASS (Used in Phase 2-4 for full UI control)
 # ------------------------------------------------------------
 class CalibrationController:
     """
@@ -11153,7 +11153,7 @@ class CalibrationController:
         return save_calibration(self.params)
 
 # ================================================================
-# MODULE 21 — Phase 2
+# MODULE 21 - Phase 2
 # CALIBRATION TAB UI (User Controls)
 # ================================================================
 
@@ -11170,7 +11170,7 @@ def render_calibration_tab():
     This tab syncs directly with CalibrationController from Phase 1.
     """
 
-    st.header("🧠 Model Calibration Center")
+    st.header("? Model Calibration Center")
     st.write("Adjust advanced model parameters for volatility, risk, bias, and EV scaling.")
 
     # Load controller
@@ -11178,7 +11178,7 @@ def render_calibration_tab():
     params = controller.params.copy()
 
     st.markdown("---")
-    st.subheader("📊 Volatility & Distribution Controls")
+    st.subheader("? Volatility & Distribution Controls")
 
     # --------------------------------------------------------
     # Variance Adjustment Slider
@@ -11200,7 +11200,7 @@ def render_calibration_tab():
         min_value=0.90, max_value=1.20,
         value=float(params["heavy_tail_adj"]),
         step=0.01,
-        help="Controls the blend weighting in Monte Carlo’s right-tail extension."
+        help="Controls the blend weighting in Monte Carlo's right-tail extension."
     )
     controller.update("heavy_tail_adj", heavy_tail_adj)
 
@@ -11208,7 +11208,7 @@ def render_calibration_tab():
     # Bias Adjustment
     # --------------------------------------------------------
     bias_adj = st.slider(
-        "Bias Adjustment (Mean shift ±)",
+        "Bias Adjustment (Mean shift ?)",
         min_value=-3.0, max_value=3.0,
         value=float(params["bias_adj"]),
         step=0.1,
@@ -11217,7 +11217,7 @@ def render_calibration_tab():
     controller.update("bias_adj", bias_adj)
 
     st.markdown("---")
-    st.subheader("🪙 Probability Stability Controls")
+    st.subheader("? Probability Stability Controls")
 
     # --------------------------------------------------------
     # Drift Adjustment
@@ -11244,7 +11244,7 @@ def render_calibration_tab():
     controller.update("clv_adj", clv_adj)
 
     st.markdown("---")
-    st.subheader("💰 Risk & Bankroll Settings")
+    st.subheader("? Risk & Bankroll Settings")
 
     # --------------------------------------------------------
     # Fractional Kelly slider
@@ -11271,32 +11271,32 @@ def render_calibration_tab():
     controller.update("bankroll", bankroll)
 
     st.markdown("---")
-    st.subheader("💾 Save Settings")
+    st.subheader("? Save Settings")
 
     colA, colB = st.columns(2)
 
     # --------------------------------------------------------
     # Save button
     # --------------------------------------------------------
-    if colA.button("💾 Save Calibration"):
+    if colA.button("? Save Calibration"):
         success = controller.save()
         if success:
-            st.success("✅ Calibration saved successfully!")
+            st.success("? Calibration saved successfully!")
         else:
-            st.error("❌ Failed to save calibration.")
+            st.error("? Failed to save calibration.")
 
     # --------------------------------------------------------
     # Reset button
     # --------------------------------------------------------
-    if colB.button("🔄 Reset to Defaults"):
+    if colB.button("? Reset to Defaults"):
         controller.reset()
-        st.warning("⚠️ Calibration reset to default values. Refresh tab.")
+        st.warning("?? Calibration reset to default values. Refresh tab.")
 
     st.markdown("---")
-    st.info("These settings automatically feed into Monte Carlo (Module 10–11) and decision engine (Module 12).")
+    st.info("These settings automatically feed into Monte Carlo (Module 10-11) and decision engine (Module 12).")
 
 # ================================================================
-# MODULE 21 — Phase 3
+# MODULE 21 - Phase 3
 # CALIBRATION DIAGNOSTICS + LIVE PREVIEW VISUALS
 # ================================================================
 import numpy as np
@@ -11311,7 +11311,7 @@ def render_calibration_diagnostics():
     Automatically reflects slider adjustments from Phase 2.
     """
 
-    st.header("📈 Calibration Diagnostics & Live Preview")
+    st.header("? Calibration Diagnostics & Live Preview")
 
     controller = CalibrationController()
     params = controller.params.copy()
@@ -11333,9 +11333,9 @@ def render_calibration_diagnostics():
     tail_mult = heavy_tail_adj
 
     # -----------------------------------------------------------
-    # DIAGNOSTIC AREA 1 — Distribution Comparison
+    # DIAGNOSTIC AREA 1 - Distribution Comparison
     # -----------------------------------------------------------
-    st.subheader("📊 Distribution Preview")
+    st.subheader("? Distribution Preview")
 
     x = np.linspace(base_mu - 4 * base_sd, base_mu + 4 * base_sd, 400)
 
@@ -11364,9 +11364,9 @@ def render_calibration_diagnostics():
     st.plotly_chart(fig_dist, use_container_width=True)
 
     # -----------------------------------------------------------
-    # DIAGNOSTIC AREA 2 — Volatility Curve Visualization
+    # DIAGNOSTIC AREA 2 - Volatility Curve Visualization
     # -----------------------------------------------------------
-    st.subheader("📉 Volatility Curve")
+    st.subheader("? Volatility Curve")
 
     minutes = np.linspace(18, 40, 24)
     vol_curve = adj_sd * np.sqrt(minutes / 30)
@@ -11386,9 +11386,9 @@ def render_calibration_diagnostics():
     st.plotly_chart(fig_vol, use_container_width=True)
 
     # -----------------------------------------------------------
-    # DIAGNOSTIC AREA 3 — Probability Sensitivity Curve
+    # DIAGNOSTIC AREA 3 - Probability Sensitivity Curve
     # -----------------------------------------------------------
-    st.subheader("🎯 Probability Sensitivity")
+    st.subheader("? Probability Sensitivity")
 
     # Market lines to test
     lines = np.linspace(base_mu - 12, base_mu + 12, 60)
@@ -11423,7 +11423,7 @@ def render_calibration_diagnostics():
     st.info("These diagnostics help validate how calibration affects probabilities, volatility, and Monte Carlo behavior.")
 
 # ================================================================
-# MODULE 21 — Phase 4
+# MODULE 21 - Phase 4
 # CALIBRATION EXPORT / IMPORT + PERSISTENT STORAGE
 # ================================================================
 
@@ -11442,9 +11442,9 @@ def save_calibration_settings(params: dict):
     try:
         with open(CALIBRATION_FILE, "w") as f:
             json.dump(params, f, indent=4)
-        st.success("✅ Calibration settings saved successfully.")
+        st.success("? Calibration settings saved successfully.")
     except Exception as e:
-        st.error(f"❌ Failed to save calibration settings: {e}")
+        st.error(f"? Failed to save calibration settings: {e}")
 
 
 def load_calibration_settings() -> dict:
@@ -11479,7 +11479,7 @@ def render_calibration_export_import_ui():
       - Import JSON
     """
 
-    st.subheader("💾 Save / Load Calibration Settings")
+    st.subheader("? Save / Load Calibration Settings")
 
     controller = CalibrationController()
     current_params = controller.params.copy()
@@ -11490,21 +11490,21 @@ def render_calibration_export_import_ui():
     # SAVE BUTTON
     # ------------------------------------------------------------
     with col1:
-        if st.button("💾 Save Calibration Settings", use_container_width=True):
+        if st.button("? Save Calibration Settings", use_container_width=True):
             save_calibration_settings(current_params)
 
     # ------------------------------------------------------------
     # LOAD BUTTON
     # ------------------------------------------------------------
     with col2:
-        if st.button("📥 Load Saved Settings", use_container_width=True):
+        if st.button("? Load Saved Settings", use_container_width=True):
             loaded = load_calibration_settings()
             CalibrationController().update(loaded)
-            st.success("🔄 Loaded saved calibration settings.")
+            st.success("? Loaded saved calibration settings.")
             st.rerun()
 
     st.markdown("---")
-    st.subheader("📤 Export / 📥 Import Calibration JSON")
+    st.subheader("? Export / ? Import Calibration JSON")
 
     col3, col4 = st.columns(2)
 
@@ -11513,7 +11513,7 @@ def render_calibration_export_import_ui():
     # ------------------------------------------------------------
     with col3:
         st.download_button(
-            label="📤 Export Calibration JSON",
+            label="? Export Calibration JSON",
             data=json.dumps(current_params, indent=4),
             file_name="calibration_export.json",
             mime="application/json",
@@ -11524,22 +11524,22 @@ def render_calibration_export_import_ui():
     # IMPORT JSON UPLOAD
     # ------------------------------------------------------------
     with col4:
-        uploaded = st.file_uploader("📥 Upload Calibration JSON", type=["json"])
+        uploaded = st.file_uploader("? Upload Calibration JSON", type=["json"])
         if uploaded is not None:
             try:
                 imported_params = json.load(uploaded)
                 CalibrationController().update(imported_params)
-                st.success("✅ Imported calibration file successfully.")
+                st.success("? Imported calibration file successfully.")
                 st.rerun()
             except Exception as e:
-                st.error(f"❌ Invalid JSON file: {e}")
+                st.error(f"? Invalid JSON file: {e}")
 
     st.markdown("---")
     st.info("Calibration settings are now fully persistent, exportable, and importable.")
 
 # ================================================================
-# MODULE 22 — PHASE 1
-# DEFENSIVE MATCHUP ENGINE — CORE SCHEMA + BASELINE RATINGS
+# MODULE 22 - PHASE 1
+# DEFENSIVE MATCHUP ENGINE - CORE SCHEMA + BASELINE RATINGS
 # ================================================================
 
 import numpy as np
@@ -11564,14 +11564,14 @@ DEF_ATTRIBUTES = [
     "rebound_rate",         # ability to limit 2nd chance points
     "pace_adj",             # adjusts possessions up/down
     "ast_allowance",        # how many assists they generally allow
-    "turnover_creation",    # pressure defense → more TO → transition
+    "turnover_creation",    # pressure defense ? more TO ? transition
 ]
 
 # ------------------------------------------------------------
 # 2. Baseline positional matchup weights
 # ------------------------------------------------------------
 # These weights determine how important each defensive attribute is
-# depending on the offensive player’s primary scoring style.
+# depending on the offensive player's primary scoring style.
 
 POSITION_WEIGHTS = {
     "guard": {
@@ -11630,22 +11630,22 @@ DEF_TEAM_DB = {}
 def compute_def_matchup_multiplier(team: str, position: str) -> float:
     """
     Computes a base defensive multiplier:
-        < 1.00 → difficult matchup
-        > 1.00 → favorable matchup
+        < 1.00 ? difficult matchup
+        > 1.00 ? favorable matchup
 
     Inputs:
-        team      — "LAL", "MIL", etc.
-        position  — "guard", "wing", "big"
+        team      - "LAL", "MIL", etc.
+        position  - "guard", "wing", "big"
 
     Returns:
-        float multiplier (0.85 → 1.20)
+        float multiplier (0.85 ? 1.20)
     """
 
     team = team.upper()
     position = position.lower()
 
     if team not in DEF_TEAM_DB:
-        # unknown team → neutral matchup
+        # unknown team ? neutral matchup
         return 1.00
 
     if position not in POSITION_WEIGHTS:
@@ -11660,9 +11660,9 @@ def compute_def_matchup_multiplier(team: str, position: str) -> float:
         score += team_stats.get(attr, 0.50) * weight
 
     # Normalize score into usable multiplier
-    # 0.50 → 0.80
-    # 0.75 → 1.00
-    # 1.00 → 1.20
+    # 0.50 ? 0.80
+    # 0.75 ? 1.00
+    # 1.00 ? 1.20
 
     normalized = 0.80 + (score - 0.50) * 0.80
 
@@ -11679,12 +11679,12 @@ def defensive_context_boost(team: str, position: str, market: str) -> float:
     """
     Applies matchup boost by market type:
 
-    PRA     → balanced
-    Points  → more perimeter/paint weight
-    Rebounds→ more rebound & paint weight
-    Assists → more ast_allowance & pace
+    PRA     ? balanced
+    Points  ? more perimeter/paint weight
+    Rebounds? more rebound & paint weight
+    Assists ? more ast_allowance & pace
 
-    Returns multiplier 0.85–1.25
+    Returns multiplier 0.85-1.25
     """
 
     base = compute_def_matchup_multiplier(team, position)
@@ -11701,7 +11701,7 @@ def defensive_context_boost(team: str, position: str, market: str) -> float:
         return float(np.clip(base * 1.00, 0.85, 1.25))
 
 # ================================================================
-# MODULE 22 — PHASE 2
+# MODULE 22 - PHASE 2
 # FULL 30-TEAM DEFENSIVE TEAM DATABASE
 # ================================================================
 
@@ -12009,7 +12009,7 @@ DEF_TEAM_DB = {
 }
 
 # ================================================================
-# MODULE 22 — PHASE 3
+# MODULE 22 - PHASE 3
 # POSITIONAL DEFENSIVE ASSIGNMENT ENGINE
 # ================================================================
 
@@ -12028,7 +12028,7 @@ DEF_BASELINE = 0.58
 
 def _estimate_primary_defender(team_abbrev: str, player_pos: str) -> float:
     """
-    Returns a defender quality rating between 0.30 — 0.90 using:
+    Returns a defender quality rating between 0.30 - 0.90 using:
       - team defensive profile (Phase 2 DB)
       - player position (PG/SG/SF/PF/C)
       - expected switch frequency
@@ -12098,13 +12098,13 @@ def matchup_defensive_multiplier(team_abbrev: str, player_pos: str, market: str)
     """
     Computes FINAL defensive matchup multiplier for projection pipeline.
 
-    Output range ≈ (0.75 → 1.30)
+    Output range ? (0.75 ? 1.30)
 
     Markets affected differently:
-        - Points → heavily tied to perimeter/paint defense depending on position
-        - Rebounds → tied to rebound_rate + paint defense
-        - Assists → tied to ast_allowance + help defense
-        - PRA → blended 3-way mixture
+        - Points ? heavily tied to perimeter/paint defense depending on position
+        - Rebounds ? tied to rebound_rate + paint defense
+        - Assists ? tied to ast_allowance + help defense
+        - PRA ? blended 3-way mixture
 
     This multiplier will be used inside:
         - compute_leg()
@@ -12141,14 +12141,14 @@ def matchup_defensive_multiplier(team_abbrev: str, player_pos: str, market: str)
     else:
         base = defense_strength
 
-    # Normalize into usable multiplier (0.75 — 1.30)
-    # Higher defense_strength → LOWER multiplier
+    # Normalize into usable multiplier (0.75 - 1.30)
+    # Higher defense_strength ? LOWER multiplier
     multiplier = 1.25 - (base - 0.30) * 0.85
 
     return float(np.clip(multiplier, 0.75, 1.30))
 
 # ================================================================
-# MODULE 22 — PHASE 4
+# MODULE 22 - PHASE 4
 # ROTATIONAL MATCHUP ESTIMATOR (MOM-MINUTE WEIGHTED DEFENSE ENGINE)
 # ================================================================
 
@@ -12172,7 +12172,7 @@ _ARCHETYPE_MULT = {
 def _big_defender_strength(team):
     """
     Pull interior-based defender rating.
-    Returns between ~0.30 — 0.90.
+    Returns between ~0.30 - 0.90.
     """
     return float(np.clip(
         0.60 * team["paint_defense"] + 0.40 * team["rebound_rate"],
@@ -12194,7 +12194,7 @@ def estimate_rotational_matchup(team_abbrev: str, player_pos: str) -> dict:
       "primary": float,
       "secondary": float,
       "big": float,
-      "weighted_def": float   (final difficulty value 0.30 — 0.90)
+      "weighted_def": float   (final difficulty value 0.30 - 0.90)
     }
     """
 
@@ -12233,15 +12233,15 @@ def estimate_rotational_matchup(team_abbrev: str, player_pos: str) -> dict:
 
 def matchup_minutes_multiplier(rotational_profile: dict, market: str) -> float:
     """
-    Converts rotational defensive profile → market-specific matchup multiplier.
+    Converts rotational defensive profile ? market-specific matchup multiplier.
 
     rotational_profile = estimate_rotational_matchup(...)
 
     Outputs multiplier:
-        0.70 → 1.35
+        0.70 ? 1.35
 
-    Higher → easier matchup.
-    Lower → harder matchup.
+    Higher ? easier matchup.
+    Lower ? harder matchup.
     """
 
     weighted_def = rotational_profile["weighted_def"]
@@ -12277,7 +12277,7 @@ def matchup_minutes_multiplier(rotational_profile: dict, market: str) -> float:
     return float(np.clip(mult, 0.70, 1.35))
 
 # ================================================================
-# MODULE 22 — PHASE 5
+# MODULE 22 - PHASE 5
 # FINAL DEFENSIVE ADJUSTMENT ENGINE
 # ================================================================
 
@@ -12302,14 +12302,14 @@ def defensive_adjustment_final(player_pos: str, opponent_team: str, market: str)
     """
     Produces the final defensive multiplier combining:
 
-      ✓ Positional defense profile (Phase 1)
-      ✓ Team defensive DB (Phase 2)
-      ✓ Primary & secondary defender strength (Phase 3)
-      ✓ Rotational matchup distribution (Phase 4)
-      ✓ Market sensitivity curves
+      ? Positional defense profile (Phase 1)
+      ? Team defensive DB (Phase 2)
+      ? Primary & secondary defender strength (Phase 3)
+      ? Rotational matchup distribution (Phase 4)
+      ? Market sensitivity curves
 
     Output:
-        float in range 0.70 — 1.40
+        float in range 0.70 - 1.40
     """
 
     # ----------------------------
@@ -12325,18 +12325,18 @@ def defensive_adjustment_final(player_pos: str, opponent_team: str, market: str)
     # ----------------------------
     rotation_profile = estimate_rotational_matchup(opponent_team, player_pos)
 
-    # Use Phase 4 multiplier (0.70 – 1.35)
+    # Use Phase 4 multiplier (0.70 - 1.35)
     matchup_mult = matchup_minutes_multiplier(rotation_profile, market)
 
     # ----------------------------
     # Step 3: Team defensive base difficulty
     # ----------------------------
-    team_def_base = team["def_metric"]      # 0.30 – 0.90
-    pace_factor = team["pace_factor"]       # 0.95 – 1.06
+    team_def_base = team["def_metric"]      # 0.30 - 0.90
+    pace_factor = team["pace_factor"]       # 0.95 - 1.06
 
     # Convert defensive number to adjustment
-    # harder defense (0.90) ≈ 0.80 multiplier
-    # softer defense (0.30) ≈ 1.22 multiplier
+    # harder defense (0.90) ? 0.80 multiplier
+    # softer defense (0.30) ? 1.22 multiplier
     team_def_mult = float(
         np.clip(1.40 - team_def_base * 0.66, 0.78, 1.22)
     )
@@ -12361,7 +12361,7 @@ def defensive_adjustment_final(player_pos: str, opponent_team: str, market: str)
     return final_mult
 
 # ================================================================
-# MODULE 22 — PHASE 6
+# MODULE 22 - PHASE 6
 # FINAL DEFENSIVE CONTEXT INTEGRATION WRAPPER
 # ================================================================
 
@@ -12389,7 +12389,7 @@ def apply_defensive_context(mu: float,
         (adj_mu, adj_sd, def_mult)
     """
 
-    # Step 1: Get final defensive adjustment (0.70 — 1.40)
+    # Step 1: Get final defensive adjustment (0.70 - 1.40)
     def_mult = defensive_adjustment_final(
         player_pos,
         opponent_team,
@@ -12403,10 +12403,10 @@ def apply_defensive_context(mu: float,
     #   - tougher defenses shrink SD less than they shrink mean
     #   - softer defenses expand SD slightly more than mean
     if def_mult < 1.0:
-        # tougher defense → shrink SD slightly (but 80–100% of mu scaling)
+        # tougher defense ? shrink SD slightly (but 80-100% of mu scaling)
         sd_mult = 0.85 + 0.15 * def_mult
     else:
-        # easy defense → SD grows slightly faster than mu
+        # easy defense ? SD grows slightly faster than mu
         sd_mult = 1.00 + (def_mult - 1.0) * 0.20
 
     adj_sd = float(sd * sd_mult)
@@ -12417,19 +12417,19 @@ def apply_defensive_context(mu: float,
     return adj_mu, adj_sd, def_mult
 
 
-# UI & APP LAYOUT (PARTS 1–20)
+# UI & APP LAYOUT (PARTS 1-20)
 # =====================================================================
 
 
 
 # ================================================================
-# PART 3 — MODEL TAB (PLAYER INPUT UI)
-# UltraMax NBA Prop Quant Engine — V4 (B3)
+# PART 3 - MODEL TAB (PLAYER INPUT UI)
+# UltraMax NBA Prop Quant Engine - V4 (B3)
 # ================================================================
 
 # Top-level tabs (this will exist throughout the full app)
 tab_model, tab_results, tab_history, tab_calibration = st.tabs(
-    ["📊 Model", "📈 Results", "📜 History", "🧬 Calibration"]
+    ["? Model", "? Results", "? History", "? Calibration"]
 )
 
 def render_realtime_alert_bar():
@@ -12485,13 +12485,13 @@ def run_auto_line_update_hook(
     return model_line1, model_line2
 
 # =====================================================================
-# MODULE 17 — PROJECTION OVERRIDE ENGINE UI PANEL
-# Phase 2 — Streamlit Override Editor
+# MODULE 17 - PROJECTION OVERRIDE ENGINE UI PANEL
+# Phase 2 - Streamlit Override Editor
 # =====================================================================
 
-with st.sidebar.expander("🛠 Projection Overrides", expanded=False):
+with st.sidebar.expander("? Projection Overrides", expanded=False):
 
-    st.markdown("### 🔧 Manual Override Controls")
+    st.markdown("### ? Manual Override Controls")
 
     st.write(
         "Use these controls to override projections for special situations:\n"
@@ -12512,23 +12512,23 @@ with st.sidebar.expander("🛠 Projection Overrides", expanded=False):
         ["Points", "Rebounds", "Assists", "PRA"],
     )
 
-    st.markdown("### ⏱ Minutes Overrides")
+    st.markdown("### ? Minutes Overrides")
     ov_minutes = st.number_input("Set Minutes (optional)", min_value=0.0, max_value=48.0, value=0.0)
     ov_minutes_floor = st.number_input("Minutes Floor", min_value=0.0, max_value=48.0, value=0.0)
     ov_minutes_ceiling = st.number_input("Minutes Ceiling", min_value=0.0, max_value=48.0, value=0.0)
 
-    st.markdown("### 🔥 Usage Overrides")
+    st.markdown("### ? Usage Overrides")
     ov_usage_mult = st.number_input("Usage Multiplier (1.15 = +15%)", value=1.00)
     ov_usage_floor = st.number_input("Usage Floor", value=0.00)
     ov_usage_ceiling = st.number_input("Usage Ceiling", value=5.00)
 
-    st.markdown("### 📊 Market-Specific Adjustments")
-    ov_mu_mult = st.number_input("μ Multiplier", value=1.00)
-    ov_sd_mult = st.number_input("σ Multiplier", value=1.00)
-    ov_mu_override = st.number_input("Hard μ Override (optional)", value=0.0)
-    ov_sd_override = st.number_input("Hard σ Override (optional)", value=0.0)
+    st.markdown("### ? Market-Specific Adjustments")
+    ov_mu_mult = st.number_input("? Multiplier", value=1.00)
+    ov_sd_mult = st.number_input("? Multiplier", value=1.00)
+    ov_mu_override = st.number_input("Hard ? Override (optional)", value=0.0)
+    ov_sd_override = st.number_input("Hard ? Override (optional)", value=0.0)
 
-    st.markdown("### ⚠ Contextual Flags")
+    st.markdown("### ? Contextual Flags")
     flag_minutes_restriction = st.checkbox("Minutes Restriction")
     flag_injury_return = st.checkbox("Injury Return")
     flag_role_change = st.checkbox("Role Change")
@@ -12541,7 +12541,7 @@ with st.sidebar.expander("🛠 Projection Overrides", expanded=False):
     # ------------------------------------------------
     # Register Override
     # ------------------------------------------------
-    if st.button("💾 Apply Override"):
+    if st.button("? Apply Override"):
 
         if override_player == "":
             st.error("Player name is required to apply override.")
@@ -12567,12 +12567,12 @@ with st.sidebar.expander("🛠 Projection Overrides", expanded=False):
             )
 
             register_override(override_player, override_market, override)
-            st.success(f"Override applied to {override_player} — {override_market}")
+            st.success(f"Override applied to {override_player} - {override_market}")
 
     # ------------------------------------------------
     # Display Active Overrides
     # ------------------------------------------------
-    st.markdown("### 📌 Active Overrides")
+    st.markdown("### ? Active Overrides")
 
     if len(override_db) == 0:
         st.info("No overrides applied.")
@@ -12588,16 +12588,16 @@ with st.sidebar.expander("🛠 Projection Overrides", expanded=False):
 # ================================================================
 with tab_model:
 
-    st.markdown("## 🎯 UltraMax 2-Pick Prop Engine — Model Inputs")
+    st.markdown("## ? UltraMax 2-Pick Prop Engine - Model Inputs")
     st.markdown("Configure your two-pick entry below.")
 
     col1, col2 = st.columns(2)
 
     # ------------------------------------------------------------
-    # LEFT SIDE — LEG 1 INPUTS
+    # LEFT SIDE - LEG 1 INPUTS
     # ------------------------------------------------------------
     with col1:
-        st.markdown("### 🟥 Leg 1")
+        st.markdown("### ? Leg 1")
 
         p1_name = st.text_input(
             "Player 1 Name",
@@ -12637,10 +12637,10 @@ with tab_model:
         )
 
     # ------------------------------------------------------------
-    # RIGHT SIDE — LEG 2 INPUTS
+    # RIGHT SIDE - LEG 2 INPUTS
     # ------------------------------------------------------------
     with col2:
-        st.markdown("### 🟦 Leg 2")
+        st.markdown("### ? Leg 2")
 
         p2_name = st.text_input(
             "Player 2 Name",
@@ -12684,7 +12684,7 @@ with tab_model:
     # ------------------------------------------------------------
     # RUN BUTTON (Connected to sidebar's run_model flag)
     # ------------------------------------------------------------
-    st.markdown("### 🚀 Run the UltraMax Engine")
+    st.markdown("### ? Run the UltraMax Engine")
 
     run_model_button = st.button(
         "Run Projection Model",
@@ -12692,19 +12692,19 @@ with tab_model:
     )
 
 # =====================================================================
-# PART 4 — PrizePicks & Sleeper Autofill System
+# PART 4 - PrizePicks & Sleeper Autofill System
 # =====================================================================
 
 import json
 import time
 
 # -----------------------------------------------------------------------------
-# 4.1 — Local Cached Line Database (initially empty; filled by Module 18 later)
+# 4.1 - Local Cached Line Database (initially empty; filled by Module 18 later)
 # -----------------------------------------------------------------------------
 @st.cache_data
 def load_local_line_db():
     """
-    Local placeholder DB — will be replaced by live sync in Module 18.
+    Local placeholder DB - will be replaced by live sync in Module 18.
     Structure:
     {
         "PrizePicks": [
@@ -12725,38 +12725,38 @@ def load_local_line_db():
 line_db = load_local_line_db()
 
 # -----------------------------------------------------------------------------
-# 4.2 — Helper to build a unified dropdown list
+# 4.2 - Helper to build a unified dropdown list
 # -----------------------------------------------------------------------------
 def build_line_selector_list(line_db):
     """
     Converts:
         [{"player":..., "market":..., "line":...}]
     Into readable UI strings like:
-        "LeBron James — Points — 26.5 (vs DEN) [PrizePicks]"
+        "LeBron James - Points - 26.5 (vs DEN) [PrizePicks]"
     """
     out = []
     for provider, items in line_db.items():
         for row in items:
-            label = f"{row['player']} — {row['market']} — {row['line']} (vs {row['opp']}) [{provider}]"
+            label = f"{row['player']} - {row['market']} - {row['line']} (vs {row['opp']}) [{provider}]"
             out.append((label, provider, row))
     return out
 
 prop_selector_list = build_line_selector_list(line_db)
 
 # -----------------------------------------------------------------------------
-# 4.3 — Model Tab Autofill Components (Attach to Part 3 UI)
+# 4.3 - Model Tab Autofill Components (Attach to Part 3 UI)
 # -----------------------------------------------------------------------------
 with tab_model:
 
-    st.markdown("### ⚡ Autofill Props from PrizePicks / Sleeper")
+    st.markdown("### ? Autofill Props from PrizePicks / Sleeper")
 
     auto_col1, auto_col2 = st.columns(2)
 
     # ------------------------------------------------------------
-    # AUTOFILL — LEG 1
+    # AUTOFILL - LEG 1
     # ------------------------------------------------------------
     with auto_col1:
-        st.markdown("#### 🟥 Autofill Leg 1")
+        st.markdown("#### ? Autofill Leg 1")
 
         autofill_1 = st.selectbox(
             "Select a Pick (Leg 1)",
@@ -12778,10 +12778,10 @@ with tab_model:
             st.success(f"Autofilled Leg 1 from {provider}")
 
     # ------------------------------------------------------------
-    # AUTOFILL — LEG 2
+    # AUTOFILL - LEG 2
     # ------------------------------------------------------------
     with auto_col2:
-        st.markdown("#### 🟦 Autofill Leg 2")
+        st.markdown("#### ? Autofill Leg 2")
 
         autofill_2 = st.selectbox(
             "Select a Pick (Leg 2)",
@@ -12803,7 +12803,7 @@ with tab_model:
             st.success(f"Autofilled Leg 2 from {provider}")
 
 # =====================================================================
-# PART 5 — RUN MODEL BUTTON (Execution Trigger)
+# PART 5 - RUN MODEL BUTTON (Execution Trigger)
 # =====================================================================
 
 # Storage for model run context
@@ -12812,10 +12812,10 @@ model_request = {}
 
 with tab_model:
 
-    st.markdown("### 🚀 UltraMax Model Execution")
+    st.markdown("### ? UltraMax Model Execution")
 
     run_btn = st.button(
-        "🔮 Run UltraMax Quant Model",
+        "? Run UltraMax Quant Model",
         help="Runs the full 22-module computational pipeline."
     )
 
@@ -12841,15 +12841,15 @@ with tab_model:
             missing_inputs.append("Player 2 market")
 
         if missing_inputs:
-            st.error("⚠️ Missing required fields:")
+            st.error("?? Missing required fields:")
             for m in missing_inputs:
-                st.write(f"• {m}")
+                st.write(f"? {m}")
             st.stop()
 
         # ---------------------------
         # Loader Animation
         # ---------------------------
-        with st.spinner("Running UltraMax Engine… please wait ⏳"):
+        with st.spinner("Running UltraMax Engine... please wait ?"):
             time.sleep(0.2)
 
         # ---------------------------
@@ -12885,14 +12885,14 @@ with tab_model:
         st.success("Inputs captured! Proceeding to UltraMax computation...")
         st.info("Now waiting for Part 6 (Compute Engine Controller).")
 # =====================================================================
-# PART 6 — COMPUTE LEGS (Modules 1–6)
+# PART 6 - COMPUTE LEGS (Modules 1-6)
 # =====================================================================
 
-st.markdown("## 🧮 UltraMax Engine — Leg Computation")
+st.markdown("## ? UltraMax Engine - Leg Computation")
 
 def compute_single_leg(leg_input: dict):
     """
-    Executes Modules 1–6 for ONE LEG.
+    Executes Modules 1-6 for ONE LEG.
     Returns (leg_dict, error_message)
     """
 
@@ -12983,7 +12983,7 @@ def compute_single_leg(leg_input: dict):
         regime_state="normal"
     )
 # -------------------------------------------------------
-# MODULE 22 — FINAL DEFENSIVE MULTIPLIER APPLICATION
+# MODULE 22 - FINAL DEFENSIVE MULTIPLIER APPLICATION
 # -------------------------------------------------------
 adj_mu, adj_sd, def_mult = apply_defensive_context(
     mu,
@@ -13007,7 +13007,7 @@ sd = adj_sd
         volatility_score=sd / max(mu, 1)
     )
 # =====================================================================
-# MODULE 17 — PHASE 3  
+# MODULE 17 - PHASE 3  
 # Projection Override Injection inside compute_leg()
 # =====================================================================
 
@@ -13037,7 +13037,7 @@ if active_override is not None:
         usage_mu = min(usage_mu, float(active_override.usage_ceiling))
 
     # -----------------------------------------------------------------
-    # 3. Apply μ & σ multipliers BEFORE opponent/volatility adjustments
+    # 3. Apply ? & ? multipliers BEFORE opponent/volatility adjustments
     # -----------------------------------------------------------------
     mu *= float(active_override.mu_mult)
     sd *= float(active_override.sd_mult)
@@ -13081,7 +13081,7 @@ if active_override is not None:
         mu *= 0.94
         sd *= 1.10
 
-    # Recently traded players — randomness increases
+    # Recently traded players - randomness increases
     if active_override.is_trade_adjustment:
         mu *= 0.98
         sd *= 1.20
@@ -13117,7 +13117,7 @@ if "model_request" in st.session_state:
 
     request = st.session_state["model_request"]
 
-    st.markdown("### 🔄 Computing Legs (Modules 1–6)…")
+    st.markdown("### ? Computing Legs (Modules 1-6)...")
 
     # Compute both legs
     leg1, err1 = compute_single_leg(request["p1"])
@@ -13125,11 +13125,11 @@ if "model_request" in st.session_state:
 
     # Display errors if any
     if err1:
-        st.error(f"❌ Leg 1 Error: {err1}")
+        st.error(f"? Leg 1 Error: {err1}")
     if err2:
-        st.error(f"❌ Leg 2 Error: {err2}")
+        st.error(f"? Leg 2 Error: {err2}")
 
-    # Store results for next parts (7–20)
+    # Store results for next parts (7-20)
     st.session_state["leg1"] = leg1
     st.session_state["leg2"] = leg2
 
@@ -13139,7 +13139,7 @@ if "model_request" in st.session_state:
         st.warning("Leg computation incomplete. Fix errors above.")
 
 # ============================================================
-#   PART 7 — COMBO MONTE CARLO ENGINE (Modules 7–12)
+#   PART 7 - COMBO MONTE CARLO ENGINE (Modules 7-12)
 #   Handles correlation-aware multi-leg simulation
 # ============================================================
 
@@ -13147,7 +13147,7 @@ import numpy as np
 from scipy.stats import multivariate_normal
 
 # ------------------------------------------------------------
-# MODULE 7 — Single Stat Distribution Builder
+# MODULE 7 - Single Stat Distribution Builder
 # Converts player projections into distribution parameters
 # ------------------------------------------------------------
 
@@ -13164,12 +13164,12 @@ def build_stat_distribution(proj_mean, proj_std, dist_type="normal"):
 
 
 # ------------------------------------------------------------
-# MODULE 8 — Correlation Matrix Builder
+# MODULE 8 - Correlation Matrix Builder
 # Handles:
-#   • PRA correlations (P↔R | P↔A | R↔A)
-#   • Intra-team dependencies
-#   • Pace volatility impact
-#   • Opponent defensive correlation
+#   ? PRA correlations (P?R | P?A | R?A)
+#   ? Intra-team dependencies
+#   ? Pace volatility impact
+#   ? Opponent defensive correlation
 # ------------------------------------------------------------
 
 def build_correlation_matrix(legs):
@@ -13229,8 +13229,8 @@ def build_correlation_matrix(legs):
 
 
 # ------------------------------------------------------------
-# MODULE 9 — Covariance Matrix Builder
-# Converts correlation matrix + std deviations → covariance
+# MODULE 9 - Covariance Matrix Builder
+# Converts correlation matrix + std deviations ? covariance
 # ------------------------------------------------------------
 
 def build_covariance_matrix(legs, corr_matrix):
@@ -13240,7 +13240,7 @@ def build_covariance_matrix(legs, corr_matrix):
 
 
 # ------------------------------------------------------------
-# MODULE 10 — Multivariate Simulation Engine
+# MODULE 10 - Multivariate Simulation Engine
 # Runs correlated draws across all legs
 # ------------------------------------------------------------
 
@@ -13271,7 +13271,7 @@ def simulate_combo_distribution(legs, n_sims=DEFAULT_SIMULATIONS):
 
 
 # ------------------------------------------------------------
-# MODULE 11 — Combo Card EV Calculation
+# MODULE 11 - Combo Card EV Calculation
 # Applies PrizePicks payout logic + hit probabilities
 # ------------------------------------------------------------
 
@@ -13308,7 +13308,7 @@ def compute_card_ev(legs, lines, power_payout=3.0, flex_payout=1.25, flex_prob=0
         two_hit   = (hits.sum(axis=1) == 2).mean() * 1.25
         ev = three_hit + two_hit
     else:
-        # 4–6 pick flex: threshold scaling
+        # 4-6 pick flex: threshold scaling
         k = 4 if n == 4 else 5
         full = (hits.sum(axis=1) == n).mean() * (flex_payout * n)
         partial = (hits.sum(axis=1) >= k).mean() * (flex_payout * (n-1))
@@ -13323,7 +13323,7 @@ def compute_card_ev(legs, lines, power_payout=3.0, flex_payout=1.25, flex_prob=0
 
 
 # ------------------------------------------------------------
-# MODULE 12 — Kelly Stake (Full, Fractional)
+# MODULE 12 - Kelly Stake (Full, Fractional)
 # ------------------------------------------------------------
 
 def compute_kelly_stake(prob, payout=3.0, fraction=KELLY_FRACTION):
@@ -13334,10 +13334,10 @@ def compute_kelly_stake(prob, payout=3.0, fraction=KELLY_FRACTION):
     return max(kelly * fraction, 0)
 
 # ===========================
-# PART 8 — SUMMARY SECTION
+# PART 8 - SUMMARY SECTION
 # ===========================
 
-st.markdown("## 🔍 Summary & Recommendations")
+st.markdown("## ? Summary & Recommendations")
 
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -13357,16 +13357,16 @@ summary_df = pd.DataFrame({
     "Flag": flags
 })
 
-st.markdown("### 📊 Leg-by-Leg Breakdown")
+st.markdown("### ? Leg-by-Leg Breakdown")
 st.dataframe(summary_df, use_container_width=True)
 
 # Verdict
 if total_ev < 0:
-    verdict = "🚫 PASS"
+    verdict = "? PASS"
 elif total_ev < 3:
-    verdict = "🤔 LEAN"
+    verdict = "? LEAN"
 else:
-    verdict = "🔥 FIRE"
+    verdict = "? FIRE"
 
 st.markdown(f"### Verdict: **{verdict}**")
 
@@ -13376,7 +13376,7 @@ recommended_bet = bankroll * kelly_fraction * kelly_value
 st.metric("Fractional Kelly Recommended Bet", f"${recommended_bet:.2f}")
 
 # Risk Notes
-st.markdown("### ⚠️ Risk Factors")
+st.markdown("### ?? Risk Factors")
 with st.expander("Show Risk Notes"):
     for n in global_notes:
         st.markdown(f"- {n}")
@@ -13390,11 +13390,11 @@ if st.button("Save Slip to History"):
 # PART 9 - RESULTS TAB
 # ============================
 
-results_tab = st.tabs(["🏁 Results"])[0]
+results_tab = st.tabs(["? Results"])[0]
 
 with results_tab:
-    st.markdown("## 🏁 Final Results")
-    st.markdown("Here’s your model-backed analysis for today’s slip.")
+    st.markdown("## ? Final Results")
+    st.markdown("Here's your model-backed analysis for today's slip.")
 
     # Slip Metadata
     st.markdown(f"**Contest Type:** {contest_type}")
@@ -13402,7 +13402,7 @@ with results_tab:
     st.markdown(f"**Date:** {today}")
 
     st.markdown("---")
-    st.markdown("## 🎯 Leg Results")
+    st.markdown("## ? Leg Results")
 
     def leg_card(player, line, projection, hit_prob, ev, flag, matchup_score, color):
         st.markdown(
@@ -13443,21 +13443,21 @@ with results_tab:
             colors[category]
         )
 
-    st.markdown("## 📈 Summary")
+    st.markdown("## ? Summary")
     col1, col2, col3 = st.columns(3)
     with col1: st.metric("Total EV", f"{total_ev:+.2f}%")
     with col2: st.metric("Slip Hit Probability", f"{prob_hit*100:.1f}%")
     with col3: st.metric("Recommended Stake", f"${kelly_stake:.2f}")
 
-    verdict = "🚫 PASS" if total_ev < 0 else "🤔 LEAN" if total_ev < 3 else "🔥 FIRE"
+    verdict = "? PASS" if total_ev < 0 else "? LEAN" if total_ev < 3 else "? FIRE"
     st.markdown(f"### Verdict: **{verdict}**")
 
-    st.markdown("### ⚠️ Risk Factors")
+    st.markdown("### ?? Risk Factors")
     with st.expander("See Details"):
         for n in global_notes:
             st.markdown(f"- {n}")
 
-    st.markdown("### 💾 Save or Export")
+    st.markdown("### ? Save or Export")
     if st.button("Save Slip to History"):
         save_slip(summary_df, total_ev, kelly_stake, verdict)
         st.success("Saved!")
@@ -13469,7 +13469,7 @@ with results_tab:
 # PART 10 - HISTORY TAB
 # ============================
 
-history_tab = st.tabs(["📜 History"])[0]
+history_tab = st.tabs(["? History"])[0]
 
 def load_history():
     try:
@@ -13481,7 +13481,7 @@ def load_history():
         ])
 
 with history_tab:
-    st.markdown("## 📜 Slip History")
+    st.markdown("## ? Slip History")
     st.markdown("Track all your previously saved slips and their model results.")
 
     # Load history
@@ -13492,14 +13492,14 @@ with history_tab:
     else:
         # Filters
         st.subheader("Filters")
-        verdict_filter = st.selectbox("Verdict Filter", ["All", "🚫 PASS", "🤔 LEAN", "🔥 FIRE"])
+        verdict_filter = st.selectbox("Verdict Filter", ["All", "? PASS", "? LEAN", "? FIRE"])
         if verdict_filter != "All":
             history = history[history["verdict"] == verdict_filter]
 
         ev_min = st.slider("Minimum EV Filter", -20.0, 20.0, 0.0)
         history = history[history["total_ev"] >= ev_min]
 
-        st.markdown("### 📊 Slip Log")
+        st.markdown("### ? Slip Log")
         st.dataframe(history[[
             "timestamp", "verdict", "total_ev", 
             "hit_prob", "kelly_stake", "num_legs"
@@ -13509,7 +13509,7 @@ with history_tab:
         selected = st.selectbox("Select Slip", history["timestamp"].tolist())
         slip = history[history["timestamp"] == selected].iloc[0]
 
-        st.markdown("### 📌 Slip Summary")
+        st.markdown("### ? Slip Summary")
         col1, col2, col3 = st.columns(3)
         with col1: st.metric("Total EV", f"{slip.total_ev:+.2f}%")
         with col2: st.metric("Hit Probability", f"{slip.hit_prob*100:.1f}%")
@@ -13519,7 +13519,7 @@ with history_tab:
         st.markdown(f"**Number of Legs:** {slip.num_legs}")
 
         legs_df = pd.read_json(slip.summary_json)
-        st.markdown("### 🧩 Leg Breakdown")
+        st.markdown("### ? Leg Breakdown")
         st.dataframe(legs_df, use_container_width=True)
 
         # Export button
@@ -13530,10 +13530,10 @@ with history_tab:
 # PART 11 - CALIBRATION TAB UI
 # =============================
 
-calibration_tab = st.tabs(["⚙️ Calibration"])[0]
+calibration_tab = st.tabs(["?? Calibration"])[0]
 
 with calibration_tab:
-    st.markdown("## ⚙️ Model Calibration")
+    st.markdown("## ?? Model Calibration")
     st.markdown("""
     Adjust the internal weighting system (Module 8)
     and bias calibration engine (Module 9).
@@ -13543,7 +13543,7 @@ with calibration_tab:
     # Load current settings
     settings = load_calibration()
 
-    st.markdown("### 🎚 Module 8 - Weighting Engine")
+    st.markdown("### ? Module 8 - Weighting Engine")
 
     settings["pace_weight"] = st.slider("Pace Weight", 0.0, 3.0, settings["pace_weight"], 0.1)
     settings["defense_weight"] = st.slider("Defensive Matchup Weight", 0.0, 3.0, settings["defense_weight"], 0.1)
@@ -13552,7 +13552,7 @@ with calibration_tab:
     settings["usage_weight"] = st.slider("Usage/Minutes Weight", 0.0, 2.0, settings["usage_weight"], 0.05)
     settings["home_away_weight"] = st.slider("Home/Away Adjustment", 0.0, 2.0, settings["home_away_weight"], 0.05)
 
-    st.markdown("### 🧠 Module 9 - Bias Calibration Engine")
+    st.markdown("### ? Module 9 - Bias Calibration Engine")
 
     settings["prop_bias"] = st.slider("Prop Type Bias Adjustment", -10.0, 10.0, settings["prop_bias"], 0.5)
     settings["player_bias"] = st.slider("Player Historical Bias", -20.0, 20.0, settings["player_bias"], 1.0)
@@ -13562,16 +13562,16 @@ with calibration_tab:
 
     st.markdown("---")
 
-    if st.button("💾 Save Calibration Settings"):
+    if st.button("? Save Calibration Settings"):
         save_calibration(settings)
         st.success("Settings saved!")
 
-    if st.button("🔄 Reset to Default"):
+    if st.button("? Reset to Default"):
         if os.path.exists("calibration.json"):
             os.remove("calibration.json")
-        st.warning("Reset complete — reload the app.")
+        st.warning("Reset complete - reload the app.")
 
-    st.markdown("### 📦 Export / Import Calibration Profiles")
+    st.markdown("### ? Export / Import Calibration Profiles")
 
     calib_export = json.dumps(settings)
     st.download_button("Export Current Profile", calib_export, "calibration.json")
@@ -13583,12 +13583,12 @@ with calibration_tab:
         st.success("Profile imported!")
 
 # ===============================
-# PART 12 — DEFENSIVE PROFILE VISUALIZER
+# PART 12 - DEFENSIVE PROFILE VISUALIZER
 # ===============================
 
 def defensive_profile_visualizer():
 
-    st.markdown("## 🛡 Defensive Profile Visualizer")
+    st.markdown("## ? Defensive Profile Visualizer")
     st.markdown("Analyze opponent defensive strengths, weaknesses, pace, positional defense, and matchup difficulty.")
 
     # ---- Load defensive data ---- #
@@ -13606,7 +13606,7 @@ def defensive_profile_visualizer():
     # -----------------------------------
     # RADAR CHART (Spider Plot)
     # -----------------------------------
-    st.markdown("### 🕸 Defensive Radar Profile")
+    st.markdown("### ? Defensive Radar Profile")
 
     labels = ["PTS Allowed", "REB Allowed", "AST Allowed", "3PA Allowed", "Pace"]
     values = [
@@ -13630,9 +13630,9 @@ def defensive_profile_visualizer():
     st.pyplot(fig)
 
     # -----------------------------------
-    # BAR CHART – Allowed Stats
+    # BAR CHART - Allowed Stats
     # -----------------------------------
-    st.markdown("### 📊 Allowed Per Game Stats")
+    st.markdown("### ? Allowed Per Game Stats")
 
     allowed_stats = {
         "PTS Allowed": team.get("PTS_allowed", 0),
@@ -13651,7 +13651,7 @@ def defensive_profile_visualizer():
     # -----------------------------------
     # POSITIONAL DEFENSE
     # -----------------------------------
-    st.markdown("### 🧍‍♂️ Positional Defense Grades")
+    st.markdown("### ??? Positional Defense Grades")
 
     pos = team.get("positional_ratings", {
         "PG": 0, "SG": 0, "SF": 0, "PF": 0, "C": 0
@@ -13666,7 +13666,7 @@ def defensive_profile_visualizer():
     # -----------------------------------
     # ON/OFF IMPACT
     # -----------------------------------
-    st.markdown("### 🔌 On/Off Defensive Impact")
+    st.markdown("### ? On/Off Defensive Impact")
 
     onoff = team.get("on_off_changes", {
         "DRTG_change": 0,
@@ -13682,7 +13682,7 @@ def defensive_profile_visualizer():
     # -----------------------------------
     # MATCHUP DIFFICULTY BADGES
     # -----------------------------------
-    st.markdown("### 🎯 Matchup Difficulty Scores")
+    st.markdown("### ? Matchup Difficulty Scores")
 
     match = team.get("matchup_scores", {
         "points": 1.0,
@@ -13720,12 +13720,12 @@ def defensive_profile_visualizer():
     cols[2].write(badge("Assists", match.get("assists", 1.0)))
     cols[3].write(badge("3PT", match.get("threes", 1.0)))
 # ====================================
-# PART 13 — TEAM CONTEXT VISUALIZER
+# PART 13 - TEAM CONTEXT VISUALIZER
 # ====================================
 
 def team_context_visualizer():
 
-    st.markdown("## 📊 Team Context Visualizer")
+    st.markdown("## ? Team Context Visualizer")
     st.markdown("Analyze full game environment: pace, efficiency, usage, rotations, injuries, and Vegas context.")
 
     # ---- Load team context data ---- #
@@ -13748,7 +13748,7 @@ def team_context_visualizer():
     # ------------------------------
     # GAME OVERVIEW (3-CARD SUMMARY)
     # ------------------------------
-    st.markdown("### 🏀 Game Environment Overview")
+    st.markdown("### ? Game Environment Overview")
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Team Pace", f"{data.get('pace', 0):.1f}")
@@ -13758,7 +13758,7 @@ def team_context_visualizer():
     # ------------------------------
     # Efficiency Bar Chart
     # ------------------------------
-    st.markdown("### 📈 Efficiency Ratings")
+    st.markdown("### ? Efficiency Ratings")
 
     ORTG = data.get("ORTG", 0)
     DRTG = data.get("DRTG", 0)
@@ -13776,7 +13776,7 @@ def team_context_visualizer():
     # ------------------------------
     # Pace Comparison (Team vs Opponent)
     # ------------------------------
-    st.markdown("### 🏃 Pace Matchup Comparison")
+    st.markdown("### ? Pace Matchup Comparison")
 
     fig2, ax2 = plt.subplots(figsize=(5, 3))
     ax2.bar(["Team Pace", "Opponent Pace"], [data.get("pace", 0), opp.get("pace", 0)])
@@ -13787,7 +13787,7 @@ def team_context_visualizer():
     # ------------------------------
     # Usage Distribution Pie Chart
     # ------------------------------
-    st.markdown("### 🔋 Usage Distribution")
+    st.markdown("### ? Usage Distribution")
 
     usage = data.get("usage_distribution", {})
 
@@ -13802,7 +13802,7 @@ def team_context_visualizer():
     # ------------------------------
     # Implied Totals Heatmap
     # ------------------------------
-    st.markdown("### 🔥 Implied Team Totals")
+    st.markdown("### ? Implied Team Totals")
 
     vegas = data.get("vegas", {})
     team_total = vegas.get("team_total", 0)
@@ -13827,7 +13827,7 @@ def team_context_visualizer():
     # ------------------------------
     # Rotation + Injury Context
     # ------------------------------
-    st.markdown("### 🧩 Rotation & Injury Context")
+    st.markdown("### ? Rotation & Injury Context")
 
     col4, col5 = st.columns(2)
     col4.metric("Rotation Depth", data.get("rotation_depth", 0))
@@ -13839,7 +13839,7 @@ def team_context_visualizer():
     # ------------------------------
     # Blowout Risk (Using Spread)
     # ------------------------------
-    st.markdown("### ⚠️ Blowout Probability")
+    st.markdown("### ?? Blowout Probability")
 
     spread = vegas.get("spread", 0)
     # Simple blowout probability model
@@ -13854,7 +13854,7 @@ def team_context_visualizer():
     # Summary Card
     # ------------------------------
     st.info(f"""
-    ### 📝 Matchup Summary — {selected_team} vs {opponent}
+    ### ? Matchup Summary - {selected_team} vs {opponent}
 
     - **Pace Projection:** {"Fast" if data.get("pace", 0) > opp.get("pace", 0) else "Slow" if data.get("pace", 0) < opp.get("pace", 0) else "Neutral"}
     - **Offensive Edge:** {"Team" if data.get("NetRTG", 0) > opp.get("NetRTG", 0) else "Opponent"}
@@ -13864,12 +13864,12 @@ def team_context_visualizer():
     """)
 
 # ==========================================
-# PART 14 — BLOWOUT MODEL DISPLAY
+# PART 14 - BLOWOUT MODEL DISPLAY
 # ==========================================
 
 def blowout_model_display():
 
-    st.markdown("## 💥 Blowout Model Display")
+    st.markdown("## ? Blowout Model Display")
     st.markdown("Understand blowout risk, minutes decay, garbage time danger, and game script volatility.")
 
     # ---- Load team context ---- #
@@ -13935,7 +13935,7 @@ def blowout_model_display():
     # -------------------------------------------
     # INPUT FACTORS
     # -------------------------------------------
-    st.markdown("### 📊 Inputs to Blowout Model")
+    st.markdown("### ? Inputs to Blowout Model")
 
     net_rating_gap = data.get("NetRTG", 0) - opp.get("NetRTG", 0)
     pace_gap = data.get("pace", 0) - opp.get("pace", 0)
@@ -13954,18 +13954,18 @@ def blowout_model_display():
     # -------------------------------------------
     # GARBAGE TIME RISK SCORE
     # -------------------------------------------
-    garbage_risk = min(10, blowout_prob * 20)  # scaled to 1–10
+    garbage_risk = min(10, blowout_prob * 20)  # scaled to 1-10
 
-    st.markdown("### 🕒 Garbage-Time Risk")
+    st.markdown("### ? Garbage-Time Risk")
     st.metric("Garbage-Time Score", f"{garbage_risk:.1f} / 10")
 
     # -------------------------------------------
     # PROJECTED MINUTES DECAY
     # -------------------------------------------
-    st.markdown("### 📉 Minutes Decay Projection")
+    st.markdown("### ? Minutes Decay Projection")
 
     def compute_minutes_decay(prob):
-        return min(8, prob * 12)  # at 80% blowout → ~8 min decay
+        return min(8, prob * 12)  # at 80% blowout ? ~8 min decay
 
     minutes_decay = compute_minutes_decay(blowout_prob)
 
@@ -13980,7 +13980,7 @@ def blowout_model_display():
     # -------------------------------------------
     # STRATEGY RECOMMENDATIONS
     # -------------------------------------------
-    st.markdown("### 🎯 Betting Strategy Guidance")
+    st.markdown("### ? Betting Strategy Guidance")
 
     if blowout_prob > 0.40:
         st.error("""
@@ -14008,7 +14008,7 @@ def blowout_model_display():
     # -------------------------------------------
     # BLOWOUT SIMULATION DISTRIBUTION
     # -------------------------------------------
-    st.markdown("### 🧪 Blowout Monte Carlo Simulation")
+    st.markdown("### ? Blowout Monte Carlo Simulation")
 
     # Simulate score margin distribution
     np.random.seed(1)
@@ -14026,7 +14026,7 @@ def blowout_model_display():
     # SUMMARY CARD
     # -------------------------------------------
     st.info(f"""
-    ### 📝 Blowout Summary — {selected_team} vs {opponent}
+    ### ? Blowout Summary - {selected_team} vs {opponent}
 
     - **Blowout Probability:** {blowout_prob*100:.1f}%
     - **Garbage-Time Score:** {garbage_risk:.1f}/10
@@ -14038,12 +14038,12 @@ def blowout_model_display():
     """)
 
 # ==========================================
-# PART 15 — ROTATION VOLATILITY DISPLAY
+# PART 15 - ROTATION VOLATILITY DISPLAY
 # ==========================================
 
 def rotation_volatility_display():
 
-    st.markdown("## 🔁 Rotation Volatility Display")
+    st.markdown("## ? Rotation Volatility Display")
     st.markdown("Analyze how stable or volatile rotations are, including minutes variance, bench usage, and volatility risk.")
 
     # ---- Load rotation data ---- #
@@ -14066,7 +14066,7 @@ def rotation_volatility_display():
     # ==========================================
     # ROTATION DEPTH
     # ==========================================
-    st.markdown("### 🧩 Rotation Depth")
+    st.markdown("### ? Rotation Depth")
 
     rotation_depth = team.get("rotation_depth", 0)
     st.metric("Active Rotation Depth", rotation_depth)
@@ -14074,7 +14074,7 @@ def rotation_volatility_display():
     # ==========================================
     # MINUTES VARIANCE (TABLE)
     # ==========================================
-    st.markdown("### 🎛 Minutes Variance (Last 10 Games)")
+    st.markdown("### ? Minutes Variance (Last 10 Games)")
 
     variance_rows = []
 
@@ -14102,7 +14102,7 @@ def rotation_volatility_display():
     # ==========================================
     # MINUTES RANGE BAR CHART
     # ==========================================
-    st.markdown("### 🎚 Minutes Range (Floor → Ceiling)")
+    st.markdown("### ? Minutes Range (Floor ? Ceiling)")
 
     fig, ax = plt.subplots(figsize=(8,4))
     names = df_var["Player"]
@@ -14118,9 +14118,9 @@ def rotation_volatility_display():
     st.pyplot(fig)
 
     # ==========================================
-    # VOLATILITY INDEX (0–100)
+    # VOLATILITY INDEX (0-100)
     # ==========================================
-    st.markdown("### ⚠️ Rotation Volatility Index")
+    st.markdown("### ?? Rotation Volatility Index")
 
     def avg_injury_risk(players):
         risks = []
@@ -14170,7 +14170,7 @@ def rotation_volatility_display():
     # ==========================================
     # BENCH USAGE PIE CHART
     # ==========================================
-    st.markdown("### 🔋 Bench Usage Share")
+    st.markdown("### ? Bench Usage Share")
 
     bench_usage = team.get("bench_usage_share", {})
 
@@ -14185,7 +14185,7 @@ def rotation_volatility_display():
     # ==========================================
     # PROP IMPACT RECOMMENDATIONS
     # ==========================================
-    st.markdown("### 🎯 Prop Impact Recommendations")
+    st.markdown("### ? Prop Impact Recommendations")
 
     if vol_index > 70:
         st.error("""
@@ -14213,7 +14213,7 @@ def rotation_volatility_display():
     # ==========================================
     # MINUTES SIMULATION HEATMAP
     # ==========================================
-    st.markdown("### 🧪 Minutes Distribution Simulation")
+    st.markdown("### ? Minutes Distribution Simulation")
 
     simulated_minutes = []
 
@@ -14236,7 +14236,7 @@ def rotation_volatility_display():
     # SUMMARY CARD
     # ==========================================
     st.info(f"""
-    ### 📝 Rotation Summary — {selected_team}
+    ### ? Rotation Summary - {selected_team}
 
     - **Volatility Index:** {vol_index:.1f}/100  
     - **Rotation Depth:** {rotation_depth} players  
@@ -14246,7 +14246,7 @@ def rotation_volatility_display():
     """)
 
 # ==========================================
-# PART 16 — OVERRIDE TAB UI
+# PART 16 - OVERRIDE TAB UI
 # ==========================================
 
 import json
@@ -14254,7 +14254,7 @@ import os
 
 def override_tab_ui():
 
-    st.markdown("## 🛠 Manual Override Controls")
+    st.markdown("## ? Manual Override Controls")
     st.markdown("""
     Override any model-generated values for projections, minutes, usage, pace, matchup difficulty, lines, and bias.
     Your overrides will persist locally and override the model during calculations.
@@ -14302,7 +14302,7 @@ def override_tab_ui():
 
     current = model_outputs[selected_player]  # model-generated values
 
-    st.markdown(f"### 🧩 Overrides for **{selected_player}**")
+    st.markdown(f"### ? Overrides for **{selected_player}**")
     st.markdown("Adjust any field below. Leave blank or equal to model value for no override.")
 
     # ==========================================
@@ -14322,8 +14322,8 @@ def override_tab_ui():
     def get_override_value(key, default):
         return overrides[selected_player].get(key, default)
 
-    # FIELD GROUP A — PROJECTION
-    st.markdown("### 📈 Projection")
+    # FIELD GROUP A - PROJECTION
+    st.markdown("### ? Projection")
     col1, col2 = st.columns(2)
     with col1:
         st.write("**Model Projection:**", current.get("projection", 0))
@@ -14335,8 +14335,8 @@ def override_tab_ui():
             format="%.2f"
         )
 
-    # FIELD GROUP B — MINUTES
-    st.markdown("### 🕒 Minutes")
+    # FIELD GROUP B - MINUTES
+    st.markdown("### ? Minutes")
     col3, col4 = st.columns(2)
     with col3:
         st.write("**Model Minutes:**", current.get("minutes", 0))
@@ -14347,8 +14347,8 @@ def override_tab_ui():
             step=1.0
         )
 
-    # FIELD GROUP C — USAGE
-    st.markdown("### 🔋 Usage Rate (%)")
+    # FIELD GROUP C - USAGE
+    st.markdown("### ? Usage Rate (%)")
     col5, col6 = st.columns(2)
     with col5:
         st.write("**Model Usage Rate:**", f"{current.get('usage', 0):.1f}%")
@@ -14359,8 +14359,8 @@ def override_tab_ui():
             step=1.0
         )
 
-    # FIELD GROUP D — PACE
-    st.markdown("### 🏃 Pace Adjustment")
+    # FIELD GROUP D - PACE
+    st.markdown("### ? Pace Adjustment")
     col7, col8 = st.columns(2)
     with col7:
         st.write("**Model Pace:**", current.get("pace", 0))
@@ -14371,8 +14371,8 @@ def override_tab_ui():
             step=0.1
         )
 
-    # FIELD GROUP E — MATCHUP DIFFICULTY
-    st.markdown("### 🛡 Matchup Difficulty Multiplier")
+    # FIELD GROUP E - MATCHUP DIFFICULTY
+    st.markdown("### ? Matchup Difficulty Multiplier")
     col9, col10 = st.columns(2)
     with col9:
         st.write("**Model Matchup Score:**", current.get("matchup_score", 1.0))
@@ -14384,8 +14384,8 @@ def override_tab_ui():
             step=0.05
         )
 
-    # FIELD GROUP F — MARKET LINE
-    st.markdown("### 📊 Prop Line (O/U)")
+    # FIELD GROUP F - MARKET LINE
+    st.markdown("### ? Prop Line (O/U)")
     col11, col12 = st.columns(2)
     with col11:
         st.write("**Market Line:**", current.get("line", 0))
@@ -14396,8 +14396,8 @@ def override_tab_ui():
             step=0.5
         )
 
-    # FIELD GROUP G — BIAS ADJUSTMENT
-    st.markdown("### 🧠 Bias Adjustment")
+    # FIELD GROUP G - BIAS ADJUSTMENT
+    st.markdown("### ? Bias Adjustment")
     col13, col14 = st.columns(2)
     with col13:
         st.write("**Model Bias:**", current.get("bias", 0.0))
@@ -14416,23 +14416,23 @@ def override_tab_ui():
 
     colA, colB, colC = st.columns([1,1,1])
 
-    if colA.button("💾 Save Overrides"):
+    if colA.button("? Save Overrides"):
         save_overrides(overrides)
         st.success("Overrides saved successfully!")
 
-    if colB.button("🔄 Reset Player Overrides"):
+    if colB.button("? Reset Player Overrides"):
         overrides[selected_player] = {}
         save_overrides(overrides)
         st.warning(f"Overrides reset for {selected_player}.")
 
-    if colC.button("🔥 Reset ALL Overrides"):
+    if colC.button("? Reset ALL Overrides"):
         save_overrides({})
         st.error("All overrides cleared.")
 
     # ==========================================
     # PREVIEW ACTIVE OVERRIDES
     # ==========================================
-    st.markdown("### 📋 Active Overrides for This Player")
+    st.markdown("### ? Active Overrides for This Player")
 
     current_overrides = overrides.get(selected_player, {})
     if current_overrides:
@@ -14441,12 +14441,12 @@ def override_tab_ui():
         st.info("No overrides currently applied for this player.")
 
 # ==========================================
-# PART 17 — TREND RECOGNITION DISPLAY
+# PART 17 - TREND RECOGNITION DISPLAY
 # ==========================================
 
 def trend_recognition_display():
 
-    st.markdown("## 📈 Trend Recognition Display")
+    st.markdown("## ? Trend Recognition Display")
     st.markdown("Analyze rolling averages, volatility, pace-adjusted performance, opponent context, and on/off trends.")
 
     # ---- Load player trend data ---- #
@@ -14493,18 +14493,18 @@ def trend_recognition_display():
         short = rolling_avg(arr, 3)
         long = rolling_avg(arr, 10)
         if long == 0:
-            return "➡️ Neutral"
+            return "?? Neutral"
         if short > long * 1.12:
-            return "📈 Trending Up"
+            return "? Trending Up"
         elif short < long * 0.88:
-            return "📉 Trending Down"
+            return "? Trending Down"
         else:
-            return "➡️ Neutral"
+            return "?? Neutral"
 
     # -------------------------------
     # Rolling Averages
     # -------------------------------
-    st.markdown("### 🔍 Rolling Averages (3 / 5 / 10)")
+    st.markdown("### ? Rolling Averages (3 / 5 / 10)")
 
     def avg_block(label, arr):
         col1, col2, col3 = st.columns(3)
@@ -14520,7 +14520,7 @@ def trend_recognition_display():
     # -------------------------------
     # Trend Directions
     # -------------------------------
-    st.markdown("### 📊 Trend Directions")
+    st.markdown("### ? Trend Directions")
 
     st.write("- **Points:**", trend_direction(pts))
     st.write("- **Rebounds:**", trend_direction(reb))
@@ -14530,7 +14530,7 @@ def trend_recognition_display():
     # -------------------------------
     # Sparkline Trend Charts
     # -------------------------------
-    st.markdown("### 📉 Sparkline Performance Charts")
+    st.markdown("### ? Sparkline Performance Charts")
 
     def sparkline(label, arr):
         fig, ax = plt.subplots(figsize=(6, 1.8))
@@ -14546,7 +14546,7 @@ def trend_recognition_display():
     # -------------------------------
     # Volatility Score
     # -------------------------------
-    st.markdown("### ⚠️ Volatility Score")
+    st.markdown("### ?? Volatility Score")
 
     def volatility_score(arr):
         if len(arr) == 0 or np.mean(arr) == 0:
@@ -14565,7 +14565,7 @@ def trend_recognition_display():
     # -------------------------------
     # Pace-Adjusted Trend
     # -------------------------------
-    st.markdown("### 🏃 Pace-Adjusted Points Trend")
+    st.markdown("### ? Pace-Adjusted Points Trend")
 
     pace_adj = pdata.get("pace_adjusted", {}).get("points", [])
     if pace_adj:
@@ -14579,7 +14579,7 @@ def trend_recognition_display():
     # -------------------------------
     # Opponent-Adjusted Trend
     # -------------------------------
-    st.markdown("### 🛡 Opponent-Adjusted Points Trend")
+    st.markdown("### ? Opponent-Adjusted Points Trend")
 
     opp_adj = pdata.get("opponent_adjusted", {}).get("points", [])
     if opp_adj:
@@ -14593,7 +14593,7 @@ def trend_recognition_display():
     # -------------------------------
     # On/Off Split Trend
     # -------------------------------
-    st.markdown("### 🔌 On/Off Teammate Impact Trends")
+    st.markdown("### ? On/Off Teammate Impact Trends")
 
     onoff_data = pdata.get("on_off_splits", {})
 
@@ -14601,7 +14601,7 @@ def trend_recognition_display():
         for teammate, arr in onoff_data.items():
             fig4, ax4 = plt.subplots(figsize=(6,2))
             ax4.plot(dates, arr)
-            ax4.set_title(f"On/Off Impact — {teammate}")
+            ax4.set_title(f"On/Off Impact - {teammate}")
             st.pyplot(fig4)
     else:
         st.info("No on/off split data available.")
@@ -14609,22 +14609,22 @@ def trend_recognition_display():
     # -------------------------------
     # Trend-Based Recommendations
     # -------------------------------
-    st.markdown("### 🎯 Trend-Based Betting Recommendations")
+    st.markdown("### ? Trend-Based Betting Recommendations")
 
     pts_trend = trend_direction(pts)
 
-    if pts_trend == "📈 Trending Up" and vol_pts < 30:
-        st.success("**Points Overs appear strong** — stable upward trend.")
-    elif pts_trend == "📉 Trending Down":
-        st.error("**Points Overs risky** — downward trend detected.")
+    if pts_trend == "? Trending Up" and vol_pts < 30:
+        st.success("**Points Overs appear strong** - stable upward trend.")
+    elif pts_trend == "? Trending Down":
+        st.error("**Points Overs risky** - downward trend detected.")
     else:
-        st.warning("**Neutral trend** — rely more on matchup or pace data.")
+        st.warning("**Neutral trend** - rely more on matchup or pace data.")
 
     # -------------------------------
     # Summary Card
     # -------------------------------
     st.info(f"""
-    ### 📝 Trend Summary — {selected_player}
+    ### ? Trend Summary - {selected_player}
 
     **Points Trend:** {trend_direction(pts)}  
     **Rebounding Trend:** {trend_direction(reb)}  
@@ -14636,12 +14636,12 @@ def trend_recognition_display():
     """)
 
 # ==========================================
-# PART 18 — LINE SHOPPING ANALYZER
+# PART 18 - LINE SHOPPING ANALYZER
 # ==========================================
 
 def line_shopping_analyzer():
 
-    st.markdown("## 💰 Line Shopping Analyzer")
+    st.markdown("## ? Line Shopping Analyzer")
     st.markdown("Compare sportsbook lines + EV across the entire market to find the best edges.")
 
     # =========================
@@ -14676,7 +14676,7 @@ def line_shopping_analyzer():
     props = sorted(list(lines_data[selected_player].keys()))
     selected_prop = st.selectbox("Select Prop Type", props)
 
-    player_lines = lines_data[selected_player][selected_prop]  # dict of book → line
+    player_lines = lines_data[selected_player][selected_prop]  # dict of book ? line
 
     # =========================
     # MODEL PROJECTION
@@ -14687,7 +14687,7 @@ def line_shopping_analyzer():
         st.error(f"No projection available for {selected_prop} on {selected_player}.")
         return
 
-    st.markdown("### 📈 Model vs Market")
+    st.markdown("### ? Model vs Market")
 
     colA, colB = st.columns(2)
     colA.metric("Model Projection", f"{projection:.1f}")
@@ -14703,7 +14703,7 @@ def line_shopping_analyzer():
     # =========================
     # COLOR-CODED TABLE
     # =========================
-    st.markdown("### 📊 Sportsbook Line Comparison")
+    st.markdown("### ? Sportsbook Line Comparison")
 
     table_html = "<table style='width:100%; border-collapse:collapse;'>"
     table_html += "<tr><th style='text-align:left;'>Sportsbook</th><th>Line</th><th>Delta vs Best</th></tr>"
@@ -14750,26 +14750,26 @@ def line_shopping_analyzer():
 
     ev_df = pd.DataFrame(ev_rows).sort_values("EV%", ascending=False)
 
-    st.markdown("### 📈 EV Comparison Across Books")
+    st.markdown("### ? EV Comparison Across Books")
     st.dataframe(ev_df, use_container_width=True)
 
     # =========================
     # LINE DELTA VISUALIZATION
     # =========================
-    st.markdown("### 📉 Line Delta Visualization")
+    st.markdown("### ? Line Delta Visualization")
 
     fig, ax = plt.subplots(figsize=(7,3))
     ax.bar(player_lines.keys(), player_lines.values(), color="#3498dbaa")
     ax.axhline(best_line, color="green", linestyle="--", label="Best Line")
     ax.set_ylabel("Line")
-    ax.set_title(f"Market Line Spread – {selected_prop}")
+    ax.set_title(f"Market Line Spread - {selected_prop}")
     ax.legend()
     st.pyplot(fig)
 
     # =========================
     # PRIZEPICKS / SLEEPER EDGE ALERTS
     # =========================
-    st.markdown("### 🎯 PrizePicks / Sleeper Edges")
+    st.markdown("### ? PrizePicks / Sleeper Edges")
 
     pp_line = player_lines.get("PrizePicks")
     sl_line = player_lines.get("Sleeper")
@@ -14777,25 +14777,25 @@ def line_shopping_analyzer():
     if pp_line is not None:
         edge = projection - pp_line
         if abs(edge) >= 1:
-            st.success(f"🔥 **PrizePicks Edge Detected:** Model = {projection:.1f}, PP = {pp_line}   (Δ = {edge:+.1f})")
+            st.success(f"? **PrizePicks Edge Detected:** Model = {projection:.1f}, PP = {pp_line}   (? = {edge:+.1f})")
         else:
             st.info("PrizePicks: No major mispricing detected.")
 
     if sl_line is not None:
         edge = projection - sl_line
         if abs(edge) >= 1.5:
-            st.success(f"🔥 **Sleeper Edge Detected:** Model = {projection:.1f}, Sleeper = {sl_line}   (Δ = {edge:+.1f})")
+            st.success(f"? **Sleeper Edge Detected:** Model = {projection:.1f}, Sleeper = {sl_line}   (? = {edge:+.1f})")
         else:
             st.info("Sleeper: No major mispricing detected.")
 
     # =========================
     # MIDDLE OPPORTUNITY DETECTION
     # =========================
-    st.markdown("### ⚠️ Middle Opportunity Detection")
+    st.markdown("### ?? Middle Opportunity Detection")
 
     line_values = list(player_lines.values())
     if max(line_values) - min(line_values) >= 1.0:
-        st.warning("⚠️ **Middle detected!** You may be able to bet Over at one book and Under another for a middle.")
+        st.warning("?? **Middle detected!** You may be able to bet Over at one book and Under another for a middle.")
     else:
         st.info("No middle opportunities at the moment.")
 
@@ -14803,7 +14803,7 @@ def line_shopping_analyzer():
     # SUMMARY CARD
     # =========================
     st.info(f"""
-    ### 📝 Line Shopping Summary — {selected_player} ({selected_prop})
+    ### ? Line Shopping Summary - {selected_player} ({selected_prop})
     
     - **Best Line:** {best_line}  
     - **Worst Line:** {worst_line}  
@@ -14813,7 +14813,7 @@ def line_shopping_analyzer():
     """)
 
 # ==========================================
-# PART 19 — ERROR HANDLING LAYER (FAILSAFE UI)
+# PART 19 - ERROR HANDLING LAYER (FAILSAFE UI)
 # ==========================================
 
 import numpy as np
@@ -14870,7 +14870,7 @@ def sanitize_array(arr):
 # ==========================================
 
 def render_failsafe_toggle():
-    st.sidebar.markdown("### 🛡 Failsafe Mode")
+    st.sidebar.markdown("### ? Failsafe Mode")
 
     failsafe_enabled = st.sidebar.toggle(
         "Enable Failsafe Mode (recommended)",
@@ -14900,7 +14900,7 @@ def safe_model_run(run_fn):
             return output
 
     except Exception as e:
-        st.error("🚨 Critical Error: The model failed to complete.")
+        st.error("? Critical Error: The model failed to complete.")
         st.session_state.setdefault("error_logs", []).append(traceback.format_exc())
         st.stop()
 
@@ -14916,7 +14916,7 @@ def safe_api_call(api_fn, cache_fn=None, name="API"):
     try:
         return api_fn()
     except Exception:
-        st.warning(f"⚠️ {name} unavailable — using cached data.")
+        st.warning(f"?? {name} unavailable - using cached data.")
         if cache_fn:
             try:
                 return cache_fn()
@@ -14932,7 +14932,7 @@ def safe_api_call(api_fn, cache_fn=None, name="API"):
 
 def sanity_check_projection(player, proj):
     if proj is None or np.isnan(proj) or proj < 0 or proj > 120:
-        st.error(f"Projection for {player} appears invalid — reverting to fallback.")
+        st.error(f"Projection for {player} appears invalid - reverting to fallback.")
         return 0
     return proj
 
@@ -14948,7 +14948,7 @@ def sanity_check_probability(prob):
 # ==========================================
 
 def render_error_logs():
-    st.markdown("## 🗂 Error Logs")
+    st.markdown("## ? Error Logs")
 
     logs = st.session_state.get("error_logs", [])
 
@@ -14986,7 +14986,7 @@ def render_failsafe_banner():
 
 def failsafe_summary_card():
     st.info(f"""
-    ### 🛡 Failsafe System Active
+    ### ? Failsafe System Active
 
     - Global safe execution wrapper  
     - Fallback values prevent crashes  
@@ -15000,7 +15000,7 @@ def failsafe_summary_card():
     """)
 
 # ==========================================
-# PART 20 — FINAL APP ASSEMBLER (MAIN APP)
+# PART 20 - FINAL APP ASSEMBLER (MAIN APP)
 # ==========================================
 
 import streamlit as st
@@ -15034,7 +15034,7 @@ from error_layer import (
 st.set_page_config(
     page_title="NBA Quant App",
     layout="wide",
-    page_icon="🏀",
+    page_icon="?",
 )
 
 
@@ -15127,20 +15127,20 @@ render_failsafe_toggle()
 page = st.sidebar.radio(
     "Navigation",
     [
-        "🏠 Home",
-        "🛡 Defensive Profile",
-        "📊 Team Context",
-        "💥 Blowout Model",
-        "🔁 Rotation Volatility",
-        "📈 Trends",
-        "💰 Line Shopping",
-        "🛠 Overrides",
-        "🗂 Error Logs",
+        "? Home",
+        "? Defensive Profile",
+        "? Team Context",
+        "? Blowout Model",
+        "? Rotation Volatility",
+        "? Trends",
+        "? Line Shopping",
+        "? Overrides",
+        "? Error Logs",
     ]
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("Built by Kamal + ChatGPT 🚀")
+st.sidebar.markdown("Built by Kamal + ChatGPT ?")
 
 
 # --------------------------------------------------------------------
@@ -15150,11 +15150,11 @@ render_failsafe_banner()
 
 
 # --------------------------------------------------------------------
-# ROUTER — MAIN PAGE LOADER
+# ROUTER - MAIN PAGE LOADER
 # --------------------------------------------------------------------
-if page == "🏠 Home":
+if page == "? Home":
 
-    st.title("🏀 NBA Quant App Dashboard")
+    st.title("? NBA Quant App Dashboard")
     st.markdown("""
     Welcome to the **NBA Quant App**, a full-stack analytics toolkit built for:
     
@@ -15170,27 +15170,26 @@ if page == "🏠 Home":
     Use the sidebar to navigate through analysis modules.
     """)
 
-elif page == "🛡 Defensive Profile":
+elif page == "? Defensive Profile":
     defensive_profile_visualizer()
 
-elif page == "📊 Team Context":
+elif page == "? Team Context":
     team_context_visualizer()
 
-elif page == "💥 Blowout Model":
+elif page == "? Blowout Model":
     blowout_model_display()
 
-elif page == "🔁 Rotation Volatility":
+elif page == "? Rotation Volatility":
     rotation_volatility_display()
 
-elif page == "📈 Trends":
+elif page == "? Trends":
     trend_recognition_display()
 
-elif page == "💰 Line Shopping":
+elif page == "? Line Shopping":
     line_shopping_analyzer()
 
-elif page == "🛠 Overrides":
+elif page == "? Overrides":
     override_tab_ui()
 
-elif page == "🗂 Error Logs":
+elif page == "? Error Logs":
     render_error_logs()
-
