@@ -3458,7 +3458,7 @@ def log_drift_and_clv(
     Adds one observation into the drift memory system.
 
     Inputs:
-        model_prob     - model's predicted probability
+#         model_prob     - model's predicted probability
         actual_result  - 1 if over hit, 0 if under
         opening_line   - line when user played it
         closing_line   - final line before lock
@@ -10014,11 +10014,11 @@ def auto_recompute_on_line_change(
     PrizePicks/Sleeper live lines change.
 
     Inputs:
-        p1_name, p1_market      --> user selection leg 1
-        p2_name, p2_market      --> user selection leg 2
-        current_leg1_line       --> model's last known line
-        current_leg2_line       --> model's last known line
-        payout_mult             --> fixed 3.0 for PP power plays
+#         p1_name, p1_market      --> user selection leg 1
+#         p2_name, p2_market      --> user selection leg 2
+#         current_leg1_line       --> model's last known line
+#         current_leg2_line       --> model's last known line
+#         payout_mult             --> fixed 3.0 for PP power plays
         
     Returns:
         {
