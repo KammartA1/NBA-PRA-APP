@@ -12940,6 +12940,89 @@ def compute_single_leg(leg_input: dict):
         market,
         volatility_score=sd / max(mu, 1)
     )
+# =====================================================================
+# MODULE 17 — PHASE 3  
+# Projection Override Injection inside compute_leg()
+# =====================================================================
+
+# Attempt to load override for this player + market
+active_override = apply_projection_override(player, market)
+
+if active_override is not None:
+
+    # 1. Minutes override
+    if active_override.minutes is not None:
+        proj_minutes = float(active_override.minutes)
+
+    # Minutes floor / ceiling
+    if active_override.minutes_floor is not None:
+        proj_minutes = max(proj_minutes, float(active_override.minutes_floor))
+    if active_override.minutes_ceiling is not None:
+        proj_minutes = min(proj_minutes, float(active_override.minutes_ceiling))
+
+    # 2. Usage multiplier
+    if active_override.usage_mult is not None:
+        usage_mu *= float(active_override.usage_mult)
+
+    # Usage floor / ceiling
+    if active_override.usage_floor is not None:
+        usage_mu = max(usage_mu, float(active_override.usage_floor))
+    if active_override.usage_ceiling is not None:
+        usage_mu = min(usage_mu, float(active_override.usage_ceiling))
+
+    # -----------------------------------------------------------------
+    # 3. Apply μ & σ multipliers BEFORE opponent/volatility adjustments
+    # -----------------------------------------------------------------
+    mu *= float(active_override.mu_mult)
+    sd *= float(active_override.sd_mult)
+
+    # -----------------------------------------------------------------
+    # 4. Hard Overrides (highest priority)
+    # -----------------------------------------------------------------
+    if active_override.override_mu is not None and active_override.override_mu > 0:
+        mu = float(active_override.override_mu)
+
+    if active_override.override_sd is not None and active_override.override_sd > 0:
+        sd = float(active_override.override_sd)
+
+    # -----------------------------------------------------------------
+    # 5. Contextual Flags (additive adjustments)
+    # -----------------------------------------------------------------
+
+    # Minutes restriction = tighter variance
+    if active_override.is_minutes_restricted:
+        sd *= 0.88
+        mu *= 0.96
+
+    # Injury return = lower usage + lower minutes
+    if active_override.is_injury_return:
+        sd *= 1.12
+        mu *= 0.92
+        proj_minutes *= 0.85
+
+    # Role change = higher upside
+    if active_override.is_role_change:
+        mu *= 1.08
+        sd *= 1.05
+
+    # Hot streak / heat check
+    if active_override.is_heat_check:
+        mu *= 1.12
+        sd *= 1.15
+
+    # Back-to-back fatigue
+    if active_override.is_fatigue_b2b:
+        mu *= 0.94
+        sd *= 1.10
+
+    # Recently traded players — randomness increases
+    if active_override.is_trade_adjustment:
+        mu *= 0.98
+        sd *= 1.20
+
+    # Final clamps
+    proj_minutes = float(np.clip(proj_minutes, 5, 48))
+    sd = max(sd, 0.05)
 
     # ---------------------------------------------------------
     # Build final leg object
