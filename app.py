@@ -145,19 +145,19 @@ with st.sidebar:
 
     drift_adj = st.slider(
         "Model Drift Adjustment",
-        0.80,
-        1.25,
-        1.00,
-        0.01,
+# 0.80,
+# 1.25,
+# 1.00,
+# 0.01,
         help="Controls long-term bias correction. Used in Module 12."
     )
 
     clv_adj = st.slider(
         "CLV (Closing Line Value) Sharpening",
-        0.80,
-        1.35,
-        1.00,
-        0.01,
+# 0.80,
+# 1.35,
+# 1.00,
+# 0.01,
         help="Boosts accuracy if model historically beats closing lines."
     )
 
@@ -171,19 +171,19 @@ with st.sidebar:
 
     global_vol_adj = st.slider(
         "Global Volatility Multiplier",
-        0.70,
-        1.40,
-        1.00,
-        0.01,
+# 0.70,
+# 1.40,
+# 1.00,
+# 0.01,
         help="Scales standard deviations for all markets."
     )
 
     heavy_tail_adj = st.slider(
         "Heavy Tail Expansion",
-        0.80,
-        1.25,
-        1.00,
-        0.01,
+# 0.80,
+# 1.25,
+# 1.00,
+# 0.01,
         help="Controls right-tail outcomes in Monte Carlo (Module 10)."
     )
 
@@ -361,7 +361,7 @@ def safe_read_json(path, default=None):
             with open(path, "r") as f:
                 return json.load(f)
     except:
-        pass
+# pass
     return default
 
 def safe_write_json(path, data):
@@ -370,7 +370,7 @@ def safe_write_json(path, data):
         with open(path, "w") as f:
             json.dump(data, f)
     except:
-        pass
+# pass
 
 # -------------------------------------------------------
 # PLAYER RESOLUTION UTILITIES
@@ -491,7 +491,7 @@ def pp_layer_3_html():
             data = json.loads(m)
             return data
         except:
-            pass
+# pass
 
     return None
 
@@ -702,7 +702,7 @@ def sleeper_layer_3_html():
         try:
             return json.loads(m)
         except:
-            pass
+# pass
 
     return None
 
@@ -861,7 +861,7 @@ def canonicalize_name(name: str):
     try:
         name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
     except:
-        pass
+# pass
 
     name = re.sub(r"[^a-zA-Z0-9 ]+", "", name)
     name = re.sub(r"\s+", " ", name.strip().lower())
@@ -1253,11 +1253,11 @@ def _role_confidence_smoothing(value, avg, weight=0.65):
 # ROLE SELECTION ENGINE
 # -------------------------------------------------------------
 def classify_dynamic_role(
-        usage_rate,
-        ast_chance,
-        touch_time,
-        teammate_out_level,
-        recent_usage_5,
+# usage_rate,
+# ast_chance,
+# touch_time,
+# teammate_out_level,
+# recent_usage_5,
         opp_def_scheme="switch",
         creator_rating=0.0,
         offball_rating=0.0
@@ -1649,7 +1649,7 @@ def compute_lineup_redistribution(position, player_role, teammate_out_level, mis
         synergy_mult *
         on_off_mult *
         fallback_mult *
-        injury_mult
+# injury_mult
     )
 
     return float(np.clip(final, 0.85, 1.42))
@@ -2457,7 +2457,7 @@ def volatility_engine_phase3(
     # 2. Apply nonlinear curve reshape
     # ---------------------------------------------
     nonlinear_sd = nonlinear_curve(
-        phase2_sd,
+# phase2_sd,
         power=exponent,
         steepness=steepness
     )
@@ -2726,10 +2726,10 @@ def ensemble_prob_over(mu, sd, line, market, volatility_score):
 
     # Inflate weight of fat-tail models when volatility is high
     w = w * np.array([
-        1.0,
+# 1.0,
         1.0 + (vol_adj - 1.0) * 0.35,  # skew
         1.0 + (vol_adj - 1.0) * 0.55,  # lognormal
-        1.0,
+# 1.0,
         1.0 + (vol_adj - 1.0) * 0.25   # tail boost
     ])
 
@@ -3113,7 +3113,7 @@ def correlation_engine_phase3(leg1, leg2, base_corr_phase2):
         blowout_factor *
         injury_factor *
         rotation_factor *
-        script_factor
+# script_factor
     )
 
     # ----------------------------------------------
@@ -3239,9 +3239,9 @@ def correlation_engine_phase4(leg1, leg2, corr_phase3):
 
     # --- Bayesian shrink
     corr_smoothed = _bayesian_shrink(
-        corr_phase3,
-        corr_prior,
-        confidence
+# corr_phase3,
+# corr_prior,
+# confidence
     )
 
     # --- Nonlinear range soft clamp
@@ -3446,11 +3446,11 @@ def _init_drift_memory():
 # 2. Log Drift + CLV Sample (called after a bet settles)
 # ---------------------------------------------------------------------
 def log_drift_and_clv(
-    model_prob,
-    actual_result,
-    opening_line,
-    closing_line,
-    market
+# model_prob,
+# actual_result,
+# opening_line,
+# closing_line,
+# market
 ):
     # 
 #     Adds one observation into the drift memory system.
@@ -3933,10 +3933,10 @@ def volatility_bias_multiplier(sd, market):
 # 3. Final Unified Bias Engine
 # ---------------------------------------------------------------
 def unified_bias_multiplier(
-    market,
-    sd,
-    drift_mult,
-    clv_mult
+# market,
+# sd,
+# drift_mult,
+# clv_mult
 ):
     # 
 #     Produces a single final multiplier representing all bias learning.
@@ -3972,10 +3972,10 @@ def unified_bias_multiplier(
 # 4. High-level helper used by Modules 10-12
 # ---------------------------------------------------------------
 def compute_final_bias_multiplier(
-    market,
-    sd,
-    drift_mult,
-    clv_mult
+# market,
+# sd,
+# drift_mult,
+# clv_mult
 ):
     # 
 #     Official function to compute the final bias multiplier.
@@ -4049,17 +4049,17 @@ def save_calibration_data(data):
 # 4. Add new calibration record
 # ------------------------------------------------------------
 def add_calibration_record(
-    player,
-    market,
-    line,
-    projection_mu,
-    projection_sd,
-    prob_over,
-    actual_result,
-    hit,
-    drift_mult,
-    clv_mult,
-    unified_bias_mult
+# player,
+# market,
+# line,
+# projection_mu,
+# projection_sd,
+# prob_over,
+# actual_result,
+# hit,
+# drift_mult,
+# clv_mult,
+# unified_bias_mult
 ):
     # 
 #     Adds a full calibration record after each game resolves.
@@ -4696,8 +4696,8 @@ def monte_carlo_leg_simulation_phase3(core):
 
     # clamp to prevent model blowing up
     skew_samples = np.clip(
-        skew_samples,
-        0,
+# skew_samples,
+# 0,
         mu * 10  # players rarely exceed 10? mean rate
     )
 
@@ -5134,10 +5134,10 @@ def joint_mc_phase3_joint_probability(corr_pack, payout_mult=3.0):
 # =====================================================================
 
 def joint_mc_phase4_finalize(
-    leg1_data,
-    leg2_data,
-    corr_phase2_pack,
-    phase3_pack,
+# leg1_data,
+# leg2_data,
+# corr_phase2_pack,
+# phase3_pack,
 ):
     # 
 #     Phase 4 of Module 11:
@@ -5239,7 +5239,7 @@ def joint_mc_phase4_finalize(
 # ======================================================================
 
 def module12_phase1_initialize(
-    mc_pack,
+# mc_pack,
     payout_mult: float,
     bankroll: float,
     fractional_kelly: float,
@@ -5670,16 +5670,16 @@ def module12_phase4_kelly(ev_pack, bankroll, fractional_kelly=0.50):
 # ======================================================================
 
 def module12_phase5_finalize(
-    leg1,
-    leg2,
-    leg1_mc,
-    leg2_mc,
-    corr_value,
-    payout_mult,
-    bankroll,
-    fractional_kelly,
-    drift_adj,
-    clv_adj
+# leg1,
+# leg2,
+# leg1_mc,
+# leg2_mc,
+# corr_value,
+# payout_mult,
+# bankroll,
+# fractional_kelly,
+# drift_adj,
+# clv_adj
 ):
     # 
 #     Module 12 - Phase 5 Finalization
@@ -5721,9 +5721,9 @@ def module12_phase5_finalize(
     # Step 2 - Run Phase 2 (joint probability)
     # ==========================================================
     joint_pack = module12_phase2_joint_prob(
-        leg1_mu, leg1_sd, leg1_line, leg1_dist,
-        leg2_mu, leg2_sd, leg2_line, leg2_dist,
-        corr_value
+# leg1_mu, leg1_sd, leg1_line, leg1_dist,
+# leg2_mu, leg2_sd, leg2_line, leg2_dist,
+# corr_value
     )
 
     # Add metadata
@@ -5734,7 +5734,7 @@ def module12_phase5_finalize(
     # ==========================================================
     ev_pack = module12_phase3_ev(
         joint_pack["p_joint_final"],
-        payout_mult
+# payout_mult
     )
 
     # Merge dictionaries
@@ -5744,7 +5744,7 @@ def module12_phase5_finalize(
     # Step 4 - Kelly staking engine
     # ==========================================================
     final_pack = module12_phase4_kelly(
-        merged,
+# merged,
         bankroll=bankroll,
         fractional_kelly=fractional_kelly
     )
@@ -6342,7 +6342,7 @@ def module12_phase6_build_report(final_pack):
 # # ---------------------------------------------------------------------
 # def opponent_team_multiplier(team: str, market: str):
 #     
-    Safe external wrapper  ensures no crashes regardless of input.
+# Safe external wrapper  ensures no crashes regardless of input.
     This is the function used by:
        compute_leg()
        volatility_engine_v2()
@@ -6386,7 +6386,7 @@ def module12_phase6_build_report(final_pack):
 # # ---------------------------------------------------------------------
 # def blowout_multiplier(spread: float):
 #     
-    Returns a multiplier based on potential blowout.
+# Returns a multiplier based on potential blowout.
     Positive = home favored.
     spread = |favorite - underdog|
     # 
@@ -6410,7 +6410,7 @@ def module12_phase6_build_report(final_pack):
 # # ---------------------------------------------------------------------
 # def vegas_total_to_pace(total: float):
 #     
-    Converts Vegas game total into implied game pace.
+# Converts Vegas game total into implied game pace.
     Higher totals usually = more possessions.
     # 
 # 
@@ -6553,8 +6553,8 @@ def module12_phase6_build_report(final_pack):
 # # ---------------------------------------------------------------------
 # def game_environment(team: str, opponent: str, vegas_total: float, spread: float):
 #     
-    External wrapper that resolves team & opponent data safely
-    and returns full environment package.
+# External wrapper that resolves team & opponent data safely
+# and returns full environment package.
     # 
 # 
 #     ctx = get_team_context(opponent)
@@ -6600,9 +6600,9 @@ def module12_phase6_build_report(final_pack):
 # ):
 #     
     Produces a final ~0.75 - 1.35 multiplier used by the
-    projection engine, volatility engine, and correlation engine.
+# projection engine, volatility engine, and correlation engine.
 
-    This is the MASTER CONTEXT MULTIPLIER for the entire system.
+# This is the MASTER CONTEXT MULTIPLIER for the entire system.
     # 
 # 
 #     # ---------------------------------------------------------
@@ -6845,8 +6845,8 @@ def module12_phase6_build_report(final_pack):
 # def _scale(rank, low=0.90, mid=1.00, high=1.12):
 #     
     Converts a 1-30 defensive rank into a multiplier.
-    Better defense ? lower multiplier.
-    Worse defense ? higher multiplier.
+# Better defense ? lower multiplier.
+# Worse defense ? higher multiplier.
     # 
 #     return np.interp(rank, [1, 15, 30], [low, mid, high])
 # 
@@ -7161,7 +7161,7 @@ def module12_phase6_build_report(final_pack):
 # 
 # def build_composite_def_scores(team_code: str) -> dict:
 #     
-    Converts raw OPP_DEF_PROFILE data into composite, normalized
+# Converts raw OPP_DEF_PROFILE data into composite, normalized
     defensive weights used by:
         - Opponent matchup engine (Module 4)
         - Team context engine (Module 13)
@@ -7432,8 +7432,8 @@ def module12_phase6_build_report(final_pack):
 # 
 # def _bayes_combine(prior, likelihood, weight_prior=0.65, weight_like=0.35):
 #     
-    Generic Bayesian combiner for defensive trends.
-    Produces smoothed adjustment that avoids overreacting to noise.
+# Generic Bayesian combiner for defensive trends.
+# Produces smoothed adjustment that avoids overreacting to noise.
     # 
 #     return float(
 #         (prior * weight_prior) + (likelihood * weight_like)
@@ -7453,7 +7453,7 @@ def module12_phase6_build_report(final_pack):
 #     include_variance: bool = True
 # ):
 #     
-    Computes whether a defense is HOT or COLD using Bayesian updates.
+# Computes whether a defense is HOT or COLD using Bayesian updates.
 
     Inputs:
         last5_ppp_allowed      - points per possession allowed (L5 games)
@@ -7750,7 +7750,7 @@ Output: scheme type + multiplier impacts for each market.
 # # BLOWOUT RISK ENGINE + GAME SCRIPT MODEL (Core Inputs)
 # # =====================================================================
 # 
-This module estimates blowout probability and generates
+# This module estimates blowout probability and generates
 game-script multipliers that adjust:
 
     - minutes projection
@@ -7760,7 +7760,7 @@ game-script multipliers that adjust:
     - assist opportunity
     - rebound distribution
 
-This is absolutely critical for EV accuracy.
+# This is absolutely critical for EV accuracy.
 # 
 # 
 # import numpy as np
@@ -7794,8 +7794,8 @@ This is absolutely critical for EV accuracy.
 #     injuries_B             # Same
 # ):
 #     
-    Produces the feature set that Phase 2 uses to compute
-    blowout probability.
+# Produces the feature set that Phase 2 uses to compute
+# blowout probability.
 
     All values normalized 0-1.
     # 
@@ -7858,13 +7858,13 @@ This is absolutely critical for EV accuracy.
 # 
 # def compute_blowout_probability(features):
 #     
-    Converts normalized features from Phase 1 into a blowout probability.
+# Converts normalized features from Phase 1 into a blowout probability.
 
     This blends:
-        ? logistic regression curve
-        ? NBA historical tuning curves
+# ? logistic regression curve
+# ? NBA historical tuning curves
         ? capped danger zones for extreme spreads (? 14.5)
-        ? adjustments for pace & injury imbalance
+# ? adjustments for pace & injury imbalance
     # 
 # 
 #     # ---------------------------------------------------------
@@ -7960,7 +7960,7 @@ This is absolutely critical for EV accuracy.
 # 
 # def compute_minutes_adjustment(base_minutes, blowout_data):
 #     
-    Adjusts projected minutes based on blowout probability.
+# Adjusts projected minutes based on blowout probability.
     
     Takes:
         base_minutes (float): raw projection from Module 5 volatility engine
@@ -7968,7 +7968,7 @@ This is absolutely critical for EV accuracy.
             {
               "blowout_probability": float,
               "category": str,
-              ...
+# ...
             }
     
     Returns:
@@ -8041,7 +8041,7 @@ This is absolutely critical for EV accuracy.
         - Ball-dominant secondary scorers gain slightly.
         - Bench usage increases late.
 
-    This models that redistribution.
+# This models that redistribution.
 
     Returns:
         {
@@ -8095,7 +8095,7 @@ This is absolutely critical for EV accuracy.
 # 
 # def generate_game_script_distribution(blowout_data, pace_factor, injury_factor=1.0):
 #     
-    Generates weighted probabilities for different game scripts.
+# Generates weighted probabilities for different game scripts.
 
     Returns:
         {
@@ -8943,7 +8943,7 @@ This is absolutely critical for EV accuracy.
 #     rvs_score,
 # ):
 #     
-    Final minutes assembly layer.
+# Final minutes assembly layer.
     -------------------------------------------------------
     Takes ALL upstream minutes signals:
         - RVE Monte Carlo (rve_mu, rve_sd)
@@ -9117,7 +9117,7 @@ This is absolutely critical for EV accuracy.
 # # ---------------------------------------------------------
 # def get_override(player: str, market: str) -> ProjectionOverride | None:
 #     
-    Retrieves override if applied.
+# Retrieves override if applied.
     # 
 #     p = player.lower().strip()
 #     m = market.lower().strip()
@@ -9140,10 +9140,10 @@ This is absolutely critical for EV accuracy.
 #     usage_mult: float
 # ):
 #     
-    Applies overrides if they exist.
+# Applies overrides if they exist.
 
     Returns:
-        mu, sd, minutes, usage_mult, applied_override_flag, notes
+# mu, sd, minutes, usage_mult, applied_override_flag, notes
     # 
 # 
 #     ov = get_override(player, market)
@@ -9390,7 +9390,7 @@ This is absolutely critical for EV accuracy.
 # 
 # def normalize_prop(player_name, team, market, line, platform):
 #     
-    Returns a standard, unified line dictionary for the engine.
+# Returns a standard, unified line dictionary for the engine.
     # 
 #     return {
 #         "player": player_name,
@@ -9423,7 +9423,7 @@ This is absolutely critical for EV accuracy.
 # ============================================================
 # def fetch_prizepicks_raw():
 #     
-    Returns raw JSON from PrizePicks.
+# Returns raw JSON from PrizePicks.
     # 
 #     return safe_get(PRIZEPICKS_API)
 # ============================================================
@@ -9440,7 +9440,7 @@ This is absolutely critical for EV accuracy.
 # ============================================================
 # def parse_prizepicks(json_raw):
 #     
-    Converts PrizePicks projections ? unified schema list.
+# Converts PrizePicks projections ? unified schema list.
     # 
 #     if not json_raw or "data" not in json_raw:
 #         return []
@@ -9555,8 +9555,8 @@ This is absolutely critical for EV accuracy.
 # 
 # def fetch_sleeper_raw():
 #     
-    Pulls raw NBA projection props from Sleeper.
-    Returns None safely on transport errors.
+# Pulls raw NBA projection props from Sleeper.
+# Returns None safely on transport errors.
     # 
 #     url = "https://api.sleeper.app/v1/stats/nba/projections"
 # 
@@ -9574,7 +9574,7 @@ This is absolutely critical for EV accuracy.
 # def get_sleeper_players():
 #     
     Loads all Sleeper NBA players for name/team resolution.
-    Cached for 1 hour.
+# Cached for 1 hour.
     # 
 #     url = "https://api.sleeper.app/v1/players/nba"
 #     data = safe_get(url)
@@ -9588,7 +9588,7 @@ This is absolutely critical for EV accuracy.
 # ============================================================
 # def parse_sleeper(json_raw):
 #     
-    Converts Sleeper projection JSON ? unified prop schema list.
+# Converts Sleeper projection JSON ? unified prop schema list.
     # 
 #     if not json_raw:
 #         return []
@@ -9738,9 +9738,9 @@ This is absolutely critical for EV accuracy.
 # def autofill_player_from_live_lines(player_query):
 #     
     Given a free-text player name:
-      1. Fuzzy match vs live line names
+# 1. Fuzzy match vs live line names
       2. Return all available markets + lines
-      3. Return None if no match
+# 3. Return None if no match
     # 
 # 
 #     index = build_live_index()
@@ -9812,7 +9812,7 @@ This is absolutely critical for EV accuracy.
 # ============================================================
 # def try_autofill_into_leg(prefix: str):
 #     
-    Automatically fills the leg inputs if live line exists.
+# Automatically fills the leg inputs if live line exists.
     prefix = "P1" or "P2"
     inside UI:
        p1 = try_autofill_into_leg("P1")
@@ -9851,7 +9851,7 @@ This is absolutely critical for EV accuracy.
 # def compute_hash(obj) -> str:
 #     
     Converts any dict/list into a unique short hash so we can detect
-    when live lines change without comparing entire structures.
+# when live lines change without comparing entire structures.
     # 
 #     try:
 #         raw = str(obj).encode("utf-8")
@@ -9900,7 +9900,7 @@ This is absolutely critical for EV accuracy.
 # ============================================================
 # def detect_line_movements(old, new):
 #     
-    Compare old and new live lines and return a list of movements.
+# Compare old and new live lines and return a list of movements.
     Movement = line change or platform change.
     # 
 # 
@@ -9959,7 +9959,7 @@ This is absolutely critical for EV accuracy.
 # def render_live_line_refresh_control():
 #     
     UI block that allows enabling/disabling auto-refresh +
-    selecting refresh interval.
+# selecting refresh interval.
     # 
 # 
 #     st.markdown("### ?? Live Line Auto-Refresh Settings")
@@ -10006,7 +10006,7 @@ This is absolutely critical for EV accuracy.
 #     payout_mult
 # ):
 #     
-    Triggers an automatic model recomputation when
+# Triggers an automatic model recomputation when
     PrizePicks/Sleeper live lines change.
 
     Inputs:
@@ -10152,7 +10152,7 @@ This is absolutely critical for EV accuracy.
 # 
 # def push_edge_alert(message: str, level: str = "info"):
 #     
-    Pushes an alert into Streamlit's internal queue.
+# Pushes an alert into Streamlit's internal queue.
     Level ? {"success", "warning", "error", "info"}
     # 
 # 
@@ -10165,8 +10165,8 @@ This is absolutely critical for EV accuracy.
 # 
 # def render_edge_alerts():
 #     
-    Renders queued alerts inside the UI.
-    Removes alerts older than 12 seconds.
+# Renders queued alerts inside the UI.
+# Removes alerts older than 12 seconds.
     # 
 # 
 #     now = time.time()
@@ -10302,7 +10302,7 @@ This is absolutely critical for EV accuracy.
 # # -----------------------------------------------------------
 # def badge(label: str, value: str, color: str):
 #     
-    Generic capsule badge for EV, Probabilities, Lines, etc.
+# Generic capsule badge for EV, Probabilities, Lines, etc.
     # 
 #     return f
     <div style="
@@ -10324,7 +10324,7 @@ This is absolutely critical for EV accuracy.
 # # -----------------------------------------------------------
 # def card_container(inner_html: str, width: str = "100%"):
 #     
-    All cards use this structural container.
+# All cards use this structural container.
     # 
 #     return f
     <div style="
@@ -10374,9 +10374,9 @@ This is absolutely critical for EV accuracy.
     Renders a single-leg card for UltraMax V4.
     Inputs:
         leg - dict with keys:
-            player, market, line, prob_over,
-            mu, sd, ctx_mult,
-            teammate_out, blowout
+# player, market, line, prob_over,
+# mu, sd, ctx_mult,
+# teammate_out, blowout
     # 
 # 
 #     player = leg.get("player", "Unknown Player")
@@ -10464,12 +10464,12 @@ This is absolutely critical for EV accuracy.
     Renders the full 2-leg combo card.
     Inputs:
         combo - dict returned from module12_two_pick_decision
-            joint_prob_mc
-            joint_ev
-            stake
-            decision
-            corr_used
-            p_joint_raw
+# joint_prob_mc
+# joint_ev
+# stake
+# decision
+# corr_used
+# p_joint_raw
         leg1, leg2 - individual leg dicts
     # 
 # 
@@ -10525,7 +10525,7 @@ This is absolutely critical for EV accuracy.
             color:{ULTRAMAX_COLORS['primary']};
             font-weight:700;
         ">
-            Combo Summary
+# Combo Summary
         </h2>
 
         <div style="margin-top:8px; font-size:15px;">
@@ -10575,14 +10575,14 @@ This is absolutely critical for EV accuracy.
 # ):
 #     
     Executes the entire UltraMax model pipeline:
-      1. Compute leg 1
-      2. Compute leg 2
-      3. Render leg cards
-      4. Compute correlation
-      5. Monte Carlo joint simulation
+# 1. Compute leg 1
+# 2. Compute leg 2
+# 3. Render leg cards
+# 4. Compute correlation
+# 5. Monte Carlo joint simulation
       6. Kelly sizing + decision
-      7. Render combo card
-      8. Optional warnings
+# 7. Render combo card
+# 8. Optional warnings
     # 
 # 
 #     st.markdown("## ? UltraMax Model Results")
@@ -10827,8 +10827,8 @@ This is absolutely critical for EV accuracy.
 # # ================================================================
 # def _initialize_history_file():
 #     
-    Creates the CSV file if it doesn't exist.
-    Ensures correct headers.
+# Creates the CSV file if it doesn't exist.
+# Ensures correct headers.
     Streamlit-safe and idempotent.
     # 
 #     if not os.path.exists(HISTORY_FILE):
@@ -10841,8 +10841,8 @@ This is absolutely critical for EV accuracy.
 # # ================================================================
 # def load_history():
 #     
-    Loads the CSV into a dataframe.
-    Always returns a valid DataFrame.
+# Loads the CSV into a dataframe.
+# Always returns a valid DataFrame.
     # 
 #     _initialize_history_file()
 # 
@@ -10866,8 +10866,8 @@ This is absolutely critical for EV accuracy.
 # # ================================================================
 # def append_history(entry_dict: dict):
 #     
-    Appends one UltraMax run to the history CSV.
-    entry_dict MUST follow HISTORY_COLUMNS.
+# Appends one UltraMax run to the history CSV.
+# entry_dict MUST follow HISTORY_COLUMNS.
     # 
 # 
 #     _initialize_history_file()
@@ -10890,7 +10890,7 @@ This is absolutely critical for EV accuracy.
 # # ================================================================
 # def clear_history():
 #     
-    Empties the history file.
+# Empties the history file.
     # 
 #     df = pd.DataFrame(columns=HISTORY_COLUMNS)
 #     df.to_csv(HISTORY_FILE, index=False)
@@ -10927,7 +10927,7 @@ This is absolutely critical for EV accuracy.
 # def filter_history(df: pd.DataFrame):
 #     
     Applies sidebar filters: player, market, EV range, date.
-    Returns filtered DF.
+# Returns filtered DF.
     # 
 # 
 #     if df.empty:
@@ -11068,8 +11068,8 @@ This is absolutely critical for EV accuracy.
 # # ------------------------------------------------------------
 # def load_calibration():
 #     
-    Loads calibration parameters from local JSON file.
-    If file missing or corrupted ? return defaults.
+# Loads calibration parameters from local JSON file.
+# If file missing or corrupted ? return defaults.
     # 
 # 
 #     if not os.path.exists(CALIBRATION_FILE):
@@ -11163,7 +11163,7 @@ This is absolutely critical for EV accuracy.
       - Fractional Kelly
       - Bankroll settings
 
-    This tab syncs directly with CalibrationController from Phase 1.
+# This tab syncs directly with CalibrationController from Phase 1.
     # 
 # 
 #     st.header("? Model Calibration Center")
@@ -11304,7 +11304,7 @@ This is absolutely critical for EV accuracy.
       - Distribution preview (normal, heavy-tail, biased)
       - Volatility curve visualization
       - Probability sensitivity (line vs hit prob)
-    Automatically reflects slider adjustments from Phase 2.
+# Automatically reflects slider adjustments from Phase 2.
     # 
 # 
 #     st.header("? Calibration Diagnostics & Live Preview")
@@ -11432,8 +11432,8 @@ This is absolutely critical for EV accuracy.
 # 
 # def save_calibration_settings(params: dict):
 #     
-    Saves calibration settings to a local JSON file.
-    Works both in local Streamlit and Streamlit Cloud.
+# Saves calibration settings to a local JSON file.
+# Works both in local Streamlit and Streamlit Cloud.
     # 
 #     try:
 #         with open(CALIBRATION_FILE, "w") as f:
@@ -11445,7 +11445,7 @@ This is absolutely critical for EV accuracy.
 # 
 # def load_calibration_settings() -> dict:
 #     
-    Loads calibration settings if file exists.
+# Loads calibration settings if file exists.
     Otherwise returns defaults from CalibrationController().
     # 
 #     controller = CalibrationController()
@@ -11675,10 +11675,10 @@ This is absolutely critical for EV accuracy.
 #     
     Applies matchup boost by market type:
 
-    PRA     ? balanced
+# PRA     ? balanced
     Points  ? more perimeter/paint weight
-    Rebounds? more rebound & paint weight
-    Assists ? more ast_allowance & pace
+# Rebounds? more rebound & paint weight
+# Assists ? more ast_allowance & pace
 
     Returns multiplier 0.85-1.25
     # 
@@ -12030,7 +12030,7 @@ This is absolutely critical for EV accuracy.
       - expected switch frequency
       - expected cross-match rules
 
-    The result is a SINGLE number that acts as a defensive strength anchor.
+# The result is a SINGLE number that acts as a defensive strength anchor.
     # 
 # 
 #     team = DEF_TEAM_DB.get(team_abbrev.upper())
@@ -12092,7 +12092,7 @@ This is absolutely critical for EV accuracy.
 # 
 # def matchup_defensive_multiplier(team_abbrev: str, player_pos: str, market: str) -> float:
 #     
-    Computes FINAL defensive matchup multiplier for projection pipeline.
+# Computes FINAL defensive matchup multiplier for projection pipeline.
 
     Output range ? (0.75 ? 1.30)
 
@@ -12234,10 +12234,10 @@ This is absolutely critical for EV accuracy.
     rotational_profile = estimate_rotational_matchup(...)
 
     Outputs multiplier:
-        0.70 ? 1.35
+# 0.70 ? 1.35
 
-    Higher ? easier matchup.
-    Lower ? harder matchup.
+# Higher ? easier matchup.
+# Lower ? harder matchup.
     # 
 # 
 #     weighted_def = rotational_profile["weighted_def"]
@@ -12279,8 +12279,8 @@ This is absolutely critical for EV accuracy.
 # 
 # def _market_def_sensitivity(market: str) -> float:
 #     
-    Returns how sensitive this market is to defense.
-    Used to scale defensive difficulty into a final multiplier.
+# Returns how sensitive this market is to defense.
+# Used to scale defensive difficulty into a final multiplier.
     # 
 #     if market == "Points":
 #         return 1.18
@@ -12302,7 +12302,7 @@ This is absolutely critical for EV accuracy.
       ? Team defensive DB (Phase 2)
       ? Primary & secondary defender strength (Phase 3)
       ? Rotational matchup distribution (Phase 4)
-      ? Market sensitivity curves
+# ? Market sensitivity curves
 
     Output:
         float in range 0.70 - 1.40
@@ -12705,11 +12705,11 @@ This is absolutely critical for EV accuracy.
     {
         "PrizePicks": [
             {"player":"LeBron James","market":"Points","line":26.5,"team":"LAL","opp":"DEN"},
-            ...
+# ...
         ],
         "Sleeper": [
             {"player":"Nikola Jokic","market":"PRA","line":47.5,"team":"DEN","opp":"MIN"},
-            ...
+# ...
         ]
     }
     # 
@@ -13533,7 +13533,7 @@ This is absolutely critical for EV accuracy.
 #     st.markdown(
     Adjust the internal weighting system (Module 8)
     and bias calibration engine (Module 9).
-    These settings affect all model outputs.
+# These settings affect all model outputs.
     # )
 # 
 #     # Load current settings
@@ -14253,7 +14253,7 @@ This is absolutely critical for EV accuracy.
 #     st.markdown("## ? Manual Override Controls")
 #     st.markdown(
     Override any model-generated values for projections, minutes, usage, pace, matchup difficulty, lines, and bias.
-    Your overrides will persist locally and override the model during calculations.
+# Your overrides will persist locally and override the model during calculations.
     # )
 # 
 #     # ==========================================
@@ -14823,7 +14823,7 @@ This is absolutely critical for EV accuracy.
 # 
 # def safe_execute(fn, fallback=None, error_msg="An unexpected error occurred.", log=True):
 #     
-    Safely executes any function and returns fallback if error occurs.
+# Safely executes any function and returns fallback if error occurs.
     Appends errors to session_state['error_logs'].
     # 
 #     try:
@@ -14907,7 +14907,7 @@ This is absolutely critical for EV accuracy.
 # 
 # def safe_api_call(api_fn, cache_fn=None, name="API"):
 #     
-    Calls API and falls back to cache on fail.
+# Calls API and falls back to cache on fail.
     # 
 #     try:
 #         return api_fn()
@@ -14992,7 +14992,7 @@ This is absolutely critical for EV accuracy.
     - Auto-sanitization of invalid data  
     - Hard-stop protection on critical failures  
 
-    This layer ensures the app remains stable under all conditions.
+# This layer ensures the app remains stable under all conditions.
     # )
 # 
 # # ==========================================
@@ -15163,7 +15163,7 @@ This is absolutely critical for EV accuracy.
     - Manual Overrides  
     - Full Error/Failsafe Architecture  
     
-    Use the sidebar to navigate through analysis modules.
+# Use the sidebar to navigate through analysis modules.
     """)
 
 elif page == "? Defensive Profile":
@@ -15189,5 +15189,3 @@ elif page == "? Overrides":
 
 elif page == "? Error Logs":
     render_error_logs()
-
-
