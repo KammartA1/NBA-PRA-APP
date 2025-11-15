@@ -12431,6 +12431,59 @@ def apply_defensive_context(mu: float,
 tab_model, tab_results, tab_history, tab_calibration = st.tabs(
     ["📊 Model", "📈 Results", "📜 History", "🧬 Calibration"]
 )
+
+def render_realtime_alert_bar():
+    """
+    Shows all active alerts (auto-updates each interaction)
+    """
+    render_edge_alerts()
+
+
+def run_auto_line_update_hook(
+    p1_name, p1_market,
+    p2_name, p2_market,
+    model_line1,
+    model_line2,
+    lookback,
+    payout_mult=3.0
+):
+    """
+    Master controller for:
+    - Detect movement
+    - Trigger recompute
+    - Update model output live
+    """
+
+    recompute = auto_recompute_on_line_change(
+        p1_name, p1_market,
+        p2_name, p2_market,
+        model_line1,
+        model_line2,
+        payout_mult
+    )
+
+    if not recompute["should_recompute"]:
+        return model_line1, model_line2
+
+    # Update line values
+    if recompute["new_leg1_line"] is not None:
+        model_line1 = recompute["new_leg1_line"]
+
+    if recompute["new_leg2_line"] is not None:
+        model_line2 = recompute["new_leg2_line"]
+
+    # Re-run engine
+    auto_execute_ultramax(
+        p1_name, p1_market,
+        p2_name, p2_market,
+        model_line1,
+        model_line2,
+        lookback,
+        payout_mult
+    )
+
+    return model_line1, model_line2
+
 # =====================================================================
 # MODULE 17 — PROJECTION OVERRIDE ENGINE UI PANEL
 # Phase 2 — Streamlit Override Editor
@@ -12929,6 +12982,19 @@ def compute_single_leg(leg_input: dict):
         usage_mu / max(base_mu_per_min, 0.01),
         regime_state="normal"
     )
+# -------------------------------------------------------
+# MODULE 22 — FINAL DEFENSIVE MULTIPLIER APPLICATION
+# -------------------------------------------------------
+adj_mu, adj_sd, def_mult = apply_defensive_context(
+    mu,
+    sd,
+    player_position,   # you must pass the player's position (PG/SG/SF/PF/C)
+    opponent,          # opponent team abbrev
+    market
+)
+
+mu = adj_mu
+sd = adj_sd
 
     # ---------------------------------------------------------
     # 9. Ensemble Probability Engine (Module 6)
