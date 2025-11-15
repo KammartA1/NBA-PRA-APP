@@ -1519,6 +1519,80 @@ def append_history(entry: dict):
     df = pd.concat([df, pd.DataFrame([entry])], ignore_index=True)
     save_history(df)
 # =========================================================
+# MODULE — monte_carlo_combo (Compatibility Wrapper)
+# UltraMax V4 — Bridges legacy UI calls to Module 10 & 12
+# =========================================================
+
+def monte_carlo_combo(leg1, leg2, corr, payout_mult):
+    """
+    Compatibility wrapper so older UI code can still call
+    `monte_carlo_combo()` even though UltraMax V4 uses
+    Module 10 + Module 12 instead.
+
+    Returns:
+        {
+            "joint_prob": float,
+            "ev": float,
+            "kelly_stake": float
+        }
+    """
+
+    # -------------------------------
+    # 1. Run individual MC Sims (Module 10)
+    # -------------------------------
+    sim1 = monte_carlo_leg_simulation(
+        mu=leg1["mu"],
+        sd=leg1["sd"],
+        line=leg1["line"],
+        market=leg1["market"]
+    )
+
+    sim2 = monte_carlo_leg_simulation(
+        mu=leg2["mu"],
+        sd=leg2["sd"],
+        line=leg2["line"],
+        market=leg2["market"]
+    )
+
+    # -------------------------------
+    # 2. Joint MC Simulation (Module 11)
+    # -------------------------------
+    joint = joint_monte_carlo_v2(
+        leg1_mu=leg1["mu"],
+        leg1_sd=leg1["sd"],
+        leg1_line=leg1["line"],
+        leg1_dist=sim1["dist"],
+
+        leg2_mu=leg2["mu"],
+        leg2_sd=leg2["sd"],
+        leg2_line=leg2["line"],
+        leg2_dist=sim2["dist"],
+
+        corr_value=corr,
+        iterations=10000
+    )
+
+    joint_prob = joint["joint_prob"]
+
+    # -------------------------------
+    # 3. EV
+    # -------------------------------
+    ev = payout_mult * joint_prob - 1
+
+    # -------------------------------
+    # 4. Kelly Stake (simple)
+    # -------------------------------
+    b = payout_mult - 1
+    q = 1 - joint_prob
+    kelly = max(0, (b * joint_prob - q) / b)
+
+    return {
+        "joint_prob": joint_prob,
+        "ev": ev,
+        "kelly_stake": kelly
+    }
+
+    # =========================================================
 # MODULE — RENDER LEG CARD (UltraMax UI Component)
 # =========================================================
 
