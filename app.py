@@ -1657,167 +1657,79 @@ with tab_model:
 
     col1, col2 = st.columns(2)
 
-    # --------------------------
-    # Left leg inputs
-    # --------------------------
+    # Left Leg
     with col1:
         p1_name = st.text_input("Player 1")
         p1_market = st.selectbox("Market 1", MARKET_OPTIONS)
         p1_line = st.number_input("Line 1", min_value=0.0, value=25.0, step=0.5)
-
-        p1_opp = st.text_input("P1 Opponent (Team Abbrev)", help="LAL, DEN, BOS, etc.")
+        p1_opp = st.text_input("P1 Opponent (Team Abbrev)")
         p1_teammate_out = st.checkbox("Key teammate OUT (P1)")
         p1_blowout = st.checkbox("Blowout risk (P1)")
 
-    # --------------------------
-    # Right leg inputs
-    # --------------------------
+    # Right Leg
     with col2:
         p2_name = st.text_input("Player 2")
         p2_market = st.selectbox("Market 2", MARKET_OPTIONS)
         p2_line = st.number_input("Line 2", min_value=0.0, value=25.0, step=0.5)
-
-        p2_opp = st.text_input("P2 Opponent (Team Abbrev)", help="LAL, DEN, BOS, etc.")
+        p2_opp = st.text_input("P2 Opponent (Team Abbrev)")
         p2_teammate_out = st.checkbox("Key teammate OUT (P2)")
         p2_blowout = st.checkbox("Blowout risk (P2)")
 
-    st.markdown("---")
+    games_lookback = st.slider(
+        "Number of Games to Analyze (Lookback)",
+        min_value=3,
+        max_value=20,
+        value=10,
+        step=1
+    )
 
+    st.markdown("---")
     run_btn = st.button("🚀 Run UltraMax Model")
 
     if run_btn:
-
-        # loader animation
         with st.spinner("Running UltraMax Engine…"):
             time.sleep(0.25)
 
+        # ====== RUN LEGS ======
+        leg1, err1 = compute_leg(
+            p1_name, p1_market, p1_line, p1_opp,
+            p1_teammate_out, p1_blowout, games_lookback
+        )
 
-    # -------------------------------------------
-    # Build production total for market
-    # -------------------------------------------
-    metrics = MARKET_METRICS.get(market, ["PTS"])
-    logs["MarketVal"] = logs[metrics].sum(axis=1)
+        leg2, err2 = compute_leg(
+            p2_name, p2_market, p2_line, p2_opp,
+            p2_teammate_out, p2_blowout, games_lookback
+        )
 
-    # clean minutes
-    try:
-        logs["Minutes"] = logs["MIN"].astype(float)
-    except:
-        logs["Minutes"] = 0
+        # Errors
+        if err1:
+            st.error(f"Leg 1 Error: {err1}")
+        if err2:
+            st.error(f"Leg 2 Error: {err2}")
 
-    # -------------------------------------------
-    # Per-minute base
-    # -------------------------------------------
-    valid = logs["Minutes"] > 0
-    if not valid.any():
-        return None, "No valid minute data."
+        # Render output
+        if leg1:
+            render_leg_card_ultramax(leg1)
+        if leg2:
+            render_leg_card_ultramax(leg2)
 
-    pm_values = logs.loc[valid, "MarketVal"] / logs.loc[valid, "Minutes"]
-
-    base_mu_per_min = float(pm_values.mean())
-    base_sd_per_min = float(max(pm_values.std(), 0.10))
-
-    # -------------------------------------------
-    # Minutes projection
-    # -------------------------------------------
-    proj_minutes = float(np.clip(logs["Minutes"].tail(5).mean(), 18, 40))
-
-    # -------------------------------------------
-    # Usage Engine
-    # -------------------------------------------
-    teammate_out_level = 1 if teammate_out else 0
-
-    usage_mu = usage_engine_v3(
-        base_mu_per_min,
-        team_usage_rate=1.00,
-        teammate_out_level=teammate_out_level
-    )
-
-    # -------------------------------------------
-    # Opponent Engine
-    # -------------------------------------------
-    ctx_mult = opponent_matchup_v2(opponent, market)
-
-    # -------------------------------------------
-    # Final mean
-    # -------------------------------------------
-    mu = usage_mu * proj_minutes * ctx_mult
-
-    # -------------------------------------------
-    # Volatility Engine
-    # -------------------------------------------
-    sd = volatility_engine_v2(
-        base_sd_per_min,
-        proj_minutes,
-        market,
-        ctx_mult,
-        usage_mu / max(base_mu_per_min, 0.01),
-        regime_state="normal"
-    )
-
-    # -------------------------------------------
-    # Probability
-    # -------------------------------------------
-    prob = ensemble_prob_over(
-        mu,
-        sd,
-        line,
-        market,
-        volatility_score=sd / max(mu, 1)
-    )
-
-    leg = {
-        "player": canonical,
-        "market": market,
-        "line": float(line),
-        "prob_over": float(prob),
-        "mu": float(mu),
-        "sd": float(sd),
-        "ctx_mult": float(ctx_mult),
-        "team": None,
-        "teammate_out": teammate_out,
-        "blowout": blowout,
-    }
-
-    return leg, None
-
-
-        # =====================================================
-        # JOINT PROBABILITY + CORRELATION
-        # =====================================================
+        # If both legs valid → compute joint
         if leg1 and leg2:
-
             st.markdown("---")
             st.subheader("🔗 Correlation & Combo Projection")
 
             corr = correlation_engine_v3(leg1, leg2)
-
-            # Monte Carlo combo (5,000–10,000 iterations)
             combo_out = monte_carlo_combo(leg1, leg2, corr, payout_mult)
 
-            joint_prob = combo_out["joint_prob"]
-            ev_combo = combo_out["ev"]
-            kelly_stake = combo_out["kelly_stake"]
+            st.write(f"Correlation: {corr:+.3f}")
+            st.write(f"Joint Probability: {combo_out['joint_prob']*100:.2f}%")
+            st.write(f"EV per $1: {combo_out['ev']*100:+.2f}%")
+            st.write(f"Kelly Stake: ${combo_out['kelly_stake']:.2f}")
 
-            st.write(f"**Correlation:** {corr:+.3f}")
-            st.write(f"**Joint Probability:** {joint_prob*100:.1f}%")
-            st.write(f"**EV (per $1):** {ev_combo*100:+.1f}%")
-            st.write(f"**Kelly-Sized Stake:** ${kelly_stake:.2f}")
-
-            # decision
-            if ev_combo >= 0.10:
-                st.success("🔥 **PLAY — Strong Quant Edge**")
-            elif ev_combo >= 0.03:
-                st.warning("🟡 **Lean — Thin Edge**")
-            else:
-                st.error("❌ **Pass — No Edge**")
-
-        # =====================================================
-        # Save baselines
-        # =====================================================
-        if leg1:
+            # Save baselines
             update_market_baseline(leg1["player"], leg1["market"], leg1["line"])
-        if leg2:
             update_market_baseline(leg2["player"], leg2["market"], leg2["line"])
+
 # =========================================================
 # MODULE 14 — RESULTS TAB (UltraMax V4)
 # =========================================================
