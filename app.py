@@ -1,6 +1,4 @@
 # =====================================================================
-# app.py - NBA Quant App (Master File)
-# =====================================================================
 # ================================================================
 # PART 1 - STREAMLIT APP HEADER + CSS + LAYOUT
 # UltraMax NBA Prop Quant Engine - Version B3 Architecture
@@ -5853,8 +5851,8 @@ def module12_phase6_build_report(final_pack):
     # 5. Probability Commentary
     # ----------------------------------------------------
     prob_msg = (
-        f"Joint hit probability: **{p_joint*100:.1f}%** "
-        f"(raw: {p_joint_raw*100:.1f}%)"
+# f"Joint hit probability: **{p_joint*100:.1f}%** "
+# f"(raw: {p_joint_raw*100:.1f}%)"
     )
 
     # ----------------------------------------------------
@@ -5862,7 +5860,7 @@ def module12_phase6_build_report(final_pack):
     # ----------------------------------------------------
     if stake > 0:
         stake_msg = (
-            f"Recommended stake (Kelly-scaled): **${stake:.2f}**\n"
+# f"Recommended stake (Kelly-scaled): **${stake:.2f}**\n"
             f"Fractional Kelly applied: {final_pack.get('fractional_kelly', 'N/A')}"
         )
     else:
@@ -5873,12 +5871,12 @@ def module12_phase6_build_report(final_pack):
     # ----------------------------------------------------
     leg1_text = (
         f"**{leg1.get('player','Leg 1')} - {leg1.get('market','')}**\n"
-        f"Line: **{leg1.get('line','?')}**, Model Mean: **{leg1.get('mu','?'):.2f}**"
+# f"Line: **{leg1.get('line','?')}**, Model Mean: **{leg1.get('mu','?'):.2f}**"
     )
 
     leg2_text = (
         f"**{leg2.get('player','Leg 2')} - {leg2.get('market','')}**\n"
-        f"Line: **{leg2.get('line','?')}**, Model Mean: **{leg2.get('mu','?'):.2f}**"
+# f"Line: **{leg2.get('line','?')}**, Model Mean: **{leg2.get('mu','?'):.2f}**"
     )
 
     # ----------------------------------------------------
@@ -7863,7 +7861,7 @@ game-script multipliers that adjust:
     This blends:
 # ? logistic regression curve
 # ? NBA historical tuning curves
-        ? capped danger zones for extreme spreads (? 14.5)
+# ? capped danger zones for extreme spreads (? 14.5)
 # ? adjustments for pace & injury imbalance
     # 
 # 
@@ -9946,9 +9944,9 @@ game-script multipliers that adjust:
 #             f
 # <div style="padding:12px; border-radius:10px; background:#1e1e1e; margin-bottom:10px;">
 # <b style="color:#4FC3F7;">{move['player']}</b><br>
-                Market: <b>{move['market']}</b><br>
-                Line: <b>{move['old_line']} ? {move['new_line']}</b> ({direction})<br>
-                Platform: <b>{move['platform']}</b>
+# Market: <b>{move['market']}</b><br>
+# Line: <b>{move['old_line']} ? {move['new_line']}</b> ({direction})<br>
+# Platform: <b>{move['platform']}</b>
 # </div>
             # ,
 #             unsafe_allow_html=True
@@ -10443,10 +10441,10 @@ game-script multipliers that adjust:
 
 # <div style="font-size:14px; color:{ULTRAMAX_COLORS['text_secondary']}">
 # <strong>Projection Summary:</strong><br/>
-            ? Expected = <b>{mu:.2f}</b><br/>
-            ? Volatility = <b>{sd:.2f}</b><br/>
-            ? Opponent Context Multiplier = <b>{ctx:.2f}</b><br/>
-            ? Probability Over = <b>{prob*100:.1f}%</b><br/>
+# ? Expected = <b>{mu:.2f}</b><br/>
+# ? Volatility = <b>{sd:.2f}</b><br/>
+# ? Opponent Context Multiplier = <b>{ctx:.2f}</b><br/>
+# ? Probability Over = <b>{prob*100:.1f}%</b><br/>
 # </div>
 
 # </div>
@@ -10551,11 +10549,11 @@ game-script multipliers that adjust:
 
 # <div style="font-size:14px; color:{ULTRAMAX_COLORS['text_secondary']}">
 # <strong>Combo Insights:</strong><br/>
-            ? Joint probability (after drift + CLV): <b>{jp*100:.2f}%</b><br/>
-            ? Raw probability before adjustments: <b>{p_raw*100:.2f}%</b><br/>
-            ? Correlation applied: <b>{corr:+.3f}</b><br/>
-            ? EV per $1: <b>{ev*100:+.2f}%</b><br/>
-            ? Kelly stake: <b>${stake:.2f}</b><br/>
+# ? Joint probability (after drift + CLV): <b>{jp*100:.2f}%</b><br/>
+# ? Raw probability before adjustments: <b>{p_raw*100:.2f}%</b><br/>
+# ? Correlation applied: <b>{corr:+.3f}</b><br/>
+# ? EV per $1: <b>{ev*100:+.2f}%</b><br/>
+# ? Kelly stake: <b>${stake:.2f}</b><br/>
 # </div>
 
 # </div>
@@ -12298,10 +12296,10 @@ game-script multipliers that adjust:
 #     
     Produces the final defensive multiplier combining:
 
-      ? Positional defense profile (Phase 1)
-      ? Team defensive DB (Phase 2)
-      ? Primary & secondary defender strength (Phase 3)
-      ? Rotational matchup distribution (Phase 4)
+# ? Positional defense profile (Phase 1)
+# ? Team defensive DB (Phase 2)
+# ? Primary & secondary defender strength (Phase 3)
+# ? Rotational matchup distribution (Phase 4)
 # ? Market sensitivity curves
 
     Output:
@@ -12704,11 +12702,11 @@ game-script multipliers that adjust:
     Structure:
 # {
 # "PrizePicks": [
-            {"player":"LeBron James","market":"Points","line":26.5,"team":"LAL","opp":"DEN"},
+# {"player":"LeBron James","market":"Points","line":26.5,"team":"LAL","opp":"DEN"},
 # ...
         ],
 # "Sleeper": [
-            {"player":"Nikola Jokic","market":"PRA","line":47.5,"team":"DEN","opp":"MIN"},
+# {"player":"Nikola Jokic","market":"PRA","line":47.5,"team":"DEN","opp":"MIN"},
 # ...
         ]
 # }
@@ -13704,7 +13702,7 @@ game-script multipliers that adjust:
 # margin-bottom:5px;
 # font-weight:bold;
 # ">
-                {label}: {score:.2f}
+# {label}: {score:.2f}
 # </div>
             # ,
 #             unsafe_allow_html=True
@@ -13920,7 +13918,7 @@ game-script multipliers that adjust:
 # margin-top:12px;
 # margin-bottom:18px;
 # ">
-                Blowout Risk: {prob*100:.1f}%
+# Blowout Risk: {prob*100:.1f}%
 # </div>
             # ,
 #             unsafe_allow_html=True
@@ -14024,12 +14022,12 @@ game-script multipliers that adjust:
 #     st.info(f
     ### ? Blowout Summary - {selected_team} vs {opponent}
 
-    - **Blowout Probability:** {blowout_prob*100:.1f}%
-    - **Garbage-Time Score:** {garbage_risk:.1f}/10
-    - **Minutes Decay (est.):** -{minutes_decay:.1f} for stars
+# - **Blowout Probability:** {blowout_prob*100:.1f}%
+# - **Garbage-Time Score:** {garbage_risk:.1f}/10
+# - **Minutes Decay (est.):** -{minutes_decay:.1f} for stars
     - **Spread:** {spread:+}
-    - **Net Rating Difference:** {net_rating_gap:+.1f}
-    - **Pace Gap:** {pace_gap:+.1f}
+# - **Net Rating Difference:** {net_rating_gap:+.1f}
+# - **Pace Gap:** {pace_gap:+.1f}
     - **Injury Impact:** {injuries} key players
     # )
 # 
@@ -14155,7 +14153,7 @@ game-script multipliers that adjust:
 # margin-top:10px;
 # margin-bottom:20px;
 # ">
-                Rotation Volatility: {score:.1f}/100
+# Rotation Volatility: {score:.1f}/100
 # </div>
             # ,
 #             unsafe_allow_html=True
@@ -14234,11 +14232,11 @@ game-script multipliers that adjust:
 #     st.info(f
     ### ? Rotation Summary - {selected_team}
 
-    - **Volatility Index:** {vol_index:.1f}/100  
+# - **Volatility Index:** {vol_index:.1f}/100  
     - **Rotation Depth:** {rotation_depth} players  
-    - **Avg Minutes StdDev:** {df_var['Std Dev'].mean():.2f}  
-    - **Injury Volatility:** {avg_injury_risk(players):.2f}  
-    - **Coaching Variance Factor:** {team.get('coaching_profile',{}).get('volatility_factor',0.2)}
+# - **Avg Minutes StdDev:** {df_var['Std Dev'].mean():.2f}  
+# - **Injury Volatility:** {avg_injury_risk(players):.2f}  
+# - **Coaching Variance Factor:** {team.get('coaching_profile',{}).get('volatility_factor',0.2)}
     # )
 # 
 # # ==========================================
@@ -14627,7 +14625,7 @@ game-script multipliers that adjust:
     **Assist Trend:** {trend_direction(ast)}  
     **Minutes Trend:** {trend_direction(mins)}  
 
-    **Volatility:** {np.mean([vol_pts, vol_reb, vol_ast]):.1f}/100  
+# **Volatility:** {np.mean([vol_pts, vol_reb, vol_ast]):.1f}/100  
     **Games Logged:** {len(pts)}
     # )
 # 
@@ -14803,8 +14801,8 @@ game-script multipliers that adjust:
     
     - **Best Line:** {best_line}  
     - **Worst Line:** {worst_line}  
-    - **Range:** {line_range:.1f}  
-    - **Highest EV:** {ev_df.iloc[0]["EV%"]:.2f}% at {ev_df.iloc[0]["Sportsbook"]}  
+# - **Range:** {line_range:.1f}  
+# - **Highest EV:** {ev_df.iloc[0]["EV%"]:.2f}% at {ev_df.iloc[0]["Sportsbook"]}  
     - **Books Scanned:** {len(player_lines)}
     # )
 # 
@@ -15189,3 +15187,5 @@ elif page == "? Overrides":
 
 elif page == "? Error Logs":
     render_error_logs()
+
+
