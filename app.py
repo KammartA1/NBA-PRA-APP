@@ -51,6 +51,53 @@ h1, h2, h3, h4, h5 {
 """
 st.markdown(DARK_STYLE, unsafe_allow_html=True)
 
+# -----------------------
+# Utilities
+# -----------------------
+def get_current_season():
+    year = 2025
+    return "2025-26"
+
+def gaussian_cdf(x):
+    return 0.5 * (1 + erf(x / sqrt(2)))
+
+# -----------------------
+# PrizePicks Live Lines (PP3 + O3)
+# -----------------------
+def get_pp_lines(player_name):
+    try:
+        r = requests.get("https://api.prizepicks.com/projections")
+        data = r.json()["data"]
+        included = {i["id"]:i for i in r.json()["included"]}
+        for proj in data:
+            pid = proj["relationships"]["new_player"]["data"]["id"]
+            player = included[pid]["attributes"]["name"]
+            if player.lower() == player_name.lower():
+                markets = proj["attributes"]["stat_type"]
+                line = proj["attributes"]["line_score"]
+                return {markets: line}
+    except:
+        pass
+    return None
+
+def get_odds_api_lines(player_name):
+    key = os.getenv("ODDS_API_KEY")
+    if not key:
+        return None
+    try:
+        url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/odds?apikey={key}"
+        r = requests.get(url).json()
+        return None
+    except:
+        return None
+
+def get_live_lines(player):
+    pp = get_pp_lines(player)
+    if pp: return pp
+    odds = get_odds_api_lines(player)
+    if odds: return odds
+    return {}
+
 # ------------------------------------------------------------
 # GLOBAL HELPERS
 # ------------------------------------------------------------
