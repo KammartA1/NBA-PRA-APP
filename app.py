@@ -97,9 +97,13 @@ def get_current_season():
 # ------------------------------------------------------------
 # SIDEBAR UI
 # ------------------------------------------------------------
-def build_sidebar():
-    st.sidebar.title("🏀 UltraMAX NBA Quant Engine")
-    st.sidebar.caption(f"Active Season: **{CURRENT_SEASON}**")
+with st.sidebar:
+    st.image("https://i.imgur.com/2Q1hJ8o.png", use_column_width=True)
+    st.markdown("### 🏀 UltraMAX NBA Quant Engine")
+    st.markdown("##### 2025–2026 Season — Auto Updating")
+
+    st.markdown("---")
+
 
     # Player ID input
     player_id = st.sidebar.text_input("Basketball Reference Player ID", value="", help="Example: curryde01")
