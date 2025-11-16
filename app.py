@@ -97,81 +97,83 @@ def get_current_season():
 # ------------------------------------------------------------
 # SIDEBAR UI
 # ------------------------------------------------------------
-with st.sidebar:
-    st.image("https://i.imgur.com/2Q1hJ8o.png", use_column_width=True)
-    st.markdown("### 🏀 UltraMAX NBA Quant Engine")
-    st.markdown("##### 2025–2026 Season — Auto Updating")
+def get_sidebar_inputs():
+    with st.sidebar:
+        st.image("https://i.imgur.com/2Q1hJ8o.png", use_column_width=True)
+        st.markdown("### 🏀 UltraMAX NBA Quant Engine")
+        st.markdown("##### 2025–2026 Season — Auto Updating")
+        st.markdown("---")
 
-    st.markdown("---")
+        # Player ID input
+        player_id = st.text_input("Basketball Reference Player ID", value="")
 
+        # Season selection (but your CURRENT_SEASON and DEFAULT_SEASONS are missing, see below)
+        season = st.selectbox("Season", [get_current_season()])
 
-    # Player ID input
-    player_id = st.sidebar.text_input("Basketball Reference Player ID", value="", help="Example: curryde01")
+        # Lines
+        st.subheader("📈 Player Lines")
+        line_pts = st.number_input("PTS Line", value=0.0)
+        line_reb = st.number_input("REB Line", value=0.0)
+        line_ast = st.number_input("AST Line", value=0.0)
+        line_pra = st.number_input("PRA Line", value=0.0)
 
-    # Season selection
-    season = st.sidebar.selectbox("Season", [CURRENT_SEASON] + DEFAULT_SEASONS)
-
-    # Lines
-    st.sidebar.subheader("📈 Player Lines")
-    line_pts = st.sidebar.number_input("PTS Line", value=0.0)
-    line_reb = st.sidebar.number_input("REB Line", value=0.0)
-    line_ast = st.sidebar.number_input("AST Line", value=0.0)
-    line_pra = st.sidebar.number_input("PRA Line", value=0.0)
-
-    # Engine inputs
-    st.sidebar.subheader("⚙️ Advanced Engine Parameters")
-    engine_inputs = {
-        "rotation": {
-            "foul_rate": st.sidebar.slider("Foul Rate", 0.0, 6.0, 2.5),
-            "coach_trust": st.sidebar.slider("Coach Trust", 0, 100, 65),
-            "bench_depth": st.sidebar.slider("Bench Depth", 6, 12, 9),
-            "games_back": st.sidebar.slider("Games Back", 0, 20, 8),
-        },
-        "blowout": {
-            "spread": st.sidebar.number_input("Game Spread", value=0.0),
-            "role": st.sidebar.selectbox("Player Role", ["starter", "bench"])
-        },
-        "context": {
-            "team_pace": st.sidebar.number_input("Team Pace", value=100.0),
-            "opp_pace": st.sidebar.number_input("Opponent Pace", value=100.0),
-        },
-        "defense": {
-            "opp_def_rating": st.sidebar.number_input("Opponent Defensive Rating", value=113.0),
-        },
-        "synergy": {
-            "usage_rate": st.sidebar.slider("Usage Rate (%)", 0, 40, 22),
+        # Engine inputs
+        st.subheader("⚙️ Advanced Engine Parameters")
+        engine_inputs = {
+            "rotation": {
+                "foul_rate": st.slider("Foul Rate", 0.0, 6.0, 2.5),
+                "coach_trust": st.slider("Coach Trust", 0, 100, 65),
+                "bench_depth": st.slider("Bench Depth", 6, 12, 9),
+                "games_back": st.slider("Games Back", 0, 20, 8),
+                "role": "starter"
+            },
+            "blowout": {
+                "spread": st.number_input("Game Spread", value=0.0),
+                "role": st.selectbox("Player Role", ["starter", "bench"])
+            },
+            "context": {
+                "team_pace": st.number_input("Team Pace", value=100.0),
+                "opp_pace": st.number_input("Opponent Pace", value=100.0)
+            },
+            "defense": {
+                "opp_def_rating": st.number_input("Opponent Defensive Rating", value=113.0)
+            },
+            "synergy": {
+                "usage_rate": st.slider("Usage Rate (%)", 0, 40, 22)
+            }
         }
-    }
 
-    # Page selection
-    page = st.sidebar.selectbox(
-        "📄 Select Page",
-        [
-            "Model",
-            "Player Card",
-            "Trends",
-            "Rotation",
-            "Blowout",
-            "Team Context",
-            "Defensive Profile",
-            "Line Shopping",
-            "Joint EV",
-            "Overrides",
-            "History",
-            "Calibration"
-        ]
-    )
+        page = st.selectbox(
+            "📄 Select Page",
+            [
+                "Model",
+                "Player Card",
+                "Trends",
+                "Rotation",
+                "Blowout",
+                "Team Context",
+                "Defensive Profile",
+                "Line Shopping",
+                "Joint EV",
+                "Overrides",
+                "History",
+                "Calibration"
+            ]
+        )
 
-    return {
-        "player_id": player_id,
-        "season": season,
-        "engine_inputs": engine_inputs,
-        "line_pts": line_pts,
-        "line_reb": line_reb,
-        "line_ast": line_ast,
-        "line_pra": line_pra,
-        "page": page
-    }
+        return {
+            "player_id": player_id,
+            "season": season,
+            "engine_inputs": engine_inputs,
+            "line_pts": line_pts,
+            "line_reb": line_reb,
+            "line_ast": line_ast,
+            "line_pra": line_pra,
+            "page": page
+        }
+
+# Then call it:
+inputs = get_sidebar_inputs()
 
 
 # ------------------------------------------------------------
