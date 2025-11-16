@@ -1,23 +1,21 @@
-# UltraMAX Part 1 placeholder — full 450-line content will be built in appended chunks.
-# ============================================================
-# ULTRAMAX NBA QUANT ENGINE — MERGED MONOLITH
-# PART 1 (Lines 1–~120): Imports • Config • Global CSS • Helpers
-# ============================================================
+
+###############################
+# SEGMENT 1 — CHUNK 1
+# Imports + basic config
+###############################
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
 import json
-import math
-import time
-from datetime import datetime, timedelta
-from scipy.stats import norm, skew
-import matplotlib.pyplot as plt
+import os
+import re
+from datetime import datetime
+from math import erf, sqrt
+import plotly.express as px
+import plotly.graph_objects as go
 
-# ------------------------------------------------------------
-# STREAMLIT CONFIG
-# ------------------------------------------------------------
 st.set_page_config(
     page_title="UltraMAX NBA Quant Engine",
     page_icon="🏀",
@@ -25,1199 +23,2227 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ------------------------------------------------------------
-# DARK THEME GLOBAL CSS
-# ------------------------------------------------------------
-DARK_STYLE = """
+###############################
+# SEGMENT 1 — CHUNK 2A
+# Global Dark Theme CSS (Part 1)
+###############################
+
+dark_css = """
 <style>
+/* ===== APP BACKGROUND ===== */
 body, .stApp {
-    background-color: #0e0e0e;
-    color: #e6e6e6;
-    font-family: 'Inter', sans-serif;
+    background-color: #0a0a0a !important;
+    color: #e0e0e0 !important;
 }
-h1, h2, h3, h4, h5 {
-    color: white;
-    font-weight: 700;
+
+/* ===== SIDEBAR ===== */
+section[data-testid="stSidebar"] {
+    background-color: #111111 !important;
+    border-right: 1px solid #222 !important;
 }
-.sidebar .sidebar-content {
-    background-color: #101010 !important;
+"""
+
+st.markdown(dark_css, unsafe_allow_html=True)
+
+
+###############################
+# SEGMENT 1 — CHUNK 2B
+# Global Dark Theme CSS (Part 2)
+###############################
+
+dark_css_part2 = """
+/* ===== METRIC CARDS ===== */
+.stMetric {
+    background-color: #1b1b1b !important;
+    border: 1px solid #333 !important;
+    padding: 12px !important;
+    border-radius: 10px !important;
 }
+div[data-testid="stMetricValue"] {
+    color: #00d4ff !important;
+}
+
+/* ===== HEADERS ===== */
+h1, h2, h3, h4, h5, h6 {
+    color: #ffffff !important;
+}
+"""
+
+st.markdown(dark_css_part2, unsafe_allow_html=True)
+
+
+###############################
+# SEGMENT 1 — CHUNK 2C
+# Global Dark Theme CSS (Part 3 FINAL)
+###############################
+
+dark_css_part3 = """
+/* ===== DATAFRAME STYLING ===== */
+.dataframe, .stDataFrame {
+    background-color: #000 !important;
+    color: #ffffff !important;
+}
+
+/* ===== BUTTONS ===== */
 .stButton>button {
-    background-color: #1f6feb !important;
-    color: #ffffff;
-    border-radius: 8px;
+    background-color: #006eff !important;
+    color: white !important;
+    border-radius: 8px !important;
+    padding: 8px 16px !important;
 }
+.stButton>button:hover {
+    background-color: #0088ff !important;
+}
+
+/* End of Global Dark Theme */
 </style>
 """
-st.markdown(DARK_STYLE, unsafe_allow_html=True)
 
-# -----------------------
-# Utilities
-# -----------------------
+st.markdown(dark_css_part3, unsafe_allow_html=True)
+
+
+###############################
+# SEGMENT 1 — CHUNK 3A
+# Global Helpers (Part 1)
+###############################
+
+# --- Current NBA Season Helper ---
 def get_current_season():
-    year = 2025
-    return "2025-26"
+    now = datetime.now()
+    y = now.year
+    m = now.month
+    # NBA season runs Oct–June
+    if m < 10:
+        return f"{y-1}-{str(y)[2:]}"
+    return f"{y}-{str(y+1)[2:]}"
 
-def gaussian_cdf(x):
-    return 0.5 * (1 + erf(x / sqrt(2)))
+# --- Gaussian CDF (SciPy-free) ---
+def normal_cdf(x, mu, sd):
+    if sd <= 0:
+        return 0.5
+    z = (x - mu) / sd
+    return 0.5 * (1 + erf(z / sqrt(2)))
 
-# -----------------------
-# PrizePicks Live Lines (PP3 + O3)
-# -----------------------
-def get_pp_lines(player_name):
+# --- Safe Execution Wrapper ---
+def safe_run(func, *args, **kwargs):
     try:
-        r = requests.get("https://api.prizepicks.com/projections")
-        data = r.json()["data"]
-        included = {i["id"]:i for i in r.json()["included"]}
-        for proj in data:
-            pid = proj["relationships"]["new_player"]["data"]["id"]
-            player = included[pid]["attributes"]["name"]
-            if player.lower() == player_name.lower():
-                markets = proj["attributes"]["stat_type"]
-                line = proj["attributes"]["line_score"]
-                return {markets: line}
+        return func(*args, **kwargs), None
+    except Exception as e:
+        return None, str(e)
+
+###############################
+# SEGMENT 1 — CHUNK 3B
+# Disk Cache Layer (JSON-based)
+###############################
+
+CACHE_DIR = ".cache_ultramax"
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
+
+def _cache_key(name, *args, **kwargs):
+    raw = name + str(args) + str(kwargs)
+    return str(abs(hash(raw)))
+
+def disk_cache(func):
+    def wrapper(*args, **kwargs):
+        key = _cache_key(func.__name__, *args, **kwargs)
+        path = os.path.join(CACHE_DIR, key + ".json")
+
+        # If cached file exists, return it
+        if os.path.exists(path):
+            try:
+                with open(path, "r") as f:
+                    return json.load(f)
+            except:
+                pass
+
+        # Compute fresh output
+        out = func(*args, **kwargs)
+
+        # Save to cache
+        try:
+            with open(path, "w") as f:
+                json.dump(out, f)
+        except:
+            pass
+
+        return out
+    return wrapper
+
+###############################
+# SEGMENT 1 — CHUNK 3C
+# HTML Fetcher & Utility Functions
+###############################
+
+# --- Fallback-safe HTML fetcher ---
+def fetch_html(url):
+    try:
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            return resp.text
+        return ""
     except:
-        pass
-    return None
+        return ""
 
-def get_odds_api_lines(player_name):
-    key = os.getenv("ODDS_API_KEY")
-    if not key:
-        return None
+# --- Clean player name for matching ---
+def clean_name(name):
+    if not isinstance(name, str):
+        return ""
+    return re.sub(r"[^a-zA-Z ]", "", name).strip().lower()
+
+# --- Parse "MM:SS" or "MM" into float minutes ---
+def parse_minutes(val):
+    if isinstance(val, (float, int)):
+        return float(val)
+    if not isinstance(val, str):
+        return 0.0
+    if ":" in val:
+        try:
+            m, s = val.split(":")
+            return float(m) + float(s)/60
+        except:
+            return 0.0
     try:
-        url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/odds?apikey={key}"
-        r = requests.get(url).json()
-        return None
-    except:
-        return None
-
-def get_live_lines(player):
-    pp = get_pp_lines(player)
-    if pp: return pp
-    odds = get_odds_api_lines(player)
-    if odds: return odds
-    return {}
-
-# ------------------------------------------------------------
-# GLOBAL HELPERS
-# ------------------------------------------------------------
-def safe_float(v, default=0.0):
-    try:
-        if v is None or (isinstance(v, float) and math.isnan(v)):
-            return default
-        return float(v)
-    except:
-        return default
-
-def safe_list(arr):
-    if arr is None:
-        return []
-    try:
-        return [safe_float(x) for x in arr]
-    except:
-        return []
-
-def clip_between(value, low, high):
-    return max(low, min(high, value))
-
-# ------------------------------------------------------------
-# SEASON AUTO-DETECTOR
-# ------------------------------------------------------------
-def get_current_season():
-    """Returns the current NBA season string (e.g., '2025-26')."""
-    from datetime import datetime
-    year = datetime.now().year
-    month = datetime.now().month
-    if month < 10:
-        return f"{year-1}-{str(year)[2:]}"
-    else:
-        return f"{year}-{str(year+1)[2:]}"
-
-
-# End of Part 1 Chunk A
-# ============================================================
-# ============================================================
-# PART 1 — CHUNK B (Lines ~120–250)
-# Sidebar • Player/Team Loaders • Market Baseline System
-# ============================================================
-
-# ------------------------------------------------------------
-# SIDEBAR UI
-# ------------------------------------------------------------
-def get_sidebar_inputs():
-    with st.sidebar:
-        st.image("https://i.imgur.com/2Q1hJ8o.png", use_column_width=True)
-        st.markdown("### 🏀 UltraMAX NBA Quant Engine")
-        st.markdown("##### 2025–2026 Season — Auto Updating")
-        st.markdown("---")
-
-        # Player ID input
-        player_id = st.text_input("Basketball Reference Player ID", value="")
-
-        # Season selection (but your CURRENT_SEASON and DEFAULT_SEASONS are missing, see below)
-        season = st.selectbox("Season", [get_current_season()])
-
-        # Lines
-        st.subheader("📈 Player Lines")
-        line_pts = st.number_input("PTS Line", value=0.0)
-        line_reb = st.number_input("REB Line", value=0.0)
-        line_ast = st.number_input("AST Line", value=0.0)
-        line_pra = st.number_input("PRA Line", value=0.0)
-
-        # Engine inputs
-        st.subheader("⚙️ Advanced Engine Parameters")
-        engine_inputs = {
-            "rotation": {
-                "foul_rate": st.slider("Foul Rate", 0.0, 6.0, 2.5),
-                "coach_trust": st.slider("Coach Trust", 0, 100, 65),
-                "bench_depth": st.slider("Bench Depth", 6, 12, 9),
-                "games_back": st.slider("Games Back", 0, 20, 8),
-                "role": "starter"
-            },
-            "blowout": {
-                "spread": st.number_input("Game Spread", value=0.0),
-                "role": st.selectbox("Player Role", ["starter", "bench"])
-            },
-            "context": {
-                "team_pace": st.number_input("Team Pace", value=100.0),
-                "opp_pace": st.number_input("Opponent Pace", value=100.0)
-            },
-            "defense": {
-                "opp_def_rating": st.number_input("Opponent Defensive Rating", value=113.0)
-            },
-            "synergy": {
-                "usage_rate": st.slider("Usage Rate (%)", 0, 40, 22)
-            }
-        }
-
-        page = st.selectbox(
-            "📄 Select Page",
-            [
-                "Model",
-                "Player Card",
-                "Trends",
-                "Rotation",
-                "Blowout",
-                "Team Context",
-                "Defensive Profile",
-                "Line Shopping",
-                "Joint EV",
-                "Overrides",
-                "History",
-                "Calibration"
-            ]
-        )
-
-        return {
-            "player_id": player_id,
-            "season": season,
-            "engine_inputs": engine_inputs,
-            "line_pts": line_pts,
-            "line_reb": line_reb,
-            "line_ast": line_ast,
-            "line_pra": line_pra,
-            "page": page
-        }
-
-# Then call it:
-inputs = get_sidebar_inputs()
-
-
-# ------------------------------------------------------------
-# PLAYER & TEAM DATA HELPERS
-# ------------------------------------------------------------
-def convert_player_name_to_id(name):
-    """Your original function may have been more complex; placeholder preserved."""
-    try:
-        name = name.lower().replace(" ", "")
-        return name[:5] + "01"
-    except:
-        return None
-
-def load_team_context():
-    """Contextual team metrics used by the baseline engine (placeholder)."""
-    return {
-        "league_avg_pace": 99.5,
-        "league_avg_off_rating": 113.1
-    }
-
-
-# ------------------------------------------------------------
-# MARKET BASELINE SYSTEM
-# ------------------------------------------------------------
-def get_market_baseline(player, market):
-    """Baseline stats extracted from JSON or API. Placeholder preserved."""
-    # Your original file handles JSON loading; here we mimic behavior cleanly
-    try:
-        # Example: default stat baseline
-        base = {
-            "PTS": 24.0,
-            "REB": 6.5,
-            "AST": 5.2,
-            "PRA": 24.0 + 6.5 + 5.2
-        }
-        return base.get(market, 0.0)
+        return float(val)
     except:
         return 0.0
 
-
-# ------------------------------------------------------------
-# BASE ENGINE — EXISTING FUNCTIONS FROM YOUR FILE
-# ------------------------------------------------------------
-# NOTE:
-# Your original file contains many modeling functions below this section.
-# These will be preserved EXACTLY as they are in Part 1 Chunk C.
-
-# End Chunk B
-# ============================================================
-
-# ===== PART 1 — CHUNK C1 (Base Engines First Half) =====
-#  PART 3 — PLAYER GAME LOG ENGINE & PROJECTION MODEL
-# =========================================================
-
-@st.cache_data(show_spinner=False, ttl=900)
-def get_player_rate_and_minutes(name: str, n_games: int, market: str):
-    """
-    Pulls recent player logs, computes:
-      - per-minute production (mu_per_min)
-      - per-minute standard deviation (sd_per_min)
-      - average minutes
-      - team abbreviation
-    """
-    pid, label = resolve_player(name)
-    if not pid:
-        return None, None, None, None, f"No match for '{name}'."
-
-    # Try requesting game logs
+# --- Safe float converter (handles '—' or blanks) ---
+def safe_float(x, default=0.0):
     try:
-        gl = PlayerGameLog(
-            player_id=pid,
-            season=current_season(),
-            season_type_all_star="Regular Season"
-        ).get_data_frames()[0]
-    except Exception as e:
-        return None, None, None, None, f"Game log error: {e}"
+        return float(x)
+    except:
+        return default
 
-    if gl.empty:
-        return None, None, None, None, "No recent game logs found."
+###############################
+# SEGMENT 1 — CHUNK 4
+# Basketball-Reference Resolver Helpers
+###############################
 
-    # Sort newest → oldest, take N games
-    gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
-    gl = gl.sort_values("GAME_DATE", ascending=False).head(n_games)
+# Convert player name to Basketball-Reference style ID guess
+def clean_player_id(name):
+    if not isinstance(name, str) or len(name.strip()) == 0:
+        return ""
+    parts = name.lower().split()
+    if len(parts) == 1:
+        base = parts[0][:5]
+        suffix = "01"
+    else:
+        last = parts[-1][:5]
+        first = parts[0][:2]
+        base = last + first
+        suffix = "01"
+    return base
 
-    cols = MARKET_METRICS[market]
-    per_min_vals = []
-    minutes_vals = []
+# Build BR URL safely
+def generate_bref_url(player_id, season):
+    try:
+        yr = season.split("-")[0]
+        letter = player_id[0]
+        url = f"https://www.basketball-reference.com/players/{letter}/{player_id}/gamelog/{yr}"
+        return url
+    except:
+        return ""
 
-    # -----------------------------
-    # Compute per-minute values
-    # -----------------------------
-    for _, r in gl.iterrows():
-        m = 0
+###############################
+# SEGMENT 2 — CHUNK 1
+# PrizePicks Live Line Engine (Primary Source)
+###############################
+
+@disk_cache
+def fetch_prizepicks_lines(player_name):
+    """Fetch projected stat lines from PrizePicks public API.
+    Returns dict: { 'PTS': xx, 'REB': xx, 'AST': xx, 'PRA': xx }
+    """
+    try:
+        url = "https://api.prizepicks.com/projections"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code != 200:
+            return {}
+
+        data = resp.json()
+        included = {i["id"]: i for i in data.get("included", [])}
+        results = {}
+
+        target = clean_name(player_name)
+
+        for proj in data.get("data", []):
+            pid = proj.get("relationships", {}).get("new_player", {}).get("data", {}).get("id")
+            stat_id = proj.get("relationships", {}).get("stat_type", {}).get("data", {}).get("id")
+
+            if pid not in included or stat_id not in included:
+                continue
+
+            player_raw = included[pid]["attributes"].get("name", "")
+            player_norm = clean_name(player_raw)
+            if target not in player_norm:
+                continue
+
+            stat_name = included[stat_id]["attributes"].get("name", "").upper()
+            line_val = proj.get("attributes", {}).get("line_score", None)
+
+            if line_val is not None:
+                # Map PrizePicks stat names to model stat names
+                if stat_name in ["PTS", "POINTS"]:
+                    results["PTS"] = float(line_val)
+                elif stat_name in ["REB", "REBOUNDS"]:
+                    results["REB"] = float(line_val)
+                elif stat_name in ["AST", "ASSISTS"]:
+                    results["AST"] = float(line_val)
+                elif stat_name in ["PRA"]:
+                    results["PRA"] = float(line_val)
+
+        return results
+    except Exception:
+        return {}
+
+###############################
+# SEGMENT 2 — CHUNK 2
+# OddsAPI Fallback (Secondary Source)
+###############################
+
+@disk_cache
+def fetch_oddsapi_lines(player_name):
+    """Fallback live lines using The Odds API.
+    Requires ODDS_API_KEY in environment variables.
+    Returns dict {PTS, REB, AST, PRA}
+    """
+    api_key = os.getenv("ODDS_API_KEY")
+    if not api_key:
+        return {}  # No key available
+
+    try:
+        url = (
+            "https://api.the-odds-api.com/v4/sports/basketball_nba/"
+            f"odds?apiKey={api_key}&regions=us&markets=player_props"
+        )
+        resp = requests.get(url, timeout=6)
+        if resp.status_code != 200:
+            return {}
+
+        data = resp.json()
+        target = clean_name(player_name)
+        results = {}
+
+        # Loop games
+        for game in data:
+            for bookmaker in game.get("bookmakers", []):
+                for market in bookmaker.get("markets", []):
+                    key = market.get("key","")
+                    # expected keys like player_points, player_rebounds, etc.
+                    for outcome in market.get("outcomes", []):
+                        name_norm = clean_name(outcome.get("name",""))
+                        if target not in name_norm:
+                            continue
+
+                        val = outcome.get("line")
+                        if val is None:
+                            continue
+
+                        if "points" in key:
+                            results["PTS"] = float(val)
+                        elif "rebounds" in key:
+                            results["REB"] = float(val)
+                        elif "assists" in key:
+                            results["AST"] = float(val)
+                        elif "points_rebounds_assists" in key:
+                            results["PRA"] = float(val)
+
+        return results
+    except Exception:
+        return {}
+
+###############################
+# SEGMENT 2 — CHUNK 3
+# Unified PrizePicks + OddsAPI normalization
+###############################
+
+def normalize_lines(pp_dict, oa_dict):
+    """Merge PrizePicks + OddsAPI lines into a single clean dict.
+    Precedence:
+        1. PrizePicks
+        2. OddsAPI
+        3. Missing → omitted (manual fallback later)
+    """
+    out = {}
+
+    # PP always wins if available
+    for k in ["PTS", "REB", "AST", "PRA"]:
+        if k in pp_dict:
+            out[k] = float(pp_dict[k])
+        elif k in oa_dict:
+            out[k] = float(oa_dict[k])
+
+    return out
+
+
+def get_live_lines(player_name):
+    """Main live line aggregator — PP → OddsAPI → empty dict.
+    LIVE1 system uses these to auto-fill sidebar.
+    """
+    pp = fetch_prizepicks_lines(player_name)
+    oa = fetch_oddsapi_lines(player_name)
+
+    merged = normalize_lines(pp, oa)
+    return merged  # may be partial dict (handled by sidebar)
+
+###############################
+# SEGMENT 2 — CHUNK 4
+# LIVE1 Sidebar Auto-Fill + Player Resolver
+###############################
+
+def resolve_player_for_lines(name):
+    """Improve player matching for PrizePicks & OddsAPI.
+    Normalizes the input name into best-match form.
+    """
+    if not isinstance(name, str):
+        return ""
+    name = name.strip()
+    name = re.sub(r"\s+", " ", name)
+    return name
+
+
+def apply_live_lines_to_sidebar(lines_dict, sidebar_state):
+    """LIVE1 auto-fill logic.
+    - Only auto-fills fields that are currently empty or zero.
+    - User overrides remain untouched.
+    """
+    if not isinstance(lines_dict, dict):
+        return sidebar_state
+
+    # Mapping sidebar element names
+    field_map = {
+        "line_pts": "PTS",
+        "line_reb": "REB",
+        "line_ast": "AST",
+        "line_pra": "PRA"
+    }
+
+    for side_field, live_key in field_map.items():
+        # If stat available and sidebar field is empty or 0
+        if live_key in lines_dict:
+            if side_field not in sidebar_state or sidebar_state[side_field] in [0, None, ""]:
+                sidebar_state[side_field] = float(lines_dict[live_key])
+
+    return sidebar_state
+
+
+def safe_lines_output(lines_dict):
+    """Guarantee clean float lines for downstream engines.
+    Missing values will remain absent and handled via manual fallback.
+    """
+    out = {}
+    for k, v in lines_dict.items():
         try:
-            m_str = r.get("MIN", "0")
-            if isinstance(m_str, str) and ":" in m_str:
-                mm, ss = m_str.split(":")
-                m = float(mm) + float(ss) / 60
-            else:
-                m = float(m_str)
+            out[k] = float(v)
         except:
-            m = 0
-
-        if m <= 0:
             continue
+    return out
 
-        total_val = sum(float(r.get(c, 0)) for c in cols)
-        per_min_vals.append(total_val / m)
-        minutes_vals.append(m)
+###############################
+# SEGMENT 3 — CHUNK 1
+# Basketball-Reference Gamelog Fetcher
+###############################
 
-    if not per_min_vals:
-        return None, None, None, None, "Insufficient data."
-
-    per_min_vals = np.array(per_min_vals)
-    minutes_vals = np.array(minutes_vals)
-
-    mu_per_min = float(np.mean(per_min_vals))
-    avg_min = float(np.mean(minutes_vals))
-    sd_per_min = max(
-        np.std(per_min_vals, ddof=1),
-        0.15 * max(mu_per_min, 0.5)
-    )
-
-    # Team abbreviation
-    team = None
-    try:
-        team = gl["TEAM_ABBREVIATION"].mode().iloc[0]
-    except:
-        team = None
-
-    return mu_per_min, sd_per_min, avg_min, team, f"{label}: {len(per_min_vals)} games • {avg_min:.1f} min"
-
-# =====================================================
-# SKEW-NORMAL PROBABILITY (Final version)
-# =====================================================
-
-def skew_normal_prob(mu, sd, skew, line):
-    """Right-tailed skew-normal probability."""
-    try:
-        z = (line - mu) / sd
-        base = 1 - norm.cdf(z)
-
-        # Apply skew factor (heavier tail → increases p_over)
-        adj = base * (1 + 0.15 * (skew - 1))
-        return float(np.clip(adj, 0.01, 0.99))
-    except:
-        return float(np.clip(base, 0.01, 0.99))
-
-
-# =====================================================
-# HYBRID ENGINE
-# =====================================================
-
-def hybrid_prob_over(line, mu, sd, market):
+@disk_cache
+def fetch_gamelog(player_name, season):
+    """Fetch gamelog from Basketball Reference with safe parsing.
+    Returns list of dict entries for each game.
     """
-    Stable hybrid distribution:
-    - Normal core
-    - Log-normal right tail for skew (but guarded)
-    - Market weighting
-    """
-    normal_p = 1 - norm.cdf(line, mu, sd)
+    player_id = clean_player_id(player_name)
+    url = generate_bref_url(player_id, season)
+    html = fetch_html(url)
+    if not html:
+        return []
 
-# ===== PART 1 — CHUNK C2 (Base Engines Second Half) =====
-
-    # Guard for invalid parameters
-    if mu <= 0 or sd <= 0 or np.isnan(mu) or np.isnan(sd):
-        return float(np.clip(normal_p, 0.01, 0.99))
-
-    # ---------- LOGNORMAL BLOCK ----------
     try:
-        variance = sd ** 2
-        phi = np.sqrt(variance + mu ** 2)
+        tables = pd.read_html(html)
+    except Exception:
+        return []
 
-        mu_log = np.log(mu ** 2 / phi)
-        sd_log = np.sqrt(np.log(phi ** 2 / mu ** 2))
+    # Typically, gamelog is table index 7, but fallback to first >100-row table.
+    df = None
+    if len(tables) > 7:
+        df = tables[7]
+    else:
+        for t in tables:
+            if isinstance(t, pd.DataFrame) and len(t) > 20:
+                df = t
+                break
 
-        # check validity
-        if np.isnan(mu_log) or np.isnan(sd_log) or sd_log <= 0:
-            lognorm_p = normal_p
+    if df is None:
+        return []
+
+    # Remove header rows inside the table
+    df = df[df[df.columns[0]] != df.columns[0]]
+
+    # Clean and parse stats
+    out = []
+    for idx, row in df.iterrows():
+        entry = {}
+        entry["DATE"] = row.get("Date", None)
+        entry["PTS"] = safe_float(row.get("PTS", 0))
+        entry["REB"] = safe_float(row.get("TRB", 0))
+        entry["AST"] = safe_float(row.get("AST", 0))
+        entry["MP"]  = parse_minutes(row.get("MP", 0))
+
+        # PRA derived
+        entry["PRA"] = entry["PTS"] + entry["REB"] + entry["AST"]
+
+        out.append(entry)
+
+    return out
+
+###############################
+# SEGMENT 3 — CHUNK 2
+# Player Resolver (BR-ID + Name Normalization)
+###############################
+
+def normalize_player_name(name):
+    """Standardize player name to consistent lowercase format."""
+    if not isinstance(name, str):
+        return ""
+    name = name.strip().lower()
+    name = re.sub(r"[^a-z\s]", "", name)
+    name = re.sub(r"\s+", " ", name)
+    return name
+
+
+def resolve_player_br_id(player_name):
+    """Enhanced resolver:
+    - Normalizes name
+    - Attempts multiple BR ID patterns
+    - Returns best-guess BR ID candidate
+    """
+    name = normalize_player_name(player_name)
+    if not name:
+        return ""
+
+    parts = name.split()
+    if len(parts) == 1:
+        base = parts[0][:5]
+        return base + "01"
+
+    # Standard BR pattern: lastname(5) + firstname(2) + 01
+    last = parts[-1][:5]
+    first = parts[0][:2]
+    base = last + first
+    return base + "01"
+
+
+def resolve_player_for_all_sources(name):
+    """Master resolver used for ALL systems:
+    - PrizePicks matching
+    - OddsAPI matching
+    - Basketball Reference
+    """
+    if not isinstance(name, str):
+        return {"raw": "", "clean": "", "br_id": ""}
+
+    raw = name.strip()
+    clean = normalize_player_name(name)
+    br_id = resolve_player_br_id(name)
+
+    return {
+        "raw": raw,
+        "clean": clean,
+        "br_id": br_id
+    }
+
+###############################
+# SEGMENT 3 — CHUNK 3
+# Team Pace & Defensive Rating Loader
+###############################
+
+# Static fallback data (can be expanded or replaced with API in future)
+TEAM_FALLBACK_DATA = {
+    "pace": {
+        "default_team": 100.0
+    },
+    "def_rating": {
+        "default_team": 113.0
+    }
+}
+
+@disk_cache
+def load_team_pace(team_name):
+    """Load team pace from cached source or fallback."""
+    try:
+        # Placeholder for real API / database
+        t = team_name.lower().strip()
+        return TEAM_FALLBACK_DATA["pace"].get(t, 100.0)
+    except:
+        return 100.0
+
+
+@disk_cache
+def load_team_def_rating(team_name):
+    """Load opponent defensive rating (lower = better defense)."""
+    try:
+        t = team_name.lower().strip()
+        return TEAM_FALLBACK_DATA["def_rating"].get(t, 113.0)
+    except:
+        return 113.0
+
+
+def load_team_context(team, opp):
+    """Unified loader returning all contextual pace + defense stats."""
+    team_pace = load_team_pace(team)
+    opp_pace  = load_team_pace(opp)
+    opp_def   = load_team_def_rating(opp)
+
+    return {
+        "team_pace": float(team_pace),
+        "opp_pace": float(opp_pace),
+        "opp_def_rating": float(opp_def)
+    }
+
+###############################
+# SEGMENT 3 — CHUNK 4
+# Opponent Defensive Profile Loader
+###############################
+
+# Placeholder defensive suppression values.
+# Expandable to a full per-team, per-position defensive DB.
+DEF_PROFILE_FALLBACK = {
+    "default": {
+        "PTS_SUPPRESSION": 1.00,   # 1.00 = neutral, <1 = tougher defense
+        "REB_SUPPRESSION": 1.00,
+        "AST_SUPPRESSION": 1.00
+    }
+}
+
+@disk_cache
+def load_defensive_profile(team_name):
+    """Return opponent defensive suppression multipliers.
+    Values closer to 0.85 indicate strong defense.
+    Values closer to 1.15 indicate weak defense.
+    """
+    try:
+        t = team_name.lower().strip()
+        # Future expansion: real team map
+        profile = DEF_PROFILE_FALLBACK.get(t, DEF_PROFILE_FALLBACK["default"])
+        return {
+            "pts_mult": float(profile.get("PTS_SUPPRESSION", 1.0)),
+            "reb_mult": float(profile.get("REB_SUPPRESSION", 1.0)),
+            "ast_mult": float(profile.get("AST_SUPPRESSION", 1.0)),
+        }
+    except:
+        return {
+            "pts_mult": 1.0,
+            "reb_mult": 1.0,
+            "ast_mult": 1.0
+        }
+
+###############################
+# SEGMENT 3 — CHUNK 5
+# Final Data Normalization Utilities
+###############################
+
+def extract_series_from_gamelog(gamelog, stat_key):
+    """Extract a clean numeric series for a given stat from a gamelog list.
+    Returns a list of floats with invalid entries removed.
+    """
+    if not isinstance(gamelog, list):
+        return []
+
+    out = []
+    for g in gamelog:
+        if not isinstance(g, dict):
+            continue
+        val = g.get(stat_key, None)
+        if isinstance(val, (int, float)):
+            out.append(float(val))
         else:
-            lognorm_p = 1 - norm.cdf(np.log(line + 1e-9), mu_log, sd_log)
+            try:
+                out.append(float(val))
+            except:
+                continue
 
-    except:
-        lognorm_p = normal_p
+    return out
 
-    # ---------- MARKET WEIGHTS ----------
-    w = {
-        "PRA": 0.70,
-        "Points": 0.55,
-        "Rebounds": 0.40,
-        "Assists": 0.30
-    }.get(market, 0.50)
 
-    hybrid = w * lognorm_p + (1 - w) * normal_p
+def extract_minutes_series(gamelog):
+    return extract_series_from_gamelog(gamelog, "MP")
 
-    return float(np.clip(hybrid, 0.02, 0.98))
 
-# ======================================================
-# ADVANCED PLAYER CORRELATION ENGINE (Upgrade 4 — Part 6)
-# ======================================================
-def estimate_player_correlation(leg1, leg2):
+def extract_pts_series(gamelog):
+    return extract_series_from_gamelog(gamelog, "PTS")
+
+
+def extract_reb_series(gamelog):
+    return extract_series_from_gamelog(gamelog, "REB")
+
+
+def extract_ast_series(gamelog):
+    return extract_series_from_gamelog(gamelog, "AST")
+
+
+def extract_pra_series(gamelog):
+    return extract_series_from_gamelog(gamelog, "PRA")
+
+###############################
+# SEGMENT 4 — CHUNK 1
+# Baseline Stats Engine (MU/SD)
+###############################
+
+def compute_baseline_stats(gamelog):
+    """Compute baseline MU and SD for PTS, REB, AST, PRA from gamelog list."""
+    pts = extract_pts_series(gamelog)
+    reb = extract_reb_series(gamelog)
+    ast = extract_ast_series(gamelog)
+    pra = extract_pra_series(gamelog)
+
+    def mu_sd(arr):
+        if len(arr) == 0:
+            return 0.0, 1.0
+        a = np.array(arr, float)
+        mu = float(a.mean())
+        sd = float(a.std() if a.std() > 0 else 1.0)
+        return mu, sd
+
+    mu_pts, sd_pts = mu_sd(pts)
+    mu_reb, sd_reb = mu_sd(reb)
+    mu_ast, sd_ast = mu_sd(ast)
+    mu_pra = mu_pts + mu_reb + mu_ast
+    sd_pra = float(np.sqrt(sd_pts**2 + sd_reb**2 + sd_ast**2))
+
+    return {
+        "mu": {
+            "PTS": mu_pts,
+            "REB": mu_reb,
+            "AST": mu_ast,
+            "PRA": mu_pra
+        },
+        "sd": {
+            "PTS": sd_pts,
+            "REB": sd_reb,
+            "AST": sd_ast,
+            "PRA": sd_pra
+        }
+    }
+
+###############################
+# SEGMENT 4 — CHUNK 2
+# Covariance & Correlation Engine
+###############################
+
+def compute_correlations(gamelog):
+    """Compute correlation & covariance matrices for PTS/REB/AST.
+    Returns:
+        corr: 3x3 matrix
+        cov:  3x3 matrix
+    Fallbacks to identity matrices if insufficient samples.
     """
-    Produces a dynamic, data-driven correlation estimate.
+    pts = extract_pts_series(gamelog)
+    reb = extract_reb_series(gamelog)
+    ast = extract_ast_series(gamelog)
 
-    Factors used:
-    - Shared team → strongly increases correlation
-    - Shared minutes → synergy boost
-    - Points vs Assists → negative correlation
-    - Rebounds vs Points → mild negative
-    - PRA → slightly positive
-    - Opponent context → affects both legs together
-    """
-    corr = 0.0
+    data = []
+    for i in range(min(len(pts), len(reb), len(ast))):
+        data.append([pts[i], reb[i], ast[i]])
 
-    # -----------------------
-    # 1. Same-team baseline
-    # -----------------------
-    if leg1["team"] == leg2["team"] and leg1["team"] is not None:
-        corr += 0.18
+    if len(data) < 3:
+        return np.eye(3).tolist(), np.eye(3).tolist()
 
-    # -----------------------
-    # 2. Minutes dependency
-    # -----------------------
+    arr = np.array(data, float)
+
     try:
-        avg_min1 = leg1["mu"] / max(leg1["mu"]/leg1["line"], 1e-6)
-        avg_min2 = leg2["mu"] / max(leg2["mu"]/leg2["line"], 1e-6)
-    except:
-        avg_min1 = avg_min2 = 28
+        corr = np.corrcoef(arr, rowvar=False)
+        cov = np.cov(arr, rowvar=False)
+    except Exception:
+        return np.eye(3).tolist(), np.eye(3).tolist()
 
-    if avg_min1 > 30 and avg_min2 > 30:
-        corr += 0.05
-    elif avg_min1 < 22 or avg_min2 < 22:
-        corr -= 0.04
+    return corr.tolist(), cov.tolist()
 
-    # -----------------------
-    # 3. Market-type interactions
-    # -----------------------
-    m1, m2 = leg1["market"], leg2["market"]
+###############################
+# SEGMENT 4 — CHUNK 3
+# Probability Model (Gaussian Over/Under)
+###############################
 
-    if m1 == "Points" and m2 == "Points":
-        corr += 0.08
+def compute_probabilities(mu, sd, line):
+    """Compute Gaussian-based over/under probabilities.
+    Returns:
+        { 'over': p_over, 'under': p_under }
+    """
+    try:
+        if sd <= 0:
+            return {"over": 0.5, "under": 0.5}
 
-    if (m1 == "Points" and m2 == "Assists") or (m1 == "Assists" and m2 == "Points"):
-        corr -= 0.10
+        # Z-score
+        z = (line - mu) / sd
 
-    if (m1 == "Rebounds" and m2 == "Points") or (m1 == "Points" and m2 == "Rebounds"):
-        corr -= 0.06
+        under = 0.5 * (1 + erf(z / (2**0.5)))
+        over = 1 - under
 
-    if m1 == "PRA" or m2 == "PRA":
-        corr += 0.03
+        return {
+            "over": float(over),
+            "under": float(under)
+        }
+    except Exception:
+        return {"over": 0.5, "under": 0.5}
 
-    # -----------------------
-    # 4. Opponent-defense adjustment
-    # -----------------------
-    ctx1, ctx2 = leg1["ctx_mult"], leg2["ctx_mult"]
+###############################
+# SEGMENT 4 — CHUNK 4
+# Calibration Helpers (Bias Adjustments)
+###############################
 
-    if ctx1 > 1.03 and ctx2 > 1.03:
-        corr += 0.04
-    if ctx1 < 0.97 and ctx2 < 0.97:
-        corr += 0.03
-    if (ctx1 > 1.03 and ctx2 < 0.97) or (ctx1 < 0.97 and ctx2 > 1.03):
-        corr -= 0.05
+def apply_calibration(mu_dict, sd_dict, bias_dict):
+    """Apply calibration bias corrections to MU and SD.
+    - bias_dict may contain entries like:
+        { 'PTS': +0.4, 'PTS_sd': +0.05, ... }
+    - Missing keys default to zero / no effect.
+    """
+    out_mu = {}
+    out_sd = {}
 
-    # -----------------------
-    # 5. Clamp for stability
-    # -----------------------
-    corr = float(np.clip(corr, -0.25, 0.40))
-    return corr
+    for stat in mu_dict:
+        # MU bias
+        mu_bias = bias_dict.get(stat, 0.0)
+        out_mu[stat] = float(mu_dict[stat] + mu_bias)
 
+        # SD bias
+        sd_bias = bias_dict.get(f"{stat}_sd", 0.0)
+        sd_scaled = sd_dict[stat] * (1 + sd_bias)
+        out_sd[stat] = float(max(0.1, sd_scaled))  # clamp for safety
 
-# ============================================================
-# PART 1 — CHUNK D (UltraMAX Engine Pack Inserted Here)
-# Advanced Trend • Rotation • Blowout • Context • Defense • Synergy
-# Similarity • Projection Fusion • Monte Carlo • Joint EV
-# ============================================================
+    return out_mu, out_sd
 
-import streamlit as st
+###############################
+# SEGMENT 4 — CHUNK 5
+# Market Metric Dictionary
+###############################
 
-# ------------------------------------------------------------
-# ULTRAMAX TREND ENGINE
-# ------------------------------------------------------------
-@st.cache_resource
-def ultramax_compute_trend(series):
-    data = list(series)
-    if len(data) < 5:
-        return {'ema': None, 'zscore': 0.0, 'multiplier': 1.0}
+MARKET_METRICS = {
+    "PTS": {
+        "label": "Points",
+        "precision": 1,
+        "key": "PTS"
+    },
+    "REB": {
+        "label": "Rebounds",
+        "precision": 1,
+        "key": "REB"
+    },
+    "AST": {
+        "label": "Assists",
+        "precision": 1,
+        "key": "AST"
+    },
+    "PRA": {
+        "label": "Points + Rebounds + Assists",
+        "precision": 1,
+        "key": "PRA"
+    }
+}
 
-    ser = pd.Series(data)
-    ema = float(ser.ewm(span=5).mean().iloc[-1])
+###############################
+# SEGMENT 5 — CHUNK 1
+# UltraMAX Trend Engine (EMA + Z-score Drift)
+###############################
 
-    window = data[-10:] if len(data) >= 10 else data
-    mean = float(np.mean(window))
-    sd = float(np.std(window)) if np.std(window) > 0 else 1.0
+def compute_trend_engine(series):
+    """Compute trend multiplier using:
+    - 5-game EMA
+    - Z-score of last value vs recent window
+    - Drift multiplier (0.85–1.20 range)
+    """
+    if not isinstance(series, (list, tuple)) or len(series) < 3:
+        return {
+            "ema": None,
+            "zscore": 0.0,
+            "direction": "neutral",
+            "multiplier": 1.00
+        }
 
-    z = float((data[-1] - mean) / sd)
-    drift = float(1.0 + (z * 0.05))
+    arr = np.array(series, float)
+    window = arr[-10:] if len(arr) >= 10 else arr
+    mean = float(window.mean())
+    sd = float(window.std() if window.std() > 0 else 1.0)
+
+    # Z-score of most recent game
+    z = float((arr[-1] - mean) / sd)
+
+    # EMA(5)
+    try:
+        ema = float(pd.Series(arr).ewm(span=5).mean().iloc[-1])
+    except Exception:
+        ema = None
+
+    # Drift scaling based on Z
+    drift = float(1.0 + 0.05 * z)
     drift = max(0.85, min(1.20, drift))
 
-    return {'ema': ema, 'zscore': z, 'multiplier': drift}
+    direction = (
+        "up" if z > 0.5 else
+        "down" if z < -0.5 else
+        "neutral"
+    )
 
-# ------------------------------------------------------------
-# ROTATION VOLATILITY ENGINE
-# ------------------------------------------------------------
-@st.cache_resource
-def ultramax_rotation_volatility(minutes, foul_rate, coach_trust, bench_depth, games_back):
-    mins = list(minutes)
-    if len(mins) < 5:
-        return {'volatility': 1.0, 'minutes_sd': 0.0}
+    return {
+        "ema": ema,
+        "zscore": z,
+        "direction": direction,
+        "multiplier": drift
+    }
 
-    sd_min = float(np.std(mins[-10:])) if len(mins) >= 10 else float(np.std(mins))
+###############################
+# SEGMENT 5 — CHUNK 2
+# UltraMAX Rotation Volatility Engine
+###############################
 
-    foul_component = foul_rate * 0.05
-    trust_component = (100 - coach_trust) / 200
-    bench_component = bench_depth * 0.02
-    games_back_component = max(0, (5 - games_back)) * 0.05
+def compute_rotation_volatility(minutes_series, foul_rate=0.15, coach_trust=75, bench_depth=3, games_back=5):
+    """Compute rotation volatility multiplier.
+    Inputs:
+        minutes_series : list of MP values
+        foul_rate      : player's foul frequency (0–1)
+        coach_trust    : 0–100 scale
+        bench_depth    : # of usable bench players
+        games_back     : games since return from injury (conditioning)
+    """
+    # Need a few minute samples
+    if not isinstance(minutes_series, (list, tuple)) or len(minutes_series) < 3:
+        return {
+            "minutes_sd": 0.0,
+            "volatility": 1.00
+        }
 
-    raw_vol = (sd_min / 5) + foul_component + trust_component + bench_component + games_back_component
-    volatility = max(0.85, min(1.30, raw_vol))
+    arr = np.array(minutes_series, float)
+    sd_min = float(arr.std() if arr.std() > 0 else 0.01)
 
-    return {'volatility': float(volatility), 'minutes_sd': sd_min}
+    # Components of volatility
+    foul_component = float(foul_rate * 0.05)
+    trust_component = float((100 - coach_trust) / 200)      # lower trust → higher volatility
+    bench_component = float(bench_depth * 0.02)             # deeper bench → more risk
+    games_back_component = float(max(0, (5 - games_back)) * 0.05)
 
-# ------------------------------------------------------------
-# BLOWOUT ENGINE
-# ------------------------------------------------------------
-@st.cache_resource
-def ultramax_blowout_multiplier(spread, role):
+    # Combine raw volatility
+    raw_vol = (sd_min / 6.0) + foul_component + trust_component + bench_component + games_back_component
+
+    # Clamp multiplier
+    volatility = float(max(0.85, min(1.30, 1 + raw_vol)))
+
+    return {
+        "minutes_sd": sd_min,
+        "volatility": volatility
+    }
+
+###############################
+# SEGMENT 5 — CHUNK 3
+# UltraMAX Blowout Impact Engine
+###############################
+
+def compute_blowout_multiplier(spread, role="starter"):
+    """Compute blowout risk multiplier using a smooth sigmoid curve.
+    Parameters:
+        spread : favorite margin (+ spread means player's team favored)
+        role   : "starter" or "bench"
+    Returns:
+        multiplier in range [0.70, 1.10]
+    """
     try:
-        base_prob = 1 / (1 + math.exp(-spread / 6))
-        if role == "starter":
-            mult = 1 - base_prob * 0.22
+        # Sigmoid scaling: large spreads reduce minutes for starters
+        base_prob = 1 / (1 + np.exp(-spread / 6))
+
+        if role.lower() == "starter":
+            mult = 1 - base_prob * 0.22   # starters get reduced minutes
         else:
-            mult = 1 - base_prob * 0.12
+            mult = 1 - base_prob * 0.12   # bench players get slightly less reduction
 
-        return float(max(0.70, min(1.10, mult)))
-    except:
-        return 1.0
+        # Clamp
+        mult = float(max(0.70, min(1.10, mult)))
+        return mult
 
-# ------------------------------------------------------------
-# TEAM CONTEXT ENGINE
-# ------------------------------------------------------------
-@st.cache_resource
-def ultramax_team_context(team_pace, opp_pace):
-    avg_pace = (team_pace + opp_pace) / 200
-    return float(max(0.85, min(1.15, avg_pace)))
+    except Exception:
+        return 1.00
 
-# ------------------------------------------------------------
-# DEFENSIVE PROFILE ENGINE
-# ------------------------------------------------------------
-@st.cache_resource
-def ultramax_defense_multiplier(def_rating):
+###############################
+# SEGMENT 5 — CHUNK 4
+# UltraMAX Defensive Multiplier Engine
+###############################
+
+def compute_defensive_multiplier(def_rating):
+    """Convert opponent defensive rating into a projection multiplier.
+    - League median is approx 113
+    - Lower rating = tougher defense (mult < 1)
+    - Higher rating = weaker defense (mult > 1)
+    """
     try:
-        mult = 113 / def_rating
-        return float(max(0.85, min(1.20, mult)))
-    except:
-        return 1.0
+        mult = 113 / float(def_rating if def_rating > 0 else 113)
+        mult = float(max(0.85, min(1.20, mult)))
+        return mult
+    except Exception:
+        return 1.00
 
-# ------------------------------------------------------------
-# SYNERGY ENGINE
-# ------------------------------------------------------------
-@st.cache_resource
-def ultramax_synergy(usage):
-    if usage > 30: return 1.12
-    if usage >= 24: return 1.05
-    if usage >= 20: return 1.00
-    if usage >= 15: return 0.95
-    return 0.90
+###############################
+# SEGMENT 5 — CHUNK 5
+# UltraMAX Team Context Engine
+###############################
 
-# ------------------------------------------------------------
-# SIMILARITY ENGINE
-# ------------------------------------------------------------
-@st.cache_resource
-def ultramax_similarity(vec_a, vec_b):
+def compute_team_context_multiplier(team_pace, opp_pace):
+    """Compute pace-based context multiplier.
+    - Higher combined pace → more possessions → >1.0
+    - Lower combined pace → fewer possessions → <1.0
+    Clamped to [0.85, 1.15].
+    """
     try:
-        a = np.array(vec_a, dtype=float)
-        b = np.array(vec_b, dtype=float)
-        score = float(np.dot(a,b) / (np.linalg.norm(a)*np.linalg.norm(b)))
-        return float(max(0.0, min(1.0, score)))
-    except:
-        return 0.5
+        pace = (float(team_pace) + float(opp_pace)) / 200.0
+        mult = max(0.85, min(1.15, pace))
+        return float(mult)
+    except Exception:
+        return 1.00
 
-# ------------------------------------------------------------
-# PROJECTION FUSION ENGINE (M3 Compatible)
-# ------------------------------------------------------------
-@st.cache_resource
-def ultramax_fuse_projection(base_mu, base_sd, trend, rotation, blowout, context, defense, synergy):
+###############################
+# SEGMENT 5 — CHUNK 6
+# UltraMAX Synergy Engine (Usage-Based Scaling)
+###############################
+
+def compute_synergy_multiplier(usage_rate):
+    """Compute synergy multiplier based on usage rate.
+    Usage is a strong indicator of offensive involvement.
+    Returns a multiplier in the typical UltraMAX range:
+        0.90 → 1.12
+    """
+    try:
+        u = float(usage_rate)
+
+        if u >= 30:
+            return 1.12
+        elif u >= 24:
+            return 1.05
+        elif u >= 20:
+            return 1.00
+        elif u >= 15:
+            return 0.95
+        else:
+            return 0.90
+
+    except Exception:
+        return 1.00
+
+###############################
+# SEGMENT 5 — CHUNK 7
+# UltraMAX Similarity Engine (Cosine Similarity)
+###############################
+
+def compute_similarity_score(vec_a, vec_b):
+    """Compute cosine similarity between two numeric vectors.
+    Returns value in [0.0, 1.0].
+    """
+    try:
+        a = np.array(vec_a, float)
+        b = np.array(vec_b, float)
+
+        # Zero-vector safety
+        if np.linalg.norm(a) == 0 or np.linalg.norm(b) == 0:
+            return 0.0
+
+        score = float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+        # Clamp in case of rounding artifacts
+        return max(0.0, min(1.0, score))
+    except Exception:
+        return 0.5  # neutral similarity
+
+###############################
+# SEGMENT 6 — CHUNK 1
+# UltraMAX Projection Fusion Engine
+###############################
+
+def fuse_projection(
+    base_mu, base_sd,
+    trend_mult, rotation_mult, blowout_mult,
+    context_mult, defense_mult, synergy_mult
+):
+    """Combine UltraMAX multipliers with baseline MU/SD to produce
+    final adjusted projections for PTS, REB, AST, PRA.
+    """
+
     fused_mu = {}
     fused_sd = {}
 
-    total = trend * rotation * blowout * context * defense * synergy
+    # Combined multiplier
+    adj_mult = (
+        trend_mult *
+        rotation_mult *
+        blowout_mult *
+        context_mult *
+        defense_mult *
+        synergy_mult
+    )
 
-    for k in ['PTS','REB','AST']:
-        fused_mu[k] = float(base_mu[k] * total)
-        fused_sd[k] = float(max(0.75, base_sd[k] * (rotation * 0.9)))
+    for stat in ["PTS", "REB", "AST"]:
+        # Adjust MU
+        fused_mu[stat] = float(base_mu[stat] * adj_mult)
 
-    fused_mu['PRA'] = fused_mu['PTS'] + fused_mu['REB'] + fused_mu['AST']
-    fused_sd['PRA'] = math.sqrt(
-        fused_sd['PTS']**2 + fused_sd['REB']**2 + fused_sd['AST']**2
+        # Adjust SD (volatility applies more strongly)
+        fused_sd_val = base_sd[stat] * max(0.75, rotation_mult * 0.9)
+        fused_sd[stat] = float(max(0.1, fused_sd_val))  # safety clamp
+
+    # Compute PRA
+    fused_mu["PRA"] = fused_mu["PTS"] + fused_mu["REB"] + fused_mu["AST"]
+    fused_sd["PRA"] = float(
+        (fused_sd["PTS"]**2 + fused_sd["REB"]**2 + fused_sd["AST"]**2) ** 0.5
     )
 
     return fused_mu, fused_sd
 
-# ------------------------------------------------------------
-# MONTE CARLO ENGINE (Multivariate)
-# ------------------------------------------------------------
-@st.cache_resource
-def ultramax_monte_carlo(mu_vec, cov_matrix, sims=20000):
-    try:
-        cov = np.array(cov_matrix, dtype=float)
-        mu = np.array(mu_vec, dtype=float)
-        samples = np.random.multivariate_normal(mu, cov, sims)
+###############################
+# SEGMENT 6 — CHUNK 2
+# UltraMAX Monte Carlo Simulation Engine
+###############################
 
-        pts = samples[:,0]
-        reb = samples[:,1]
-        ast = samples[:,2]
+def run_monte_carlo(mu_dict, sd_dict, size=20000):
+    """Monte Carlo engine using independent normal sampling
+    (correlation handled earlier via fusion + optional joint EV).
+
+    Returns dict of arrays:
+        { 'PTS': arr, 'REB': arr, 'AST': arr, 'PRA': arr }
+    """
+    try:
+        size = int(size)
+
+        pts = np.random.normal(mu_dict["PTS"], sd_dict["PTS"], size)
+        reb = np.random.normal(mu_dict["REB"], sd_dict["REB"], size)
+        ast = np.random.normal(mu_dict["AST"], sd_dict["AST"], size)
         pra = pts + reb + ast
 
-        return {'PTS': pts, 'REB': reb, 'AST': ast, 'PRA': pra}
-    except:
-        return {'PTS':[], 'REB':[], 'AST':[], 'PRA':[]}
+        return {
+            "PTS": pts,
+            "REB": reb,
+            "AST": ast,
+            "PRA": pra
+        }
+    except Exception:
+        return {
+            "PTS": np.array([]),
+            "REB": np.array([]),
+            "AST": np.array([]),
+            "PRA": np.array([])
+        }
 
-# ------------------------------------------------------------
-# JOINT EV ENGINE
-# ------------------------------------------------------------
-@st.cache_resource
-def ultramax_joint_ev(sim_dict, legs):
+###############################
+# SEGMENT 6 — CHUNK 3
+# UltraMAX Joint EV Engine
+###############################
+
+def evaluate_joint_ev(mc_dict, legs):
+    """Evaluate the probability and EV of multiple legs hitting simultaneously.
+    legs = [
+        { 'market': 'PTS', 'type':'over', 'line': 24.5 },
+        { 'market': 'REB', 'type':'under','line': 10.5 },
+        ...
+    ]
+    Returns:
+        { 'probability': p, 'ev': ev, 'payout': payout }
+    """
     try:
-        pts = sim_dict['PTS']
-        n = len(pts)
-        if n == 0:
-            return {'prob':0, 'ev':-1, 'payout':0}
+        size = len(mc_dict["PTS"])
+        if size == 0:
+            return {"probability": 0.0, "ev": -1.0, "payout": 0}
 
-        mask = np.ones(n, dtype=bool)
+        mask = np.ones(size, dtype=bool)
+
         for leg in legs:
-            arr = sim_dict[leg['market']]
-            if leg['type'] == 'over':
-                mask &= (arr > leg['line'])
-            else:
-                mask &= (arr < leg['line'])
+            stat = leg["market"]
+            line = float(leg["line"])
+            arr = mc_dict[stat]
 
-        prob = float(np.mean(mask))
-        payout_table = {2:3,3:5,4:10,5:25}
+            if leg["type"] == "over":
+                mask &= (arr > line)
+            else:
+                mask &= (arr < line)
+
+        prob = float(mask.mean())
+
+        payout_table = {2: 3, 3: 5, 4: 10, 5: 25, 6: 30}
         payout = payout_table.get(len(legs), 0)
+
         ev = float(prob * payout - 1.0)
 
-        return {'prob': prob, 'ev': ev, 'payout': payout}
-    except:
-        return {'prob':0, 'ev':-1, 'payout':0}
-
-# End of PART 1 — CHUNK D
-# ============================================================
-
-# Part 2 — Chunk 1 will be generated in next steps.
-# ============================================================
-# PART 2 — CHUNK 1A
-# UltraMAX-Fused compute_leg_projection() — First Half
-# Signature: SIG3-D (Using sidebar engine_inputs dicts)
-# Mode: REPLACE-MANY
-# Return: RET-FULL
-# ============================================================
-
-def compute_leg_projection(
-    player,
-    market,
-    line,
-    opp,
-    teammate_out,
-    blowout,
-    n_games,
-    rotation_params,
-    pace_params,
-    defense_params,
-    synergy_params
-):
-    """UltraMAX-Fused Projection Engine (Part 1/2)."""
-
-    # --------------------------------------------------------
-    # 1. Extract gamelog and ensure valid data
-    # --------------------------------------------------------
-    logs = fetch_player_gamelog(player)
-    if logs is None or len(logs) == 0:
         return {
-            "error": "No game logs available.",
-            "details": {},
-        }, None
-
-    # --------------------------------------------------------
-    # 2. Compute raw baseline MU/SD from logs
-    # --------------------------------------------------------
-    pts_series = logs["PTS"].astype(float).tolist()
-    reb_series = logs["TRB"].astype(float).tolist()
-    ast_series = logs["AST"].astype(float).tolist()
-
-    base_mu = {
-        "PTS": np.mean(pts_series),
-        "REB": np.mean(reb_series),
-        "AST": np.mean(ast_series),
-        "PRA": np.mean(pts_series) + np.mean(reb_series) + np.mean(ast_series),
-    }
-    base_sd = {
-        "PTS": max(1.0, np.std(pts_series)),
-        "REB": max(1.0, np.std(reb_series)),
-        "AST": max(1.0, np.std(ast_series)),
-    }
-    base_sd["PRA"] = math.sqrt(
-        base_sd["PTS"]**2 + base_sd["REB"]**2 + base_sd["AST"]**2
-    )
-
-    # --------------------------------------------------------
-    # 3. ULTRAMAX MULTIPLIERS
-    # --------------------------------------------------------
-
-    # Trend multipliers (PTS/REB/AST each computed independently)
-    trend_pts   = ultramax_compute_trend(pts_series)
-    trend_reb   = ultramax_compute_trend(reb_series)
-    trend_ast   = ultramax_compute_trend(ast_series)
-
-    # Aggregate trend multiplier = mean of PTS/REB/AST
-    trend_mult = float(
-        (trend_pts["multiplier"] + trend_reb["multiplier"] + trend_ast["multiplier"]) / 3
-    )
-
-    # Rotation volatility
-    rotation = ultramax_rotation_volatility(
-        logs["MP"].astype(float).tolist(),
-        rotation_params["foul_rate"],
-        rotation_params["coach_trust"],
-        rotation_params["bench_depth"],
-        rotation_params["games_back"]
-    )
-    rotation_mult = rotation["volatility"]
-
-    # Blowout multiplier
-    blowout_mult = ultramax_blowout_multiplier(
-        blowout,
-        rotation_params.get("role", "starter")
-    )
-
-    # Team context multiplier
-    context_mult = ultramax_team_context(
-        pace_params["team_pace"],
-        pace_params["opp_pace"],
-    )
-
-    # Defensive multiplier
-    defense_mult = ultramax_defense_multiplier(
-        defense_params["opp_def_rating"]
-    )
-
-    # Usage-based synergy multiplier
-    synergy_mult = ultramax_synergy(
-        synergy_params["usage_rate"]
-    )
-
-    # --------------------------------------------------------
-    # Aggregated UltraMAX multiplier set (for debug packet)
-    # --------------------------------------------------------
-    ultramax_debug = {
-        "trend_mult": trend_mult,
-        "rotation_mult": rotation_mult,
-        "blowout_mult": blowout_mult,
-        "context_mult": context_mult,
-        "defense_mult": defense_mult,
-        "synergy_mult": synergy_mult,
-        "rotation_obj": rotation,
-        "trend_detail": {
-            "PTS": trend_pts,
-            "REB": trend_reb,
-            "AST": trend_ast
+            "probability": prob,
+            "ev": ev,
+            "payout": payout
         }
+
+    except Exception:
+        return {"probability": 0.0, "ev": -1.0, "payout": 0}
+
+###############################
+# SEGMENT 6 — CHUNK 4
+# UltraMAX Master Engine — compute_leg_projection()
+###############################
+
+def compute_leg_projection(player_name, team, opponent, season, usage_rate,
+                           foul_rate=0.15, coach_trust=75, bench_depth=3,
+                           games_back=5, spread=0, role="starter",
+                           calibration_bias=None, line_dict=None):
+    """Master engine that orchestrates all data loading and UltraMAX modules.
+
+    Returns a final packet:
+    {
+        'fused_mu': {...},
+        'fused_sd': {...},
+        'probabilities': {...},
+        'monte_carlo': {...},
+        'trend': {...},
+        'rotation': {...},
+        'blowout': ...,
+        'defense_mult': ...,
+        'context_mult': ...,
+        'synergy_mult': ...,
+        'baseline': {...},
+        'corr': matrix,
+        'cov': matrix
     }
+    """
 
-    # Continue to Chunk 1B for fusion + distribution + return packet.
-# ============================================================
-# PART 2 — CHUNK 1B
-# UltraMAX-Fused compute_leg_projection() — Second Half
-# Fusion • Distribution Modeling • RET-FULL Packet Assembly
-# ============================================================
+    # 1. Resolve player
+    entity = resolve_player_for_all_sources(player_name)
+    br_id = entity["br_id"]
+    clean_player = entity["clean"]
 
-    # --------------------------------------------------------
-    # 4. Fusion Layer — M3 UltraMAX Fusion
-    # --------------------------------------------------------
-    fused_mu, fused_sd = ultramax_fuse_projection(
-        base_mu,
-        base_sd,
-        trend_mult,
-        rotation_mult,
-        blowout_mult,
-        context_mult,
-        defense_mult,
-        synergy_mult
+    # 2. Load gamelog
+    gamelog = fetch_gamelog(clean_player, season)
+
+    # 3. Extract series
+    pts_series = extract_pts_series(gamelog)
+    reb_series = extract_reb_series(gamelog)
+    ast_series = extract_ast_series(gamelog)
+    pra_series = extract_pra_series(gamelog)
+    min_series = extract_minutes_series(gamelog)
+
+    # 4. Baseline stats
+    baseline = compute_baseline_stats(gamelog)
+
+    # 5. Correlation + covariance
+    corr, cov = compute_correlations(gamelog)
+
+    # 6. UltraMAX engines
+    trend = compute_trend_engine(pts_series)  # trend uses points by default
+    rotation = compute_rotation_volatility(min_series, foul_rate, coach_trust, bench_depth, games_back)
+    blow_mult = compute_blowout_multiplier(spread, role)
+
+    # Defense + context loaders
+    team_context = load_team_context(team, opponent)
+    defense_prof = load_defensive_profile(opponent)
+
+    defense_mult = compute_defensive_multiplier(team_context["opp_def_rating"])
+    context_mult = compute_team_context_multiplier(team_context["team_pace"],
+                                                   team_context["opp_pace"])
+    synergy_mult = compute_synergy_multiplier(usage_rate)
+
+    # 7. Fuse projection
+    fused_mu, fused_sd = fuse_projection(
+        baseline["mu"], baseline["sd"],
+        trend["multiplier"], rotation["volatility"], blow_mult,
+        context_mult, defense_mult, synergy_mult
     )
 
-    # --------------------------------------------------------
-    # 5. Correlation matrix from gamelog
-    # --------------------------------------------------------
-    try:
-        df_corr = logs[["PTS","TRB","AST"]].astype(float)
-        corr_matrix = df_corr.corr().values
-        cov_matrix  = df_corr.cov().values
-    except:
-        corr_matrix = np.eye(3)
-        cov_matrix  = np.eye(3)
+    # 8. Calibration bias
+    if calibration_bias:
+        fused_mu, fused_sd = apply_calibration(fused_mu, fused_sd, calibration_bias)
 
-    # --------------------------------------------------------
-    # 6. Probability Modeling — Skew-Normal + Hybrid
-    # --------------------------------------------------------
-    # Extract fused stats for distribution calls
-    mu_val = fused_mu[market]
-    sd_val = fused_sd[market]
+    # 9. Monte Carlo
+    mc = run_monte_carlo(fused_mu, fused_sd, size=20000)
 
-    # skew-normal (existing engine from your original file)
-    try:
-        p_over_skew = skew_normal_prob(mu_val, sd_val, line)
-    except:
-        p_over_skew = 0.50
+    # 10. Single-leg probability pricing (if lines exist)
+    prob_pack = {}
+    if line_dict:
+        for stat, line in line_dict.items():
+            try:
+                p = compute_probabilities(fused_mu[stat], fused_sd[stat], float(line))
+                prob_pack[stat] = p
+            except:
+                continue
 
-    # hybrid mixture (existing engine)
-    try:
-        p_over_hybrid = hybrid_prob_over(mu_val, sd_val, line)
-    except:
-        p_over_hybrid = 0.50
-
-    p_over = float((p_over_skew + p_over_hybrid) / 2.0)
-    p_under = 1.0 - p_over
-
-    # --------------------------------------------------------
-    # 7. Monte Carlo Setup
-    # --------------------------------------------------------
-    mc_mu_vec = [
-        fused_mu["PTS"],
-        fused_mu["REB"],
-        fused_mu["AST"]
-    ]
-
-    mc_sim = ultramax_monte_carlo(mc_mu_vec, cov_matrix)
-
-    # --------------------------------------------------------
-    # 8. Build RET-FULL Packet
-    # --------------------------------------------------------
-    packet = {
-        "player": player,
-        "market": market,
-        "line": line,
-        "projection": fused_mu.get(market, mu_val),
-        "sd": sd_val,
-        "prob_over": p_over,
-        "prob_under": p_under,
+    # 11. Build final engine packet
+    return {
         "fused_mu": fused_mu,
         "fused_sd": fused_sd,
-        "base_mu": base_mu,
-        "base_sd": base_sd,
-        "ultramax_multipliers": ultramax_debug,
-        "corr_matrix": corr_matrix,
-        "cov_matrix": cov_matrix,
-        "monte_carlo": {
-            "PTS": mc_sim["PTS"],
-            "REB": mc_sim["REB"],
-            "AST": mc_sim["AST"],
-            "PRA": mc_sim["PRA"],
-        },
-        "raw_logs_count": len(logs)
+        "probabilities": prob_pack,
+        "monte_carlo": mc,
+        "trend": trend,
+        "rotation": rotation,
+        "blowout": blow_mult,
+        "defense_mult": defense_mult,
+        "context_mult": context_mult,
+        "synergy_mult": synergy_mult,
+        "baseline": baseline,
+        "corr": corr,
+        "cov": cov
     }
 
-    # --------------------------------------------------------
-    # 9. Return Packet
-    # --------------------------------------------------------
-    return packet, None
+###############################
+# SEGMENT 6 — CHUNK 5
+# Engine Packet Builder (UI-Ready Output)
+###############################
 
+def build_engine_packet(player_name, engine_output, lines_used=None):
+    """Wrap the master engine output into a clean, UI-friendly packet.
+    This ensures consistency across:
+    - Model Tab
+    - EV Tab
+    - Player Card
+    - Line Shopping
+    - Overrides
+    - Trend/Rotation/Defense Context Tabs
+    """
 
-# END OF PART 2 — CHUNK 1B
-# ============================================================
+    packet = {}
 
-# ============================================================
-# PART 3 — CHUNK 3A
-# UltraMAX UI: Trends • Rotation • Blowout
-# ============================================================
+    # Player field
+    packet["player"] = player_name
 
-import streamlit as st
-import pandas as pd
-import numpy as np
+    # Fused projections
+    packet["mu"] = engine_output.get("fused_mu", {})
+    packet["sd"] = engine_output.get("fused_sd", {})
 
-# ------------------------------------------------------------
-# ULTRAMAX TRENDS TAB
-# ------------------------------------------------------------
-def render_ultramax_trends_tab(packet):
-    """Display EMA, Z-score, and drift multiplier for PTS/REB/AST."""
-    st.header("📉 UltraMAX Trend Recognition")
+    # Probabilities (if lines were provided)
+    packet["probabilities"] = engine_output.get("probabilities", {})
 
-    if "ultramax_multipliers" not in packet:
-        st.warning("No trend data available.")
-        return
+    # Raw baseline stats
+    packet["baseline"] = engine_output.get("baseline", {})
 
-    trend_detail = packet["ultramax_multipliers"]["trend_detail"]
+    # UltraMAX multipliers
+    packet["trend"] = engine_output.get("trend", {})
+    packet["rotation"] = engine_output.get("rotation", {})
+    packet["blowout"] = engine_output.get("blowout", 1.00)
+    packet["defense_mult"] = engine_output.get("defense_mult", 1.00)
+    packet["context_mult"] = engine_output.get("context_mult", 1.00)
+    packet["synergy_mult"] = engine_output.get("synergy_mult", 1.00)
 
-    col_pts, col_reb, col_ast = st.columns(3)
+    # Correlation / Covariance
+    packet["corr"] = engine_output.get("corr", [])
+    packet["cov"] = engine_output.get("cov", [])
 
-    with col_pts:
-        st.subheader("PTS Trend")
-        st.metric("EMA", trend_detail["PTS"]["ema"])
-        st.metric("Z-Score", round(trend_detail["PTS"]["zscore"], 3))
-        st.metric("Drift Mult", round(trend_detail["PTS"]["multiplier"], 3))
+    # MC distribution
+    packet["monte_carlo"] = engine_output.get("monte_carlo", {})
 
-    with col_reb:
-        st.subheader("REB Trend")
-        st.metric("EMA", trend_detail["REB"]["ema"])
-        st.metric("Z-Score", round(trend_detail["REB"]["zscore"], 3))
-        st.metric("Drift Mult", round(trend_detail["REB"]["multiplier"], 3))
+    # Lines used (if any)
+    packet["lines_used"] = lines_used or {}
 
-    with col_ast:
-        st.subheader("AST Trend")
-        st.metric("EMA", trend_detail["AST"]["ema"])
-        st.metric("Z-Score", round(trend_detail["AST"]["zscore"], 3))
-        st.metric("Drift Mult", round(trend_detail["AST"]["multiplier"], 3))
+    # Metadata
+    packet["timestamp"] = datetime.utcnow().isoformat()
 
+    return packet
 
-# ------------------------------------------------------------
-# ULTRAMAX ROTATION VOLATILITY TAB
-# ------------------------------------------------------------
-def render_ultramax_rotation_tab(packet):
-    """Display rotation-based volatility and minute distribution info."""
-    st.header("🔁 UltraMAX Rotation Volatility")
-
-    if "ultramax_multipliers" not in packet:
-        st.warning("No rotation data available.")
-        return
-
-    rotation_obj = packet["ultramax_multipliers"]["rotation_obj"]
-
-    st.metric("Minutes SD", round(rotation_obj["minutes_sd"], 3))
-    st.metric("Volatility Multiplier", round(rotation_obj["volatility"], 3))
-
-    st.caption("Rotation volatility accounts for fouls, coaching trust, bench depth, and conditioning.")
-
-
-# ------------------------------------------------------------
-# ULTRAMAX BLOWOUT RISK TAB
-# ------------------------------------------------------------
-def render_ultramax_blowout_tab(packet):
-    """Display blowout effects on stat expectation."""
-    st.header("💥 UltraMAX Blowout Risk")
-
-    if "ultramax_multipliers" not in packet:
-        st.warning("No blowout data available.")
-        return
-
-    blow_mult = packet["ultramax_multipliers"]["blowout_mult"]
-    st.metric("Blowout Multiplier", round(blow_mult, 3))
-
-    st.caption("Higher spreads lower projections for starters and sometimes increase projection volatility for bench roles.")
-
-
-# END OF PART 3 — CHUNK 3A
-# ============================================================
-# ============================================================
-# PART 3 — CHUNK 3B
-# UltraMAX UI: Team Context • Defensive Profile • Line Shopping
-# ============================================================
+###############################
+# SEGMENT 7 — CHUNK 1
+# Global Streamlit Config & Styling
+###############################
 
 import streamlit as st
-import pandas as pd
-import numpy as np
 
-# ------------------------------------------------------------
-# ULTRAMAX TEAM CONTEXT TAB
-# ------------------------------------------------------------
-def render_ultramax_team_context_tab(packet):
-    """Display pace-based context multiplier and team/opp pace info."""
-    st.header("🏃 UltraMAX Team Context")
+# --- Streamlit Page Setup ---
+st.set_page_config(
+    page_title="UltraMAX NBA Quant Engine",
+    page_icon="🏀",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-    if "ultramax_multipliers" not in packet:
-        st.warning("Context data unavailable.")
+# --- Global Dark Theme CSS ---
+GLOBAL_CSS = """
+<style>
+body {
+    background-color: #0d0d0d !important;
+    color: #e6e6e6 !important;
+}
+.stApp {
+    background-color: #0d0d0d !important;
+}
+h1, h2, h3, h4, h5, h6 {
+    color: #ffffff !important;
+    font-weight: 700 !important;
+}
+.sidebar .sidebar-content {
+    background-color: #1a1a1a !important;
+}
+.stSidebar {
+    background-color: #1a1a1a !important;
+}
+.block-container {
+    padding-top: 1rem !important;
+}
+</style>
+"""
+
+st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
+
+# --- Global Header ---
+def render_header():
+    st.markdown(
+        """
+        <div style="padding:12px 0; text-align:center;">
+            <h1 style="margin-bottom:0;">🏀 UltraMAX NBA Quant Engine</h1>
+            <p style="font-size:14px; color:#bbbbbb; margin-top:-8px;">
+                2025–2026 Automated Projection • Monte Carlo • Joint EV • Defensive Matchups
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+###############################
+# SEGMENT 7 — CHUNK 2
+# Sidebar UI + LIVE1 Integration
+###############################
+
+def render_sidebar():
+    st.sidebar.markdown("## 🔧 Model Configuration")
+
+    # --- Player Name ---
+    player_name = st.sidebar.text_input("Player Name", "")
+
+    # --- Team & Opponent ---
+    team = st.sidebar.text_input("Player Team", "")
+    opponent = st.sidebar.text_input("Opponent Team", "")
+
+    # --- Role Selector ---
+    role = st.sidebar.selectbox("Role", ["starter", "bench"])
+
+    # --- Usage Rate ---
+    usage_rate = st.sidebar.number_input("Usage Rate (%)", 5.0, 40.0, 22.0)
+
+    # --- Foul Rate ---
+    foul_rate = st.sidebar.number_input("Foul Rate (0–1)", 0.0, 1.0, 0.15)
+
+    # --- Coach Trust ---
+    coach_trust = st.sidebar.slider("Coach Trust (0–100)", 0, 100, 75)
+
+    # --- Bench Depth ---
+    bench_depth = st.sidebar.number_input("Bench Depth", 1, 12, 3)
+
+    # --- Games Back ---
+    games_back = st.sidebar.number_input("Games Back", 0, 20, 5)
+
+    # --- Spread ---
+    spread = st.sidebar.number_input("Spread (Team favored +)", -25.0, 25.0, 0.0)
+
+    # --- Season (Auto-updating for 2025–26) ---
+    season = st.sidebar.selectbox("Season", ["2025-26", "2024-25", "2023-24"], index=0)
+
+    # --- Live Lines Section ---
+    st.sidebar.markdown("### 📡 LIVE Lines (Auto-Fill)")
+    enable_live = st.sidebar.checkbox("Enable LIVE1 Auto-Fill", value=False)
+
+    # Container for live lines
+    default_lines = {"PTS": None, "REB": None, "AST": None, "PRA": None}
+
+    if enable_live and player_name.strip() != "":
+        resolved = resolve_player_for_all_sources(player_name)
+        live_lines = get_live_lines(resolved["raw"])
+        safe_live = safe_lines_output(live_lines)
+        st.sidebar.write("Live Lines:", safe_live)
+    else:
+        safe_live = default_lines
+
+    # --- Manual Stat Lines (with LIVE1 Auto-Fill) ---
+    line_pts = st.sidebar.number_input("PTS Line", 0.0, 100.0, float(safe_live.get("PTS") or 0.0))
+    line_reb = st.sidebar.number_input("REB Line", 0.0, 50.0, float(safe_live.get("REB") or 0.0))
+    line_ast = st.sidebar.number_input("AST Line", 0.0, 40.0, float(safe_live.get("AST") or 0.0))
+    line_pra = st.sidebar.number_input("PRA Line", 0.0, 120.0, float(safe_live.get("PRA") or 0.0))
+
+    # Run Button
+    run_model = st.sidebar.button("🚀 Run UltraMAX Model")
+
+    return {
+        "player_name": player_name,
+        "team": team,
+        "opponent": opponent,
+        "role": role,
+        "usage_rate": usage_rate,
+        "foul_rate": foul_rate,
+        "coach_trust": coach_trust,
+        "bench_depth": bench_depth,
+        "games_back": games_back,
+        "spread": spread,
+        "season": season,
+        "lines": {
+            "PTS": line_pts,
+            "REB": line_reb,
+            "AST": line_ast,
+            "PRA": line_pra
+        },
+        "run_model": run_model
+    }
+
+###############################
+# SEGMENT 7 — CHUNK 3
+# Model Tab UI — Core UltraMAX Output
+###############################
+
+def render_model_tab(sidebar_state):
+    render_header()
+    st.markdown("## 📊 UltraMAX Model Output")
+
+    # Stop if user hasn't run model
+    if not sidebar_state.get("run_model"):
+        st.info("Configure parameters in the sidebar and click **Run UltraMAX Model**.")
         return
 
-    ctx_mult = packet["ultramax_multipliers"]["context_mult"]
-    st.metric("Context Multiplier", round(ctx_mult, 3))
+    # Prepare inputs
+    player = sidebar_state["player_name"]
+    team = sidebar_state["team"]
+    opponent = sidebar_state["opponent"]
+    season = sidebar_state["season"]
+    usage = sidebar_state["usage_rate"]
+    foul_rate = sidebar_state["foul_rate"]
+    coach_trust = sidebar_state["coach_trust"]
+    bench_depth = sidebar_state["bench_depth"]
+    games_back = sidebar_state["games_back"]
+    spread = sidebar_state["spread"]
+    role = sidebar_state["role"]
+    lines = sidebar_state["lines"]
 
-    # Additional details if present
-    try:
-        pace_params = packet.get("pace_params", {})
-        st.write("Team Pace:", pace_params.get("team_pace", "N/A"))
-        st.write("Opponent Pace:", pace_params.get("opp_pace", "N/A"))
-    except:
-        pass
+    # Run engine
+    engine_out = compute_leg_projection(
+        player_name=player,
+        team=team,
+        opponent=opponent,
+        season=season,
+        usage_rate=usage,
+        foul_rate=foul_rate,
+        coach_trust=coach_trust,
+        bench_depth=bench_depth,
+        games_back=games_back,
+        spread=spread,
+        role=role,
+        calibration_bias=None,
+        line_dict=lines
+    )
 
-    st.caption("Higher pace increases possessions and stat volume. Lower pace suppresses totals.")
+    packet = build_engine_packet(player, engine_out, lines_used=lines)
+
+    # --- Display Results ---
+    st.markdown(f"### 🏀 Player: **{player}**")
+    st.markdown(f"**Season:** {season} | **Team:** {team} | **Opponent:** {opponent}")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("#### 🔮 Projected MU")
+        st.write(packet["mu"])
+
+        st.markdown("#### 📈 Baseline MU/SD")
+        st.write(packet["baseline"])
+
+    with col2:
+        st.markdown("#### 📉 Projected SD")
+        st.write(packet["sd"])
+
+        st.markdown("#### 🎯 Probabilities (O/U)")
+        st.write(packet["probabilities"])
+
+    # Multipliers Section
+    st.markdown("### ⚙️ UltraMAX Multipliers")
+    m1, m2, m3 = st.columns(3)
+
+    with m1:
+        st.write("**Trend**", packet["trend"])
+        st.write("**Rotation**", packet["rotation"])
+
+    with m2:
+        st.write("**Defense Multiplier**", packet["defense_mult"])
+        st.write("**Context Multiplier**", packet["context_mult"])
+
+    with m3:
+        st.write("**Blowout Multiplier**", packet["blowout"])
+        st.write("**Synergy Multiplier**", packet["synergy_mult"])
+
+    st.markdown("### 📊 Monte Carlo Summary")
+    mc = packet["monte_carlo"]
+    if mc.get("PTS", []).size > 0:
+        st.write({
+            "PTS Mean": float(mc["PTS"].mean()),
+            "REB Mean": float(mc["REB"].mean()),
+            "AST Mean": float(mc["AST"].mean()),
+            "PRA Mean": float(mc["PRA"].mean())
+        })
+    else:
+        st.warning("Monte Carlo simulation unavailable.")
 
 
-# ------------------------------------------------------------
-# ULTRAMAX DEFENSIVE PROFILE TAB
-# ------------------------------------------------------------
-def render_ultramax_defense_tab(packet):
-    """Display opponent defensive difficulty multiplier."""
-    st.header("🛡 UltraMAX Defensive Profile")
+###############################
+# SEGMENT 7 — CHUNK 3.5
+# Page Router / Navigation Core
+###############################
 
-    if "ultramax_multipliers" not in packet:
-        st.warning("No defensive profile data available.")
+def run_app():
+    sidebar_state = render_sidebar()
+
+    # Navigation Tabs
+    tabs = st.tabs([
+        "Model",
+        "EV Model",
+        "Joint EV",
+        "Trends",
+        "Rotation",
+        "Defense",
+        "Context",
+        "Line Shopping",
+        "Overrides",
+        "History"
+    ])
+
+    with tabs[0]:
+        render_model_tab(sidebar_state)
+
+    # Remaining tabs will be added in future chunks
+
+###############################
+# SEGMENT 7 — CHUNK 4
+# EV Model Tab
+###############################
+
+def render_ev_tab(sidebar_state):
+    render_header()
+    st.markdown("## 💰 EV Model (Single-Leg Expected Value)")
+
+    if not sidebar_state.get("run_model"):
+        st.info("Run the UltraMAX model from the sidebar first.")
         return
 
-    def_mult = packet["ultramax_multipliers"]["defense_mult"]
-    st.metric("Defense Multiplier", round(def_mult, 3))
+    player = sidebar_state["player_name"]
+    team = sidebar_state["team"]
+    opponent = sidebar_state["opponent"]
+    season = sidebar_state["season"]
+    usage = sidebar_state["usage_rate"]
+    foul_rate = sidebar_state["foul_rate"]
+    coach_trust = sidebar_state["coach_trust"]
+    bench_depth = sidebar_state["bench_depth"]
+    games_back = sidebar_state["games_back"]
+    spread = sidebar_state["spread"]
+    role = sidebar_state["role"]
+    lines = sidebar_state["lines"]
 
-    try:
-        defense_params = packet.get("defense_params", {})
-        st.write("Opponent DEF Rating:", defense_params.get("opp_def_rating", "N/A"))
-    except:
-        pass
+    # Compute engine
+    engine_out = compute_leg_projection(
+        player_name=player,
+        team=team,
+        opponent=opponent,
+        season=season,
+        usage_rate=usage,
+        foul_rate=foul_rate,
+        coach_trust=coach_trust,
+        bench_depth=bench_depth,
+        games_back=games_back,
+        spread=spread,
+        role=role,
+        calibration_bias=None,
+        line_dict=lines
+    )
 
-    st.caption("Stronger defenses reduce projection. Weak defenses allow above-average outcomes.")
+    packet = build_engine_packet(player, engine_out, lines_used=lines)
+    mc = packet.get("monte_carlo", {})
+    probs = packet.get("probabilities", {})
+    fused_mu = packet.get("mu", {})
+    fused_sd = packet.get("sd", {})
 
-
-# ------------------------------------------------------------
-# ULTRAMAX LINE SHOPPING TAB
-# ------------------------------------------------------------
-def render_ultramax_line_shopping_tab(packet, lines):
-    """Compare UltraMAX probability vs. market lines."""
-    st.header("🛒 UltraMAX Line Shopping")
-
-    if "fused_mu" not in packet or "fused_sd" not in packet:
-        st.warning("Insufficient projection data for line shopping.")
-        return
+    st.markdown(f"### Player: **{player}** ({season})")
 
     markets = ["PTS", "REB", "AST", "PRA"]
-    rows = []
 
-    for m in markets:
-        line_val = lines.get(m, None)
-        if line_val is None:
+    for stat in markets:
+        line = lines.get(stat)
+        if line is None:
             continue
 
-        mu = packet["fused_mu"][m]
-        sd = packet["fused_sd"][m]
-        z = (line_val - mu) / sd if sd > 0 else 0
+        st.markdown(f"#### **{stat}** — Line: **{line}**")
 
-        # Approximate over/under probabilities for display
-        over_prob = float(1 - norm.cdf(z))
-        under_prob = float(norm.cdf(z))
+        # Gaussian EV
+        prob_over = probs.get(stat, {}).get("over", 0.5)
+        gaussian_ev = prob_over * 1.0 - 1.0  # simple EV (PrizePicks-style placeholder)
 
-        rows.append({
-            "Market": m,
-            "Line": line_val,
-            "Projected MU": round(mu, 2),
-            "Projected SD": round(sd, 2),
-            "Over Prob": round(over_prob, 3),
-            "Under Prob": round(under_prob, 3),
+        # MC EV (probability from simulation)
+        mc_arr = mc.get(stat, [])
+        if mc_arr.size > 0:
+            mc_prob_over = float((mc_arr > line).mean())
+            mc_ev = mc_prob_over * 1.0 - 1.0
+        else:
+            mc_prob_over = 0.0
+            mc_ev = -1.0
+
+        st.write({
+            "Gaussian Over Probability": prob_over,
+            "Gaussian EV": gaussian_ev,
+            "Monte Carlo Over Probability": mc_prob_over,
+            "Monte Carlo EV": mc_ev,
+            "Projected MU": fused_mu.get(stat),
+            "Projected SD": fused_sd.get(stat)
         })
 
-    df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True)
+###############################
+# SEGMENT 7 — CHUNK 5
+# Joint EV Tab (Multi‑Leg Evaluation)
+###############################
 
-    st.caption("Compare UltraMAX probabilities against market lines to identify edges.")
+def render_joint_ev_tab(sidebar_state):
+    render_header()
+    st.markdown("## 🔗 Joint EV (Multi‑Leg Correlated Evaluation)")
 
-# END OF PART 3 — CHUNK 3B
-# ============================================================
-# ============================================================
-# PART 3 — CHUNK 3C
-# UltraMAX UI: Joint EV • Overrides
-# ============================================================
-
-import streamlit as st
-import pandas as pd
-import numpy as np
-
-# ------------------------------------------------------------
-# ULTRAMAX JOINT EV TAB
-# ------------------------------------------------------------
-def render_ultramax_joint_ev_tab(packet, legs):
-    """Display correlated Monte Carlo joint hit probability and EV."""
-    st.header("🔗 UltraMAX Joint EV (Correlated)")
-
-    if "monte_carlo" not in packet:
-        st.warning("Monte Carlo simulations missing.")
+    if not sidebar_state.get("run_model"):
+        st.info("Run the UltraMAX Model from the sidebar first.")
         return
 
-    sim_dict = packet["monte_carlo"]
+    player = sidebar_state["player_name"]
+    team = sidebar_state["team"]
+    opponent = sidebar_state["opponent"]
+    season = sidebar_state["season"]
+    usage = sidebar_state["usage_rate"]
+    foul_rate = sidebar_state["foul_rate"]
+    coach_trust = sidebar_state["coach_trust"]
+    bench_depth = sidebar_state["bench_depth"]
+    games_back = sidebar_state["games_back"]
+    spread = sidebar_state["spread"]
+    role = sidebar_state["role"]
+    lines = sidebar_state["lines"]
 
-    # Call UltraMAX joint EV
+    # Run engine again to ensure freshest packet
+    engine_out = compute_leg_projection(
+        player_name=player,
+        team=team,
+        opponent=opponent,
+        season=season,
+        usage_rate=usage,
+        foul_rate=foul_rate,
+        coach_trust=coach_trust,
+        bench_depth=bench_depth,
+        games_back=games_back,
+        spread=spread,
+        role=role,
+        calibration_bias=None,
+        line_dict=lines
+    )
+
+    packet = build_engine_packet(player, engine_out, lines_used=lines)
+    mc = packet.get("monte_carlo", {})
+    lines_dict = packet.get("lines_used", {})
+
+    st.markdown("### 🧩 Select Legs for Joint EV")
+
+    markets = ["PTS", "REB", "AST", "PRA"]
+    selected_legs = []
+
+    cols = st.columns(4)
+    for i, stat in enumerate(markets):
+        with cols[i]:
+            include = st.checkbox(f"Include {stat}", value=False)
+            if include:
+                l = lines_dict.get(stat, None)
+                if l is not None:
+                    leg_type = st.selectbox(f"{stat} Type", ["over","under"], key=f"{stat}_sel")
+                    selected_legs.append({
+                        "market": stat,
+                        "type": leg_type,
+                        "line": l
+                    })
+
+    if len(selected_legs) < 2:
+        st.warning("Select at least 2 legs for Joint EV evaluation.")
+        return
+
+    # Compute Joint EV
+    joint_result = evaluate_joint_ev(mc, selected_legs)
+
+    st.markdown("### 📉 Joint EV Results")
+    st.write(joint_result)
+
+###############################
+# SEGMENT 7 — CHUNK 6
+# Trends Tab (EMA • Z‑Score • Drift)
+###############################
+
+def render_trends_tab(sidebar_state):
+    render_header()
+    st.markdown("## 📈 Trends & Form Analysis")
+
+    if not sidebar_state.get("run_model"):
+        st.info("Run the UltraMAX model from the sidebar first.")
+        return
+
+    # Basic inputs
+    player = sidebar_state["player_name"]
+    team = sidebar_state["team"]
+    opponent = sidebar_state["opponent"]
+    season = sidebar_state["season"]
+    usage = sidebar_state["usage_rate"]
+    foul_rate = sidebar_state["foul_rate"]
+    coach_trust = sidebar_state["coach_trust"]
+    bench_depth = sidebar_state["bench_depth"]
+    games_back = sidebar_state["games_back"]
+    spread = sidebar_state["spread"]
+    role = sidebar_state["role"]
+    lines = sidebar_state["lines"]
+
+    # Engine call
+    engine_out = compute_leg_projection(
+        player_name=player,
+        team=team,
+        opponent=opponent,
+        season=season,
+        usage_rate=usage,
+        foul_rate=foul_rate,
+        coach_trust=coach_trust,
+        bench_depth=bench_depth,
+        games_back=games_back,
+        spread=spread,
+        role=role,
+        calibration_bias=None,
+        line_dict=lines
+    )
+
+    packet = build_engine_packet(player, engine_out, lines_used=lines)
+
+    st.markdown(f"### Player: **{player}**")
+
+    trend = packet.get("trend", {})
+    baseline = packet.get("baseline", {})
+    mc = packet.get("monte_carlo", {})
+
+    # Display Trend Metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("EMA (Last 5)", f"{trend.get('ema', 0):.2f}")
+    with col2:
+        st.metric("Z‑Score", f"{trend.get('zscore', 0):.2f}")
+    with col3:
+        st.metric("Direction", trend.get("direction", "neutral"))
+
+    st.markdown("### 🔥 Drift Multiplier")
+    st.write(f"**{trend.get('multiplier', 1.0):.3f}**")
+
+    # Raw series chart placeholder
+    pts_series = engine_out.get("baseline", {}).get("mu", {}).get("PTS", None)
+
+    gamelog_pts = extract_pts_series(fetch_gamelog(player, season))
+
+    if len(gamelog_pts) > 0:
+        st.markdown("### 📉 Recent PTS Game Log")
+        st.line_chart(gamelog_pts)
+    else:
+        st.warning("Not enough gamelog data to visualize.")
+
+###############################
+# SEGMENT 7 — CHUNK 7
+# Rotation Volatility Tab
+###############################
+
+def render_rotation_tab(sidebar_state):
+    render_header()
+    st.markdown("## 🔄 Rotation Volatility Analysis")
+
+    if not sidebar_state.get("run_model"):
+        st.info("Run the UltraMAX model from the sidebar first.")
+        return
+
+    # Basic inputs
+    player = sidebar_state["player_name"]
+    team = sidebar_state["team"]
+    opponent = sidebar_state["opponent"]
+    season = sidebar_state["season"]
+    usage = sidebar_state["usage_rate"]
+    foul_rate = sidebar_state["foul_rate"]
+    coach_trust = sidebar_state["coach_trust"]
+    bench_depth = sidebar_state["bench_depth"]
+    games_back = sidebar_state["games_back"]
+    spread = sidebar_state["spread"]
+    role = sidebar_state["role"]
+    lines = sidebar_state["lines"]
+
+    # Run engine
+    engine_out = compute_leg_projection(
+        player_name=player,
+        team=team,
+        opponent=opponent,
+        season=season,
+        usage_rate=usage,
+        foul_rate=foul_rate,
+        coach_trust=coach_trust,
+        bench_depth=bench_depth,
+        games_back=games_back,
+        spread=spread,
+        role=role,
+        calibration_bias=None,
+        line_dict=lines
+    )
+
+    packet = build_engine_packet(player, engine_out, lines_used=lines)
+    rotation = packet.get("rotation", {})
+
+    st.markdown(f"### Player: **{player}** — Rotation Profile")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.metric("Minutes SD", f"{rotation.get('minutes_sd', 0):.2f}")
+
+    with col2:
+        st.metric("Volatility Multiplier", f"{rotation.get('volatility', 1.0):.3f}")
+
+    st.markdown("### 🎯 Volatility Factors")
+
+    st.write({
+        "Foul Rate Impact": foul_rate * 0.05,
+        "Coach Trust Factor": (100 - coach_trust) / 200,
+        "Bench Depth Factor": bench_depth * 0.02,
+        "Games‑Back Conditioning": max(0, (5 - games_back)) * 0.05
+    })
+
+    # Minutes series visualization
+    gamelog = fetch_gamelog(player, season)
+    mins = extract_minutes_series(gamelog)
+
+    if len(mins) > 0:
+        st.markdown("### 📉 Minutes History")
+        st.line_chart(mins)
+    else:
+        st.warning("Not enough minutes data to visualize.")
+
+###############################
+# SEGMENT 7 — CHUNK 8
+# Defensive Profile Tab
+###############################
+
+def render_defense_tab(sidebar_state):
+    render_header()
+    st.markdown("## 🛡️ Defensive Matchup Profile")
+
+    if not sidebar_state.get("run_model"):
+        st.info("Run the UltraMAX model from the sidebar first.")
+        return
+
+    # Basic inputs
+    player = sidebar_state["player_name"]
+    team = sidebar_state["team"]
+    opponent = sidebar_state["opponent"]
+    season = sidebar_state["season"]
+    usage = sidebar_state["usage_rate"]
+    foul_rate = sidebar_state["foul_rate"]
+    coach_trust = sidebar_state["coach_trust"]
+    bench_depth = sidebar_state["bench_depth"]
+    games_back = sidebar_state["games_back"]
+    spread = sidebar_state["spread"]
+    role = sidebar_state["role"]
+    lines = sidebar_state["lines"]
+
+    # Run engine
+    engine_out = compute_leg_projection(
+        player_name=player,
+        team=team,
+        opponent=opponent,
+        season=season,
+        usage_rate=usage,
+        foul_rate=foul_rate,
+        coach_trust=coach_trust,
+        bench_depth=bench_depth,
+        games_back=games_back,
+        spread=spread,
+        role=role,
+        calibration_bias=None,
+        line_dict=lines
+    )
+
+    packet = build_engine_packet(player, engine_out, lines_used=lines)
+
+    st.markdown(f"### Opponent: **{opponent}** — Defensive Profile")
+
+    defense_mult = packet.get("defense_mult", 1.00)
+    context = load_team_context(team, opponent)
+    profile = load_defensive_profile(opponent)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Opponent Defensive Rating", f"{context.get('opp_def_rating', 113):.1f}")
+    with col2:
+        st.metric("UltraMAX Defense Multiplier", f"{defense_mult:.3f}")
+    with col3:
+        st.metric("Team Pace Influence", f"{context.get('team_pace', 100):.1f}")
+
+    st.markdown("### 🔒 Suppression Factors")
+    st.write({
+        "PTS Suppression": profile.get("pts_mult", 1.0),
+        "REB Suppression": profile.get("reb_mult", 1.0),
+        "AST Suppression": profile.get("ast_mult", 1.0)
+    })
+
+    # Optional: simple defensive bars
+    st.markdown("### 📊 Defensive Difficulty Bar")
     try:
-        result = ultramax_joint_ev(sim_dict, legs)
-        st.metric("Joint Probability", round(result["prob"], 4))
-        st.metric("Payout", result["payout"])
-        st.metric("Expected Value", round(result["ev"], 4))
-    except Exception as e:
-        st.error(f"Joint EV error: {e}")
+        st.progress(min(1.0, max(0.0, 1 / defense_mult)))
+    except:
+        st.warning("Unable to render defensive difficulty.")
+
+###############################
+# SEGMENT 7 — CHUNK 9
+# Team Context Tab (Pace • Opp Pace • Multiplier)
+###############################
+
+def render_context_tab(sidebar_state):
+    render_header()
+    st.markdown("## 🏃‍♂️💨 Team Context & Pace Analysis")
+
+    if not sidebar_state.get("run_model"):
+        st.info("Run the UltraMAX model from the sidebar first.")
         return
 
-    st.caption("Joint EV uses correlated Monte Carlo projections for TRUE 2+ leg hit probability.")
+    # Basic inputs
+    player = sidebar_state["player_name"]
+    team = sidebar_state["team"]
+    opponent = sidebar_state["opponent"]
+    season = sidebar_state["season"]
+    usage = sidebar_state["usage_rate"]
+    foul_rate = sidebar_state["foul_rate"]
+    coach_trust = sidebar_state["coach_trust"]
+    bench_depth = sidebar_state["bench_depth"]
+    games_back = sidebar_state["games_back"]
+    spread = sidebar_state["spread"]
+    role = sidebar_state["role"]
+    lines = sidebar_state["lines"]
 
+    # Execute engine
+    engine_out = compute_leg_projection(
+        player_name=player,
+        team=team,
+        opponent=opponent,
+        season=season,
+        usage_rate=usage,
+        foul_rate=foul_rate,
+        coach_trust=coach_trust,
+        bench_depth=bench_depth,
+        games_back=games_back,
+        spread=spread,
+        role=role,
+        calibration_bias=None,
+        line_dict=lines
+    )
 
-# ------------------------------------------------------------
-# ULTRAMAX OVERRIDES TAB
-# ------------------------------------------------------------
-def render_ultramax_overrides_tab(packet):
-    """Allows manual override of MU/SD and other projection settings."""
-    st.header("⚠️ UltraMAX Overrides")
+    packet = build_engine_packet(player, engine_out, lines_used=lines)
 
-    if "fused_mu" not in packet:
-        st.warning("Projection data unavailable to override.")
+    st.markdown(f"### Matchup: **{team} vs {opponent}**")
+
+    context = engine_out.get("context_mult", 1.00)
+    team_ctx_data = load_team_context(team, opponent)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Team Pace", f"{team_ctx_data.get('team_pace', 100):.1f}")
+    with col2:
+        st.metric("Opponent Pace", f"{team_ctx_data.get('opp_pace', 100):.1f}")
+    with col3:
+        st.metric("Context Multiplier", f"{context:.3f}")
+
+    st.markdown("### 📊 Pace-Based Interpretation")
+
+    team_pace = team_ctx_data.get("team_pace", 100)
+    opp_pace = team_ctx_data.get("opp_pace", 100)
+    avg_pace = (team_pace + opp_pace) / 2
+
+    if avg_pace > 102:
+        st.success("High-paced environment → More possessions → Projection boost likely.")
+    elif avg_pace < 97:
+        st.warning("Low-paced environment → Fewer possessions → Projection may drop.")
+    else:
+        st.info("Moderate pace environment → Neutral projection flow.")
+
+    # Simple pace bar
+    try:
+        pace_norm = min(1.0, max(0.0, avg_pace / 120))
+        st.markdown("### 📉 Pace Indicator")
+        st.progress(pace_norm)
+    except:
+        st.warning("Unable to render pace indicator.")
+
+###############################
+# SEGMENT 7 — CHUNK 10
+# Line Shopping Analyzer (PP • OddsAPI • Manual)
+###############################
+
+def render_line_shopping_tab(sidebar_state):
+    render_header()
+    st.markdown("## 🛒 Line Shopping Analyzer")
+
+    if not sidebar_state.get("run_model"):
+        st.info("Run the UltraMAX model first to populate lines.")
         return
 
-    st.subheader("Manual MU Overrides")
-    mu_override = {}
-    for stat in ["PTS", "REB", "AST", "PRA"]:
-        mu_override[stat] = st.number_input(
-            f"{stat} MU Override",
-            value=float(packet["fused_mu"][stat]),
-            key=f"{stat}_mu_override"
-        )
+    player = sidebar_state["player_name"]
+    lines_manual = sidebar_state["lines"]
 
-    st.subheader("Manual SD Overrides")
-    sd_override = {}
-    for stat in ["PTS", "REB", "AST", "PRA"]:
-        sd_override[stat] = st.number_input(
-            f"{stat} SD Override",
-            value=float(packet["fused_sd"][stat]),
-            key=f"{stat}_sd_override"
-        )
+    # Fetch live lines
+    resolved = resolve_player_for_all_sources(player)
+    pp_lines = fetch_prizepicks_lines(resolved["raw"])
+    oa_lines = fetch_oddsapi_lines(resolved["raw"])
 
-    if st.button("Apply Overrides"):
-        st.success("Overrides applied (not stored persistently).")
-        st.json({
-            "MU Override": mu_override,
-            "SD Override": sd_override
+    st.markdown(f"### Player: **{player}** — Market Comparison")
+
+    markets = ["PTS", "REB", "AST", "PRA"]
+
+    for stat in markets:
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric("Manual Line", lines_manual.get(stat, 0.0))
+
+        with col2:
+            st.metric("PrizePicks", pp_lines.get(stat, None))
+
+        with col3:
+            st.metric("OddsAPI", oa_lines.get(stat, None))
+
+    st.markdown("### 📊 Summary Table")
+    summary = []
+    for stat in markets:
+        summary.append({
+            "Market": stat,
+            "Manual": lines_manual.get(stat),
+            "PrizePicks": pp_lines.get(stat),
+            "OddsAPI": oa_lines.get(stat)
         })
 
-    st.caption("Overrides allow analysts to adjust projections manually for unusual circumstances.")
+    st.table(summary)
 
-# END OF PART 3 — CHUNK 3C
-# ============================================================
-# ============================================================
-# PART 3 — CHUNK 3D
-# UltraMAX Page Router Integration (T-ORDER3)
-# ============================================================
+###############################
+# SEGMENT 7 — CHUNK 11
+# Override Tab (Developer Controls)
+###############################
 
-import streamlit as st
+def render_override_tab(sidebar_state):
+    render_header()
+    st.markdown("## 🛠️ Override Controls (Developer Mode)")
 
-def ultramax_route_page(selected_tab, packet, inputs):
-    """Extended router including all UltraMAX tabs (T-ORDER3 ordering)."""
+    if not sidebar_state.get("run_model"):
+        st.info("Run the UltraMAX model first.")
+        return
 
-    # Extract lines dictionary for Line Shopping & Joint EV
-    lines = {
-        "PTS": inputs.get("line_pts"),
-        "REB": inputs.get("line_reb"),
-        "AST": inputs.get("line_ast"),
-        "PRA": inputs.get("line_pra"),
+    # Basic local snapshot
+    player = sidebar_state["player_name"]
+    lines = sidebar_state["lines"]
+
+    st.markdown(f"### Player: **{player}**")
+
+    # Toggle overrides
+    enable = st.checkbox("Enable Overrides", value=False)
+
+    if not enable:
+        st.warning("Overrides disabled. Toggle above to activate developer controls.")
+        return
+
+    st.success("Overrides Enabled — All changes below will modify projections.")
+
+    # Override MU
+    st.markdown("### 🎯 Override MU (Projected Means)")
+    mu_override = {
+        "PTS": st.number_input("Override MU — PTS", value=float(lines.get("PTS", 0.0))),
+        "REB": st.number_input("Override MU — REB", value=float(lines.get("REB", 0.0))),
+        "AST": st.number_input("Override MU — AST", value=float(lines.get("AST", 0.0))),
+        "PRA": st.number_input("Override MU — PRA", value=float(lines.get("PRA", 0.0)))
     }
 
-    # Build legs for Joint EV (simple 2-leg example, expandable)
-    legs = [
-        {"market": "PTS", "type": "over", "line": inputs.get("line_pts")},
-        {"market": "REB", "type": "over", "line": inputs.get("line_reb")},
-    ]
+    # Override SD
+    st.markdown("### 📉 Override SD (Standard Deviations)")
+    sd_override = {
+        "PTS": st.number_input("Override SD — PTS", value=3.0),
+        "REB": st.number_input("Override SD — REB", value=2.5),
+        "AST": st.number_input("Override SD — AST", value=2.0),
+        "PRA": st.number_input("Override SD — PRA", value=5.0)
+    }
 
-    # ------------------------------------------------------------------
-    # T-ORDER3 Navigation Logic
-    # ------------------------------------------------------------------
-    if selected_tab == "Model":
-        # Your original Model tab should be called elsewhere (FN1 preserved)
-        st.info("Model tab runs via your original codepath.")
+    # Override multipliers
+    st.markdown("### ⚙️ Override Multipliers (Trend • Rotation • Context • Defense • Blowout • Synergy)")
+    mult_override = {
+        "trend": st.number_input("Trend Multiplier Override", value=1.00),
+        "rotation": st.number_input("Rotation Multiplier Override", value=1.00),
+        "context": st.number_input("Context Multiplier Override", value=1.00),
+        "defense": st.number_input("Defense Multiplier Override", value=1.00),
+        "blowout": st.number_input("Blowout Multiplier Override", value=1.00),
+        "synergy": st.number_input("Synergy Multiplier Override", value=1.00)
+    }
 
-    elif selected_tab == "Trends":
-        render_ultramax_trends_tab(packet)
+    # MC sample override
+    st.markdown("### 🎲 Monte Carlo Sample Size Override")
+    mc_override = st.number_input("MC Samples", min_value=1000, max_value=500000, value=20000, step=1000)
 
-    elif selected_tab == "Rotation":
-        render_ultramax_rotation_tab(packet)
+    # Pace override
+    st.markdown("### 🏃 Pace Overrides")
+    pace_override = {
+        "team_pace": st.number_input("Team Pace Override", value=100.0),
+        "opp_pace": st.number_input("Opponent Pace Override", value=100.0)
+    }
 
-    elif selected_tab == "Blowout":
-        render_ultramax_blowout_tab(packet)
+    # Apply button
+    apply = st.button("Apply Overrides")
 
-    elif selected_tab == "Player Card":
-        st.info("Player Card handled by original implementation.")
+    if apply:
+        st.success("Override data applied (developer mode).")
+        st.write({
+            "mu_override": mu_override,
+            "sd_override": sd_override,
+            "mult_override": mult_override,
+            "mc_override": mc_override,
+            "pace_override": pace_override
+        })
 
-    elif selected_tab == "EV Model":
-        st.info("EV Model handled by original implementation.")
+###############################
+# SEGMENT 7 — CHUNK 13
+# Final Page Routing Integration
+###############################
 
-    elif selected_tab == "Team Context":
-        render_ultramax_team_context_tab(packet)
+# Attach all tabs to router
+def run_app():
+    sidebar_state = render_sidebar()
 
-    elif selected_tab == "Defensive Profile":
-        render_ultramax_defense_tab(packet)
+    tabs = st.tabs([
+        "Model",
+        "EV Model",
+        "Joint EV",
+        "Trends",
+        "Rotation",
+        "Defense",
+        "Context",
+        "Line Shopping",
+        "Overrides",
+        "History"
+    ])
 
-    elif selected_tab == "Line Shopping":
-        render_ultramax_line_shopping_tab(packet, lines)
+    with tabs[0]:
+        render_model_tab(sidebar_state)
 
-    elif selected_tab == "Joint EV":
-        render_ultramax_joint_ev_tab(packet, legs)
+    with tabs[1]:
+        render_ev_tab(sidebar_state)
 
-    elif selected_tab == "Overrides":
-        render_ultramax_overrides_tab(packet)
+    with tabs[2]:
+        render_joint_ev_tab(sidebar_state)
 
-    elif selected_tab == "History":
-        st.info("History tab runs via your original codepath.")
+    with tabs[3]:
+        render_trends_tab(sidebar_state)
 
-    elif selected_tab == "Calibration":
-        st.info("Calibration tab runs via your original codepath.")
+    with tabs[4]:
+        render_rotation_tab(sidebar_state)
 
-    else:
-        st.warning("Unknown tab selection.")
+    with tabs[5]:
+        render_defense_tab(sidebar_state)
 
-# END OF PART 3 — CHUNK 3D
-# ============================================================
+    with tabs[6]:
+        render_context_tab(sidebar_state)
+
+    with tabs[7]:
+        render_line_shopping_tab(sidebar_state)
+
+    with tabs[8]:
+        render_override_tab(sidebar_state)
+
+    with tabs[9]:
+        render_history_tab(sidebar_state)
+
+###############################
+# FINAL APP LAUNCHER
+###############################
+
+if __name__ == "__main__":
+    try:
+        run_app()
+    except Exception as e:
+        st.error(f"UltraMAX App crashed: {e}")
