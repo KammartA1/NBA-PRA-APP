@@ -1,4 +1,3 @@
-# ===== File: nba_quant_ultramax_part_1.py =====
 # UltraMAX Part 1 placeholder — full 450-line content will be built in appended chunks.
 # ============================================================
 # ULTRAMAX NBA QUANT ENGINE — MERGED MONOLITH
@@ -619,8 +618,6 @@ def ultramax_joint_ev(sim_dict, legs):
 # End of PART 1 — CHUNK D
 # ============================================================
 
-
-# ===== File: nba_quant_ultramax_part_2.py =====
 # Part 2 — Chunk 1 will be generated in next steps.
 # ============================================================
 # PART 2 — CHUNK 1A
@@ -842,8 +839,6 @@ def compute_leg_projection(
 # END OF PART 2 — CHUNK 1B
 # ============================================================
 
-
-# ===== File: nba_quant_ultramax_part_3.py =====
 # ============================================================
 # PART 3 — CHUNK 3A
 # UltraMAX UI: Trends • Rotation • Blowout
@@ -1172,6 +1167,3 @@ def ultramax_route_page(selected_tab, packet, inputs):
 
 # END OF PART 3 — CHUNK 3D
 # ============================================================
-
-
-
