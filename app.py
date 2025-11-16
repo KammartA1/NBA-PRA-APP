@@ -76,15 +76,16 @@ def clip_between(value, low, high):
 # ------------------------------------------------------------
 # SEASON AUTO-DETECTOR
 # ------------------------------------------------------------
-def detect_current_season():
-    today = datetime.now()
-    y, m = today.year, today.month
-    if m < 10:
-        return f"{y-1}-{y}"
-    return f"{y}-{y+1}"
+def get_current_season():
+    """Returns the current NBA season string (e.g., '2025-26')."""
+    from datetime import datetime
+    year = datetime.now().year
+    month = datetime.now().month
+    if month < 10:
+        return f"{year-1}-{str(year)[2:]}"
+    else:
+        return f"{year}-{str(year+1)[2:]}"
 
-CURRENT_SEASON = detect_current_season()
-DEFAULT_SEASONS = ["2024-2025", "2023-2024", "2022-2023"]
 
 # End of Part 1 Chunk A
 # ============================================================
