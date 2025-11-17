@@ -1,93 +1,166 @@
-🏀 NBA Prop Model – Streamlit App
+3. How the Model Works
+3.1 Data Inputs (Auto-Pulled)
 
+When you click Run Model:
 
-A professional-grade NBA Player Prop Model built for PRA (Points + Rebounds + Assists) and other markets, combining data-driven projections, risk management, and real-time analytics.
-Designed for long-term profitability through advanced statistical modeling, bankroll discipline, and market calibration.
+The app resolves each player name to an NBA ID via nba_api.
 
-🚀 Features
-🎯 Core Model
+It pulls that player's current-season game logs and uses the last N games (slider in the sidebar).
 
-Monte Carlo engine (bootstrapped resampling, 1 000 runs) for realistic PRA/PTS/REB/AST distributions
+For each game it computes:
 
-Usage-, pace-, and opponent-adjusted projections (15-game rolling window)
+Minutes played
 
-Dual-source NBA API + SportsMetrics backup for automatic data refresh
+Stat totals for the chosen market (Points / Rebounds / Assists / PRA)
 
-Manual line input (for PrizePicks, Underdog, or sportsbook props)
+Per-minute production
 
-📈 Analytics Engine
+It also pulls team-level opponent context:
 
-Expected Value (EV) and Closing Line Value (CLV) tracking
+Pace
 
-Fractional Kelly staking with a built-in 5 % max-loss daily cap
+Defensive rating
 
-Dynamic variance and correlation weighting for combo bets
+Rebound %, defensive rebound %, assist %
 
-Automatic model calibration using hit-rate vs. EV-bucket performance
+This gives a clean sample of recent per-minute and minute distributions that are season-aware and automatically roll into the new season each year.
 
-🧮 Advanced Tabs
-Tab	Description
-Model	Select players, enter lines, and run simulations
-Results	View logs, EV trend, rolling hit-rate, and monthly performance
-Calibration	Evaluate EV buckets, hit-rate stability, and receive tuning recommendations
-Insights	Track edge sustainability, CLV/EV decay, correlation learning, and model health
-📊 Key Metrics Explained
-Metric	Meaning	Goal
-EV (%)	Expected Value = (avg Payout – Cost) ÷ Cost × 100	Positive EV > 10 % = edge
-CLV	Closing Line Value – how much better your entry was than the final market	Positive = beat market
-Kelly Stake	Optimal bet sizing based on bankroll and EV	Fractional Kelly = safer growth
-Variance & Skewness	Measure distribution volatility	Lower variance = more stable
-Hit Rate	% of positive EV bets hitting > expected	Aim > 55 % for strong edge
-💾 Data Logging
+3.2 Defensive Matchup Engine
 
-All results automatically save to a local file:
+A context multiplier is computed per opponent + market, based on:
 
-results_log.csv
+Opponent pace vs league average
 
+Opponent defensive rating vs league average
 
-Each row stores:
+Opponent rebound % and assist % (for Rebounds / Assists markets)
 
-Player / Market / Line / Projection / EV / CLV / Variance / Stake / Skewness / P25 / P75 / Simulation Mean
+This multiplier feeds into both the projection and the Monte Carlo engine so every sample is defense-adjusted.
 
-Timestamped for trend, calibration, and insight charts
+3.3 Pace-Adjusted Minutes Model
 
-⚙️ Setup & Deployment
-🔧 Local Setup
-pip install -r requirements.txt
-streamlit run app.py
+Minutes are adjusted based on:
 
-☁️ Streamlit Cloud
+Opponent pace vs league
 
-Upload all files to GitHub
+Blowout risk flag
 
-Go to share.streamlit.io
- and deploy your repo
+Teammate injury flag (for extra opportunity)
 
-Make sure .streamlit/config.toml and results_log.csv exist in the root
+Rolling average minutes for that player
 
-🧠 Model Evolution Roadmap
+Faster games slightly increase expected minutes; slower games reduce them. Blowout flags trim minutes; injury flags boost them.
 
- Multi-API data sync (NBA API + SportsMetrics)
+3.4 Usage & On/Off Boost System
 
- Bootstrapped Monte Carlo simulation
+When "key teammate out" is checked:
 
- Live auto-refresh (24 h cycle)
+Per-minute production is boosted to reflect increased usage.
 
- CLV / EV trend tracking
+Minutes expectation is bumped.
 
- Advanced calibration + feedback engine
+Volatility is slightly increased.
 
- Edge sustainability / correlation learning
+This approximates an on/off usage system without needing full play-by-play data.
 
- Reinforcement learning for automated parameter tuning
+3.5 Empirical Bootstrap Monte Carlo (Per Leg)
 
- Player image & role-based impact adjustments
+For each leg:
 
-⚠️ Disclaimer
+The last N games' per-minute and minutes are stored.
 
-This application is for educational and entertainment purposes only.
-No guarantee of profitability is made.
-Always wager responsibly and within your means.
----
+A recency-weighted sampler prefers more recent games.
 
-_Last updated: November 2025 • Version 1.0.0_
+For each of 10,000 simulations:
+
+Sample a game index (recency-weighted).
+
+Adjust per-minute production via defensive & usage multipliers.
+
+Adjust minutes via pace & blowout multipliers.
+
+Multiply per-minute × minutes × lognormal noise (for heavy tails).
+
+The simulated distribution yields:
+
+MC mean
+
+MC standard deviation
+
+Probability that the stat goes OVER your line
+
+This probability is then calibrated by the self-learning engine before being displayed.
+
+3.6 Joint 2-Pick Monte Carlo
+
+For the combo section:
+
+A correlation coefficient is estimated from:
+
+Team overlap
+
+Minutes
+
+Market pair (Points vs Assists vs Rebounds vs PRA)
+
+Opponent context alignment
+
+Two correlated normal distributions are generated using each leg's MC mean & SD.
+
+10,000 joint draws are simulated to estimate the joint probability that both legs go OVER their lines.
+
+This joint probability is blended with the naive product of the two calibrated single-leg probabilities for stability.
+
+EV and fractional Kelly stake are computed from the joint probability and payout multiple.
+
+3.7 Bankroll & Risk Controls
+
+A Fractional Kelly slider controls risk level (0–100% Kelly).
+
+A hard cap of 3% of bankroll per play is enforced.
+
+A Max Daily Loss (% of bankroll) slider is applied using your logged results:
+
+If realized PnL for today breaches the cap, suggested stake is automatically set to $0 and a warning is shown.
+
+3.8 Self-Learning Calibration Engine
+
+The Calibration tab analyzes your historical bets:
+
+Buckets bets by EV:
+
+EV < 0
+
+0–5%
+
+5–10%
+
+10–20%
+
+20%+
+
+For each bucket it computes:
+
+Count
+
+Hit rate
+
+Average EV
+
+Average CLV
+
+It also compares:
+
+Predicted win rate (from EV)
+
+Actual hit rate
+
+From these, it derives:
+
+A probability multiplier (shrink/expand distance from 50%)
+
+A small EV shift
+
+These calibration parameters are applied back into the main Model tab each time you run the model, so the system learns from your performance over time.
+
+If the model is too optimistic / pessimistic or if average CLV turns negative, the tab recommends cutting volume or tightening edges.
