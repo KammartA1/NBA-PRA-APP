@@ -1,12 +1,4 @@
-# Let's build the full upgraded app.py, requirements.txt, and README.md,
-# write them into /mnt/data/nba_quant_app, and zip them for the user.
-
-import os, textwrap, zipfile, pathlib, math, json, sys
-
-base_dir = "/mnt/data/nba_quant_app"
-os.makedirs(base_dir, exist_ok=True)
-
-app_py = r'''# =========================================================
+# =========================================================
 #  NBA PROP BETTING QUANT ENGINE — SINGLE FILE STREAMLIT APP
 #  Upgraded Version (Empirical Bootstrap + Defensive Context)
 # =========================================================
@@ -23,6 +15,7 @@ import streamlit as st
 from scipy.stats import norm
 
 from nba_api.stats.static import players as nba_players
+import difflib
 from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats
 
 # =========================================================
@@ -1340,54 +1333,3 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-'''
-
-# fix missing import difflib
-app_py = app_py.replace("from nba_api.stats.static import players as nba_players", "from nba_api.stats.static import players as nba_players\nimport difflib")
-
-req_txt = """streamlit
-pandas
-numpy
-plotly
-scipy
-nba_api
-requests
-"""
-
-readme_md = """# NBA Prop Betting Quant Engine (Streamlit)
-
-This is a single-file Streamlit application that implements a **defense-adjusted NBA prop betting model** with:
-
-- Automated NBA data ingestion via `nba_api`
-- **Empirical bootstrap Monte Carlo** engine (10,000 simulations per leg)
-- Defensive matchup engine (team + stat-specific)
-- Pace-adjusted minute expectation model
-- Usage + on/off boost system for injuries
-- Correlated **2-pick joint Monte Carlo**
-- Bankroll management with fractional Kelly + daily loss cap
-- Self-learning calibration engine (EV buckets, CLV, hit-rate tracking)
-- History logging, results tracking, and performance visualization
-
-The app keeps the original layout:
-- `📊 Model` tab
-- `📓 Results` tab
-- `📜 History` tab
-- `🧠 Calibration` tab
-
-All upgrades are **under the hood** — the UI remains simple and fast.
-
----
-
-## 1. Installation
-
-### Prerequisites
-
-- Python 3.10+
-- pip
-
-### Clone / Download
-
-Unzip the project, then from the project directory run:
-
-```bash
-pip install -r requirements.txt
