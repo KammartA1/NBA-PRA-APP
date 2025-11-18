@@ -22,6 +22,7 @@ import plotly.express as px
 import streamlit as st
 from scipy.stats import norm
 import requests
+import json
 
 from nba_api.stats.static import players as nba_players
 from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats
@@ -326,28 +327,39 @@ def _pp_headers() -> dict:
 @st.cache_data(show_spinner=False, ttl=30)
 def fetch_prizepicks_board() -> dict:
     """
-    Calls the official PrizePicks projections endpoint.
+    Best-effort fetch of the PrizePicks NBA board.
 
-    IMPORTANT:
-    - This may sometimes return 403 / fail depending on Cloudflare, host, etc.
-    - On error, we return {} so the rest of the app keeps working.
+    Strategy:
+    1. Try the official PrizePicks API with browser-like headers.
+    2. If that fails or the payload is unexpected, try the public mirror.
+    3. If neither yields a dict with a `"data"` field, return {} and
+       the app will gracefully fall back to manual lines only.
+
+    This does NOT guarantee availability (Cloudflare / geo-blocking are outside
+    this app's control), but it maximizes the chance of a working live feed.
     """
-    try:
-        resp = requests.get(
-            PRIZEPICKS_API_URL,
-            headers=_pp_headers(),
-            timeout=6,
-        )
-        if resp.status_code != 200:
-            # Don't crash the app — just fall back to manual lines.
-            return {}
-        js = resp.json()
-        # Basic sanity check
-        if not isinstance(js, dict) or "data" not in js:
-            return {}
-        return js
-    except Exception:
-        return {}
+    urls = [
+        (PRIZEPICKS_API_URL, True),
+        (PRIZEPICKS_MIRROR_URL, False),
+    ]
+
+    for url, use_headers in urls:
+        try:
+            kwargs = {"timeout": 8}
+            if use_headers:
+                kwargs["headers"] = _pp_headers()
+            resp = requests.get(url, **kwargs)
+            if resp.status_code != 200:
+                continue
+            js = resp.json()
+            # Expecting a dict with "data" and optionally "included"
+            if isinstance(js, dict) and "data" in js:
+                return js
+        except Exception:
+            continue
+
+    # If everything fails, just return empty and keep app functional.
+    return {}
 
 
 def normalize_player_name_for_pp(name: str) -> str:
@@ -507,42 +519,57 @@ def auto_detect_matchup_from_board(player: str, board: dict):
 
 def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> bool:
     """
-    Simple blowout heuristic.
+    Simple blowout heuristic with two layers:
 
-    The official PrizePicks API doesn't always expose spreads directly.
-    Here we approximate:
+    1. PrizePicks board-based:
+       - If the same matchup (team vs opp) appears with a very large
+         number of props (e.g. 8+), treat it as higher blowout risk.
 
-    - If the same matchup (team vs opp) appears with a very large
-      number of props (e.g. 8+), treat it as higher blowout risk,
-      because those are often marquee or unbalanced games.
+    2. Fallback using team defensive rating gap if the board is empty
+       or doesn't carry enough matchup info.
 
     This is intentionally conservative and never breaks the app.
     """
-    if not board or not team or not opp:
+    if not team or not opp:
         return False
 
     team = team.upper()
     opp = opp.upper()
-    count = 0
 
-    for proj in board.get("data", []):
+    # Layer 1: board-based
+    if board and isinstance(board, dict) and "data" in board:
+        count = 0
+        for proj in board.get("data", []):
+            try:
+                attr = proj.get("attributes", {}) or {}
+                t = (
+                    (attr.get("team_abbrev") or attr.get("team") or "")
+                    .upper()
+                )
+                o = (
+                    (attr.get("opp_team_abbrev") or attr.get("opponent") or "")
+                    .upper()
+                )
+                if t == team and o == opp:
+                    count += 1
+            except Exception:
+                continue
+        if count >= 8:
+            return True  # many props → high script variance / blowout risk
+
+    # Layer 2: TEAM_CTX fallback (defensive rating gap as proxy)
+    if team in TEAM_CTX and opp in TEAM_CTX and LEAGUE_CTX:
         try:
-            attr = proj.get("attributes", {}) or {}
-            t = (
-                (attr.get("team_abbrev") or attr.get("team") or "")
-                .upper()
-            )
-            o = (
-                (attr.get("opp_team_abbrev") or attr.get("opponent") or "")
-                .upper()
-            )
-            if t == team and o == opp:
-                count += 1
+            def_team = TEAM_CTX[team]["DEF_RATING"]
+            def_opp = TEAM_CTX[opp]["DEF_RATING"]
+            if def_team is not None and def_opp is not None:
+                diff = abs(def_team - def_opp)
+                # Large defensive rating gap in either direction → more blowout risk
+                return diff >= 6.0
         except Exception:
-            continue
+            pass
 
-    # Tune this threshold as you get more experience with the data.
-    return count >= 8
+    return False
 
 # =========================================================
 #  PART 5 — MARKET BASELINE LIBRARY
@@ -692,14 +719,20 @@ def get_player_game_samples(name: str, n_games: int, market: str):
         if last_opp is None:
             matchup = r.get("MATCHUP", "")
             try:
-                parts = matchup.split()
-                if len(parts) == 3:
-                    t1, at_vs, t2 = parts
+                # Common formats:
+                # "LAL vs BOS", "LAL @ BOS", sometimes "LAL vs. BOS"
+                parts = matchup.replace(".", "").split()
+                if len(parts) >= 3:
                     team_abbrev = r.get("TEAM_ABBREVIATION")
-                    if at_vs == "@":
-                        last_opp = t2 if team_abbrev == t1 else t1
+                    t1 = parts[0]
+                    t2 = parts[-1]
+                    if team_abbrev == t1:
+                        last_opp = t2
+                    elif team_abbrev == t2:
+                        last_opp = t1
                     else:
-                        last_opp = t2 if team_abbrev == t1 else t1
+                        # Fallback: last token is usually opponent
+                        last_opp = t2
             except Exception:
                 last_opp = None
 
