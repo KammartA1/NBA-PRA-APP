@@ -1,13 +1,20 @@
 # =========================================================
-#  NBA PROP BETTING QUANT ENGINE — FINAL UPGRADED SINGLE-FILE APP
-#  Streamlit App (app.py)
+#  NBA PROP BETTING QUANT ENGINE — SINGLE FILE APP
+#  Upgraded with:
+#   - Empirical bootstrap Monte Carlo (10,000 sims)
+#   - Defensive matchup engine (team + context aware)
+#   - Pace–adjusted minute expectation model
+#   - Usage + on/off boost system
+#   - Game script simulation (pace, blowout, fouls, OT, usage variance)
+#   - Ensemble projections (bootstrap mean, historical mean, market implied, usage mean, script mean)
+#   - Covariance-based joint Monte Carlo via shared script factors
+#   - Underdog live line integration + Edge Scanner tab
+#   - Calibration & bankroll discipline
 # =========================================================
 
 import os
 import time
 import random
-import difflib
-import json
 from datetime import datetime, date
 
 import numpy as np
@@ -37,8 +44,6 @@ PRIMARY_MAROON = "#7A0019"
 GOLD = "#FFCC33"
 CARD_BG = "#17131C"
 BG = "#0D0A12"
-
-UND_DOG_ENDPOINT = "https://api.underdogfantasy.com/beta/v5/over_under_lines"
 
 # =========================================================
 #  GLOBAL STYLE
@@ -90,24 +95,22 @@ st.markdown(
 st.markdown('<p class="main-header">🏀 NBA Prop Quant Engine</p>', unsafe_allow_html=True)
 
 # =========================================================
-#  SIDEBAR (USER & BANKROLL SETTINGS)
+#  SIDEBAR — USER SETTINGS & BANKROLL
 # =========================================================
 
-st.sidebar.header("User, Bankroll & Model Controls")
+st.sidebar.header("User & Bankroll")
 
 user_id = st.sidebar.text_input("Your ID (for personal history)", value="Me").strip() or "Me"
 LOG_FILE = os.path.join(TEMP_DIR, f"bet_history_{user_id}.csv")
 
 bankroll = st.sidebar.number_input("Bankroll ($)", min_value=10.0, value=100.0)
-payout_mult_2pick = st.sidebar.number_input("2-Pick Payout (e.g. 3.0x)", min_value=1.5, value=3.0)
-fractional_kelly = st.sidebar.slider("Fractional Kelly (for 2-pick)", 0.0, 1.0, 0.25, 0.05)
+payout_mult = st.sidebar.number_input("2-Pick Payout (e.g. 3.0x)", min_value=1.5, value=3.0)
+fractional_kelly = st.sidebar.slider("Fractional Kelly", 0.0, 1.0, 0.25, 0.05)
 games_lookback = st.sidebar.slider("Recent Games Sample (N)", 5, 20, 10)
 compact_mode = st.sidebar.checkbox("Compact Mode (mobile)", value=False)
+max_daily_loss_pct = st.sidebar.slider("Max Daily Loss (% of bankroll)", 1, 50, 15)
 
-daily_loss_cap_pct = st.sidebar.slider("Max Daily Loss (% of Bankroll)", 1, 50, 15)
-data_source_mode = st.sidebar.selectbox("Line Source", ["Manual Input", "Underdog Autofill"])
-
-st.sidebar.caption("Model auto-pulls NBA stats & Underdog lines. You only tweak context and risk.")
+st.sidebar.caption("Model auto-pulls NBA stats & Underdog lines. You only enter lines on the Model tab if you want manual mode.")
 
 # =========================================================
 #  MODEL CONSTANTS
@@ -122,32 +125,30 @@ MARKET_METRICS = {
     "Assists": ["AST"],
 }
 
-HEAVY_TAIL = {
-    "PRA": 1.35,
-    "Points": 1.25,
-    "Rebounds": 1.25,
-    "Assists": 1.25,
-}
-
 MAX_KELLY_PCT = 0.03  # 3% hard cap
-N_SIMS = 10_000       # Monte Carlo samples
+
+MONTE_CARLO_SIMS_MODEL = 10_000
+MONTE_CARLO_SIMS_SCANNER = 3_000  # lighter for scanner
+
+UNDERDOG_NBA_URL = "https://api.underdogfantasy.com/beta/v3/over_under_lines"  # may change; configurable
 
 # =========================================================
-#  HELPER — CURRENT SEASON (AUTO-ROLLING)
+#  HELPERS — SEASON, CACHING, PLAYER INDEX
 # =========================================================
 
-def current_season():
+def current_season() -> str:
     """
-    Returns NBA season string like '2025-26' based on today's date.
-    Rolls automatically every October.
+    Auto-detect current NBA season based on today's date.
+    If month >= 10 → season begins this year (e.g. 2025-26)
+    Else → season started previous year (e.g. 2024-25)
     """
     today = datetime.now()
-    yr = today.year if today.month >= 10 else today.year - 1
-    return f"{yr}-{str(yr+1)[-2:]}"
-
-# =========================================================
-#  PLAYER RESOLUTION HELPERS
-# =========================================================
+    if today.month >= 10:
+        start_year = today.year
+    else:
+        start_year = today.year - 1
+    end_year = start_year + 1
+    return f"{start_year}-{str(end_year)[-2:]}"
 
 @st.cache_data(show_spinner=False)
 def get_players_index():
@@ -177,6 +178,7 @@ def resolve_player(name: str):
             return p["id"], p["full_name"]
 
     # Fuzzy match
+    import difflib
     names = [_norm_name(p["full_name"]) for p in players]
     best = difflib.get_close_matches(target, names, n=1, cutoff=0.7)
     if best:
@@ -249,7 +251,7 @@ def get_team_context():
 TEAM_CTX, LEAGUE_CTX = get_team_context()
 
 def get_context_multiplier(opp_abbrev: str | None, market: str):
-    """Adjust projection using advanced opponent factors. Also drives volatility."""
+    """Adjust projection using advanced opponent factors."""
     if not opp_abbrev or opp_abbrev not in TEAM_CTX or not LEAGUE_CTX:
         return 1.0
 
@@ -272,7 +274,7 @@ def get_context_multiplier(opp_abbrev: str | None, market: str):
     return float(np.clip(mult, 0.80, 1.20))
 
 # =========================================================
-#  MARKET BASELINE LIBRARY (LINES MEMORY)
+#  MARKET BASELINE LIBRARY
 # =========================================================
 
 MARKET_LIBRARY_FILE = os.path.join(TEMP_DIR, "market_baselines.csv")
@@ -309,19 +311,14 @@ def get_market_baseline(player: str, market: str):
     return d["Line"].mean(), d["Line"].median()
 
 # =========================================================
-#  PLAYER GAME LOGS & BOOTSTRAP SAMPLES
+#  PLAYER GAME LOG ENGINE & BOOTSTRAP SAMPLES
 # =========================================================
 
 @st.cache_data(show_spinner=False, ttl=900)
-def get_player_game_log(name: str):
-    """
-    Returns (game_log_df, label, error_message).
-    game_log_df is filtered to current season.
-    """
-    pid, label = resolve_player(name)
+def get_player_gamelog(player_name: str):
+    pid, label = resolve_player(player_name)
     if not pid:
-        return None, None, f"No match for '{name}'."
-
+        return None, None, f"No match for '{player_name}'."
     try:
         gl = PlayerGameLog(
             player_id=pid,
@@ -329,521 +326,207 @@ def get_player_game_log(name: str):
             season_type_all_star="Regular Season"
         ).get_data_frames()[0]
     except Exception as e:
-        return None, label, f"Game log error: {e}"
-
+        return None, None, f"Game log error: {e}"
     if gl.empty:
-        return None, label, "No recent game logs found."
-
+        return None, None, "No recent game logs found."
     gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
     gl = gl.sort_values("GAME_DATE", ascending=False)
     return gl, label, ""
 
-def extract_market_values(gl: pd.DataFrame, market: str, n_games: int):
-    """
-    From a game log, build recent N-game sample for the desired market.
-    Returns (values_array, minutes_array, team_abbrev).
-    """
-    gl_n = gl.head(n_games).copy()
+def extract_market_series(gl: pd.DataFrame, market: str, n_games: int):
     cols = MARKET_METRICS[market]
-
+    rows = gl.head(n_games).copy()
     values = []
     minutes = []
-
-    for _, r in gl_n.iterrows():
-        # Minutes
-        m = 0.0
+    opps = []
+    for _, r in rows.iterrows():
+        m_val = 0.0
         try:
             m_str = r.get("MIN", "0")
             if isinstance(m_str, str) and ":" in m_str:
                 mm, ss = m_str.split(":")
-                m = float(mm) + float(ss) / 60.0
+                m_val = float(mm) + float(ss)/60.0
             else:
-                m = float(m_str)
+                m_val = float(m_str)
         except Exception:
-            m = 0.0
-
-        if m <= 0:
+            m_val = 0.0
+        if m_val <= 0:
             continue
-
-        total_val = sum(float(r.get(c, 0)) for c in cols)
+        total_val = float(sum(float(r.get(c, 0)) for c in cols))
         values.append(total_val)
-        minutes.append(m)
+        minutes.append(m_val)
+        opps.append(r.get("MATCHUP","").split()[-1] if isinstance(r.get("MATCHUP",""), str) else None)
+    return np.array(values, dtype=float), np.array(minutes, dtype=float), opps
 
-    if not values:
-        return None, None, None
-
-    values = np.array(values, dtype=float)
-    minutes = np.array(minutes, dtype=float)
-
-    try:
-        team_abbrev = gl_n["TEAM_ABBREVIATION"].mode().iloc[0]
-    except Exception:
-        team_abbrev = None
-
-    return values, minutes, team_abbrev
-
-def compute_usage_based_rates(values: np.ndarray, minutes: np.ndarray):
-    """
-    Computes per-minute mean and SD and avg minutes.
-    """
-    per_min = values / np.maximum(minutes, 1e-3)
-    mu_per_min = float(np.mean(per_min))
-    sd_per_min = max(
-        float(np.std(per_min, ddof=1)),
-        0.15 * max(mu_per_min, 0.5)
-    )
-    avg_min = float(np.mean(minutes))
-    return mu_per_min, sd_per_min, avg_min
-
-# =========================================================
-#  GAME SCRIPT SIMULATION ENGINE
-# =========================================================
-
-def simulate_game_script(avg_min, sd_min, ctx_mult, teammate_out, blowout, opp_abbrev):
-    """
-    Simulates game script meta-variables that affect projections:
-      - expected minute range
-      - usage distribution scaling
-      - game-level variance multiplier
-      - quarter-level distribution
-    """
-    # Pace-based minute tweak
-    pace_mult = 1.0
-    if opp_abbrev and opp_abbrev in TEAM_CTX and LEAGUE_CTX:
-        opp_pace = TEAM_CTX[opp_abbrev]["PACE"]
-        league_pace = LEAGUE_CTX["PACE"]
-        pace_mult = float(np.clip(opp_pace / league_pace, 0.9, 1.1))
-
-    # Blowout risk → shave minutes
-    blowout_mult = 0.92 if blowout else 1.0
-
-    # Teammate out → slight minute & usage bump
-    tm_mult = 1.06 if teammate_out else 1.0
-
-    # Expected minutes range
-    exp_min = avg_min * pace_mult * tm_mult * blowout_mult
-    min_low = max(16.0, exp_min - 5.0)
-    min_high = exp_min + 5.0
-
-    # Usage scaling (simple)
-    usage_center = 1.0 * tm_mult
-    usage_spread = 0.10  # ±10% usage
-    # Quarter-level distribution (heavier mid-game)
-    q_dist = np.array([0.22, 0.26, 0.26, 0.26])
-
-    # Game-level variance scaling
-    base_var_scale = 1.0
-    if blowout:
-        base_var_scale *= 1.10
+def compute_usage_boost(teammate_out: bool) -> float:
+    base = 1.0
     if teammate_out:
-        base_var_scale *= 1.08
-    base_var_scale *= float(np.clip(ctx_mult, 0.9, 1.1))
+        base *= 1.08
+    return base
+
+def compute_blowout_factor(blowout_flag: bool) -> float:
+    if blowout_flag:
+        return 0.93
+    return 1.0
+
+def compute_game_script_factors(n_sims: int, base_minutes: float, blowout_flag: bool):
+    """
+    Simulate pace, foul risk, OT chance, and usage volatility.
+    Returns dict of np.arrays: pace_f, foul_f, ot_f, usage_f, minutes_f.
+    """
+    # Pace ~ N(1, 0.06)
+    pace_f = np.random.normal(1.0, 0.06, size=n_sims)
+    pace_f = np.clip(pace_f, 0.88, 1.18)
+
+    # Foul trouble → some sims with reduced minutes
+    foul_events = np.random.binomial(1, 0.12, size=n_sims)
+    foul_f = np.where(foul_events == 1, np.random.uniform(0.80, 0.95, size=n_sims), 1.0)
+
+    # OT chance → rare sims with extra minutes
+    ot_events = np.random.binomial(1, 0.07, size=n_sims)
+    ot_f = np.where(ot_events == 1, np.random.uniform(1.03, 1.12, size=n_sims), 1.0)
+
+    # Usage variance
+    usage_f = np.random.normal(1.0, 0.07, size=n_sims)
+    usage_f = np.clip(usage_f, 0.82, 1.20)
+
+    # Minutes distribution with all factors
+    blow_f = compute_blowout_factor(blowout_flag)
+    minutes_f = base_minutes * pace_f * foul_f * ot_f * blow_f
+    minutes_f = np.clip(minutes_f, base_minutes * 0.70, base_minutes * 1.30)
 
     return {
-        "exp_min": float(exp_min),
-        "min_low": float(min_low),
-        "min_high": float(min_high),
-        "usage_center": float(usage_center),
-        "usage_spread": float(usage_spread),
-        "q_dist": q_dist,
-        "var_scale": float(base_var_scale)
+        "pace_f": pace_f,
+        "foul_f": foul_f,
+        "ot_f": ot_f,
+        "usage_f": usage_f,
+        "minutes_f": minutes_f,
     }
 
-# =========================================================
-#  EMPIRICAL BOOTSTRAP MONTE CARLO ENGINE
-# =========================================================
-
-def run_bootstrap_mc(values, minutes, line, script, market):
+def simulate_leg_bootstrap(values: np.ndarray,
+                           minutes: np.ndarray,
+                           line: float,
+                           market: str,
+                           ctx_mult: float,
+                           teammate_out: bool,
+                           blowout_flag: bool,
+                           n_sims: int):
     """
-    Empirical bootstrap Monte Carlo with N_SIMS draws.
-    Uses weighted sampling (recent games heavier), plus
-    game script scaling for minutes/usage/variance.
-    Returns (p_over, boot_mean, boot_dist).
+    Empirical bootstrap Monte Carlo:
+    - Sample per-game outcomes with replacement
+    - Apply game script factors, usage, defense adjustment
     """
-    if values is None or len(values) == 0:
-        return 0.5, None, None
+    if len(values) == 0:
+        return 0.5, float(line), 1.0, np.array([line])
 
-    v = np.array(values, dtype=float)
-    m = np.array(minutes, dtype=float)
-    n = len(v)
+    # Base per-minute rate from historical
+    per_min = values / np.maximum(minutes, 1.0)
+    base_mu_per_min = float(np.mean(per_min))
+    base_minutes = float(np.mean(minutes))
 
-    # Weighted bootstrap: more recent games get higher weight
-    idx = np.arange(n)
-    raw_w = np.linspace(1.0, 2.0, n)  # last game highest weight
-    w = raw_w / raw_w.sum()
+    usage_boost = compute_usage_boost(teammate_out)
 
-    # Script multipliers
-    usage_center = script["usage_center"]
-    usage_spread = script["usage_spread"]
-    var_scale = script["var_scale"]
+    # Game script factors (shared across sims for this leg)
+    gs = compute_game_script_factors(n_sims, base_minutes, blowout_flag)
 
-    sims = []
-    for _ in range(N_SIMS):
-        k = np.random.choice(idx, p=w)
-        base_val = v[k]
-        base_min = m[k]
+    # Draw game samples
+    idx = np.random.randint(0, len(values), size=n_sims)
+    sampled_per_min = per_min[idx]
 
-        # Usage randomization around script usage
-        usage_shock = np.random.normal(loc=usage_center, scale=usage_spread / 2.0)
-        usage_shock = float(np.clip(usage_shock, usage_center - usage_spread, usage_center + usage_spread))
+    # Apply all factors
+    out = sampled_per_min * gs["minutes_f"] * ctx_mult * gs["usage_f"] * usage_boost
 
-        # Minute scaling: map to expected minutes vs sample minutes
-        if base_min > 0:
-            minute_scale = script["exp_min"] / base_min
-        else:
-            minute_scale = 1.0
+    # Market-specific volatility scaling
+    if market == "Rebounds":
+        out *= np.random.normal(1.0, 0.06, size=n_sims)
+    elif market == "Assists":
+        out *= np.random.normal(1.0, 0.05, size=n_sims)
+    elif market == "Points":
+        out *= np.random.normal(1.0, 0.07, size=n_sims)
+    elif market == "PRA":
+        out *= np.random.normal(1.0, 0.08, size=n_sims)
 
-        # Heavy-tail volatility
-        heavy = HEAVY_TAIL.get(market, 1.15)
-        noise_scale = (heavy - 1.0) * 0.10
+    out = np.clip(out, 0, None)
 
-        val = base_val * minute_scale * usage_shock
-        val *= np.random.normal(loc=1.0, scale=noise_scale * var_scale)
-        sims.append(val)
+    p_over = float(np.mean(out > line))
+    proj_mean = float(np.mean(out))
+    proj_sd = float(np.std(out, ddof=1))
 
-    sims = np.array(sims, dtype=float)
-    p_over = float(np.mean(sims > line))
-    boot_mean = float(np.mean(sims))
-    return p_over, boot_mean, sims
+    return p_over, proj_mean, proj_sd, out
 
 # =========================================================
-#  ENSEMBLE PROJECTION ENGINE
+#  ENSEMBLE PROJECTIONS
 # =========================================================
 
-def build_ensemble_projection(best_mu, hist_values, line, boot_mean, script_mean):
+def compute_ensemble_projection(values: np.ndarray,
+                                minutes: np.ndarray,
+                                line: float,
+                                market: str,
+                                ctx_mult: float,
+                                teammate_out: bool,
+                                blowout_flag: bool,
+                                market_implied_mean: float | None,
+                                n_sims: int = MONTE_CARLO_SIMS_MODEL):
     """
-    Combines:
-      - best engine mean (usage x minutes x context)
-      - historical mean
-      - Underdog market mean (line)
-      - usage-predicted mean (best_mu approximation)
-      - game-script mean
-      - bootstrap mean
-    into an ensemble projection.
+    Ensemble of:
+    - Bootstrap mean
+    - Historical mean
+    - Market implied mean (from Underdog if available)
+    - Usage-predicted mean
+    - Game-script mean
     """
-    hist_mean = float(np.mean(hist_values)) if hist_values is not None and len(hist_values) > 0 else best_mu
-    market_mean = float(line)  # simple approximation of market's implied mean
-    usage_mean = best_mu       # current best engine is usage-driven
+    if len(values) == 0:
+        return 0.5, float(line), 1.0, np.array([line])
 
-    pieces = {
-        "best": best_mu,
-        "bootstrap": boot_mean if boot_mean is not None else best_mu,
-        "hist": hist_mean,
-        "market": market_mean,
-        "usage": usage_mean,
-        "script": script_mean
-    }
+    # Historical mean
+    hist_mean = float(np.mean(values)) * ctx_mult
 
-    weights = {
-        "best": 0.35,
-        "bootstrap": 0.25,
-        "hist": 0.15,
-        "market": 0.10,
-        "usage": 0.05,
-        "script": 0.10,
-    }
+    # Usage-predicted mean (simple scaling of historical with usage boost)
+    usage_boost = compute_usage_boost(teammate_out)
+    usage_mean = hist_mean * usage_boost
 
-    num = 0.0
-    den = 0.0
-    for k, v in pieces.items():
-        w = weights[k]
-        num += w * v
-        den += w
-    if den <= 0:
-        return best_mu
-    return float(num / den)
+    # Game script mean via a small MC (for speed)
+    p_over_gs, gs_mean, _, _ = simulate_leg_bootstrap(
+        values, minutes, line, market, ctx_mult, teammate_out, blowout_flag, n_sims=min(3000, n_sims)
+    )
+
+    # Bootstrap MC main distribution
+    p_over_boot, boot_mean, boot_sd, samples = simulate_leg_bootstrap(
+        values, minutes, line, market, ctx_mult, teammate_out, blowout_flag, n_sims=n_sims
+    )
+
+    # Market implied mean (optional)
+    means = [boot_mean, hist_mean, usage_mean, gs_mean]
+    weights = [0.40, 0.20, 0.20, 0.20]
+
+    if market_implied_mean is not None and market_implied_mean > 0:
+        means.append(market_implied_mean)
+        weights.append(0.20)
+        # Re-normalize weights
+        s = sum(weights)
+        weights = [w/s for w in weights]
+
+    ensemble_mean = float(sum(m * w for m, w in zip(means, weights)))
+
+    # Recompute probability over line based on samples but centered around ensemble_mean
+    # Shift samples to match ensemble_mean while preserving shape
+    shift = ensemble_mean - boot_mean
+    adj_samples = samples + shift
+    p_over_ensemble = float(np.mean(adj_samples > line))
+    proj_sd = float(np.std(adj_samples, ddof=1))
+
+    return p_over_ensemble, ensemble_mean, proj_sd, adj_samples
 
 # =========================================================
-#  CORRELATION & COVARIANCE-BASED JOINT MC
-# =========================================================
-
-def estimate_player_correlation(leg1, leg2):
-    """
-    Context-aware correlation estimate using:
-      - same team
-      - minutes expectation
-      - market pair type (PTS/REB/AST/PRA)
-      - defensive context
-      - pace context
-      - on/off style factors
-    """
-    corr = 0.0
-
-    # Same team bump
-    if leg1.get("team") and leg2.get("team") and leg1["team"] == leg2["team"]:
-        corr += 0.18
-
-    # Minutes dependency
-    m1 = leg1.get("exp_min", 30.0)
-    m2 = leg2.get("exp_min", 30.0)
-    if m1 > 32 and m2 > 32:
-        corr += 0.05
-    elif m1 < 22 or m2 < 22:
-        corr -= 0.04
-
-    # Market interaction
-    mkt1, mkt2 = leg1["market"], leg2["market"]
-    if mkt1 == "Points" and mkt2 == "Points":
-        corr += 0.08
-    if (mkt1 == "Points" and mkt2 == "Assists") or (mkt1 == "Assists" and mkt2 == "Points"):
-        corr -= 0.10
-    if (mkt1 == "Rebounds" and mkt2 == "Points") or (mkt1 == "Points" and mkt2 == "Rebounds"):
-        corr -= 0.06
-    if mkt1 == "PRA" or mkt2 == "PRA":
-        corr += 0.03
-
-    # Defensive & pace covariance
-    ctx1, ctx2 = leg1.get("ctx_mult", 1.0), leg2.get("ctx_mult", 1.0)
-    if ctx1 > 1.03 and ctx2 > 1.03:
-        corr += 0.04
-    if ctx1 < 0.97 and ctx2 < 0.97:
-        corr += 0.03
-    if (ctx1 > 1.03 and ctx2 < 0.97) or (ctx1 < 0.97 and ctx2 > 1.03):
-        corr -= 0.05
-
-    # Clamp
-    return float(np.clip(corr, -0.30, 0.45))
-
-def joint_gaussian_mc(p1, p2, corr, n_sims=N_SIMS):
-    """
-    Covariance-based joint Monte Carlo for two binary events (over hits).
-    Uses Gaussian copula.
-    """
-    if p1 <= 0 or p1 >= 1 or p2 <= 0 or p2 >= 1:
-        return p1 * p2
-
-    mean = [0.0, 0.0]
-    cov = [[1.0, corr], [corr, 1.0]]
-    z = np.random.multivariate_normal(mean, cov, size=n_sims)
-    u1 = norm.cdf(z[:, 0])
-    u2 = norm.cdf(z[:, 1])
-    over1 = u1 < p1
-    over2 = u2 < p2
-    joint = float(np.mean(over1 & over2))
-    return joint
-
-# =========================================================
-#  KELLY FORMULA FOR 2-PICK
+#  KELLY FOR 2-PICK
 # =========================================================
 
 def kelly_for_combo(p_joint: float, payout_mult: float, frac: float):
-    """
-    Kelly criterion for 2-pick entries.
-    """
-    b = payout_mult - 1.0
+    b = payout_mult - 1
     q = 1 - p_joint
     raw = (b * p_joint - q) / b
     k = raw * frac
     return float(np.clip(k, 0, MAX_KELLY_PCT))
-
-# =========================================================
-#  SELF-LEARNING CALIBRATION HOOK (SKELETON)
-# =========================================================
-
-def compute_model_drift(history_df):
-    """
-    Simple drift indicator using EV vs realized outcomes.
-    Returns (ev_bias, clv_bias) multipliers.
-    """
-    if history_df is None or history_df.empty:
-        return 1.0, 1.0
-
-    comp = history_df[history_df["Result"].isin(["Hit","Miss"])].copy()
-    if comp.empty:
-        return 1.0, 1.0
-
-    comp["EV_float"] = pd.to_numeric(comp["EV"], errors="coerce") / 100.0
-    comp = comp.dropna(subset=["EV_float"])
-    if comp.empty:
-        return 1.0, 1.0
-
-    pred = 0.5 + comp["EV_float"].mean()
-    actual = (comp["Result"] == "Hit").mean()
-    if actual <= 0 or pred <= 0:
-        return 1.0, 1.0
-
-    ev_bias = float(np.clip(actual / pred, 0.8, 1.2))
-
-    # CLV bias ~ average CLV relative to absolute value
-    clv = pd.to_numeric(comp["CLV"], errors="coerce").fillna(0.0)
-    if not clv.empty:
-        mean_clv = float(clv.mean())
-        clv_bias = float(np.clip(1.0 + mean_clv / 20.0, 0.8, 1.2))
-    else:
-        clv_bias = 1.0
-
-    return ev_bias, clv_bias
-
-# =========================================================
-#  UNDERDOG LINES SCRAPER (ROBUST / FAIL-SAFE)
-# =========================================================
-
-@st.cache_data(show_spinner=False, ttl=60)
-def fetch_underdog_nba_lines():
-    """
-    Attempts to pull all NBA prop lines (PTS/REB/AST/PRA) from Underdog.
-    This is written to be defensive: if the JSON shape changes or fails,
-    it returns an empty DataFrame instead of crashing the app.
-    """
-    try:
-        resp = requests.get(UND_DOG_ENDPOINT, timeout=10)
-        if resp.status_code != 200:
-            return pd.DataFrame()
-
-        data = resp.json()
-
-        # The exact Underdog JSON structure can change.
-        # We attempt a flexible extraction pattern and guard with try/except.
-        lines = []
-
-        # Common structure pattern used by community scrapers:
-        over_under_lines = data.get("over_under_lines") or data.get("over_under_lines", [])
-        over_unders = {ou["id"]: ou for ou in data.get("over_unders", [])} if data.get("over_unders") else {}
-        players = {p["id"]: p for p in data.get("players", [])} if data.get("players") else {}
-        contests = {c["id"]: c for c in data.get("contests", [])} if data.get("contests") else {}
-
-        for oul in over_under_lines:
-            try:
-                ou_id = oul.get("over_under_id")
-                ou_meta = over_unders.get(ou_id, {})
-                stat_type = ou_meta.get("stat_type")
-                if stat_type not in ["points", "rebounds", "assists", "pra"]:
-                    continue
-
-                player_id = ou_meta.get("player_id")
-                player_meta = players.get(player_id, {})
-                player_name = player_meta.get("name") or player_meta.get("full_name") or "Unknown"
-
-                contest_id = ou_meta.get("contest_id")
-                contest = contests.get(contest_id, {})
-                league = (contest.get("sport") or "").upper()
-                if league != "NBA":
-                    continue
-
-                line_val = float(oul.get("stat_value") or ou_meta.get("line") or 0.0)
-                if line_val <= 0:
-                    continue
-
-                team_abbrev = (player_meta.get("team") or "").upper()
-                opp_abbrev = (contest.get("opponent") or "").upper()
-
-                if stat_type == "points":
-                    market = "Points"
-                elif stat_type == "rebounds":
-                    market = "Rebounds"
-                elif stat_type == "assists":
-                    market = "Assists"
-                else:
-                    market = "PRA"
-
-                lines.append({
-                    "player": player_name,
-                    "market": market,
-                    "line": line_val,
-                    "team": team_abbrev,
-                    "opp": opp_abbrev
-                })
-            except Exception:
-                continue
-
-        if not lines:
-            return pd.DataFrame()
-
-        df = pd.DataFrame(lines)
-        return df
-
-    except Exception:
-        return pd.DataFrame()
-
-# =========================================================
-#  CORE PROJECTION ENGINE FOR A SINGLE LEG
-# =========================================================
-
-def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_games, history_df=None):
-    """
-    Full projection engine for a single leg.
-    Uses:
-      - rolling game logs (current season)
-      - usage / per-minute rates
-      - defensive matchup context
-      - game script simulation
-      - empirical bootstrap Monte Carlo
-      - ensemble averaging
-
-    Returns (leg_dict, error_message).
-    """
-    gl, label, err = get_player_game_log(player)
-    if gl is None:
-        return None, err
-
-    values, minutes, team_abbrev = extract_market_values(gl, market, n_games)
-    if values is None or len(values) == 0:
-        return None, "Insufficient recent data."
-
-    mu_per_min, sd_per_min, avg_min = compute_usage_based_rates(values, minutes)
-
-    # Defensive and pace context
-    opp_abbrev = opp.strip().upper() if opp else None
-    ctx_mult = get_context_multiplier(opp_abbrev, market)
-
-    # Game script
-    script = simulate_game_script(avg_min, sd_per_min, ctx_mult, teammate_out, blowout, opp_abbrev)
-
-    # Best-engine mean (usage x minutes x context)
-    best_mu = mu_per_min * script["exp_min"] * ctx_mult
-
-    # Script-specific mean (slightly adjusted)
-    script_mean = best_mu * (1.0 + 0.03 * (script["var_scale"] - 1.0))
-
-    # Bootstrap Monte Carlo (empirical)
-    p_over_boot, boot_mean, sims = run_bootstrap_mc(values, minutes, line, script, market)
-
-    # Ensemble projection
-    ensemble_mean = build_ensemble_projection(best_mu, values, line, boot_mean, script_mean)
-
-    # Convert ensemble mean and bootstrap spread to probability vs line
-    # Guard: if sims exists, use its distribution directly
-    if sims is not None:
-        p_over = float(np.mean(sims > line))
-    else:
-        # fallback to normal approximation
-        sd_est = float(np.std(values)) if len(values) > 1 else max(1.0, best_mu * 0.35)
-        p_over = float(1.0 - norm.cdf(line, loc=ensemble_mean, scale=sd_est))
-
-    p_over = float(np.clip(p_over, 0.01, 0.99))
-    ev_leg_even = p_over - (1 - p_over)
-
-    # Drift correction (very light – soft learning)
-    if history_df is not None and not history_df.empty:
-        ev_bias, _ = compute_model_drift(history_df)
-        # Slightly nudge probability towards empirical bias
-        p_over_adj = float(np.clip(0.5 + (p_over - 0.5) * ev_bias, 0.01, 0.99))
-    else:
-        p_over_adj = p_over
-
-    leg = {
-        "player": label or player,
-        "market": market,
-        "line": float(line),
-        "mu": float(ensemble_mean),
-        "boot_mean": float(boot_mean if boot_mean is not None else ensemble_mean),
-        "sd_sample": float(np.std(values) if len(values) > 1 else 0.0),
-        "prob_over": float(p_over_adj),
-        "prob_over_raw": float(p_over),
-        "ev_leg_even": float(ev_leg_even),
-        "team": team_abbrev,
-        "ctx_mult": float(ctx_mult),
-        "msg": f"{label}: {len(values)} games • {script['exp_min']:.1f} exp. min",
-        "teammate_out": bool(teammate_out),
-        "blowout": bool(blowout),
-        "exp_min": float(script["exp_min"]),
-        "min_low": float(script["min_low"]),
-        "min_high": float(script["min_high"]),
-        "usage_center": float(script["usage_center"]),
-        "var_scale": float(script["var_scale"]),
-        "opp": opp_abbrev,
-    }
-    return leg, None
 
 # =========================================================
 #  HISTORY HELPERS
@@ -853,7 +536,7 @@ def ensure_history():
     if not os.path.exists(LOG_FILE):
         df = pd.DataFrame(columns=[
             "Date","Player","Market","Line","EV",
-            "Stake","Result","CLV","KellyFrac","Combo","Notes"
+            "Stake","Result","CLV","KellyFrac","Joint","ModelProb"
         ])
         df.to_csv(LOG_FILE, index=False)
 
@@ -864,35 +547,259 @@ def load_history():
     except Exception:
         return pd.DataFrame(columns=[
             "Date","Player","Market","Line","EV",
-            "Stake","Result","CLV","KellyFrac","Combo","Notes"
+            "Stake","Result","CLV","KellyFrac","Joint","ModelProb"
         ])
 
 def save_history(df):
     df.to_csv(LOG_FILE, index=False)
 
 # =========================================================
-#  UI RENDERING HELPERS
+#  UNDERDOG SCRAPER (BASIC JSON CLIENT)
+# =========================================================
+
+@st.cache_data(show_spinner=True, ttl=60)
+def fetch_underdog_nba_props():
+    """
+    Fetch Underdog NBA props from an unofficial endpoint.
+    NOTE: This endpoint may change. If it does, update UNDERDOG_NBA_URL.
+
+    Returns DataFrame with:
+    - player
+    - market (Points/Rebounds/Assists/PRA)
+    - line
+    - team
+    - opponent
+    - implied_mean (approximated)
+    """
+    try:
+        resp = requests.get(UNDERDOG_NBA_URL, timeout=10)
+        if resp.status_code != 200:
+            return pd.DataFrame()
+        data = resp.json()
+    except Exception:
+        return pd.DataFrame()
+
+    # The exact JSON structure may differ. We try to be defensive.
+    # Expecting list of over_under_lines with linked players & stats.
+    props = []
+    try:
+        items = data.get("over_under_lines") or data.get("data") or []
+    except AttributeError:
+        items = []
+
+    for item in items:
+        try:
+            ou = item.get("over_under", {}) if isinstance(item, dict) else {}
+            stat_type = ou.get("over_under_type") or ou.get("stat_type","")
+            player_name = ou.get("player_name") or ou.get("name") or ""
+            team = ou.get("team_abbr") or ""
+            opponent = ou.get("opponent_abbr") or ""
+
+            # Map stat_type to market
+            stat_type_lower = str(stat_type).lower()
+            if "points" in stat_type_lower:
+                market = "Points"
+            elif "rebounds" in stat_type_lower:
+                market = "Rebounds"
+            elif "assists" in stat_type_lower:
+                market = "Assists"
+            elif "pra" in stat_type_lower or "points_rebounds_assists" in stat_type_lower:
+                market = "PRA"
+            else:
+                continue
+
+            line_val = float(ou.get("higher_or_lower", item.get("line", 0)) or 0)
+            if line_val <= 0:
+                continue
+
+            # Approximate implied mean = line (neutral)
+            implied_mean = line_val
+
+            props.append({
+                "player": player_name,
+                "market": market,
+                "line": line_val,
+                "team": team,
+                "opponent": opponent,
+                "market_implied_mean": implied_mean,
+            })
+        except Exception:
+            continue
+
+    if not props:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(props)
+    return df
+
+# =========================================================
+#  CORE PROJECTION ENGINE (USES BOOTSTRAP + ENSEMBLE)
+# =========================================================
+
+def compute_leg_projection(player: str,
+                           market: str,
+                           line: float,
+                           opp: str | None,
+                           teammate_out: bool,
+                           blowout_flag: bool,
+                           n_games: int,
+                           market_implied_mean: float | None = None,
+                           n_sims: int = MONTE_CARLO_SIMS_MODEL):
+    """
+    Main engine used by both Model tab and Edge Scanner.
+    Returns leg dict and error message.
+    """
+    gl, label, err = get_player_gamelog(player)
+    if gl is None:
+        return None, err
+
+    values, minutes, opps = extract_market_series(gl, market, n_games)
+    if len(values) == 0:
+        return None, "Insufficient data from game logs."
+
+    # If opponent not supplied, infer from most common opponent in recent games (rarely needed)
+    opp_abbrev = (opp or "").strip().upper()
+    if not opp_abbrev and len([o for o in opps if o]) > 0:
+        try:
+            opp_abbrev = pd.Series([o for o in opps if o]).mode().iloc[0]
+        except Exception:
+            opp_abbrev = None
+
+    ctx_mult = get_context_multiplier(opp_abbrev, market)
+
+    p_over, ensemble_mean, proj_sd, samples = compute_ensemble_projection(
+        values, minutes, line, market, ctx_mult, teammate_out, blowout_flag,
+        market_implied_mean=market_implied_mean,
+        n_sims=n_sims
+    )
+
+    ev_leg_even = p_over - (1 - p_over)
+
+    # Quick defensive stats for card
+    def_ctx = TEAM_CTX.get(opp_abbrev, {}) if opp_abbrev else {}
+    opp_def_rating = def_ctx.get("DEF_RATING")
+    opp_pace = def_ctx.get("PACE")
+    opp_reb_pct = def_ctx.get("REB_PCT")
+    opp_ast_pct = def_ctx.get("AST_PCT")
+
+    return {
+        "player": label or player,
+        "market": market,
+        "line": float(line),
+        "mu": float(ensemble_mean),
+        "sd": float(proj_sd),
+        "prob_over": float(p_over),
+        "ev_leg_even": float(ev_leg_even),
+        "team": str(gl["TEAM_ABBREVIATION"].mode().iloc[0]) if "TEAM_ABBREVIATION" in gl.columns else None,
+        "ctx_mult": float(ctx_mult),
+        "msg": f"{label}: {len(values)} games • {np.mean(minutes):.1f} min (bootstrap/ensemble)",
+        "teammate_out": bool(teammate_out),
+        "blowout": bool(blowout_flag),
+        "opp": opp_abbrev,
+        "opp_def_rating": opp_def_rating,
+        "opp_pace": opp_pace,
+        "opp_reb_pct": opp_reb_pct,
+        "opp_ast_pct": opp_ast_pct,
+        "samples": samples,
+    }, None
+
+# =========================================================
+#  JOINT MONTE CARLO — COVARIANCE VIA SHARED GAME SCRIPT
+# =========================================================
+
+def joint_monte_carlo(leg1: dict,
+                      leg2: dict,
+                      payout_mult: float,
+                      n_sims: int = MONTE_CARLO_SIMS_MODEL):
+    """
+    Approximate covariance-based joint MC by:
+    - Resampling from each leg's empirical distribution
+    - Sharing game script factors (pace, blowout) between legs
+    - Adding market-type covariance tweaks (usage→assists, etc.)
+    """
+    s1 = leg1.get("samples")
+    s2 = leg2.get("samples")
+    if s1 is None or s2 is None:
+        # Fallback independent estimate
+        p1 = leg1["prob_over"]
+        p2 = leg2["prob_over"]
+        p_joint_ind = p1 * p2
+        return float(p_joint_ind), 0.0
+
+    s1 = np.asarray(s1)
+    s2 = np.asarray(s2)
+    if len(s1) < 100 or len(s2) < 100:
+        p1 = leg1["prob_over"]
+        p2 = leg2["prob_over"]
+        p_joint_ind = p1 * p2
+        return float(p_joint_ind), 0.0
+
+    # Resample indices for both legs
+    idx1 = np.random.randint(0, len(s1), size=n_sims)
+    idx2 = np.random.randint(0, len(s2), size=n_sims)
+
+    base1 = s1[idx1].copy()
+    base2 = s2[idx2].copy()
+
+    # Shared game script factors: pace & blowout
+    pace_f = np.random.normal(1.0, 0.05, size=n_sims)
+    pace_f = np.clip(pace_f, 0.90, 1.12)
+
+    blow_events = np.random.binomial(1, 0.10, size=n_sims)
+    blow_f = np.where(blow_events == 1, 0.92, 1.0)
+
+    # Market-type covariance adjustments
+    m1, m2 = leg1["market"], leg2["market"]
+
+    # usage→assists covariance: if leg2 is assists and leg1 points
+    usage_assist_cov = np.ones(n_sims)
+    if (m1 == "Points" and m2 == "Assists") or (m2 == "Points" and m1 == "Assists"):
+        # negative covariance: high scoring game reduces pure assist spike probability slightly
+        usage_assist_cov = np.random.normal(0.97, 0.03, size=n_sims)
+
+    # apply shared factors
+    out1 = base1 * pace_f * blow_f
+    out2 = base2 * pace_f * blow_f * usage_assist_cov
+
+    p1_over = float(np.mean(out1 > leg1["line"]))
+    p2_over = float(np.mean(out2 > leg2["line"]))
+    p_joint = float(np.mean((out1 > leg1["line"]) & (out2 > leg2["line"])))
+
+    # Empirical covariance
+    cov_emp = float(np.cov((out1 > leg1["line"]).astype(float),
+                           (out2 > leg2["line"]).astype(float))[0,1])
+    # Return joint and an approximate "correlation-like" summary
+    try:
+        var1 = p1_over * (1 - p1_over)
+        var2 = p2_over * (1 - p2_over)
+        denom = (var1 * var2) ** 0.5 if var1 > 0 and var2 > 0 else 1.0
+        corr_like = cov_emp / denom
+    except Exception:
+        corr_like = 0.0
+
+    return p_joint, float(np.clip(corr_like, -0.4, 0.6))
+
+# =========================================================
+#  UI RENDER — LEG CARD
 # =========================================================
 
 def render_leg_card(leg: dict, container, compact=False):
-    """
-    Displays player card with:
-      - headshot
-      - opponent defensive context
-      - ensemble mean & probability
-      - script expectations
-    """
     player = leg["player"]
     market = leg["market"]
     msg = leg["msg"]
     line = leg["line"]
     mu = leg["mu"]
+    sd = leg["sd"]
     p = leg["prob_over"]
     ctx = leg["ctx_mult"]
     even_ev = leg["ev_leg_even"]
     teammate_out = leg["teammate_out"]
     blowout = leg["blowout"]
     opp = leg.get("opp")
+    opp_def = leg.get("opp_def_rating")
+    opp_pace = leg.get("opp_pace")
+    opp_reb_pct = leg.get("opp_reb_pct")
+    opp_ast_pct = leg.get("opp_ast_pct")
 
     headshot = get_headshot_url(player)
 
@@ -906,43 +813,58 @@ def render_leg_card(leg: dict, container, compact=False):
             unsafe_allow_html=True
         )
 
-        col1, col2 = st.columns([1,2])
-        with col1:
-            if headshot:
-                st.image(headshot, width=120)
-        with col2:
+        cols = st.columns([1,2]) if headshot and not compact else [st]
+
+        if headshot and not compact:
+            with cols[0]:
+                st.image(headshot, width=110)
+            main_col = cols[1]
+        else:
+            main_col = cols[0] if isinstance(cols, list) else st
+
+        with main_col:
             st.write(f"📌 **Line:** {line}")
-            st.write(f"📊 **Ensemble Projection:** {mu:.2f}")
+            st.write(f"📊 **Ensemble Mean (Model Line):** {mu:.2f}")
+            st.write(f"📉 **Model SD:** {sd:.2f}")
             st.write(f"🎯 **Model Probability Over:** {p*100:.1f}%")
             st.write(f"💵 **Even-Money EV:** {even_ev*100:+.1f}%")
+            st.write(f"⏱️ **Context Multiplier (Def+Pace):** {ctx:.3f}")
             st.caption(f"📝 {msg}")
 
-            if opp and opp in TEAM_CTX and LEAGUE_CTX:
-                ctx_team = TEAM_CTX[opp]
-                st.write(
-                    f"🛡️ **Opponent ({opp}) Defense:** "
-                    f"Def Rating {ctx_team['DEF_RATING']:.1f} | "
-                    f"Pace {ctx_team['PACE']:.1f}"
-                )
-            st.write(
-                f"⏱️ **Expected Minutes Range:** "
-                f"{leg['min_low']:.1f} – {leg['min_high']:.1f} (center {leg['exp_min']:.1f})"
-            )
+            # Opponent quick defensive stats
+            if opp:
+                st.markdown("**Opponent Context:**")
+                pieces = []
+                if opp_def is not None:
+                    pieces.append(f"DEF RTG: {opp_def:.1f}")
+                if opp_pace is not None:
+                    pieces.append(f"PACE: {opp_pace:.1f}")
+                if opp_reb_pct is not None:
+                    pieces.append(f"REB%: {opp_reb_pct:.3f}")
+                if opp_ast_pct is not None:
+                    pieces.append(f"AST%: {opp_ast_pct:.3f}")
+                if pieces:
+                    st.write(f"🛡️ {opp} → " + " | ".join(pieces))
 
-        if teammate_out:
-            st.info("⚠️ Key teammate out → usage & minutes boost applied.")
-        if blowout:
-            st.warning("⚠️ Blowout risk → minutes trimmed in downside scenarios.")
+            # Risk flags
+            if teammate_out:
+                st.info("⚠️ Teammate out → usage boost & volatility applied.")
+            if blowout:
+                st.warning("⚠️ Blowout risk → minutes reduced in script sims.")
+
+# =========================================================
+#  LOADER & DECISION LOGIC
+# =========================================================
 
 def run_loader():
+    load_ph = st.empty()
     msgs = [
         "Pulling player logs…",
         "Analyzing matchup context…",
         "Simulating game scripts…",
-        "Running bootstrap Monte Carlo…",
-        "Finalizing edge & risk…",
+        "Running Monte Carlo…",
+        "Finalizing edge…",
     ]
-    load_ph = st.empty()
     for m in msgs:
         load_ph.markdown(
             f"<p style='color:#FFCC33;font-size:20px;font-weight:600;'>{m}</p>",
@@ -964,7 +886,7 @@ def combo_decision(ev_combo: float) -> str:
 # =========================================================
 
 tab_model, tab_results, tab_history, tab_calib, tab_scanner = st.tabs(
-    ["📊 Model", "📓 Results", "📜 History", "🧠 Calibration", "📡 Edge Scanner"]
+    ["📊 Model", "📓 Results", "📜 History", "🧠 Calibration", "🧭 Edge Scanner"]
 )
 
 # =========================================================
@@ -972,33 +894,26 @@ tab_model, tab_results, tab_history, tab_calib, tab_scanner = st.tabs(
 # =========================================================
 
 with tab_model:
-    st.subheader("2-Pick Projection & Edge (Empirical Bootstrap + Ensemble)")
 
-    history_df = load_history()
+    st.subheader("2-Pick Projection & Edge (Auto stats + manual/Underdog lines)")
 
     c1, c2 = st.columns(2)
 
-    # LEFT LEG
     with c1:
-        st.markdown("### Leg 1")
-        if data_source_mode == "Underdog Autofill":
-            st.caption("You can use the Edge Scanner tab to pick targets, then manually enter here.")
         p1 = st.text_input("Player 1 Name")
         m1 = st.selectbox("P1 Market", MARKET_OPTIONS, key="m1")
-        l1 = st.number_input("P1 Line", min_value=0.0, value=25.0, step=0.5, key="l1")
+        l1 = st.number_input("P1 Line", min_value=0.0, value=25.0, step=0.5)
         o1 = st.text_input("P1 Opponent (abbr)", help="Example: BOS, DEN", key="o1")
-        p1_teammate_out = st.checkbox("P1: Auto/Manual Key Teammate Out?", value=False, key="p1_tm")
-        p1_blowout = st.checkbox("P1: Blowout risk high?", value=False, key="p1_bo")
+        p1_teammate_out = st.checkbox("P1: Key teammate out? (override)", key="p1_to")
+        p1_blowout = st.checkbox("P1: Blowout risk high? (override)", key="p1_bo")
 
-    # RIGHT LEG
     with c2:
-        st.markdown("### Leg 2")
         p2 = st.text_input("Player 2 Name")
         m2 = st.selectbox("P2 Market", MARKET_OPTIONS, key="m2")
-        l2 = st.number_input("P2 Line", min_value=0.0, value=25.0, step=0.5, key="l2")
+        l2 = st.number_input("P2 Line", min_value=0.0, value=25.0, step=0.5)
         o2 = st.text_input("P2 Opponent (abbr)", help="Example: BOS, DEN", key="o2")
-        p2_teammate_out = st.checkbox("P2: Auto/Manual Key Teammate Out?", value=False, key="p2_tm")
-        p2_blowout = st.checkbox("P2: Blowout risk high?", value=False, key="p2_bo")
+        p2_teammate_out = st.checkbox("P2: Key teammate out? (override)", key="p2_to")
+        p2_blowout = st.checkbox("P2: Blowout risk high? (override)", key="p2_bo")
 
     leg1 = None
     leg2 = None
@@ -1006,22 +921,23 @@ with tab_model:
     run = st.button("Run Model ⚡")
 
     if run:
-        if payout_mult_2pick <= 1.0:
+
+        if payout_mult <= 1.0:
             st.error("Payout multiplier must be > 1.0")
             st.stop()
 
         run_loader()
 
-        # Compute legs
         leg1, err1 = (
             compute_leg_projection(
-                p1, m1, l1, o1, p1_teammate_out, p1_blowout, games_lookback, history_df
+                p1, m1, l1, o1, p1_teammate_out, p1_blowout, games_lookback
             )
             if p1 and l1 > 0 else (None, None)
         )
+
         leg2, err2 = (
             compute_leg_projection(
-                p2, m2, l2, o2, p2_teammate_out, p2_blowout, games_lookback, history_df
+                p2, m2, l2, o2, p2_teammate_out, p2_blowout, games_lookback
             )
             if p2 and l2 > 0 else (None, None)
         )
@@ -1032,80 +948,62 @@ with tab_model:
             st.error(f"P2: {err2}")
 
         colL, colR = st.columns(2)
+
         if leg1:
             render_leg_card(leg1, colL, compact_mode)
-            update_market_library(leg1["player"], leg1["market"], leg1["line"])
         if leg2:
             render_leg_card(leg2, colR, compact_mode)
-            update_market_library(leg2["player"], leg2["market"], leg2["line"])
 
         st.markdown("---")
         st.subheader("📈 Market vs Model Probability Check")
 
-        def implied_probability_from_payout(mult):
-            # Single leg in 2-pick style environments is roughly 0.5 implied,
-            # but this scales so you can tune later.
+        def implied_probability(mult):
             return 1.0 / mult
 
-        imp_prob_single = implied_probability_from_payout(payout_mult_2pick)
+        imp_prob = implied_probability(payout_mult)
+        st.markdown(f"**Market Implied Probability (2-pick equal legs):** {imp_prob*100:.1f}%")
 
         if leg1:
             st.markdown(
                 f"**{leg1['player']} Model Prob:** {leg1['prob_over']*100:.1f}% "
-                f"→ Edge vs ~{imp_prob_single*100:.1f}%: "
-                f"{(leg1['prob_over'] - imp_prob_single)*100:+.1f}%"
+                f"→ Edge vs 50/50: {(leg1['prob_over'] - 0.5)*100:+.1f}%"
             )
         if leg2:
             st.markdown(
                 f"**{leg2['player']} Model Prob:** {leg2['prob_over']*100:.1f}% "
-                f"→ Edge vs ~{imp_prob_single*100:.1f}%: "
-                f"{(leg2['prob_over'] - imp_prob_single)*100:+.1f}%"
+                f"→ Edge vs 50/50: {(leg2['prob_over'] - 0.5)*100:+.1f}%"
             )
 
-        # 2-PICK COMBO
         if leg1 and leg2:
-            corr = estimate_player_correlation(leg1, leg2)
-            joint = joint_gaussian_mc(leg1["prob_over"], leg2["prob_over"], corr, n_sims=N_SIMS)
-            ev_combo = payout_mult_2pick * joint - 1.0
-            k_frac = kelly_for_combo(joint, payout_mult_2pick, fractional_kelly)
-
-            # Daily loss cap logic (based on today's PnL)
-            hist = load_history()
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            todays = hist[hist["Date"].str.startswith(today_str)] if not hist.empty else pd.DataFrame()
-            if not todays.empty:
-                pnl_today = todays.apply(
-                    lambda r:
-                        r["Stake"] * (payout_mult_2pick - 1.0)
-                        if r["Result"] == "Hit"
-                        else (-r["Stake"] if r["Result"] == "Miss" else 0.0),
-                    axis=1
-                ).sum()
-            else:
-                pnl_today = 0.0
-
-            loss_cap = -bankroll * (daily_loss_cap_pct / 100.0)
-            if pnl_today <= loss_cap:
-                st.error("🚫 Daily loss cap reached — suggested stake set to $0 until tomorrow.")
-                k_frac_sanitized = 0.0
-            else:
-                k_frac_sanitized = k_frac
-
-            stake = round(bankroll * k_frac_sanitized, 2)
+            p_joint, corr_like = joint_monte_carlo(leg1, leg2, payout_mult)
+            ev_combo = payout_mult * p_joint - 1.0
+            k_frac = kelly_for_combo(p_joint, payout_mult, fractional_kelly)
+            stake = round(bankroll * k_frac, 2)
             decision = combo_decision(ev_combo)
 
-            st.markdown("### 🎯 **2-Pick Combo Result (Covariance-Based Joint MC)**")
-            st.markdown(f"- Correlation: **{corr:+.2f}**")
-            st.markdown(f"- Joint Probability (MC): **{joint*100:.1f}%**")
+            st.markdown("### 🎯 **2-Pick Combo Result (Covariance MC)**")
+            st.markdown(f"- Joint Probability: **{p_joint*100:.1f}%**")
             st.markdown(f"- EV (per $1): **{ev_combo*100:+.1f}%**")
-            st.markdown(f"- Suggested Stake (Kelly-capped + Daily Loss Cap): **${stake:.2f}**")
+            st.markdown(f"- Suggested Stake (Kelly-capped): **${stake:.2f}**")
+            st.markdown(f"- Covariance signal: **{corr_like:+.2f}**")
             st.markdown(f"- **Recommendation:** {decision}")
+
+        for leg in [leg1, leg2]:
+            if leg:
+                update_market_library(leg["player"], leg["market"], leg["line"])
+                mean_b, med_b = get_market_baseline(leg["player"], leg["market"])
+                if mean_b:
+                    st.caption(
+                        f"📊 Market Baseline for {leg['player']} {leg['market']}: "
+                        f"mean={mean_b:.1f}, median={med_b:.1f}"
+                    )
 
 # =========================================================
 #  RESULTS TAB
 # =========================================================
 
 with tab_results:
+
     st.subheader("Results & Personal Tracking")
 
     df = load_history()
@@ -1116,14 +1014,18 @@ with tab_results:
         st.info("No bets logged yet. Log entries after you place bets.")
 
     with st.form("log_result_form"):
+
         c1, c2, c3 = st.columns(3)
+
         with c1:
             r_player = st.text_input("Player / Entry Name")
+
         with c2:
             r_market = st.selectbox(
                 "Market",
                 ["PRA", "Points", "Rebounds", "Assists", "Combo"]
             )
+
         with c3:
             r_line = st.number_input(
                 "Line",
@@ -1134,6 +1036,7 @@ with tab_results:
             )
 
         c4, c5, c6 = st.columns(3)
+
         with c4:
             r_ev = st.number_input(
                 "Model EV (%)",
@@ -1142,6 +1045,7 @@ with tab_results:
                 value=5.0,
                 step=0.1
             )
+
         with c5:
             r_stake = st.number_input(
                 "Stake ($)",
@@ -1150,9 +1054,10 @@ with tab_results:
                 value=5.0,
                 step=0.5
             )
+
         with c6:
             r_clv = st.number_input(
-                "CLV (Closing - Entry, in pts)",  # simple unit
+                "CLV (Closing - Entry)",
                 min_value=-20.0,
                 max_value=20.0,
                 value=0.0,
@@ -1164,13 +1069,12 @@ with tab_results:
             ["Pending", "Hit", "Miss", "Push"]
         )
 
-        r_combo = st.checkbox("This was a 2-pick combo entry?")
-        r_notes = st.text_input("Notes (optional)")
-
         submit_res = st.form_submit_button("Log Result")
 
         if submit_res:
+
             ensure_history()
+
             new_row = {
                 "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "Player": r_player,
@@ -1181,20 +1085,27 @@ with tab_results:
                 "Result": r_result,
                 "CLV": r_clv,
                 "KellyFrac": fractional_kelly,
-                "Combo": r_combo,
-                "Notes": r_notes,
+                "Joint": None,
+                "ModelProb": None,
             }
-            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+
+            df = pd.concat(
+                [df, pd.DataFrame([new_row])],
+                ignore_index=True
+            )
+
             save_history(df)
+
             st.success("Result logged ✅")
 
     df = load_history()
     comp = df[df["Result"].isin(["Hit", "Miss"])]
 
     if not comp.empty:
+
         pnl = comp.apply(
             lambda r:
-                r["Stake"] * (payout_mult_2pick - 1.0)
+                r["Stake"] * (payout_mult - 1.0)
                 if r["Result"] == "Hit"
                 else -r["Stake"],
             axis=1,
@@ -1206,15 +1117,10 @@ with tab_results:
         hit_rate = (hits / total * 100) if total > 0 else 0.0
         roi = pnl.sum() / max(bankroll, 1.0) * 100
 
-        mean_clv = pd.to_numeric(comp["CLV"], errors="coerce").fillna(0.0).mean()
-        pnl_var = float(np.var(pnl)) if len(pnl) > 1 else 0.0
-
         st.markdown(
             f"**Completed Bets:** {total}  |  "
             f"**Hit Rate:** {hit_rate:.1f}%  |  "
-            f"**ROI (vs current bankroll):** {roi:+.1f}%  |  "
-            f"**Avg CLV:** {mean_clv:+.2f} pts  |  "
-            f"**Outcome Variance:** {pnl_var:.2f}"
+            f"**ROI:** {roi:+.1f}%"
         )
 
         trend = comp.copy()
@@ -1228,15 +1134,15 @@ with tab_results:
             title="Cumulative Profit (All Logged Bets)",
             markers=True,
         )
+
         st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No completed bets yet for summary metrics.")
 
 # =========================================================
 #  HISTORY TAB
 # =========================================================
 
 with tab_history:
+
     st.subheader("History & Filters")
 
     df = load_history()
@@ -1244,6 +1150,7 @@ with tab_history:
     if df.empty:
         st.info("No logged bets yet.")
     else:
+
         min_ev = st.slider(
             "Min EV (%) filter",
             min_value=-20.0,
@@ -1258,30 +1165,28 @@ with tab_history:
             index=0
         )
 
-        combo_only = st.checkbox("Show only Combo (2-pick) entries", value=False)
-
         filt = df[df["EV"] >= min_ev]
 
         if market_filter != "All":
             filt = filt[filt["Market"] == market_filter]
 
-        if combo_only:
-            filt = filt[filt["Combo"] == True]
-
         st.markdown(f"**Filtered Bets:** {len(filt)}")
         st.dataframe(filt, use_container_width=True)
 
         if not filt.empty:
+
             filt = filt.copy()
+
             filt["Net"] = filt.apply(
                 lambda r:
-                    r["Stake"] * (payout_mult_2pick - 1.0)
+                    r["Stake"] * (payout_mult - 1.0)
                     if r["Result"] == "Hit"
                     else (
                         -r["Stake"] if r["Result"] == "Miss" else 0.0
                     ),
                 axis=1,
             )
+
             filt["Cumulative"] = filt["Net"].cumsum()
 
             fig = px.line(
@@ -1291,13 +1196,15 @@ with tab_history:
                 title="Cumulative Profit (Filtered View)",
                 markers=True,
             )
+
             st.plotly_chart(fig, use_container_width=True)
 
 # =========================================================
-#  CALIBRATION TAB
+#  CALIBRATION TAB — SELF-LEARNING HOOK
 # =========================================================
 
 with tab_calib:
+
     st.subheader("Calibration & Edge Integrity Check")
 
     df = load_history()
@@ -1306,6 +1213,7 @@ with tab_calib:
     if comp.empty or len(comp) < 15:
         st.info("Log at least 15 completed bets with EV to start calibration.")
     else:
+
         comp = comp.copy()
         comp["EV_float"] = pd.to_numeric(comp["EV"], errors="coerce") / 100.0
         comp = comp.dropna(subset=["EV_float"])
@@ -1313,13 +1221,14 @@ with tab_calib:
         if comp.empty:
             st.info("No valid EV values yet.")
         else:
+
             pred_win_prob = 0.5 + comp["EV_float"].mean()
             actual_win_prob = (comp["Result"] == "Hit").mean()
             gap = (pred_win_prob - actual_win_prob) * 100
 
             pnl = comp.apply(
                 lambda r:
-                    r["Stake"] * (payout_mult_2pick - 1.0)
+                    r["Stake"] * (payout_mult - 1.0)
                     if r["Result"] == "Hit"
                     else -r["Stake"],
                 axis=1,
@@ -1335,27 +1244,17 @@ with tab_calib:
                 comp,
                 x="Edge_vs_Market",
                 nbins=20,
-                title="Distribution of Model Edge vs Market (EV%)"
+                title="Distribution of Model Edge vs Market (EV%)",
             )
             st.plotly_chart(fig2, use_container_width=True)
 
-            # EV buckets
-            buckets = pd.cut(
-                comp["EV_float"] * 100,
-                bins=[-5, 0, 5, 10, 20, 100],
-                labels=["<0%", "0–5%", "5–10%", "10–20%", "20%+"]
-            )
-            comp["EV_bucket"] = buckets
-            bucket_stats = comp.groupby("EV_bucket")["Result"].apply(
-                lambda x: (x == "Hit").mean() * 100
-            ).reset_index(name="HitRate")
-
-            st.markdown("### EV Buckets vs Realized Hit Rate")
-            st.dataframe(bucket_stats, use_container_width=True)
-
             st.markdown(
-                f"**Predicted Avg Win Prob (approx):** {pred_win_prob*100:.1f}%\n\n"
-                f"**Actual Hit Rate:** {actual_win_prob*100:.1f}%\n\n"
+                f"**Predicted Avg Win Prob (approx):** {pred_win_prob*100:.1f}%"
+            )
+            st.markdown(
+                f"**Actual Hit Rate:** {actual_win_prob*100:.1f}%"
+            )
+            st.markdown(
                 f"**Calibration Gap:** {gap:+.1f}% | **ROI:** {roi:+.1f}%"
             )
 
@@ -1371,103 +1270,112 @@ with tab_calib:
                 st.success("Model and results are reasonably aligned ✅")
 
 # =========================================================
-#  EDGE SCANNER TAB (UNDERDOG LIVE LINES)
+#  EDGE SCANNER TAB — UNDERDOG LIVE SCAN
 # =========================================================
 
+def classify_edge(ev_diff: float) -> str:
+    if ev_diff >= 0.12:
+        return "Elite"
+    elif ev_diff >= 0.07:
+        return "Medium"
+    elif ev_diff >= 0.03:
+        return "Thin"
+    else:
+        return "No Edge"
+
+def annotate_correlation(row, df):
+    """Simple auto-annotation of correlated edges: same player/team & related markets."""
+    same_player = df[(df["player"] == row["player"]) & (df["market"] != row["market"])]
+    same_team = df[(df["team"] == row["team"]) & (df["market"] == row["market"])]
+    tags = []
+    if not same_player.empty:
+        tags.append("player-link")
+    if not same_team.empty:
+        tags.append("team-link")
+    return ", ".join(tags) if tags else ""
+
 with tab_scanner:
-    st.subheader("Live Edge Scanner — Underdog NBA (PTS / REB / AST / PRA)")
 
-    st.caption(
-        "This scanner attempts to pull all NBA prop lines from Underdog, "
-        "run the same ensemble + bootstrap engine, and rank edges. "
-        "If Underdog changes their API or structure, this will gracefully fail."
-    )
+    st.subheader("🧭 Live Underdog Edge Scanner (NBA PTS/REB/AST/PRA)")
+    st.caption("Pulls Underdog lines (where available) and runs the full ensemble + bootstrap engine to surface edges.")
 
-    scan_button = st.button("Scan Underdog for Edges 🚀")
+    scan_button = st.button("Scan Underdog NBA Board 🔍")
 
     if scan_button:
-        lines_df = fetch_underdog_nba_lines()
+        with st.spinner("Fetching Underdog board & running simulations…"):
+            ud_df = fetch_underdog_nba_props()
 
-        if lines_df.empty:
-            st.error("No Underdog data available. The endpoint structure may have changed, or there is a network issue.")
+        if ud_df.empty:
+            st.error("Could not fetch Underdog NBA props or no supported props found. You may need to update UNDERDOG_NBA_URL or run later.")
         else:
-            st.success(f"Pulled {len(lines_df)} Underdog NBA props. Running model…")
-
+            # Run model for each prop
             records = []
-            history_df = load_history()
-
-            # Limit for performance; you can raise this if needed
-            max_props = min(120, len(lines_df))
-            subset = lines_df.head(max_props)
-
-            for _, r in subset.iterrows():
-                player_name = r["player"]
-                market = r["market"]
-                line_val = float(r["line"])
-                team_abbrev = r.get("team") or ""
-                opp_abbrev = r.get("opp") or ""
-
+            for _, r in ud_df.iterrows():
+                if r["market"] not in MARKET_OPTIONS:
+                    continue
                 leg, err = compute_leg_projection(
-                    player_name,
-                    market,
-                    line_val,
-                    opp_abbrev,
+                    r["player"],
+                    r["market"],
+                    r["line"],
+                    r.get("opponent"),
                     teammate_out=False,
-                    blowout=False,
+                    blowout_flag=False,
                     n_games=games_lookback,
-                    history_df=history_df
+                    market_implied_mean=r.get("market_implied_mean"),
+                    n_sims=MONTE_CARLO_SIMS_SCANNER,
                 )
                 if leg is None or err:
                     continue
-
-                # Implied probability baseline (can refine later)
-                imp_prob = 0.5
                 model_prob = leg["prob_over"]
-                edge = model_prob - imp_prob
-                ev_diff_pct = edge * 100
-
-                # Tier classification
-                if ev_diff_pct >= 8.0:
-                    tier = "Elite"
-                elif ev_diff_pct >= 4.0:
-                    tier = "Medium"
-                elif ev_diff_pct >= 1.5:
-                    tier = "Thin"
-                else:
-                    tier = "No Edge"
+                model_mean = leg["mu"]
+                # Treat Underdog line as "fair" mean; EV difference vs 50/50 baseline
+                ev_diff = model_prob - 0.5
+                tier = classify_edge(ev_diff)
 
                 records.append({
-                    "Player": leg["player"],
-                    "Team": leg.get("team"),
-                    "Opponent": leg.get("opp"),
-                    "Market": market,
-                    "Line": line_val,
-                    "Model_Line": leg["mu"],
-                    "Model_Prob_%": model_prob * 100.0,
-                    "Implied_Prob_%": imp_prob * 100.0,
-                    "EV_Diff_%": ev_diff_pct,
-                    "Tier": tier,
+                    "player": leg["player"],
+                    "team": leg["team"],
+                    "market": leg["market"],
+                    "line": leg["line"],
+                    "model_line": model_mean,
+                    "model_prob": model_prob,
+                    "ev_diff": ev_diff,
+                    "tier": tier,
+                    "opp": leg.get("opp"),
+                    "opp_def": leg.get("opp_def_rating"),
+                    "opp_pace": leg.get("opp_pace"),
                 })
 
             if not records:
-                st.warning("Model could not resolve any players from the Underdog feed. Check names and try again later.")
+                st.warning("No modelable edges found from Underdog props.")
             else:
-                edges_df = pd.DataFrame(records)
-                # Correlated edges annotation: same team or same opponent flagged
-                edges_df["Correlated_Flag"] = edges_df.duplicated(subset=["Team"], keep=False) | \
-                                              edges_df.duplicated(subset=["Opponent"], keep=False)
+                edge_df = pd.DataFrame(records)
+                edge_df["correlation_tag"] = edge_df.apply(lambda row: annotate_correlation(row, edge_df), axis=1)
+                edge_df["EV_%"] = edge_df["ev_diff"] * 100
+                edge_df["ModelProb_%"] = edge_df["model_prob"] * 100
 
-                edges_df = edges_df.sort_values("EV_Diff_%", ascending=False)
+                # Sort by EV descending
+                edge_df = edge_df.sort_values("ev_diff", ascending=False)
 
                 st.markdown("### Top Edges")
-                st.dataframe(edges_df, use_container_width=True)
+                st.dataframe(
+                    edge_df[[
+                        "player","team","market","line","model_line","ModelProb_%","EV_%","tier","opp","opp_def","opp_pace","correlation_tag"
+                    ]].reset_index(drop=True),
+                    use_container_width=True,
+                )
 
-                st.markdown("#### Elite / Medium Edges")
-                top_tiers = edges_df[edges_df["Tier"].isin(["Elite","Medium"])]
-                if not top_tiers.empty:
-                    st.dataframe(top_tiers, use_container_width=True)
-                else:
-                    st.info("No Elite/Medium edges detected under current settings.")
+                # Highlight elite & medium edges
+                elite = edge_df[edge_df["tier"] == "Elite"]
+                medium = edge_df[edge_df["tier"] == "Medium"]
+
+                if not elite.empty:
+                    st.markdown("#### 🔥 Elite Edges")
+                    st.dataframe(elite[["player","market","line","model_line","EV_%","ModelProb_%","opp","opp_def","correlation_tag"]])
+
+                if not medium.empty:
+                    st.markdown("#### 🟡 Medium Edges")
+                    st.dataframe(medium[["player","market","line","model_line","EV_%","ModelProb_%","opp","opp_def","correlation_tag"]])
 
 # =========================================================
 #  FOOTER
@@ -1476,7 +1384,7 @@ with tab_scanner:
 st.markdown(
     """
     <footer style='text-align:center; margin-top:30px; color:#FFCC33; font-size:11px;'>
-        © 2025 NBA Prop Quant Engine • Built for Kamal — Empirical Bootstrap • Ensemble • Covariance MC • Underdog Scanner
+        © 2025 NBA Prop Quant Engine • Powered by Kamal
     </footer>
     """,
     unsafe_allow_html=True,
