@@ -288,261 +288,132 @@ def get_context_multiplier(opp_abbrev: str | None, market: str) -> float:
     return float(np.clip(mult, 0.80, 1.25))
 
 # =========================================================
-#  PART 4 — PRIZEPICKS LIVE API (BEST-EFFORT) & MATCHUP HELPERS
+#  PART 4 — PRIZEPICKS MIRROR & MATCHUP HELPERS
 # =========================================================
 
-PRIZEPICKS_API_URL = (
-    "https://api.prizepicks.com/projections"
-    "?league_id=7&per_page=500&single_stat=true&game_mode=pickem"
-)
-
-# Map our UI market names → how PrizePicks labels stats
-PP_MARKET_MAP = {
-    "Points": ["Points", "PTS", "points"],
-    "Rebounds": ["Rebounds", "REB", "rebs"],
-    "Assists": ["Assists", "AST", "asts"],
-    "PRA": ["PRA", "Pts+Rebs+Asts", "PR+A", "Pts Reb Ast"],
-}
-
-def _pp_headers() -> dict:
+@st.cache_data(show_spinner=False, ttl=60)
+def fetch_prizepicks_board():
     """
-    Browser-like headers to reduce chance of 403/blocked requests.
-    These are based on community examples for api.prizepicks.com.
-    """
-    return {
-        "Connection": "keep-alive",
-        "Accept": "application/json; charset=UTF-8",
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-        "Origin": "https://www.prizepicks.com",
-        "Referer": "https://www.prizepicks.com/",
-    }
-
-
-@st.cache_data(show_spinner=False, ttl=30)
-def fetch_prizepicks_board() -> dict:
-    """
-    Calls the official PrizePicks projections endpoint.
-
-    IMPORTANT:
-    - This may sometimes return 403 / fail depending on Cloudflare, host, etc.
-    - On error, we return {} so the rest of the app keeps working.
+    Fetches the public PrizePicks board JSON.
+    Fails gracefully and returns {} on error.
     """
     try:
-        resp = requests.get(
-            PRIZEPICKS_API_URL,
-            headers=_pp_headers(),
-            timeout=6,
-        )
+        resp = requests.get(PRIZEPICKS_MIRROR_URL, timeout=5)
         if resp.status_code != 200:
-            # Don't crash the app — just fall back to manual lines.
             return {}
-        js = resp.json()
-        # Basic sanity check
-        if not isinstance(js, dict) or "data" not in js:
-            return {}
-        return js
+        return resp.json()
     except Exception:
         return {}
 
-
 def normalize_player_name_for_pp(name: str) -> str:
-    """
-    Normalize names so we can match PrizePicks vs user input.
-    """
-    return (
-        name.lower()
-        .replace(".", "")
-        .replace("'", "")
-        .replace("-", " ")
-        .strip()
-    )
-
-
-def _build_pp_player_map(board: dict) -> dict:
-    """
-    Build a mapping: player_id -> normalized player name
-    from the 'included' section of the PrizePicks JSON.
-    The exact structure can vary, so this is defensive.
-    """
-    mapping = {}
-    if not board:
-        return mapping
-
-    included = board.get("included", []) or []
-    for item in included:
-        try:
-            if item.get("type", "").lower() not in ("new_player", "player", "players"):
-                continue
-            pid = str(item.get("id"))
-            attr = item.get("attributes", {}) or {}
-            name = (
-                attr.get("display_name")
-                or attr.get("name")
-                or attr.get("full_name")
-            )
-            if pid and name:
-                mapping[pid] = normalize_player_name_for_pp(name)
-        except Exception:
-            continue
-    return mapping
-
+    return _norm_name(name)
 
 def get_prizepicks_line(player: str, market: str, board: dict):
     """
-    Try to locate the current PrizePicks line for (player, market).
-
-    Returns:
-        float(line) or None if not found / API blocked.
+    Attempts to locate the player's line for the selected market
+    from the PrizePicks mirror JSON.
+    Returns float(line) or None if not found.
     """
-    if not board or "data" not in board:
+    if not board:
         return None
 
     target_name = normalize_player_name_for_pp(player)
-    desired_stats = PP_MARKET_MAP.get(market, [])
+    wanted_stats = PRIZEPICKS_MARKET_MAP.get(market, [])
 
-    # Map player_id -> normalized player name
-    player_map = _build_pp_player_map(board)
+    try:
+        projections = board.get("data", [])
+    except AttributeError:
+        projections = []
 
-    best_line = None
+    found_lines = []
 
-    for proj in board.get("data", []):
+    for entry in projections:
         try:
-            attr = proj.get("attributes", {}) or {}
-            stat_type = (
-                attr.get("stat_type")
-                or attr.get("projection_type")
-                or attr.get("stat_name")
-                or ""
-            )
-            line_val = (
-                attr.get("line_score")
-                or attr.get("value")
-                or attr.get("line")
-            )
-
-            if line_val is None:
+            attr = entry.get("attributes", {})
+            full_name = attr.get("display_name") or attr.get("name") or ""
+            if not full_name:
+                continue
+            if normalize_player_name_for_pp(full_name) != target_name:
                 continue
 
-            # Get player id from attributes or relationships
-            pid = attr.get("new_player_id") or attr.get("player_id")
-            if not pid and "relationships" in proj:
-                rel = proj["relationships"].get("new_player") or proj["relationships"].get("player")
-                if rel and "data" in rel:
-                    pid = rel["data"].get("id")
+            stat_type = attr.get("stat_type") or attr.get("projection_type") or ""
+            val = attr.get("line_score") or attr.get("value")
 
-            if not pid:
-                continue
-
-            norm_name = player_map.get(str(pid), "")
-            if norm_name != target_name:
-                continue
-
-            # Market match
-            if desired_stats and stat_type not in desired_stats:
-                continue
-
-            best_line = float(line_val)
-            break
+            if not wanted_stats or stat_type in wanted_stats:
+                if val is not None:
+                    found_lines.append(float(val))
         except Exception:
             continue
 
-    return best_line
-
+    if not found_lines:
+        return None
+    return float(np.mean(found_lines))
 
 def auto_detect_matchup_from_board(player: str, board: dict):
     """
-    Best-effort team + opponent detection from PrizePicks JSON.
-    If we can't find them, returns (None, None) and the model
-    simply skips defense-adjustment rather than breaking.
+    Attempts to find team & opponent from PrizePicks board.
+    Returns (team_abbrev, opp_abbrev) or (None, None).
     """
     if not board:
         return None, None
 
     target_name = normalize_player_name_for_pp(player)
-    player_map = _build_pp_player_map(board)
 
-    # Reverse-map name -> ids that match this player
-    matching_ids = {pid for pid, nm in player_map.items() if nm == target_name}
-    if not matching_ids:
-        return None, None
+    try:
+        projections = board.get("data", [])
+    except AttributeError:
+        projections = []
 
-    team = None
-    opp = None
-
-    # Many implementations store team/opp on projection attributes.
-    for proj in board.get("data", []):
+    for entry in projections:
         try:
-            attr = proj.get("attributes", {}) or {}
-            pid = (
-                attr.get("new_player_id")
-                or attr.get("player_id")
-            )
-            if not pid or str(pid) not in matching_ids:
+            attr = entry.get("attributes", {})
+            full_name = attr.get("display_name") or attr.get("name") or ""
+            if not full_name:
+                continue
+            if normalize_player_name_for_pp(full_name) != target_name:
                 continue
 
-            # Try various common field names for team/opponent.
-            team = attr.get("team_abbrev") or attr.get("team") or attr.get("home_team")
-            opp = (
-                attr.get("opp_team_abbrev")
-                or attr.get("opponent")
-                or attr.get("away_team")
-            )
-
-            if isinstance(team, str):
-                team = team.upper()
-            if isinstance(opp, str):
-                opp = opp.upper()
-
-            return team, opp
+            team = attr.get("team_abbrev") or attr.get("team") or None
+            opp = attr.get("opp_abbrev") or attr.get("opponent") or None
+            if team and opp:
+                return team.upper(), opp.upper()
         except Exception:
             continue
 
     return None, None
 
-
 def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> bool:
     """
-    Simple blowout heuristic.
-
-    The official PrizePicks API doesn't always expose spreads directly.
-    Here we approximate:
-
-    - If the same matchup (team vs opp) appears with a very large
-      number of props (e.g. 8+), treat it as higher blowout risk,
-      because those are often marquee or unbalanced games.
-
-    This is intentionally conservative and never breaks the app.
+    Very simple blowout risk proxy:
+    - If we can find a spread and abs(spread) >= 10 → blowout risk high.
+    Otherwise False.
     """
-    if not board or not team or not opp:
+    if not team or not opp or not board:
         return False
 
-    team = team.upper()
-    opp = opp.upper()
-    count = 0
+    try:
+        games = board.get("included", [])
+    except AttributeError:
+        games = []
 
-    for proj in board.get("data", []):
+    for g in games:
         try:
-            attr = proj.get("attributes", {}) or {}
-            t = (
-                (attr.get("team_abbrev") or attr.get("team") or "")
-                .upper()
-            )
-            o = (
-                (attr.get("opp_team_abbrev") or attr.get("opponent") or "")
-                .upper()
-            )
-            if t == team and o == opp:
-                count += 1
+            attr = g.get("attributes", {})
+            home = attr.get("home_team") or attr.get("home_team_abbrev")
+            away = attr.get("away_team") or attr.get("away_team_abbrev")
+            if not home or not away:
+                continue
+            teams = {home.upper(), away.upper()}
+            if team.upper() in teams and opp.upper() in teams:
+                spread = attr.get("spread")
+                if spread is None:
+                    continue
+                if abs(float(spread)) >= 10.0:
+                    return True
         except Exception:
             continue
 
-    # Tune this threshold as you get more experience with the data.
-    return count >= 8
+    return False
 
 # =========================================================
 #  PART 5 — MARKET BASELINE LIBRARY
