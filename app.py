@@ -25,6 +25,7 @@ import requests
 
 from nba_api.stats.static import players as nba_players
 from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats
+ODDS_API_KEY = os.environ.get("ODDS_API_KEY", st.secrets.get("ODDS_API_KEY", "")).strip()
 
 # =========================================================
 #  STREAMLIT CONFIG
