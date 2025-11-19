@@ -25,7 +25,6 @@ import requests
 
 from nba_api.stats.static import players as nba_players
 from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY", st.secrets.get("ODDS_API_KEY", "")).strip()
 
 # =========================================================
 #  STREAMLIT CONFIG
@@ -294,8 +293,16 @@ def get_context_multiplier(opp_abbrev: str | None, market: str) -> float:
 #  PART 4 — ODDS API PLAYER PROPS (DRAFTKINGS ETC.) & MATCHUP HELPERS
 # =========================================================
 
-# The Odds API configuration
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "").strip()
+# --- ODDS API KEY MANAGEMENT ---
+# Priority:
+# 1. Environment variable (local dev)
+# 2. Streamlit Cloud Secrets (deployment)
+# 3. Fallback: empty string (no crash)
+ODDS_API_KEY = (
+    os.environ.get("ODDS_API_KEY") or 
+    st.secrets.get("ODDS_API_KEY", "")
+).strip()
+
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 ODDS_SPORT_KEY = "basketball_nba"
 
