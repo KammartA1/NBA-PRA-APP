@@ -4,7 +4,7 @@
 #   - Empirical Bootstrap Monte Carlo (10,000 sims)
 #   - Defensive Matchup Engine (team-context aware)
 #   - Pace-adjusted minutes & usage context
-#   - Auto live book line pulling via public JSON mirror
+#   - Auto PrizePicks line pulling via public JSON mirror
 #   - Auto opponent detection + blowout risk inference
 #   - Expanded History + Calibration + Risk Controls
 #   - EVERYTHING DEFENSE-ADJUSTED
@@ -118,8 +118,8 @@ MARKET_METRICS = {
     "Assists": ["AST"],
 }
 
-# Map our UI markets to live book stat types
-ODDS_API_MARKET_MAP = {
+# Map our UI markets to PrizePicks stat types
+PRIZEPICKS_MARKET_MAP = {
     "PRA": ["Pts+Rebs+Asts", "PRA"],
     "Points": ["Points"],
     "Rebounds": ["Rebounds"],
@@ -128,8 +128,8 @@ ODDS_API_MARKET_MAP = {
 
 MAX_KELLY_PCT = 0.03  # 3% hard cap
 
-# Public live book mirror endpoint
-ODDS_API_MIRROR_URL = "https://pp-public-mirror.vercel.app/api/board"
+# Public PrizePicks mirror endpoint
+PRIZEPICKS_MIRROR_URL = "https://pp-public-mirror.vercel.app/api/board"
 
 # =========================================================
 #  PART 2 — SIDEBAR (USER SETTINGS)
@@ -149,7 +149,7 @@ compact_mode = st.sidebar.checkbox("Compact Mode (mobile)", value=False)
 max_daily_loss_pct = st.sidebar.slider("Max Daily Loss % (stop)", 5, 50, 15)
 max_weekly_loss_pct = st.sidebar.slider("Max Weekly Loss % (stop)", 10, 60, 25)
 
-st.sidebar.caption("Model auto-pulls NBA stats & lines. Lines auto-fill from live book when possible.")
+st.sidebar.caption("Model auto-pulls NBA stats & lines. Lines auto-fill from PrizePicks when possible.")
 
 # =========================================================
 #  PART 3 — PLAYER & TEAM HELPERS
@@ -288,139 +288,74 @@ def get_context_multiplier(opp_abbrev: str | None, market: str) -> float:
     return float(np.clip(mult, 0.80, 1.25))
 
 # =========================================================
-#  PART 4 — ODDS_API LIVE API (BEST-EFFORT) & MATCHUP HELPERS
-# =========================================================
-#  PART 4 — ODDS API PLAYER PROPS (DRAFTKINGS ETC.) & MATCHUP HELPERS
+#  PART 4 — PRIZEPICKS LIVE API (BEST-EFFORT) & MATCHUP HELPERS
 # =========================================================
 
-# --- ODDS API KEY MANAGEMENT ---
-# Priority:
-# 1. Environment variable (local dev)
-# 2. Streamlit Cloud Secrets (deployment)
-# 3. Fallback: empty string (no crash)
-ODDS_API_KEY = (
-    os.environ.get("ODDS_API_KEY") or 
-    st.secrets.get("ODDS_API_KEY", "")
-).strip()
+PRIZEPICKS_API_URL = (
+    "https://api.prizepicks.com/projections"
+    "?league_id=7&per_page=500&single_stat=true&game_mode=pickem"
+)
 
-ODDS_API_BASE = "https://api.the-odds-api.com/v4"
-ODDS_SPORT_KEY = "basketball_nba"
-
-# Map our UI market names → The Odds API player prop market keys
-ODDS_MARKET_MAP = {
-    "Points": "player_points",
-    "Rebounds": "player_rebounds",
-    "Assists": "player_assists",
-    "PRA": "player_points_rebounds_assists",
+# Map our UI market names → how PrizePicks labels stats
+PP_MARKET_MAP = {
+    "Points": ["Points", "PTS", "points"],
+    "Rebounds": ["Rebounds", "REB", "rebs"],
+    "Assists": ["Assists", "AST", "asts"],
+    "PRA": ["PRA", "Pts+Rebs+Asts", "PR+A", "Pts Reb Ast"],
 }
 
-ODDS_CACHE_DIR = os.path.join(TEMP_DIR, "odds_cache")
-os.makedirs(ODDS_CACHE_DIR, exist_ok=True)
-
-
-def _odds_cache_path(market_key: str) -> str:
-    return os.path.join(ODDS_CACHE_DIR, f"{market_key}.json")
-
-
-def _load_odds_cache(market_key: str):
-    path = _odds_cache_path(market_key)
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def _save_odds_cache(market_key: str, data: dict):
-    path = _odds_cache_path(market_key)
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-    except Exception:
-        pass
-
-
-def _odds_request_log_path() -> str:
-    return os.path.join(ODDS_CACHE_DIR, "request_log.json")
-
-
-def _can_call_odds_api(max_calls_per_day: int = 12) -> bool:
-    """Simple per-day call guard so we do not burn through the free tier."""
-    path = _odds_request_log_path()
-    today = datetime.now().strftime("%Y-%m-%d")
-    data = {"date": today, "count": 0}
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            data = {"date": today, "count": 0}
-    if data.get("date") != today:
-        data = {"date": today, "count": 0}
-    if data["count"] >= max_calls_per_day:
-        return False
-    data["count"] += 1
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-    except Exception:
-        pass
-    return True
-
-
-def _call_odds_api_for_market(market_key: str):
-    """Low-level caller. Returns list[dict] games or None."""
-    if not ODDS_API_KEY:
-        return None
-    if not _can_call_odds_api():
-        # Respect daily budget; rely on cache instead
-        return None
-
-    url = f"{ODDS_API_BASE}/sports/{ODDS_SPORT_KEY}/odds"
-    params = {
-        "apiKey": ODDS_API_KEY,
-        "regions": "us",
-        "markets": market_key,
-        "oddsFormat": "american",
-        "dateFormat": "iso",
+def _pp_headers() -> dict:
+    """
+    Browser-like headers to reduce chance of 403/blocked requests.
+    These are based on community examples for api.prizepicks.com.
+    """
+    return {
+        "Connection": "keep-alive",
+        "Accept": "application/json; charset=UTF-8",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://www.prizepicks.com",
+        "Referer": "https://www.prizepicks.com/",
     }
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-    except Exception:
-        return None
-    if resp.status_code != 200:
-        return None
-    try:
-        return resp.json()
-    except Exception:
-        return None
 
 
-def fetch_oddsapi_board(market_key: str):
+@st.cache_data(show_spinner=False, ttl=30)
+def fetch_prizepicks_board() -> dict:
     """
-    Fetch player props for a given market from The Odds API with caching.
+    Calls the official PrizePicks projections endpoint.
 
-    - Uses a JSON cache in /tmp so repeated page loads do not call the API.
-    - Guards total calls per day via `_can_call_odds_api`.
-    - Returns a list of game dicts (The Odds API native format).
+    IMPORTANT:
+    - This may sometimes return 403 / fail depending on Cloudflare, host, etc.
+    - On error, we return {} so the rest of the app keeps working.
     """
-    # Try cache first
-    cached = _load_odds_cache(market_key)
-    if cached:
-        return cached
+    try:
+        resp = requests.get(
+            PRIZEPICKS_API_URL,
+            headers=_pp_headers(),
+            timeout=6,
+        )
+        if resp.status_code != 200:
+            # Don't crash the app — just fall back to manual lines.
+            return {}
+        js = resp.json()
+        # Basic sanity check
+        if not isinstance(js, dict) or "data" not in js:
+            return {}
+        return js
+    except Exception:
+        return {}
 
-    data = _call_odds_api_for_market(market_key)
-    if data is None:
-        return cached  # may be None as well
-    _save_odds_cache(market_key, data)
-    return data
 
-
-def normalize_player_name_for_odds(name: str) -> str:
+def normalize_player_name_for_pp(name: str) -> str:
+    """
+    Normalize names so we can match PrizePicks vs user input.
+    """
     return (
-        str(name).lower()
+        name.lower()
         .replace(".", "")
         .replace("'", "")
         .replace("-", " ")
@@ -428,62 +363,187 @@ def normalize_player_name_for_odds(name: str) -> str:
     )
 
 
-def _build_odds_player_index(games: list, market_key: str) -> dict:
+def _build_pp_player_map(board: dict) -> dict:
     """
-    Build mapping: normalized player name -> average line for the specified market.
-    We aggregate across all books that post that prop.
+    Build a mapping: player_id -> normalized player name
+    from the 'included' section of the PrizePicks JSON.
+    The exact structure can vary, so this is defensive.
     """
-    index: dict[str, float] = {}
-    counts: dict[str, int] = {}
+    mapping = {}
+    if not board:
+        return mapping
 
-    if not games:
-        return index
-
-    for g in games:
+    included = board.get("included", []) or []
+    for item in included:
         try:
-            bookmakers = g.get("bookmakers", []) or []
-            for bk in bookmakers:
-                mkts = bk.get("markets", []) or []
-                for m in mkts:
-                    if m.get("key") != market_key:
-                        continue
-                    for o in m.get("outcomes", []) or []:
-                        name = normalize_player_name_for_odds(o.get("name", ""))
-                        point = o.get("point")
-                        if point is None:
-                            continue
-                        point = float(point)
-                        index[name] = index.get(name, 0.0) + point
-                        counts[name] = counts.get(name, 0) + 1
+            if item.get("type", "").lower() not in ("new_player", "player", "players"):
+                continue
+            pid = str(item.get("id"))
+            attr = item.get("attributes", {}) or {}
+            name = (
+                attr.get("display_name")
+                or attr.get("name")
+                or attr.get("full_name")
+            )
+            if pid and name:
+                mapping[pid] = normalize_player_name_for_pp(name)
+        except Exception:
+            continue
+    return mapping
+
+
+def get_prizepicks_line(player: str, market: str, board: dict):
+    """
+    Try to locate the current PrizePicks line for (player, market).
+
+    Returns:
+        float(line) or None if not found / API blocked.
+    """
+    if not board or "data" not in board:
+        return None
+
+    target_name = normalize_player_name_for_pp(player)
+    desired_stats = PP_MARKET_MAP.get(market, [])
+
+    # Map player_id -> normalized player name
+    player_map = _build_pp_player_map(board)
+
+    best_line = None
+
+    for proj in board.get("data", []):
+        try:
+            attr = proj.get("attributes", {}) or {}
+            stat_type = (
+                attr.get("stat_type")
+                or attr.get("projection_type")
+                or attr.get("stat_name")
+                or ""
+            )
+            line_val = (
+                attr.get("line_score")
+                or attr.get("value")
+                or attr.get("line")
+            )
+
+            if line_val is None:
+                continue
+
+            # Get player id from attributes or relationships
+            pid = attr.get("new_player_id") or attr.get("player_id")
+            if not pid and "relationships" in proj:
+                rel = proj["relationships"].get("new_player") or proj["relationships"].get("player")
+                if rel and "data" in rel:
+                    pid = rel["data"].get("id")
+
+            if not pid:
+                continue
+
+            norm_name = player_map.get(str(pid), "")
+            if norm_name != target_name:
+                continue
+
+            # Market match
+            if desired_stats and stat_type not in desired_stats:
+                continue
+
+            best_line = float(line_val)
+            break
         except Exception:
             continue
 
-    # Convert sums to averages
-    for nm, total in list(index.items()):
-        c = counts.get(nm, 1)
-        index[nm] = total / max(c, 1)
-    return index
+    return best_line
 
 
-def get_oddsapi_line(player: str, market: str) -> float | None:
+def auto_detect_matchup_from_board(player: str, board: dict):
     """
-    Main entry: given a player name + UI market, return the consensus line.
-
-    - Maps UI market → Odds API market key.
-    - Fetches / caches the board for that market.
-    - Builds an index of player -> average line across books.
+    Best-effort team + opponent detection from PrizePicks JSON.
+    If we can't find them, returns (None, None) and the model
+    simply skips defense-adjustment rather than breaking.
     """
-    market_key = ODDS_MARKET_MAP.get(market)
-    if not market_key:
-        return None
+    if not board:
+        return None, None
 
-    games = fetch_oddsapi_board(market_key)
-    if not games:
-        return None
+    target_name = normalize_player_name_for_pp(player)
+    player_map = _build_pp_player_map(board)
 
-    index = _build_odds_player_index(games, market_key)
-    target = normalize_player_name_for_odds(player)
-    return index.get(target)
+    # Reverse-map name -> ids that match this player
+    matching_ids = {pid for pid, nm in player_map.items() if nm == target_name}
+    if not matching_ids:
+        return None, None
+
+    team = None
+    opp = None
+
+    # Many implementations store team/opp on projection attributes.
+    for proj in board.get("data", []):
+        try:
+            attr = proj.get("attributes", {}) or {}
+            pid = (
+                attr.get("new_player_id")
+                or attr.get("player_id")
+            )
+            if not pid or str(pid) not in matching_ids:
+                continue
+
+            # Try various common field names for team/opponent.
+            team = attr.get("team_abbrev") or attr.get("team") or attr.get("home_team")
+            opp = (
+                attr.get("opp_team_abbrev")
+                or attr.get("opponent")
+                or attr.get("away_team")
+            )
+
+            if isinstance(team, str):
+                team = team.upper()
+            if isinstance(opp, str):
+                opp = opp.upper()
+
+            return team, opp
+        except Exception:
+            continue
+
+    return None, None
+
+
+def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> bool:
+    """
+    Simple blowout heuristic.
+
+    The official PrizePicks API doesn't always expose spreads directly.
+    Here we approximate:
+
+    - If the same matchup (team vs opp) appears with a very large
+      number of props (e.g. 8+), treat it as higher blowout risk,
+      because those are often marquee or unbalanced games.
+
+    This is intentionally conservative and never breaks the app.
+    """
+    if not board or not team or not opp:
+        return False
+
+    team = team.upper()
+    opp = opp.upper()
+    count = 0
+
+    for proj in board.get("data", []):
+        try:
+            attr = proj.get("attributes", {}) or {}
+            t = (
+                (attr.get("team_abbrev") or attr.get("team") or "")
+                .upper()
+            )
+            o = (
+                (attr.get("opp_team_abbrev") or attr.get("opponent") or "")
+                .upper()
+            )
+            if t == team and o == opp:
+                count += 1
+        except Exception:
+            continue
+
+    # Tune this threshold as you get more experience with the data.
+    return count >= 8
+
 # =========================================================
 #  PART 5 — MARKET BASELINE LIBRARY
 # =========================================================
@@ -738,7 +798,7 @@ def compute_leg_projection(player: str, market: str, line: float | None,
     if line is None or line <= 0:
         return None, "No valid line for this player/market."
 
-    # Opponent detection — preference: user input → live book → last game
+    # Opponent detection — preference: user input → PrizePicks → last game
     opp = None
     if user_opp:
         opp = user_opp.strip().upper()
@@ -994,18 +1054,7 @@ tab_model, tab_results, tab_history, tab_calib = st.tabs(
 with tab_model:
     st.subheader("2-Pick Projection & Edge (Bootstrap Monte Carlo)")
 
-    board_pts  = fetch_oddsapi_board("player_points")
-    board_reb  = fetch_oddsapi_board("player_rebounds")
-    board_ast  = fetch_oddsapi_board("player_assists")
-    board_pra  = fetch_oddsapi_board("player_points_rebounds_assists")
-
-    board = {
-        "Points": board_pts,
-        "Rebounds": board_reb,
-        "Assists": board_ast,
-        "PRA": board_pra
-}
-
+    board = fetch_prizepicks_board()
 
     c1, c2 = st.columns(2)
 
@@ -1042,22 +1091,22 @@ with tab_model:
         line2_used = None
 
         if p1 and not manual1:
-            auto_line1 = get_oddsapi_line(p1, m1)
+            auto_line1 = get_prizepicks_line(p1, m1, board)
             if auto_line1 is None:
-                st.warning("Could not auto-fetch live book line for Player 1. Please enable manual override and enter line.")
+                st.warning("Could not auto-fetch PrizePicks line for Player 1. Please enable manual override and enter line.")
             else:
                 line1_used = auto_line1
-                st.info(f"P1 auto live book line detected: {auto_line1:.1f}")
+                st.info(f"P1 auto PrizePicks line detected: {auto_line1:.1f}")
         elif p1 and manual1:
             line1_used = l1
 
         if p2 and not manual2:
-            auto_line2 = get_oddsapi_line(p2, m2)
+            auto_line2 = get_prizepicks_line(p2, m2, board)
             if auto_line2 is None:
-                st.warning("Could not auto-fetch live book line for Player 2. Please enable manual override and enter line.")
+                st.warning("Could not auto-fetch PrizePicks line for Player 2. Please enable manual override and enter line.")
             else:
                 line2_used = auto_line2
-                st.info(f"P2 auto live book line detected: {auto_line2:.1f}")
+                st.info(f"P2 auto PrizePicks line detected: {auto_line2:.1f}")
         elif p2 and manual2:
             line2_used = l2
 
