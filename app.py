@@ -1045,7 +1045,7 @@ with tab_model:
             line1_used = l1
 
         if p2 and not manual2:
-            auto_line2 = get_oddsapi_line(p2, m2, board)
+            auto_line2 = get_oddsapi_line(p2, m2)
             if auto_line2 is None:
                 st.warning("Could not auto-fetch live book line for Player 2. Please enable manual override and enter line.")
             else:
