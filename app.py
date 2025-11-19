@@ -994,7 +994,11 @@ tab_model, tab_results, tab_history, tab_calib = st.tabs(
 with tab_model:
     st.subheader("2-Pick Projection & Edge (Bootstrap Monte Carlo)")
 
-    board = fetch_oddsapi_board()
+board_pts = fetch_oddsapi_board("player_points")
+board_reb = fetch_oddsapi_board("player_rebounds")
+board_ast = fetch_oddsapi_board("player_assists")
+board_pra = fetch_oddsapi_board("player_points_rebounds_assists")
+
 
     c1, c2 = st.columns(2)
 
