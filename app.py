@@ -994,10 +994,17 @@ tab_model, tab_results, tab_history, tab_calib = st.tabs(
 with tab_model:
     st.subheader("2-Pick Projection & Edge (Bootstrap Monte Carlo)")
 
-    board_pts = fetch_oddsapi_board("player_points")
-    board_reb = fetch_oddsapi_board("player_rebounds")
-    board_ast = fetch_oddsapi_board("player_assists")
-    board_pra = fetch_oddsapi_board("player_points_rebounds_assists")
+    board_pts  = fetch_oddsapi_board("player_points")
+    board_reb  = fetch_oddsapi_board("player_rebounds")
+    board_ast  = fetch_oddsapi_board("player_assists")
+    board_pra  = fetch_oddsapi_board("player_points_rebounds_assists")
+
+    board = {
+        "Points": board_pts,
+        "Rebounds": board_reb,
+        "Assists": board_ast,
+        "PRA": board_pra
+}
 
 
     c1, c2 = st.columns(2)
@@ -1035,7 +1042,7 @@ with tab_model:
         line2_used = None
 
         if p1 and not manual1:
-            auto_line1 = get_oddsapi_line(p1, m1, board)
+            auto_line1 = get_oddsapi_line(p1, m1)
             if auto_line1 is None:
                 st.warning("Could not auto-fetch live book line for Player 1. Please enable manual override and enter line.")
             else:
