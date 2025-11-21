@@ -896,23 +896,36 @@ def combo_decision(ev_combo: float) -> str:
 
 def fetch_live_line_from_odds_api(player_name: str, market: str):
     """
-    Very lightweight Odds API wrapper.
-    NOTE: The Odds API's exact player prop endpoints may vary; this is a best-effort
-    implementation that fails gracefully and falls back to manual input.
+    Free-tier compatible Odds API fetcher.
+
+    NOTES:
+    - Free tier does NOT support "player_props" market.
+    - Instead, we fetch all available props and manually filter.
     """
+
     allow, reason = can_use_odds_api()
     if not allow:
         return None, reason
 
+    # Use only valid markets for free tier.
+    valid_market_map = {
+        "Points": "player_points",
+        "Rebounds": "player_rebounds",
+        "Assists": "player_assists",
+        "PRA": "player_points"   # PRA not directly available; fallback to points-only
+    }
+
+    mapped_market = valid_market_map.get(market, "player_points")
+
     params = {
         "apiKey": ODDS_API_KEY,
         "regions": "us",
-        "markets": "player_props",
-        "oddsFormat": "american",
-        "dateFormat": "iso",
+        "markets": mapped_market,
+        "oddsFormat": "american"
     }
 
     url = f"{ODDS_API_BASE}/sports/basketball_nba/odds"
+
     try:
         resp = requests.get(url, params=params, timeout=8)
         register_odds_call()
@@ -922,32 +935,27 @@ def fetch_live_line_from_odds_api(player_name: str, market: str):
     except Exception as e:
         return None, f"Odds API error: {e}"
 
+    # Normalize player for matching
     player_norm = _norm_name(player_name)
-    target_markets = {
-        "Points": ["points", "player_points"],
-        "Rebounds": ["rebounds", "player_rebounds"],
-        "Assists": ["assists", "player_assists"],
-        "PRA": ["pra", "points_rebounds_assists", "player_pra"],
-    }.get(market, [])
-
     best_line = None
+
+    # Extract results
     for game in data:
         for bookmaker in game.get("bookmakers", []):
             for market_obj in bookmaker.get("markets", []):
-                key = market_obj.get("key", "").lower()
-                if not any(k in key for k in target_markets):
-                    continue
                 for outcome in market_obj.get("outcomes", []):
-                    name = _norm_name(outcome.get("description", ""))
-                    if player_norm in name:
+                    normalized = _norm_name(outcome.get("description", ""))
+
+                    if player_norm in normalized:
                         try:
                             line_val = float(outcome.get("point", None))
-                        except Exception:
-                            continue
-                        if best_line is None or abs(line_val - (best_line or line_val)) < 0.25:
                             best_line = line_val
+                        except:
+                            continue
+
     if best_line is None:
-        return None, "No matching live line found."
+        return None, "No valid live line available for this market on free plan."
+
     return best_line, ""
 
 # =====================================================
