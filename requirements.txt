@@ -1,7 +1,7 @@
 streamlit
 pandas
 numpy
+requests
+nba_api
 plotly
 scipy
-nba_api
-requests
