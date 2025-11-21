@@ -1071,38 +1071,40 @@ with tab_model:
             if risk_note:
                 st.warning(risk_note)
             # ---------------------------------------------------------
-# AUTO-LOG PROMPT AFTER MODEL RUN
-# ---------------------------------------------------------
-st.markdown("---")
-st.subheader("📝 Quick Log")
+            # AUTO-LOG PROMPT AFTER MODEL RUN
+            # ---------------------------------------------------------
+            st.markdown("---")
+            st.subheader("📝 Quick Log")
 
-log_choice = st.radio(
-    "Did you place this bet?",
-    ["No", "Yes"],
-    horizontal=True,
+            log_choice = st.radio(
+                "Did you place this bet?",
+                ["No", "Yes"],
+                horizontal=True,
 )
 
-if log_choice == "Yes" and (leg1 and leg2):
-    ensure_history()
+            if log_choice == "Yes" and (leg1 and leg2):
+                ensure_history()
 
-    # Auto-compute values for the log
-    log_row = {
-        "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "Player": f"{leg1['player']} + {leg2['player']}",
-        "Market": "Combo",
-        "Line": f"{leg1['line']} / {leg2['line']}",
-        "EV": round(ev_combo * 100, 2),
-        "Stake": stake,
-        "Result": "Pending",
-        "CLV": 0.0,
-        "KellyFrac": fractional_kelly,
+                # Auto-compute values for the log
+                log_row = {
+                    "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "Player": f"{leg1['player']} + {leg2['player']}",
+                    "Market": "Combo",
+                    "Line": f"{leg1['line']} / {leg2['line']}",
+                    "EV": round(ev_combo * 100, 2),
+                    "Stake": stake,
+                    "Result": "Pending",
+                    "CLV": 0.0,
+                    "KellyFrac": fractional_kelly,
     }
 
-    df = load_history()
-    df = pd.concat([df, pd.DataFrame([log_row])], ignore_index=True)
-    save_history(df)
+                df = load_history()
+                df = pd.concat([df, pd.DataFrame([log_row])], ignore_index=True)
+                save_history(df)
 
-    st.success("Bet logged in history ✅")
+                st.success("Bet logged in history ✅")
+
+
     
 
             # Baseline library recap
