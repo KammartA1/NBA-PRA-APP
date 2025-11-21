@@ -1181,9 +1181,10 @@ with tab_model:
 
     scanner_players = st.text_area(
         "Enter players (one per line) as: Player Name | Market | Opp (abbr)",
-        value="Nikola Jokic | PRA | LAL
-Anthony Davis | Rebounds | DEN",
-    )
+        value="""Nikola Jokic | PRA | LAL
+    Anthony Davis | Rebounds | DEN""",
+)
+
 
     run_scan = st.button("Run Edge Scanner 🔍")
 
