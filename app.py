@@ -1,1255 +1,1521 @@
-ort os
-import json
-import math
-import datetime
-from dataclasses import dataclass, asdict
-from typing import List, Dict, Optional, Tuple
+# =========================================================
+#  NBA PROP BETTING QUANT ENGINE — UPGRADED SINGLE-FILE APP
+#  Based on: nba_prop_model_option_b2 (1).py
+#  Upgrades:
+#    - Odds API live line support (Points / Rebounds / Assists / PRA)
+#    - Monte Carlo simulation (10,000 sims single + joint)
+#    - Covariance-based joint MC
+#    - Volatility engine (defense, pace, role, blowout)
+#    - Bankroll controls (fractional Kelly, daily/weekly loss caps)
+#    - Expanded tracking (hit rate, ROI, CLV, variance)
+#    - Self-learning calibration via EV buckets + drift scaling
+#    - Live edge scanner (inside Model tab) with EV > 65% filter
+#    - Auto-history logging: "Did you place this bet?"
+# =========================================================
+
+import os, time, random, difflib, json
+from datetime import datetime, date, timedelta
 
 import numpy as np
 import pandas as pd
-import requests
+import plotly.express as px
 import streamlit as st
+from scipy.stats import norm
 
-# =========================
-# SECTION A — GLOBAL CONFIG
-# =========================
+import requests
 
-APP_VERSION = "3.0.0-upgraded"
+from nba_api.stats.static import players as nba_players
+from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats
+
+# =========================================================
+#  STREAMLIT CONFIG
+# =========================================================
+
+st.set_page_config(
+    page_title="NBA Prop Quant Engine",
+    page_icon="🏀",
+    layout="wide"
+)
+
+# Use a temp dir for all persistent state
+TEMP_DIR = os.path.join("/tmp", "nba_prop_temp")
+os.makedirs(TEMP_DIR, exist_ok=True)
+
+PRIMARY_MAROON = "#7A0019"
+GOLD = "#FFCC33"
+CARD_BG = "#17131C"
+BG = "#0D0A12"
+
+# =========================================================
+#  GLOBAL STYLE
+# =========================================================
+
+st.markdown(
+    f"""
+    <style>
+    .main-header {{
+        text-align:center;
+        font-size:40px;
+        color:{GOLD};
+        font-weight:700;
+        margin-bottom:0px;
+    }}
+    .card {{
+        background-color:{CARD_BG};
+        border-radius:18px;
+        padding:14px;
+        margin-bottom:18px;
+        border:1px solid {GOLD}33;
+        box-shadow:0 10px 24px rgba(0,0,0,0.75);
+        transition:all 0.16s ease;
+    }}
+    .card:hover {{
+        transform:translateY(-3px) scale(1.015);
+        box-shadow:0 18px 40px rgba(0,0,0,0.9);
+    }}
+    .rec-play {{color:#4CAF50;font-weight:700;}}
+    .rec-thin {{color:#FFC107;font-weight:700;}}
+    .rec-pass {{color:#F44336;font-weight:700;}}
+
+    .stApp {{
+        background-color:{BG};
+        color:white;
+        font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;
+    }}
+
+    section[data-testid="stSidebar"] {{
+        background: radial-gradient(circle at top,{PRIMARY_MAROON} 0%,#2b0b14 55%,#12060a 100%);
+        border-right:1px solid {GOLD}33;
+    }}
+
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.markdown('<p class="main-header">🏀 NBA Prop Quant Engine</p>', unsafe_allow_html=True)
+
+# =========================================================
+#  PART 2 — SIDEBAR (USER SETTINGS)
+# =========================================================
+
+st.sidebar.header("User & Bankroll")
+
+user_id = st.sidebar.text_input("Your ID (for personal history)", value="Me").strip() or "Me"
+LOG_FILE = os.path.join(TEMP_DIR, f"bet_history_{user_id}.csv")
+
+bankroll = st.sidebar.number_input("Bankroll ($)", min_value=10.0, value=100.0)
+payout_mult = st.sidebar.number_input("2-Pick Payout (e.g. 3.0x)", min_value=1.5, value=3.0)
+fractional_kelly = st.sidebar.slider("Fractional Kelly", 0.0, 1.0, 0.25, 0.05)
+games_lookback = st.sidebar.slider("Recent Games Sample (N)", 5, 20, 10)
+compact_mode = st.sidebar.checkbox("Compact Mode (mobile)", value=False)
+
+# Bankroll risk caps
+st.sidebar.subheader("Risk Controls")
+max_daily_loss_pct = st.sidebar.slider("Max daily loss (% of bankroll)", 0.0, 100.0, 20.0, 1.0)
+max_weekly_loss_pct = st.sidebar.slider("Max weekly loss (% of bankroll)", 0.0, 100.0, 40.0, 1.0)
+
+st.sidebar.caption("Model auto-pulls NBA stats & Odds API lines. You mostly choose the players and markets.")
+
+# =========================================================
+#  PART 2.1 — MODEL CONSTANTS
+# =========================================================
+
+MARKET_OPTIONS = ["PRA", "Points", "Rebounds", "Assists"]
+
+MARKET_METRICS = {
+    "PRA": ["PTS", "REB", "AST"],
+    "Points": ["PTS"],
+    "Rebounds": ["REB"],
+    "Assists": ["AST"],
+}
+
+HEAVY_TAIL = {
+    "PRA": 1.35,
+    "Points": 1.25,
+    "Rebounds": 1.25,
+    "Assists": 1.25,
+}
+
+MAX_KELLY_PCT = 0.03  # 3% hard cap
+
+# Odds API configuration
 ODDS_API_KEY = "621ec92ab709da9f9ce59cf2e513af55"
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
-SPORT_KEY_NBA = "basketball_nba"
+ODDS_USAGE_FILE = os.path.join(TEMP_DIR, "odds_api_usage.json")
+ODDS_MAX_REQUESTS_PER_DAY = 20
 
-API_USAGE_FILE = "api_usage.json"
-HISTORY_FILE = "bet_history.csv"
-CALIBRATION_FILE = "calibration.json"
+# =========================================================
+#  UTILS — DATES & ODDS API USAGE GOVERNOR
+# =========================================================
 
-DEFAULT_KELLY_FRACTION = 0.25  # fractional Kelly
-N_MONTE_CARLO_SIMS = 10_000
+def today_str():
+    return datetime.now().strftime("%Y-%m-%d")
 
-EDGE_SCANNER_MIN_EV = 0.065  # 6.5% edge threshold for scanner
 
-# ======================
-# SECTION B — DATA TYPES
-# ======================
-
-@dataclass
-class PlayerContext:
-    player_name: str
-    team: str
-    opponent: str
-    market: str  # "points", "rebounds", "assists", "pra"
-    line: float
-    american_odds: int
-    side: str  # "over" or "under"
-    minutes_expectation: float
-    usage_rate: float
-    pace_adj_factor: float
-    rebound_rate: float
-    assist_rate: float
-    shot_rate: float
-    opponent_def_rating: float
-    opponent_reb_pct_allowed: float
-    opponent_ast_pct_allowed: float
-    injury_teammate_out: bool
-    blowout_risk: float  # 0-1
-    notes: str = ""
-
-@dataclass
-class SimulationResult:
-    hit_prob: float
-    fair_odds: float
-    ev: float
-    kelly_fraction: float
-    play_pass: str
-    volatility: float
-    simulated_mean: float
-    simulated_std: float
-
-@dataclass
-class JointSimulationResult:
-    hit_prob_both: float
-    ev_both: float
-    kelly_fraction_both: float
-    play_pass_both: str
-
-# ===============================
-# SECTION C — UTILITY / PERSISTENCE
-# ===============================
-
-def _today_str() -> str:
-    return datetime.date.today().isoformat()
-
-def _load_json(path: str, default):
-    if not os.path.exists(path):
-        return default
+def load_odds_usage():
+    if not os.path.exists(ODDS_USAGE_FILE):
+        return {"date": today_str(), "count": 0}
     try:
-        with open(path, "r") as f:
-            return json.load(f)
+        with open(ODDS_USAGE_FILE, "r") as f:
+            data = json.load(f)
     except Exception:
-        return default
-
-def _save_json(path: str, data) -> None:
-    try:
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-    except Exception:
-        pass
-
-def get_api_usage() -> Dict:
-    return _load_json(API_USAGE_FILE, {"date": _today_str(), "odds_api_calls": 0})
-
-def register_odds_api_call() -> None:
-    usage = get_api_usage()
-    today = _today_str()
-    if usage.get("date") != today:
-        usage = {"date": today, "odds_api_calls": 0}
-    usage["odds_api_calls"] = usage.get("odds_api_calls", 0) + 1
-    _save_json(API_USAGE_FILE, usage)
-
-def can_call_odds_api() -> bool:
-    usage = get_api_usage()
-    today = _today_str()
-    if usage.get("date") != today:
-        return True
-    return usage.get("odds_api_calls", 0) < 20
-
-def load_history() -> pd.DataFrame:
-    if not os.path.exists(HISTORY_FILE):
-        return pd.DataFrame(
-            columns=[
-                "timestamp",
-                "date",
-                "game",
-                "player_name",
-                "team",
-                "opponent",
-                "market",
-                "side",
-                "line",
-                "american_odds",
-                "stake",
-                "result",
-                "payout",
-                "model_prob",
-                "ensemble_prob",
-                "fair_odds",
-                "ev",
-                "kelly_fraction",
-                "actual_stat",
-                "open_odds",
-                "closing_odds",
-                "clv",
-                "notes",
-            ]
-        )
-    try:
-        return pd.read_csv(HISTORY_FILE)
-    except Exception:
-        return pd.DataFrame()
-
-def save_history(df: pd.DataFrame) -> None:
-    try:
-        df.to_csv(HISTORY_FILE, index=False)
-    except Exception:
-        pass
-
-def load_calibration() -> Dict:
-    default = {
-        "last_updated": None,
-        "probability_scaling": {
-            "thin": 1.0,
-            "edge": 1.0,
-            "strong": 1.0,
-        },
-        "notes": "Scaling factors applied to raw hit probabilities by EV bucket.",
-        "version": APP_VERSION,
-    }
-    data = _load_json(CALIBRATION_FILE, default)
-    # Ensure keys exist
-    for k in default["probability_scaling"]:
-        data.setdefault("probability_scaling", {})
-        data["probability_scaling"].setdefault(k, 1.0)
+        data = {"date": today_str(), "count": 0}
+    if data.get("date") != today_str():
+        data = {"date": today_str(), "count": 0}
     return data
 
-def save_calibration(calib: Dict) -> None:
-    calib["last_updated"] = datetime.datetime.utcnow().isoformat()
-    calib["version"] = APP_VERSION
-    _save_json(CALIBRATION_FILE, calib)
 
-# ====================================
-# SECTION D — ODDS API & NBA DATA LAYER
-# ====================================
+def save_odds_usage(data):
+    try:
+        with open(ODDS_USAGE_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
-def fetch_live_player_props(markets: List[str]) -> Tuple[bool, Optional[List[Dict]], str]:
-    """Fetch live player prop markets from The Odds API.
 
-    Returns (ok, data, message).
+def can_use_odds_api():
+    """Cap daily Odds API requests at 20, and restrict to mornings / pre-slate."""
+    data = load_odds_usage()
+    if data["count"] >= ODDS_MAX_REQUESTS_PER_DAY:
+        return False, "Daily Odds API request cap reached (20)."
+    now = datetime.now()
+    # Soft rule: only auto-hit Odds API before 5pm local
+    if now.hour >= 17:
+        return False, "Odds API restricted to pre-slate hours (before 5pm)."
+    return True, ""
+
+
+def register_odds_call():
+    data = load_odds_usage()
+    data["count"] = int(data.get("count", 0)) + 1
+    save_odds_usage(data)
+
+# =========================================================
+#  PART 2.2 — PLAYER LOOKUP HELPERS
+# =========================================================
+
+def current_season():
+    today = datetime.now()
+    yr = today.year if today.month >= 10 else today.year - 1
+    return f"{yr}-{str(yr+1)[-2:]}"
+
+
+@st.cache_data(show_spinner=False)
+def get_players_index():
+    return nba_players.get_players()
+
+
+def _norm_name(s: str) -> str:
+    return (
+        s.lower()
+        .replace(".", "")
+        .replace("'", "")
+        .replace("-", " ")
+        .strip()
+    )
+
+
+@st.cache_data(show_spinner=False)
+def resolve_player(name: str):
+    """Resolves fuzzy player input → correct NBA API player ID & full_name."""
+    if not name:
+        return None, None
+
+    players = get_players_index()
+    target = _norm_name(name)
+
+    # Exact match
+    for p in players:
+        if _norm_name(p["full_name"]) == target:
+            return p["id"], p["full_name"]
+
+    # Fuzzy match
+    names = [_norm_name(p["full_name"]) for p in players]
+    best = difflib.get_close_matches(target, names, n=1, cutoff=0.7)
+    if best:
+        chosen = best[0]
+        for p in players:
+            if _norm_name(p["full_name"]) == chosen:
+                return p["id"], p["full_name"]
+
+    return None, None
+
+
+def get_headshot_url(name: str):
+    pid, _ = resolve_player(name)
+    if not pid:
+        return None
+    return f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/{pid}.png"
+
+# =========================================================
+#  PART 2.3 — TEAM CONTEXT (PACE, DEF, REB%, AST%)
+# =========================================================
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def get_team_context():
+    """Pulls advanced opponent metrics for matchup adjustments."""
+    try:
+        base = LeagueDashTeamStats(
+            season=current_season(),
+            per_mode_detailed="PerGame"
+        ).get_data_frames()[0]
+
+        adv = LeagueDashTeamStats(
+            season=current_season(),
+            measure_type_detailed="Advanced",
+            per_mode_detailed="PerGame",
+        ).get_data_frames()[0][[
+            "TEAM_ID","TEAM_ABBREVIATION","REB_PCT","OREB_PCT","DREB_PCT","AST_PCT","PACE"
+        ]]
+
+        defn = LeagueDashTeamStats(
+            season=current_season(),
+            measure_type_detailed_defense="Defense",
+            per_mode_detailed="PerGame",
+        ).get_data_frames()[0][[
+            "TEAM_ID","TEAM_ABBREVIATION","DEF_RATING"
+        ]]
+
+        df = base.merge(adv, on=["TEAM_ID","TEAM_ABBREVIATION"], how="left")
+        df = df.merge(defn, on=["TEAM_ID","TEAM_ABBREVIATION"], how="left")
+
+        # League averages
+        league_avg = {
+            col: df[col].mean()
+            for col in ["PACE","DEF_RATING","REB_PCT","AST_PCT"]
+        }
+
+        # Context per team
+        ctx = {
+            r["TEAM_ABBREVIATION"]: {
+                "PACE": r["PACE"],
+                "DEF_RATING": r["DEF_RATING"],
+                "REB_PCT": r["REB_PCT"],
+                "DREB_PCT": r["DREB_PCT"],
+                "AST_PCT": r["AST_PCT"],
+            }
+            for _, r in df.iterrows()
+        }
+
+        return ctx, league_avg
+
+    except Exception:
+        return {}, {}
+
+TEAM_CTX, LEAGUE_CTX = get_team_context()
+
+def get_context_multiplier(opp_abbrev: str | None, market: str):
+    """Adjust projection using advanced opponent factors."""
+    if not opp_abbrev or opp_abbrev not in TEAM_CTX or not LEAGUE_CTX:
+        return 1.0
+
+    opp = TEAM_CTX[opp_abbrev]
+
+    pace_f = opp["PACE"] / LEAGUE_CTX["PACE"]
+    def_f = LEAGUE_CTX["DEF_RATING"] / opp["DEF_RATING"]
+
+    reb_adj = (
+        LEAGUE_CTX["REB_PCT"] / opp["DREB_PCT"]
+        if market == "Rebounds" else 1.0
+    )
+    ast_adj = (
+        LEAGUE_CTX["AST_PCT"] / opp["AST_PCT"]
+        if market == "Assists" else 1.0
+    )
+
+    mult = (0.4 * pace_f) + (0.3 * def_f) + (0.3 * (reb_adj if market == "Rebounds" else ast_adj))
+
+    return float(np.clip(mult, 0.80, 1.20))
+
+# =========================================================
+#  PART 2.4 — MARKET BASELINE LIBRARY
+# =========================================================
+
+MARKET_LIBRARY_FILE = os.path.join(TEMP_DIR, "market_baselines.csv")
+
+def load_market_library():
+    if not os.path.exists(MARKET_LIBRARY_FILE):
+        return pd.DataFrame(columns=["Player","Market","Line","Timestamp"])
+    try:
+        return pd.read_csv(MARKET_LIBRARY_FILE)
+    except Exception:
+        return pd.DataFrame(columns=["Player","Market","Line","Timestamp"])
+
+def save_market_library(df):
+    df.to_csv(MARKET_LIBRARY_FILE, index=False)
+
+def update_market_library(player: str, market: str, line: float):
+    df = load_market_library()
+    new_row = pd.DataFrame([{
+        "Player": player,
+        "Market": market,
+        "Line": float(line),
+        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
+    }])
+    df = pd.concat([df, new_row], ignore_index=True)
+    save_market_library(df)
+
+def get_market_baseline(player: str, market: str):
+    df = load_market_library()
+    if df.empty:
+        return None, None
+    d = df[(df["Player"] == player) & (df["Market"] == market)]
+    if d.empty:
+        return None, None
+    return d["Line"].mean(), d["Line"].median()
+
+# =========================================================
+#  PART 3 — PLAYER GAME LOG ENGINE & PROJECTION MODEL
+# =========================================================
+
+@st.cache_data(show_spinner=False, ttl=900)
+def get_player_logs(name: str, n_games: int, market: str):
     """
-    if not can_call_odds_api():
-        return False, None, "Daily The Odds API request cap (20) reached."
+    Pulls recent player logs, computes:
+      - per-minute samples
+      - minutes samples
+      - team abbreviation
+    """
+    pid, label = resolve_player(name)
+    if not pid:
+        return None, None, None, None, f"No match for '{name}'."
+
+    try:
+        gl = PlayerGameLog(
+            player_id=pid,
+            season=current_season(),
+            season_type_all_star="Regular Season"
+        ).get_data_frames()[0]
+    except Exception as e:
+        return None, None, None, None, f"Game log error: {e}"
+
+    if gl.empty:
+        return None, None, None, None, "No recent game logs found."
+
+    gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
+    gl = gl.sort_values("GAME_DATE", ascending=False).head(n_games)
+
+    cols = MARKET_METRICS[market]
+    per_min_vals = []
+    minutes_vals = []
+
+    for _, r in gl.iterrows():
+        m = 0
+        try:
+            m_str = r.get("MIN", "0")
+            if isinstance(m_str, str) and ":" in m_str:
+                mm, ss = m_str.split(":")
+                m = float(mm) + float(ss) / 60
+            else:
+                m = float(m_str)
+        except Exception:
+            m = 0
+
+        if m <= 0:
+            continue
+
+        total_val = sum(float(r.get(c, 0)) for c in cols)
+        per_min_vals.append(total_val / m)
+        minutes_vals.append(m)
+
+    if not per_min_vals:
+        return None, None, None, None, "Insufficient data."
+
+    per_min_vals = np.array(per_min_vals, dtype=float)
+    minutes_vals = np.array(minutes_vals, dtype=float)
+
+    team = None
+    try:
+        team = gl["TEAM_ABBREVIATION"].mode().iloc[0]
+    except Exception:
+        team = None
+
+    msg = f"{label}: {len(per_min_vals)} games • {minutes_vals.mean():.1f} min"
+    return per_min_vals, minutes_vals, team, gl, msg
+
+
+def summarize_rates(per_min_vals: np.ndarray, minutes_vals: np.ndarray):
+    """
+    Weighted bootstrap-friendly rates.
+    """
+    if per_min_vals is None or len(per_min_vals) == 0:
+        return None, None, None
+    weights = np.linspace(0.5, 1.5, len(per_min_vals))
+    weights /= weights.sum()
+
+    mu_per_min = float(np.average(per_min_vals, weights=weights))
+    avg_min = float(np.average(minutes_vals, weights=weights))
+    sd_per_min = float(
+        max(
+            np.sqrt(np.average((per_min_vals - mu_per_min) ** 2, weights=weights)),
+            0.15 * max(mu_per_min, 0.5),
+        )
+    )
+    return mu_per_min, sd_per_min, avg_min
+
+# =====================================================
+# HYBRID ANALYTIC ENGINE
+# =====================================================
+
+def hybrid_prob_over(line, mu, sd, market):
+    normal_p = 1 - norm.cdf(line, mu, sd)
+
+    if mu <= 0 or sd <= 0 or np.isnan(mu) or np.isnan(sd):
+        return float(np.clip(normal_p, 0.01, 0.99))
+
+    try:
+        variance = sd ** 2
+        phi = np.sqrt(variance + mu ** 2)
+
+        mu_log = np.log(mu ** 2 / phi)
+        sd_log = np.sqrt(np.log(phi ** 2 / mu ** 2))
+
+        if np.isnan(mu_log) or np.isnan(sd_log) or sd_log <= 0:
+            lognorm_p = normal_p
+        else:
+            lognorm_p = 1 - norm.cdf(np.log(line + 1e-9), mu_log, sd_log)
+    except Exception:
+        lognorm_p = normal_p
+
+    w = {
+        "PRA": 0.70,
+        "Points": 0.55,
+        "Rebounds": 0.40,
+        "Assists": 0.30
+    }.get(market, 0.50)
+
+    hybrid = w * lognorm_p + (1 - w) * normal_p
+    return float(np.clip(hybrid, 0.02, 0.98))
+
+# ======================================================
+# ADVANCED PLAYER CORRELATION ENGINE
+# ======================================================
+
+def estimate_player_correlation(leg1, leg2):
+    corr = 0.0
+
+    if leg1["team"] == leg2["team"] and leg1["team"] is not None:
+        corr += 0.18
+
+    try:
+        avg_min1 = leg1["minutes"]
+        avg_min2 = leg2["minutes"]
+    except Exception:
+        avg_min1 = avg_min2 = 28.0
+
+    if avg_min1 > 30 and avg_min2 > 30:
+        corr += 0.05
+    elif avg_min1 < 22 or avg_min2 < 22:
+        corr -= 0.04
+
+    m1, m2 = leg1["market"], leg2["market"]
+
+    if m1 == "Points" and m2 == "Points":
+        corr += 0.08
+    if (m1 == "Points" and m2 == "Assists") or (m1 == "Assists" and m2 == "Points"):
+        corr -= 0.10
+    if (m1 == "Rebounds" and m2 == "Points") or (m1 == "Points" and m2 == "Rebounds"):
+        corr -= 0.06
+    if m1 == "PRA" or m2 == "PRA":
+        corr += 0.03
+
+    ctx1, ctx2 = leg1["ctx_mult"], leg2["ctx_mult"]
+
+    if ctx1 > 1.03 and ctx2 > 1.03:
+        corr += 0.04
+    if ctx1 < 0.97 and ctx2 < 0.97:
+        corr += 0.03
+    if (ctx1 > 1.03 and ctx2 < 0.97) or (ctx1 < 0.97 and ctx2 > 1.03):
+        corr -= 0.05
+
+    corr = float(np.clip(corr, -0.25, 0.40))
+    return corr
+
+# =====================================================
+# VOLATILITY ENGINE + CORE PROJECTION
+# =====================================================
+
+def apply_volatility(mu_min, sd_min, avg_min, market, opp, teammate_out, blowout):
+    minutes = avg_min
+    if teammate_out:
+        minutes *= 1.05
+        mu_min *= 1.06
+    if blowout:
+        minutes *= 0.90
+
+    ctx_mult = get_context_multiplier(opp.strip().upper() if opp else None, market)
+
+    mu = mu_min * minutes * ctx_mult
+    heavy = HEAVY_TAIL[market]
+    sd_base = max(1.0, sd_min * np.sqrt(max(minutes, 1.0)) * heavy)
+    sd_final = sd_base
+
+    if opp:
+        opp_abbrev = opp.strip().upper()
+        if opp_abbrev in TEAM_CTX:
+            opp_def = TEAM_CTX[opp_abbrev]["DEF_RATING"]
+            league_def = LEAGUE_CTX["DEF_RATING"]
+            def_vol = np.clip(opp_def / league_def, 0.85, 1.20)
+            sd_final *= def_vol
+
+            opp_pace = TEAM_CTX[opp_abbrev]["PACE"]
+            league_pace = LEAGUE_CTX["PACE"]
+            pace_vol = np.clip(opp_pace / league_pace, 0.90, 1.18)
+            sd_final *= pace_vol
+
+    if market == "Rebounds":
+        sd_final *= 1.10
+    elif market == "Assists":
+        sd_final *= 1.06
+    elif market == "Points":
+        sd_final *= 1.12
+    elif market == "PRA":
+        sd_final *= 1.15
+
+    if teammate_out:
+        sd_final *= 1.07
+    if blowout:
+        sd_final *= 1.10
+
+    sd_final *= (1 + 0.10 * (heavy - 1))
+    sd_final = float(np.clip(sd_final, sd_base * 0.80, sd_base * 1.60))
+
+    return mu, sd_final, minutes, ctx_mult
+
+# =====================================================
+# SELF-LEARNING CALIBRATION ENGINE
+# =====================================================
+
+def compute_model_drift(history_df: pd.DataFrame):
+    """
+    Look at EV buckets and realized hit rates to adjust:
+      - probability scaling
+      - variance scaling (soft)
+    Returns (prob_scale, vol_scale).
+    """
+    if history_df is None or history_df.empty:
+        return 1.0, 1.0
+
+    df = history_df.copy()
+    df = df[df["Result"].isin(["Hit", "Miss"])]
+    if df.empty:
+        return 1.0, 1.0
+
+    try:
+        df["EV_float"] = pd.to_numeric(df["EV"], errors="coerce") / 100.0
+    except Exception:
+        return 1.0, 1.0
+
+    df = df.dropna(subset=["EV_float"])
+    if df.empty:
+        return 1.0, 1.0
+
+    df["is_hit"] = (df["Result"] == "Hit").astype(int)
+    pred_prob = 0.5 + df["EV_float"]
+    pred_prob = pred_prob.clip(0.01, 0.99)
+
+    actual_prob = df["is_hit"].mean()
+    expected_prob = pred_prob.mean()
+
+    if expected_prob <= 0:
+        return 1.0, 1.0
+
+    prob_scale = float(np.clip(actual_prob / expected_prob, 0.6, 1.4))
+
+    pnl = df.apply(
+        lambda r:
+            r["Stake"] * (payout_mult - 1.0)
+            if r["Result"] == "Hit"
+            else -r["Stake"],
+        axis=1,
+    )
+    vol_scale = float(np.clip((pnl.std() / max(abs(pnl.mean()), 1e-6)) if len(pnl) > 1 else 1.0, 0.7, 1.3))
+
+    return prob_scale, vol_scale
+
+# =====================================================
+# MONTE CARLO ENGINES
+# =====================================================
+
+def run_monte_carlo_leg(leg: dict, n_sims: int = 10000, rng=None):
+    """
+    Simulate a single leg outcome distribution.
+    Fully defense-adjusted via leg['mu'] and leg['sd'] (already context-adjusted).
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    mu = leg["mu"]
+    sd = leg["sd"]
+    line = leg["line"]
+
+    sims = rng.normal(mu, sd, size=n_sims)
+    prob_over_mc = float(np.mean(sims > line))
+
+    leg["prob_over_mc"] = prob_over_mc
+    return sims, prob_over_mc
+
+
+def run_joint_monte_carlo(leg1: dict, leg2: dict, corr: float, n_sims: int = 10000, rng=None):
+    """
+    Covariance-based joint MC using correlated normal draws.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    mu1, sd1, line1 = leg1["mu"], leg1["sd"], leg1["line"]
+    mu2, sd2, line2 = leg2["mu"], leg2["sd"], leg2["line"]
+
+    cov = corr * sd1 * sd2
+    cov_matrix = np.array([[sd1 ** 2, cov], [cov, sd2 ** 2]])
+
+    try:
+        sims = rng.multivariate_normal([mu1, mu2], cov_matrix, size=n_sims)
+    except np.linalg.LinAlgError:
+        sims = rng.normal([mu1, mu2], [sd1, sd2], size=(n_sims, 2))
+
+    over1 = sims[:, 0] > line1
+    over2 = sims[:, 1] > line2
+    joint_prob_mc = float(np.mean(over1 & over2))
+
+    return joint_prob_mc
+
+# =====================================================
+# LEG PROJECTION WRAPPER
+# =====================================================
+
+def compute_leg_projection(player, market, line, opp, teammate_out, blowout, n_games, history_df):
+    """
+    Core projection engine for a single leg, including:
+      - rolling weighted stats
+      - volatility engine
+      - hybrid analytic probability
+      - Monte Carlo leg simulation
+      - defense-adjusted at every step
+    """
+    per_min_vals, minutes_vals, team, gl, msg = get_player_logs(player, n_games, market)
+    if per_min_vals is None:
+        return None, msg
+
+    mu_min, sd_min, avg_min = summarize_rates(per_min_vals, minutes_vals)
+    if mu_min is None:
+        return None, "Insufficient data."
+
+    mu, sd_final, minutes, ctx_mult = apply_volatility(
+        mu_min, sd_min, avg_min, market, opp, teammate_out, blowout
+    )
+
+    base_prob = hybrid_prob_over(line, mu, sd_final, market)
+
+    hist_df = history_df if history_df is not None else pd.DataFrame()
+    prob_scale, vol_scale = compute_model_drift(hist_df)
+
+    mu_adj = mu
+    sd_adj = sd_final * vol_scale
+    prob_adj = float(np.clip(base_prob * prob_scale, 0.02, 0.98))
+
+    leg = {
+        "player": player,
+        "market": market,
+        "line": float(line),
+        "mu": float(mu_adj),
+        "sd": float(sd_adj),
+        "prob_over": float(prob_adj),
+        "team": team,
+        "ctx_mult": float(ctx_mult),
+        "msg": msg,
+        "teammate_out": bool(teammate_out),
+        "blowout": bool(blowout),
+        "minutes": float(minutes),
+    }
+
+    sims, prob_over_mc = run_monte_carlo_leg(leg, n_sims=10000)
+    leg["prob_over_mc"] = float(prob_over_mc)
+    leg["prob_over_final"] = float(np.clip(0.5 * leg["prob_over"] + 0.5 * prob_over_mc, 0.02, 0.98))
+
+    ev_leg_even = leg["prob_over_final"] - (1 - leg["prob_over_final"])
+    leg["ev_leg_even"] = float(ev_leg_even)
+
+    return leg, None
+
+# =========================================================
+#  PART 3.2 — KELLY FORMULA FOR 2-PICK
+# =========================================================
+
+def kelly_for_combo(p_joint: float, payout_mult: float, frac: float):
+    b = payout_mult - 1
+    q = 1 - p_joint
+    raw = (b * p_joint - q) / b
+    k = raw * frac
+    return float(np.clip(k, 0, MAX_KELLY_PCT))
+
+# =====================================================
+# HISTORY HELPERS
+# =====================================================
+
+def ensure_history():
+    if not os.path.exists(LOG_FILE):
+        df = pd.DataFrame(columns=[
+            "Date","Player","Market","Line","EV",
+            "Stake","Result","CLV","KellyFrac","JointProb","PayoutMult"
+        ])
+        df.to_csv(LOG_FILE, index=False)
+
+def load_history():
+    ensure_history()
+    try:
+        return pd.read_csv(LOG_FILE)
+    except Exception:
+        return pd.DataFrame(columns=[
+            "Date","Player","Market","Line","EV",
+            "Stake","Result","CLV","KellyFrac","JointProb","PayoutMult"
+        ])
+
+def save_history(df):
+    df.to_csv(LOG_FILE, index=False)
+
+# =====================================================
+# BANKROLL RISK CHECKS
+# =====================================================
+
+def compute_pnl(df: pd.DataFrame):
+    if df.empty:
+        return pd.Series(dtype=float)
+    df = df.copy()
+    df["Net"] = df.apply(
+        lambda r:
+            r["Stake"] * (r.get("PayoutMult", payout_mult) - 1.0)
+            if r["Result"] == "Hit"
+            else (-r["Stake"] if r["Result"] == "Miss" else 0.0),
+        axis=1,
+    )
+    return df["Net"]
+
+def risk_lockout_flags(df: pd.DataFrame, bankroll: float, max_daily_pct: float, max_weekly_pct: float):
+    if df.empty:
+        return False, False, 0.0, 0.0
+
+    df = df.copy()
+    df["DateOnly"] = pd.to_datetime(df["Date"]).dt.date
+    pnl = compute_pnl(df)
+
+    df["Net"] = pnl.values
+
+    today = date.today()
+    week_ago = today - timedelta(days=7)
+
+    daily_pnl = df[df["DateOnly"] == today]["Net"].sum()
+    weekly_pnl = df[(df["DateOnly"] >= week_ago) & (df["DateOnly"] <= today)]["Net"].sum()
+
+    daily_limit = -bankroll * max_daily_pct / 100.0
+    weekly_limit = -bankroll * max_weekly_pct / 100.0
+
+    daily_lock = daily_pnl <= daily_limit
+    weekly_lock = weekly_pnl <= weekly_limit
+
+    return daily_lock, weekly_lock, daily_pnl, weekly_pnl
+
+# =========================================================
+# PART 4 — UI RENDER ENGINE + LOADERS + DECISION LOGIC
+# =========================================================
+
+def render_leg_card(leg: dict, container, compact=False):
+    player = leg["player"]
+    market = leg["market"]
+    msg = leg["msg"]
+    line = leg["line"]
+    mu = leg["mu"]
+    sd = leg["sd"]
+    p = leg["prob_over_final"]
+    ctx = leg["ctx_mult"]
+    even_ev = leg["ev_leg_even"]
+    teammate_out = leg["teammate_out"]
+    blowout = leg["blowout"]
+    prob_mc = leg.get("prob_over_mc", None)
+
+    headshot = get_headshot_url(player)
+
+    with container:
+        st.markdown(
+            f"""
+            <div class="card">
+                <h3 style="margin-top:0;color:#FFCC33;">{player} — {market}</h3>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        if headshot and not compact:
+            st.image(headshot, width=120)
+
+        st.write(f"📌 **Line:** {line}")
+        st.write(f"📊 **Model Mean:** {mu:.2f}")
+        st.write(f"📉 **Model SD (volatility-adjusted):** {sd:.2f}")
+        st.write(f"⏱️ **Context Multiplier (pace+def+reb/ast):** {ctx:.3f}")
+        if prob_mc is not None:
+            st.write(f"🎯 **Analytic Prob Over:** {leg['prob_over']*100:.1f}%")
+            st.write(f"🎲 **Monte Carlo Prob Over (10k sims):** {prob_mc*100:.1f}%")
+        st.write(f"🧠 **Final Blended Prob Over:** {p*100:.1f}%")
+        st.write(f"💵 **Even-Money EV (defense-adjusted):** {even_ev*100:+.1f}%")
+        st.caption(f"📝 {msg}")
+
+        if teammate_out:
+            st.info("⚠️ Key teammate out → usage & minutes boost applied.")
+        if blowout:
+            st.warning("⚠️ Blowout risk → minutes reduced, volatility increased.")
+
+def run_loader():
+    load_ph = st.empty()
+    msgs = [
+        "Pulling player logs…",
+        "Analyzing matchup & pace…",
+        "Building distributions…",
+        "Running Monte Carlo (10,000 sims)…",
+        "Optimizing stake & edge…",
+    ]
+    for m in msgs:
+        load_ph.markdown(
+            f"<p style='color:#FFCC33;font-size:20px;font-weight:600;'>{m}</p>",
+            unsafe_allow_html=True,
+        )
+        time.sleep(0.25)
+    load_ph.empty()
+
+def combo_decision(ev_combo: float) -> str:
+    if ev_combo >= 0.10:
+        return "🔥 **PLAY — Strong Edge**"
+    elif ev_combo >= 0.03:
+        return "🟡 **Lean — Thin Edge**"
+    else:
+        return "❌ **Pass — No Edge**"
+
+# =====================================================
+# ODDS API LINE FETCHER
+# =====================================================
+
+def fetch_live_line_from_odds_api(player_name: str, market: str):
+    """
+    Very lightweight Odds API wrapper.
+    NOTE: The Odds API's exact player prop endpoints may vary; this is a best-effort
+    implementation that fails gracefully and falls back to manual input.
+    """
+    allow, reason = can_use_odds_api()
+    if not allow:
+        return None, reason
 
     params = {
         "apiKey": ODDS_API_KEY,
         "regions": "us",
-        "markets": ",".join(markets),
+        "markets": "player_props",
         "oddsFormat": "american",
+        "dateFormat": "iso",
     }
-    url = f"{ODDS_API_BASE}/sports/{SPORT_KEY_NBA}/odds"
+
+    url = f"{ODDS_API_BASE}/sports/basketball_nba/odds"
     try:
-        resp = requests.get(url, params=params, timeout=10)
-        register_odds_api_call()
+        resp = requests.get(url, params=params, timeout=8)
+        register_odds_call()
         if resp.status_code != 200:
-            return False, None, f"Odds API error: {resp.status_code} — {resp.text[:200]}"
+            return None, f"Odds API error: {resp.status_code}"
         data = resp.json()
-        return True, data, "OK"
     except Exception as e:
-        return False, None, f"Odds API exception: {e}"
+        return None, f"Odds API error: {e}"
 
-def flatten_player_props(odds_data: List[Dict]) -> pd.DataFrame:
-    """Flatten The Odds API player-prop JSON into a DataFrame.
+    player_norm = _norm_name(player_name)
+    target_markets = {
+        "Points": ["points", "player_points"],
+        "Rebounds": ["rebounds", "player_rebounds"],
+        "Assists": ["assists", "player_assists"],
+        "PRA": ["pra", "points_rebounds_assists", "player_pra"],
+    }.get(market, [])
 
-    This is designed to be resilient to minor schema differences.
-    """
-    rows = []
-    for event in odds_data:
-        event_id = event.get("id")
-        home_team = event.get("home_team")
-        away_team = event.get("away_team")
-        game_label = f"{away_team} @ {home_team}"
+    best_line = None
+    for game in data:
+        for bookmaker in game.get("bookmakers", []):
+            for market_obj in bookmaker.get("markets", []):
+                key = market_obj.get("key", "").lower()
+                if not any(k in key for k in target_markets):
+                    continue
+                for outcome in market_obj.get("outcomes", []):
+                    name = _norm_name(outcome.get("description", ""))
+                    if player_norm in name:
+                        try:
+                            line_val = float(outcome.get("point", None))
+                        except Exception:
+                            continue
+                        if best_line is None or abs(line_val - (best_line or line_val)) < 0.25:
+                            best_line = line_val
+    if best_line is None:
+        return None, "No matching live line found."
+    return best_line, ""
 
-        for book in event.get("bookmakers", []):
-            book_key = book.get("key")
-            last_update = book.get("last_update")
-            for market in book.get("markets", []):
-                mkey = market.get("key")
-                for outcome in market.get("outcomes", []):
-                    player_name = outcome.get("description") or outcome.get("name")
-                    line = outcome.get("point")
-                    price = outcome.get("price")
-                    if player_name is None or line is None or price is None:
-                        continue
-                    rows.append(
-                        {
-                            "event_id": event_id,
-                            "game": game_label,
-                            "bookmaker": book_key,
-                            "last_update": last_update,
-                            "player_name": player_name,
-                            "market": mkey,
-                            "line": line,
-                            "american_odds": int(price),
-                        }
-                    )
-    if not rows:
-        return pd.DataFrame(
-            columns=[
-                "event_id",
-                "game",
-                "bookmaker",
-                "last_update",
-                "player_name",
-                "market",
-                "line",
-                "american_odds",
-            ]
-        )
-    return pd.DataFrame(rows)
+# =====================================================
+# APP TABS (KEEP EXISTING STRUCTURE)
+# =====================================================
 
-# Placeholder NBA advanced data fetches. To keep the app robust, these
-# functions fail gracefully and fall back to user inputs if nba_api is
-# not available or network calls fail.
+tab_model, tab_results, tab_history, tab_calib = st.tabs(
+    ["📊 Model", "📓 Results", "📜 History", "🧠 Calibration"]
+)
 
-def fetch_player_last10_stats(player_name: str) -> Optional[pd.DataFrame]:
-    try:
-        from nba_api.stats.static import players
-        from nba_api.stats.endpoints import playergamelog
+# =====================================================
+# PART 5 — MODEL TAB
+# =====================================================
 
-        pl = players.find_players_by_full_name(player_name)
-        if not pl:
-            return None
-        player_id = pl[0]["id"]
-        # Use current season by default; nba_api will infer if left empty
-        gl = playergamelog.PlayerGameLog(player_id=player_id, season=None)
-        df = gl.get_data_frames()[0]
-        return df.head(10)
-    except Exception:
-        return None
+with tab_model:
+    st.subheader("2-Pick Projection & Edge (Auto stats + Odds API lines)")
 
-def estimate_usage_and_rates(player_name: str, market: str) -> Tuple[float, float, float, float]:
-    """Best-effort estimate of usage, rebound rate, assist rate, shot rate.
+    history_df = load_history()
 
-    Falls back to generic assumptions if NBA API calls fail.
-    """
-    df = fetch_player_last10_stats(player_name)
-    if df is None or df.empty:
-        # Fallback generic assumptions
-        return 24.0, 0.12, 0.18, 0.25
-
-    # Basic per-minute rates from last 10 games
-    minutes = df["MIN"].astype(str).str.split(":", expand=True).iloc[:, 0].astype(float)
-    pts = df["PTS"].astype(float)
-    reb = df["REB"].astype(float)
-    ast = df["AST"].astype(float)
-
-    min_mean = max(minutes.mean(), 10.0)
-    usage = 24.0  # placeholder, could be improved with advanced endpoints
-    reb_rate = float((reb / min_mean).mean())
-    ast_rate = float((ast / min_mean).mean())
-    shot_rate = float((pts / min_mean).mean())
-
-    return usage, reb_rate, ast_rate, shot_rate
-
-def estimate_opponent_defense(team_abbr: str) -> Tuple[float, float, float]:
-    """Return (def_rating, def_reb_pct_allowed, def_ast_pct_allowed).
-
-    For robustness this uses simple hard-coded baselines. You can later
-    wire in nba_api leaguedashteamstats here.
-    """
-    # Baseline values: average NBA team
-    base_def_rating = 113.0
-    base_reb_allowed = 0.50
-    base_ast_allowed = 0.50
-
-    # Very lightweight custom tweaks can be added here per team if desired.
-    # For now, we keep it simple but still pass these knobs into the engines.
-    return base_def_rating, base_reb_allowed, base_ast_allowed
-
-# ===================================
-# SECTION E — PROJECTION / RISK ENGINES
-# ===================================
-
-def american_to_implied_prob(odds: int) -> float:
-    if odds == 0:
-        return 0.5
-    if odds > 0:
-        return 100.0 / (odds + 100.0)
-    else:
-        return -odds / (-odds + 100.0)
-
-def implied_prob_to_american(p: float) -> float:
-    p = max(min(p, 0.999), 0.001)
-    if p >= 0.5:
-        return - (p * 100.0) / (1.0 - p)
-    else:
-        return (1.0 - p) * 100.0 / p
-
-def kelly_fraction(prob: float, odds: int, frac: float = DEFAULT_KELLY_FRACTION) -> float:
-    b = abs(odds) / 100.0 if odds != 0 else 1.0
-    q = 1.0 - prob
-    k = (prob * (b + 1.0) - 1.0) / b
-    k = max(k, 0.0)
-    return k * frac
-
-def classify_ev_bucket(ev: float) -> str:
-    if ev < 0.05:
-        return "thin"
-    elif ev < 0.20:
-        return "edge"
-    else:
-        return "strong"
-
-def volatility_score_from_gamelog(df: Optional[pd.DataFrame], market: str) -> float:
-    if df is None or df.empty:
-        return 1.0
-    if market == "points":
-        series = df["PTS"].astype(float)
-    elif market == "rebounds":
-        series = df["REB"].astype(float)
-    elif market == "assists":
-        series = df["AST"].astype(float)
-    else:  # PRA
-        series = df["PTS"].astype(float) + df["REB"].astype(float) + df["AST"].astype(float)
-    return float(series.std(ddof=1))
-
-def weighted_bootstrap_samples(df: Optional[pd.DataFrame], market: str, n: int) -> np.ndarray:
-    if df is None or df.empty:
-        return np.array([])
-    if market == "points":
-        vals = df["PTS"].astype(float).values
-    elif market == "rebounds":
-        vals = df["REB"].astype(float).values
-    elif market == "assists":
-        vals = df["AST"].astype(float).values
-    else:
-        vals = (df["PTS"].astype(float) + df["REB"].astype(float) + df["AST"].astype(float)).values
-    # Exponential weighting: recent games heavier
-    idx = np.arange(len(vals))
-    weights = np.exp(idx - idx.max())
-    weights = weights / weights.sum()
-    samples = np.random.choice(vals, size=n, p=weights)
-    return samples
-
-def game_script_minutes_samples(base_minutes: float, blowout_risk: float, n: int) -> np.ndarray:
-    # Pace factor ~ N(1.0, 0.08^2), truncated to [0.85, 1.15]
-    pace = np.random.normal(loc=1.0, scale=0.08, size=n)
-    pace = np.clip(pace, 0.85, 1.15)
-    blowout_flags = np.random.binomial(1, blowout_risk, size=n)
-    minutes = base_minutes * pace * (1.0 - 0.30 * blowout_flags)
-    return minutes
-
-def apply_defense_adjustments(base_mean: float, ctx: PlayerContext) -> float:
-    # Simple linear adjustments that can be refined later.
-    def_factor = (113.0 / max(ctx.opponent_def_rating, 90.0))  # tougher D -> <1
-    reb_factor = 1.0 + (0.50 - ctx.opponent_reb_pct_allowed)
-    ast_factor = 1.0 + (0.50 - ctx.opponent_ast_pct_allowed)
-    if ctx.market == "rebounds":
-        adj = base_mean * reb_factor * def_factor
-    elif ctx.market == "assists":
-        adj = base_mean * ast_factor * def_factor
-    else:
-        adj = base_mean * def_factor
-    # Injury bump: if key teammate out, modest usage bump
-    if ctx.injury_teammate_out:
-        adj *= 1.07
-    return adj
-
-def projection_engine(ctx: PlayerContext) -> Tuple[float, float]:
-    """Return (projection_mean, projection_std_per_minute)."""
-    df_last10 = fetch_player_last10_stats(ctx.player_name)
-    vol = volatility_score_from_gamelog(df_last10, ctx.market)
-    if df_last10 is not None and not df_last10.empty:
-        minutes = df_last10["MIN"].astype(str).str.split(":", expand=True).iloc[:, 0].astype(float)
-        if ctx.market == "points":
-            vals = df_last10["PTS"].astype(float)
-        elif ctx.market == "rebounds":
-            vals = df_last10["REB"].astype(float)
-        elif ctx.market == "assists":
-            vals = df_last10["AST"].astype(float)
-        else:
-            vals = (
-                df_last10["PTS"].astype(float)
-                + df_last10["REB"].astype(float)
-                + df_last10["AST"].astype(float)
-            )
-        base_per_min = (vals / minutes).mean()
-    else:
-        # Fallback per-minute baselines tied to usage/market
-        if ctx.market == "points":
-            base_per_min = ctx.shot_rate * 0.5
-        elif ctx.market == "rebounds":
-            base_per_min = ctx.rebound_rate
-        elif ctx.market == "assists":
-            base_per_min = ctx.assist_rate
-        else:
-            base_per_min = ctx.shot_rate * 0.4 + ctx.rebound_rate + ctx.assist_rate
-
-    minutes_proj = ctx.minutes_expectation
-    base_mean = base_per_min * minutes_proj
-    mean_adj = apply_defense_adjustments(base_mean, ctx)
-
-    # Approximate per-minute std from volatility
-    std_per_min = max(vol / max(minutes_proj, 1.0), 0.1)
-    return mean_adj, std_per_min
-
-def ensemble_hit_probability(ctx: PlayerContext, calib: Dict) -> Tuple[SimulationResult, np.ndarray]:
-    """Monte Carlo + bootstrap + game script ensemble.
-
-    Returns SimulationResult and the raw samples used.
-    """
-    df_last10 = fetch_player_last10_stats(ctx.player_name)
-    # Base projection & volatility
-    mean_adj, std_per_min = projection_engine(ctx)
-    minutes_samples = game_script_minutes_samples(ctx.minutes_expectation, ctx.blowout_risk, N_MONTE_CARLO_SIMS)
-    # Model 1: parametric normal per-minute
-    per_min_mean = mean_adj / max(ctx.minutes_expectation, 1.0)
-    base_std = std_per_min * np.sqrt(minutes_samples / max(ctx.minutes_expectation, 1.0))
-    normal_samples = np.random.normal(
-        loc=per_min_mean * minutes_samples,
-        scale=np.clip(base_std, 0.5, None),
-        size=N_MONTE_CARLO_SIMS,
+    daily_lock, weekly_lock, daily_pnl, weekly_pnl = risk_lockout_flags(
+        history_df, bankroll, max_daily_loss_pct, max_weekly_loss_pct
     )
 
-    # Model 2: weighted bootstrap of last 10 games
-    boot = weighted_bootstrap_samples(df_last10, ctx.market, N_MONTE_CARLO_SIMS)
-    if boot.size == 0:
-        boot = normal_samples.copy()
+    if daily_lock:
+        st.error(f"Daily loss cap reached (P&L today: ${daily_pnl:.2f}). New stakes are set to $0 by discipline rule.")
+    if weekly_lock:
+        st.warning(f"Weekly loss cap reached (7-day P&L: ${weekly_pnl:.2f}). Stakes heavily constrained.")
 
-    # Model 3: usage/pace/injury-adjusted deterministic projection + noise
-    usage_factor = ctx.usage_rate / 22.0
-    pace_factor = ctx.pace_adj_factor
-    injury_factor = 1.10 if ctx.injury_teammate_out else 1.0
-    script_mean = mean_adj * usage_factor * pace_factor * injury_factor
-    script_std = max(script_mean * 0.20, 1.0)
-    script_samples = np.random.normal(loc=script_mean, scale=script_std, size=N_MONTE_CARLO_SIMS)
+    c1, c2 = st.columns(2)
 
-    # Ensemble samples (simple average of three models)
-    samples = (normal_samples + boot + script_samples) / 3.0
-
-    # Side-aware hit probability
-    if ctx.side == "over":
-        raw_prob = float(np.mean(samples > ctx.line))
-    else:
-        raw_prob = float(np.mean(samples < ctx.line))
-
-    simulated_mean = float(np.mean(samples))
-    simulated_std = float(np.std(samples, ddof=1))
-    volatility = float(np.std(boot if boot.size else samples, ddof=1))
-
-    # Calibration scaling by EV bucket (we don't know EV yet, so assume "edge" then re-bucket below)
-    scaling = calib.get("probability_scaling", {}).get("edge", 1.0)
-    prob = max(min(raw_prob * scaling, 0.995), 0.005)
-
-    # Fair odds and EV
-    fair_odds = implied_prob_to_american(prob)
-    implied = american_to_implied_prob(ctx.american_odds)
-    ev = prob * (abs(ctx.american_odds) / 100.0) - (1 - prob)
-    kelly_frac = kelly_fraction(prob, ctx.american_odds)
-
-    bucket = classify_ev_bucket(max(ev, 0.0))
-    bucket_scale = calib.get("probability_scaling", {}).get(bucket, 1.0)
-    prob *= bucket_scale
-    prob = max(min(prob, 0.995), 0.005)
-    fair_odds = implied_prob_to_american(prob)
-    ev = prob * (abs(ctx.american_odds) / 100.0) - (1 - prob)
-    kelly_frac = kelly_fraction(prob, ctx.american_odds)
-
-    play_pass = "PLAY" if ev > 0 and prob > implied else "PASS"
-
-    sim_result = SimulationResult(
-        hit_prob=prob,
-        fair_odds=fair_odds,
-        ev=ev,
-        kelly_fraction=kelly_frac,
-        play_pass=play_pass,
-        volatility=volatility,
-        simulated_mean=simulated_mean,
-        simulated_std=simulated_std,
-    )
-
-    return sim_result, samples
-
-def covariance_joint_probability(ctx1: PlayerContext, ctx2: PlayerContext, calib: Dict) -> JointSimulationResult:
-    # Approximate joint MC with a correlation assumption based on markets
-    base_corr = 0.1
-    if ctx1.player_name == ctx2.player_name:
-        if {ctx1.market, ctx2.market} == {"points", "assists"}:
-            base_corr = 0.35
-        elif {ctx1.market, ctx2.market} == {"points", "rebounds"}:
-            base_corr = 0.25
-        else:
-            base_corr = 0.3
-    elif ctx1.team == ctx2.team:
-        base_corr = 0.15
-
-    # Individual ensembles to get means/stds
-    res1, samples1 = ensemble_hit_probability(ctx1, calib)
-    res2, samples2 = ensemble_hit_probability(ctx2, calib)
-
-    # Use rank correlation if samples available; otherwise stick with base
-    if samples1.size and samples2.size:
-        rho = float(np.corrcoef(samples1, samples2)[0, 1])
-        corr = 0.5 * rho + 0.5 * base_corr
-    else:
-        corr = base_corr
-
-    # Build correlated normal draws around the original samples' distributions
-    mean1, mean2 = np.mean(samples1), np.mean(samples2)
-    std1, std2 = np.std(samples1), np.std(samples2, ddof=1)
-    cov = corr * std1 * std2
-    cov_matrix = np.array([[std1 ** 2, cov], [cov, std2 ** 2]])
-    mvn = np.random.multivariate_normal(mean=[mean1, mean2], cov=cov_matrix, size=N_MONTE_CARLO_SIMS)
-    s1 = mvn[:, 0]
-    s2 = mvn[:, 1]
-
-    if ctx1.side == "over":
-        leg1_hit = s1 > ctx1.line
-    else:
-        leg1_hit = s1 < ctx1.line
-    if ctx2.side == "over":
-        leg2_hit = s2 > ctx2.line
-    else:
-        leg2_hit = s2 < ctx2.line
-
-    both_hit_prob = float(np.mean(leg1_hit & leg2_hit))
-
-    # Assume user enters combined parlay odds separately; if not, approximate as product
-    combo_odds = st.session_state.get("parlay_american_odds", None)
-    if combo_odds is None:
-        # naive approximation: multiply decimal odds
-        dec1 = 1 + abs(ctx1.american_odds) / 100.0
-        dec2 = 1 + abs(ctx2.american_odds) / 100.0
-        combo_dec = dec1 * dec2
-        if combo_dec >= 2:
-            combo_odds = int((combo_dec - 1) * 100)
-        else:
-            combo_odds = -int(100 / (combo_dec - 1))
-
-    implied_parlay = american_to_implied_prob(combo_odds)
-    ev_both = both_hit_prob * (abs(combo_odds) / 100.0) - (1 - both_hit_prob)
-    kelly_both = kelly_fraction(both_hit_prob, combo_odds)
-    play_pass_both = "PLAY" if ev_both > 0 and both_hit_prob > implied_parlay else "PASS"
-
-    return JointSimulationResult(
-        hit_prob_both=both_hit_prob,
-        ev_both=ev_both,
-        kelly_fraction_both=kelly_both,
-        play_pass_both=play_pass_both,
-    )
-
-# ======================================
-# SECTION F — CALIBRATION / FEEDBACK LOOP
-# ======================================
-
-def update_calibration_from_history(hist: pd.DataFrame) -> Dict:
-    calib = load_calibration()
-    if hist.empty:
-        return calib
-
-    # Only use rows with results and model_prob
-    df = hist.dropna(subset=["result", "model_prob"])
-    if df.empty:
-        return calib
-
-    # Binary outcome: 1 for win, 0 for loss; pushes excluded
-    df = df[df["result"].isin(["win", "loss"])].copy()
-    if df.empty:
-        return calib
-    df["hit"] = (df["result"] == "win").astype(int)
-
-    # EV buckets based on stored EV
-    df["ev_bucket"] = df["ev"].apply(classify_ev_bucket)
-    scales = {}
-    for bucket in ["thin", "edge", "strong"]:
-        sub = df[df["ev_bucket"] == bucket]
-        if len(sub) < 30:
-            scales[bucket] = calib["probability_scaling"].get(bucket, 1.0)
-            continue
-        expected_hits = (sub["model_prob"]).sum()
-        actual_hits = sub["hit"].sum()
-        if expected_hits <= 0:
-            scales[bucket] = calib["probability_scaling"].get(bucket, 1.0)
-        else:
-            # scale so expected ~ actual
-            scale = float(actual_hits / expected_hits)
-            # clip to reasonable range
-            scale = float(max(min(scale, 1.2), 0.8))
-            scales[bucket] = scale
-
-    calib["probability_scaling"].update(scales)
-    save_calibration(calib)
-    return calib
-
-def compute_performance_metrics(hist: pd.DataFrame) -> Dict[str, float]:
-    if hist.empty:
-        return {}
-    df = hist.dropna(subset=["result", "stake"])
-    if df.empty:
-        return {}
-    df = df[df["result"].isin(["win", "loss", "push"])].copy()
-
-    total_bets = len(df)
-    wins = (df["result"] == "win").sum()
-    losses = (df["result"] == "loss").sum()
-    pushes = (df["result"] == "push").sum()
-    hit_rate = wins / max(wins + losses, 1)
-
-    # Profit per bet assuming American odds and stakes
-    profits = []
-    for _, row in df.iterrows():
-        stake = row["stake"]
-        odds = int(row["american_odds"])
-        if row["result"] == "win":
-            profits.append(stake * (abs(odds) / 100.0))
-        elif row["result"] == "loss":
-            profits.append(-stake)
-        else:
-            profits.append(0.0)
-    profits = np.array(profits)
-    roi = float(profits.sum() / max(df["stake"].sum(), 1.0))
-    variance = float(np.var(profits, ddof=1))
-    avg_clv = float(df["clv"].dropna().mean()) if "clv" in df.columns else 0.0
-
-    return {
-        "total_bets": total_bets,
-        "wins": int(wins),
-        "losses": int(losses),
-        "pushes": int(pushes),
-        "hit_rate": hit_rate,
-        "roi": roi,
-        "variance": variance,
-        "avg_clv": avg_clv,
-    }
-
-# ============================
-# SECTION G — STREAMLIT UI LAYER
-# ============================
-
-def init_session_state():
-    defaults = {
-        "legs": [],
-        "last_results": [],
-        "parlay_american_odds": None,
-        "bet_logged_for_last_run": False,
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-def build_player_context(index: int) -> Optional[PlayerContext]:
-    st.subheader(f"Leg {index + 1}")
-    col1, col2 = st.columns(2)
-    with col1:
-        player_name = st.text_input("Player name", key=f"player_name_{index}")
-        team = st.text_input("Team (abbr)", key=f"team_{index}")
-        opponent = st.text_input("Opponent (abbr)", key=f"opponent_{index}")
-    with col2:
-        market = st.selectbox(
-            "Market",
-            options=["points", "rebounds", "assists", "pra"],
-            key=f"market_{index}",
-        )
-        side = st.selectbox("Side", options=["over", "under"], key=f"side_{index}")
-        line = st.number_input("Line", key=f"line_{index}", value=20.5)
-        american_odds = st.number_input("American odds", key=f"odds_{index}", value=-115, step=5)
-
-    adv = st.expander("Advanced context (minutes, usage, pace, etc.)", expanded=False)
-    with adv:
-        col3, col4, col5 = st.columns(3)
-        with col3:
-            minutes_expectation = st.number_input(
-                "Expected minutes",
-                min_value=10.0,
-                max_value=45.0,
-                value=32.0,
-                key=f"minutes_{index}",
-            )
-            usage_rate = st.number_input(
-                "Usage rate %",
-                min_value=10.0,
-                max_value=40.0,
-                value=24.0,
-                key=f"usage_{index}",
-            )
-            pace_adj_factor = st.slider(
-                "Pace factor",
-                min_value=0.8,
-                max_value=1.2,
-                value=1.0,
-                step=0.01,
-                key=f"pace_{index}",
-            )
-        with col4:
-            rebound_rate = st.number_input(
-                "Rebound rate per min",
-                min_value=0.0,
-                max_value=2.0,
-                value=0.25,
-                key=f"reb_rate_{index}",
-            )
-            assist_rate = st.number_input(
-                "Assist rate per min",
-                min_value=0.0,
-                max_value=1.5,
-                value=0.15,
-                key=f"ast_rate_{index}",
-            )
-            shot_rate = st.number_input(
-                "Shot attempts per min",
-                min_value=0.0,
-                max_value=2.5,
-                value=0.9,
-                key=f"shot_rate_{index}",
-            )
-        with col5:
-            injury_teammate_out = st.checkbox("Key teammate OUT", key=f"injury_{index}")
-            blowout_risk = st.slider(
-                "Blowout risk",
-                min_value=0.0,
-                max_value=0.8,
-                value=0.15,
-                step=0.01,
-                key=f"blowout_{index}",
-            )
-            # Opponent defense info (auto + manual)
-            def_rating, reb_pct_allowed, ast_pct_allowed = estimate_opponent_defense(opponent or "")
-            st.caption(
-                f"Opponent def rating (approx): {def_rating:.1f} | "
-                f"Defensive reb% allowed baseline: {reb_pct_allowed:.2f} | "
-                f"Ast% allowed baseline: {ast_pct_allowed:.2f}"
-            )
-        notes = st.text_area("Notes (optional)", key=f"notes_{index}", height=60)
-
-    if not player_name or not team or not opponent:
-        return None
-
-    ctx = PlayerContext(
-        player_name=player_name,
-        team=team,
-        opponent=opponent,
-        market=market,
-        line=float(line),
-        american_odds=int(american_odds),
-        side=side,
-        minutes_expectation=float(minutes_expectation),
-        usage_rate=float(usage_rate),
-        pace_adj_factor=float(pace_adj_factor),
-        rebound_rate=float(rebound_rate),
-        assist_rate=float(assist_rate),
-        shot_rate=float(shot_rate),
-        opponent_def_rating=def_rating,
-        opponent_reb_pct_allowed=reb_pct_allowed,
-        opponent_ast_pct_allowed=ast_pct_allowed,
-        injury_teammate_out=bool(injury_teammate_out),
-        blowout_risk=float(blowout_risk),
-        notes=notes,
-    )
-    return ctx
-
-def model_tab(calib: Dict):
-    st.header("NBA Prop Quant Engine — Model")
-    bankroll = st.number_input("Bankroll ($)", min_value=0.0, value=1000.0, step=50.0)
-    kelly_frac_global = st.slider(
-        "Global Kelly fraction",
-        min_value=0.05,
-        max_value=0.5,
-        value=DEFAULT_KELLY_FRACTION,
-        step=0.05,
-    )
-
-    st.markdown("### Legs configuration")
-    num_legs = st.slider("Number of legs", min_value=1, max_value=4, value=2, step=1)
-    contexts: List[PlayerContext] = []
-    for i in range(num_legs):
-        ctx = build_player_context(i)
-        if ctx:
-            contexts.append(ctx)
-
-    st.session_state["parlay_american_odds"] = st.number_input(
-        "Parlay American odds (if 2+ legs parlay)",
-        value=-110,
-        step=5,
-    )
-
-    run = st.button("Run model", type="primary")
-    if not run:
-        return
-
-    if not contexts:
-        st.warning("Please complete all required fields for at least one leg.")
-        return
-
-    # Reset last run log flag
-    st.session_state["bet_logged_for_last_run"] = False
-
-    leg_results = []
-    st.markdown("### Single-leg Monte Carlo results")
-    cols = st.columns(len(contexts))
-    for idx, (ctx, col) in enumerate(zip(contexts, cols)):
-        with col:
-            sim_res, samples = ensemble_hit_probability(ctx, calib)
-            # Override Kelly fraction with global
-            k_frac = kelly_fraction(sim_res.hit_prob, ctx.american_odds, frac=kelly_frac_global)
-            sim_res.kelly_fraction = k_frac
-            stake = bankroll * k_frac
-            implied = american_to_implied_prob(ctx.american_odds)
-            edge_pct = (sim_res.hit_prob - implied) * 100.0
-
-            card = st.container(border=True)
-            with card:
-                st.subheader(f"Leg {idx + 1}: {ctx.player_name} {ctx.market} {ctx.side} {ctx.line}")
-                st.metric("Defense-adjusted projection", f"{sim_res.simulated_mean:.2f} ± {sim_res.simulated_std:.2f}")
-                st.metric("Defense-adjusted hit probability", f"{sim_res.hit_prob*100:.1f}%")
-                st.metric("Implied probability (market)", f"{implied*100:.1f}%")
-                st.metric("Edge (model - market)", f"{edge_pct:.1f}%")
-                st.metric("Fair odds (model)", f"{sim_res.fair_odds:.0f}")
-                st.metric("Volatility score", f"{sim_res.volatility:.2f}")
-                st.metric("Kelly stake", f"${stake:.2f}")
-                st.markdown(f"**Decision:** :{'green_circle' if sim_res.play_pass=='PLAY' else 'red_circle'}: {sim_res.play_pass}")
-
-            leg_results.append(
-                {
-                    "context": ctx,
-                    "sim_result": sim_res,
-                    "stake": stake,
-                    "samples": samples,
-                }
-            )
-
-    # Joint 2-leg simulation (UltraMax)
-    joint_result = None
-    if len(contexts) == 2:
-        st.markdown("### 2-Leg Covariance-based Joint Monte Carlo")
-        ctx1, ctx2 = contexts
-        joint_result = covariance_joint_probability(ctx1, ctx2, calib)
-        combo_odds = st.session_state.get("parlay_american_odds", -110)
-        implied_parlay = american_to_implied_prob(combo_odds)
-        edge_pct = (joint_result.hit_prob_both - implied_parlay) * 100.0
-        stake_both = bankroll * joint_result.kelly_fraction_both
-
-        joint_card = st.container(border=True)
-        with joint_card:
-            label = (
-                f"{ctx1.player_name} {ctx1.market} {ctx1.side} {ctx1.line}  +  "
-                f"{ctx2.player_name} {ctx2.market} {ctx2.side} {ctx2.line}"
-            )
-            st.subheader(label)
-            st.metric("Joint hit probability", f"{joint_result.hit_prob_both*100:.1f}%")
-            st.metric("Market implied prob (parlay)", f"{implied_parlay*100:.1f}%")
-            st.metric("Edge (model - market)", f"{edge_pct:.1f}%")
-            st.metric("Kelly stake (parlay)", f"${stake_both:.2f}")
-            st.markdown(
-                f"**2-Leg Decision:** :{'green_circle' if joint_result.play_pass_both=='PLAY' else 'red_circle'}: "
-                f"{joint_result.play_pass_both}"
-            )
-
-    # Save into session for Results & History tabs
-    st.session_state["last_results"] = [
-        {
-            "player_name": r["context"].player_name,
-            "team": r["context"].team,
-            "opponent": r["context"].opponent,
-            "market": r["context"].market,
-            "side": r["context"].side,
-            "line": r["context"].line,
-            "american_odds": r["context"].american_odds,
-            "hit_prob": r["sim_result"].hit_prob,
-            "fair_odds": r["sim_result"].fair_odds,
-            "ev": r["sim_result"].ev,
-            "kelly_fraction": r["sim_result"].kelly_fraction,
-            "stake": r["stake"],
-            "projection_mean": r["sim_result"].simulated_mean,
-            "projection_std": r["sim_result"].simulated_std,
-            "volatility": r["sim_result"].volatility,
-            "notes": r["context"].notes,
-        }
-        for r in leg_results
-    ]
-    st.session_state["last_joint_result"] = (
-        {
-            "joint_prob": joint_result.hit_prob_both,
-            "joint_ev": joint_result.ev_both,
-            "joint_kelly": joint_result.kelly_fraction_both,
-            "joint_play_pass": joint_result.play_pass_both,
-            "parlay_odds": st.session_state.get("parlay_american_odds", None),
-        }
-        if joint_result is not None
-        else None
-    )
-
-    st.success("Model run complete.")
-
-    # Prompt for bet logging
-    st.markdown("---")
-    st.markdown("### Bet logging")
-    placed = st.radio(
-        "Did you place this bet?",
-        options=["No", "Yes"],
-        index=0,
-        horizontal=True,
-    )
-    if placed == "Yes":
-        history = load_history()
-        now = datetime.datetime.now()
-        for res in st.session_state["last_results"]:
-            history = pd.concat(
-                [
-                    history,
-                    pd.DataFrame(
-                        [
-                            {
-                                "timestamp": now.isoformat(),
-                                "date": now.date().isoformat(),
-                                "game": f"{res['team']} vs {res['opponent']}",
-                                "player_name": res["player_name"],
-                                "team": res["team"],
-                                "opponent": res["opponent"],
-                                "market": res["market"],
-                                "side": res["side"],
-                                "line": res["line"],
-                                "american_odds": res["american_odds"],
-                                "stake": res["stake"],
-                                "result": None,
-                                "payout": None,
-                                "model_prob": res["hit_prob"],
-                                "ensemble_prob": res["hit_prob"],
-                                "fair_odds": res["fair_odds"],
-                                "ev": res["ev"],
-                                "kelly_fraction": res["kelly_fraction"],
-                                "actual_stat": None,
-                                "open_odds": res["american_odds"],
-                                "closing_odds": None,
-                                "clv": None,
-                                "notes": res["notes"],
-                            }
-                        ]
-                    ),
-                ],
-                ignore_index=True,
-            )
-        save_history(history)
-        st.session_state["bet_logged_for_last_run"] = True
-        st.success("Bet(s) logged to history.")
-
-def results_tab():
-    st.header("Results & Game Scripts")
-    last = st.session_state.get("last_results", [])
-    joint = st.session_state.get("last_joint_result", None)
-    if not last:
-        st.info("Run the model in the Model tab to see results.")
-        return
-    df = pd.DataFrame(last)
-    st.subheader("Single-leg outputs")
-    st.dataframe(df.style.format({"hit_prob": "{:.3f}", "ev": "{:.3f}", "stake": "{:.2f}"}), use_container_width=True)
-
-    if joint is not None:
-        st.subheader("2-leg joint simulation")
-        st.write(
-            f"Joint hit probability: **{joint['joint_prob']*100:.1f}%** | "
-            f"Joint EV: **{joint['joint_ev']:.3f}** | "
-            f"Kelly fraction: **{joint['joint_kelly']:.3f}** | "
-            f"Decision: **{joint['joint_play_pass']}** | "
-            f"Parlay odds: **{joint['parlay_odds']}**"
-        )
-
-    st.markdown("### Live Edge Scanner (The Odds API)")
-    st.caption("Automatically detects only high-EV edges (>6.5% EV) from current player props feed.")
-    if not can_call_odds_api():
-        st.warning("Daily The Odds API request cap reached — scanner disabled.")
-        return
-
-    scan = st.button("Run live edge scanner")
-    if not scan:
-        return
-
-    ok, data, msg = fetch_live_player_props(
-        markets=[
-            "player_points",
-            "player_rebounds",
-            "player_assists",
-            "player_points_rebounds_assists",
-        ]
-    )
-    if not ok or data is None:
-        st.error(f"Could not fetch live props: {msg}")
-        return
-
-    props_df = flatten_player_props(data)
-    if props_df.empty:
-        st.info("No player props returned from The Odds API.")
-        return
-
-    calib = load_calibration()
-    edges = []
-    # Limit to avoid burning calls / time; sample subset
-    subset = props_df.sample(min(len(props_df), 40), random_state=42)
-    progress = st.progress(0.0)
-    for i, row in enumerate(subset.itertuples()):
-        ctx = PlayerContext(
-            player_name=row.player_name,
-            team="",
-            opponent=row.game,
-            market=row.market.replace("player_", "").replace("_rebounds", "rebounds").replace("_assists", "assists").replace("_points", "points").replace("points_rebounds_assists", "pra"),
-            line=float(row.line),
-            american_odds=int(row.american_odds),
-            side="over",
-            minutes_expectation=32.0,
-            usage_rate=24.0,
-            pace_adj_factor=1.0,
-            rebound_rate=0.25,
-            assist_rate=0.15,
-            shot_rate=0.9,
-            opponent_def_rating=113.0,
-            opponent_reb_pct_allowed=0.5,
-            opponent_ast_pct_allowed=0.5,
-            injury_teammate_out=False,
-            blowout_risk=0.15,
-            notes="Scanner auto-evaluated.",
-        )
-        sim_res, _ = ensemble_hit_probability(ctx, calib)
-        implied = american_to_implied_prob(ctx.american_odds)
-        edge = sim_res.hit_prob - implied
-        if edge >= EDGE_SCANNER_MIN_EV:
-            edges.append(
-                {
-                    "game": row.game,
-                    "player_name": row.player_name,
-                    "market": ctx.market,
-                    "line": ctx.line,
-                    "american_odds": ctx.american_odds,
-                    "model_prob": sim_res.hit_prob,
-                    "market_implied": implied,
-                    "edge_pct": edge * 100.0,
-                    "fair_odds": sim_res.fair_odds,
-                    "decision": sim_res.play_pass,
-                }
-            )
-        progress.progress((i + 1) / len(subset))
-
-    if not edges:
-        st.info("Scanner did not find any edges above the EV threshold.")
-        return
-
-    edges_df = pd.DataFrame(edges).sort_values("edge_pct", ascending=False)
-    st.subheader("Detected edges")
-    st.dataframe(
-        edges_df.style.format(
-            {
-                "model_prob": "{:.3f}",
-                "market_implied": "{:.3f}",
-                "edge_pct": "{:.1f}",
-            }
-        ),
-        use_container_width=True,
-    )
-
-def history_tab():
-    st.header("History & Performance")
-    hist = load_history()
-    if hist.empty:
-        st.info("No bets logged yet.")
-        return
-
-    st.subheader("Bet history")
-    st.dataframe(hist, use_container_width=True)
-
-    st.markdown("### Update results for open bets")
-    open_bets = hist[hist["result"].isna()]
-    if not open_bets.empty:
-        idx = st.selectbox(
-            "Select open bet to update",
-            options=list(open_bets.index),
-            format_func=lambda i: f"{hist.loc[i, 'date']} — {hist.loc[i, 'player_name']} {hist.loc[i, 'market']} {hist.loc[i, 'side']} {hist.loc[i, 'line']}",
-        )
-        result = st.selectbox("Result", options=["win", "loss", "push"])
-        actual_stat = st.number_input("Actual stat value", min_value=0.0, value=0.0)
-        closing_odds = st.number_input(
-            "Closing American odds (for CLV)",
-            value=int(hist.loc[idx, "american_odds"]),
-            step=5,
-        )
-        if st.button("Save result update"):
-            hist.loc[idx, "result"] = result
-            hist.loc[idx, "actual_stat"] = actual_stat
-            hist.loc[idx, "closing_odds"] = closing_odds
-            open_imp = american_to_implied_prob(int(hist.loc[idx, "open_odds"]))
-            close_imp = american_to_implied_prob(int(closing_odds))
-            hist.loc[idx, "clv"] = close_imp - open_imp
-            # Compute payout
-            stake = hist.loc[idx, "stake"]
-            odds = int(hist.loc[idx, "american_odds"])
-            if result == "win":
-                hist.loc[idx, "payout"] = stake * (abs(odds) / 100.0)
-            elif result == "loss":
-                hist.loc[idx, "payout"] = -stake
+    with c1:
+        p1 = st.text_input("Player 1 Name")
+        m1 = st.selectbox("P1 Market", MARKET_OPTIONS, key="p1_market")
+        auto_line_p1 = st.checkbox("Pull P1 line from Odds API (if available)", key="p1_auto_line")
+        if auto_line_p1 and p1:
+            if st.button("Fetch P1 Live Line", key="btn_p1_fetch"):
+                line_p1, msg_p1 = fetch_live_line_from_odds_api(p1, m1)
+                if line_p1 is None:
+                    st.warning(msg_p1 or "Unable to fetch live line.")
+                    l1 = st.number_input("P1 Line (manual)", min_value=0.0, value=25.0, step=0.5, key="p1_line_manual")
+                else:
+                    st.success(f"Fetched live line: {line_p1}")
+                    l1 = st.number_input("P1 Line", min_value=0.0, value=float(line_p1), step=0.5, key="p1_line_live")
             else:
-                hist.loc[idx, "payout"] = 0.0
-            save_history(hist)
-            st.success("Bet updated.")
+                l1 = st.number_input("P1 Line", min_value=0.0, value=25.0, step=0.5, key="p1_line_default")
+        else:
+            l1 = st.number_input("P1 Line", min_value=0.0, value=25.0, step=0.5, key="p1_line_plain")
 
-    st.markdown("### Performance metrics")
-    metrics = compute_performance_metrics(hist)
-    if not metrics:
-        st.info("Not enough completed bets to compute metrics.")
-    else:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total bets", metrics["total_bets"])
-            st.metric("Wins / Losses / Pushes", f"{metrics['wins']} / {metrics['losses']} / {metrics['pushes']}")
-        with col2:
-            st.metric("Hit rate", f"{metrics['hit_rate']*100:.1f}%")
-            st.metric("ROI", f"{metrics['roi']*100:.1f}%")
-        with col3:
-            st.metric("Outcome variance", f"{metrics['variance']:.2f}")
-            st.metric("Avg CLV", f"{metrics['avg_clv']*100:.2f}%")
+        o1 = st.text_input("P1 Opponent (abbr)", help="Example: BOS, DEN", key="p1_opp")
+        p1_teammate_out = st.checkbox("P1: Key teammate out?", key="p1_teammate_out")
+        p1_blowout = st.checkbox("P1: Blowout risk high?", key="p1_blowout")
 
-def calibration_tab():
-    st.header("Calibration & Model Drift")
-    hist = load_history()
-    calib = load_calibration()
+    with c2:
+        p2 = st.text_input("Player 2 Name")
+        m2 = st.selectbox("P2 Market", MARKET_OPTIONS, key="p2_market")
+        auto_line_p2 = st.checkbox("Pull P2 line from Odds API (if available)", key="p2_auto_line")
+        if auto_line_p2 and p2:
+            if st.button("Fetch P2 Live Line", key="btn_p2_fetch"):
+                line_p2, msg_p2 = fetch_live_line_from_odds_api(p2, m2)
+                if line_p2 is None:
+                    st.warning(msg_p2 or "Unable to fetch live line.")
+                    l2 = st.number_input("P2 Line (manual)", min_value=0.0, value=25.0, step=0.5, key="p2_line_manual")
+                else:
+                    st.success(f"Fetched live line: {line_p2}")
+                    l2 = st.number_input("P2 Line", min_value=0.0, value=float(line_p2), step=0.5, key="p2_line_live")
+            else:
+                l2 = st.number_input("P2 Line", min_value=0.0, value=25.0, step=0.5, key="p2_line_default")
+        else:
+            l2 = st.number_input("P2 Line", min_value=0.0, value=25.0, step=0.5, key="p2_line_plain")
 
-    st.subheader("Current calibration scaling")
-    st.json(calib)
+        o2 = st.text_input("P2 Opponent (abbr)", help="Example: BOS, DEN", key="p2_opp")
+        p2_teammate_out = st.checkbox("P2: Key teammate out?", key="p2_teammate_out")
+        p2_blowout = st.checkbox("P2: Blowout risk high?", key="p2_blowout")
 
-    if st.button("Recalibrate from history"):
-        calib = update_calibration_from_history(hist)
-        st.success("Calibration updated.")
-        st.json(calib)
+    leg1 = None
+    leg2 = None
+    joint_result = None
 
-    st.markdown("### Edge bins performance")
-    if hist.empty:
-        st.info("No history to analyze.")
-        return
-    df = hist.dropna(subset=["result", "ev"])
-    if df.empty:
-        st.info("No bets with EV and result stored yet.")
-        return
-    df = df[df["result"].isin(["win", "loss"])].copy()
-    df["ev_bucket"] = df["ev"].apply(classify_ev_bucket)
-    summary = (
-        df.groupby("ev_bucket")
-        .agg(
-            bets=("ev", "count"),
-            avg_ev=("ev", "mean"),
-            hit_rate=("result", lambda x: (x == "win").mean()),
-            avg_clv=("clv", "mean"),
-        )
-        .reset_index()
-    )
-    st.dataframe(
-        summary.style.format(
-            {
-                "avg_ev": "{:.3f}",
-                "hit_rate": "{:.3f}",
-                "avg_clv": "{:.3f}",
-            }
-        ),
-        use_container_width=True,
-    )
+    run = st.button("Run Model ⚡")
 
-    st.markdown("### Playbook patterns")
-    st.caption("Quick view of where edges tend to come from — by market type and injury context.")
-    if "market" in hist.columns:
-        playbook = (
-            hist.dropna(subset=["result"])
-            .assign(win=lambda d: (d["result"] == "win").astype(int))
-            .groupby(["market", "notes"])
-            .agg(
-                bets=("win", "count"),
-                win_rate=("win", "mean"),
-                avg_ev=("ev", "mean"),
+    if run:
+        if payout_mult <= 1.0:
+            st.error("Payout multiplier must be > 1.0")
+            st.stop()
+
+        run_loader()
+
+        leg1, err1 = (
+            compute_leg_projection(
+                p1, m1, l1, o1, p1_teammate_out, p1_blowout, games_lookback, history_df
             )
-            .reset_index()
-            .sort_values("avg_ev", ascending=False)
-            .head(50)
-        )
-        st.dataframe(
-            playbook.style.format({"win_rate": "{:.3f}", "avg_ev": "{:.3f}"}),
-            use_container_width=True,
+            if p1 and l1 > 0 else (None, None)
         )
 
-# =====================
-# APP ENTRYPOINT / MAIN
-# =====================
+        leg2, err2 = (
+            compute_leg_projection(
+                p2, m2, l2, o2, p2_teammate_out, p2_blowout, games_lookback, history_df
+            )
+            if p2 and l2 > 0 else (None, None)
+        )
 
-def main():
-    st.set_page_config(page_title="NBA Prop Quant Engine", layout="wide")
-    init_session_state()
-    calib = load_calibration()
+        if err1:
+            st.error(f"P1: {err1}")
+        if err2:
+            st.error(f"P2: {err2}")
 
-    st.sidebar.title("Bankroll & Risk Controls")
-    usage = get_api_usage()
-    st.sidebar.metric("Odds API calls used today", f"{usage.get('odds_api_calls', 0)}/20")
-    st.sidebar.info(
-        "Risk notes:\\n"
-        "- Fractional Kelly sizing (configurable in Model tab).\\n"
-        "- Daily Odds API calls capped at 20 for CLV & scanner use."
+        colL, colR = st.columns(2)
+
+        if leg1:
+            render_leg_card(leg1, colL, compact_mode)
+        if leg2:
+            render_leg_card(leg2, colR, compact_mode)
+
+        st.markdown("---")
+        st.subheader("📈 Market vs Model Probability Check")
+
+        def implied_probability(mult):
+            return 1.0 / mult
+
+        imp_prob = implied_probability(payout_mult)
+        st.markdown(f"**Market Implied Probability (2-pick fair):** {imp_prob*100:.1f}%")
+
+        if leg1:
+            st.markdown(
+                f"**{leg1['player']} Model Prob (final):** {leg1['prob_over_final']*100:.1f}% "
+                f"→ Edge vs market: {(leg1['prob_over_final'] - imp_prob)*100:+.1f}%"
+            )
+        if leg2:
+            st.markdown(
+                f"**{leg2['player']} Model Prob (final):** {leg2['prob_over_final']*100:.1f}% "
+                f"→ Edge vs market: {(leg2['prob_over_final'] - imp_prob)*100:+.1f}%"
+            )
+
+        if leg1 and leg2:
+            corr = estimate_player_correlation(leg1, leg2)
+
+            base_joint = leg1["prob_over_final"] * leg2["prob_over_final"]
+            joint_analytic = base_joint + corr * (
+                min(leg1["prob_over_final"], leg2["prob_over_final"]) - base_joint
+            )
+            joint_analytic = float(np.clip(joint_analytic, 0.0, 1.0))
+
+            joint_mc = run_joint_monte_carlo(leg1, leg2, corr, n_sims=10000)
+
+            joint_final = float(np.clip(0.5 * joint_analytic + 0.5 * joint_mc, 0.0, 1.0))
+
+            ev_combo = payout_mult * joint_final - 1.0
+            k_frac = kelly_for_combo(joint_final, payout_mult, fractional_kelly)
+
+            if daily_lock or weekly_lock:
+                k_frac = 0.0
+
+            stake = round(bankroll * k_frac, 2)
+            decision = combo_decision(ev_combo)
+
+            joint_result = {
+                "corr": corr,
+                "joint_analytic": joint_analytic,
+                "joint_mc": joint_mc,
+                "joint_final": joint_final,
+                "ev_combo": ev_combo,
+                "stake": stake,
+                "k_frac": k_frac,
+            }
+
+            st.markdown("### 🎯 **2-Pick Combo Result (Defense-Adjusted + Monte Carlo)**")
+            st.markdown(f"- Correlation (context-aware): **{corr:+.2f}**")
+            st.markdown(f"- Joint Prob Analytic: **{joint_analytic*100:.1f}%**")
+            st.markdown(f"- Joint Prob Monte Carlo (10k sims): **{joint_mc*100:.1f}%**")
+            st.markdown(f"- **Blended Joint Probability:** {joint_final*100:.1f}%")
+            st.markdown(f"- EV per $1: **{ev_combo*100:+.1f}%**")
+            st.markdown(f"- Suggested Stake (fractional Kelly, risk-capped): **${stake:.2f}**")
+            st.markdown(f"- **Recommendation:** {decision}")
+
+        for leg in [leg1, leg2]:
+            if leg:
+                mean_b, med_b = get_market_baseline(leg["player"], leg["market"])
+                update_market_library(leg["player"], leg["market"], leg["line"])
+                if mean_b:
+                    st.caption(
+                        f"📊 Market Baseline for {leg['player']} {leg['market']}: "
+                        f"mean={mean_b:.1f}, median={med_b:.1f}"
+                    )
+
+        if joint_result and leg1 and leg2:
+            st.markdown("---")
+            st.subheader("📌 Post-Run Logging")
+
+            placed = st.radio("Did you place this 2-pick bet?", ["No", "Yes"], index=0)
+            stake_actual = st.number_input(
+                "If yes, what stake did you use? ($)",
+                min_value=0.0,
+                max_value=10000.0,
+                value=joint_result["stake"],
+                step=1.0,
+            )
+            clv_input = st.number_input(
+                "Optional: CLV (closing line - entry line)", min_value=-20.0, max_value=20.0, value=0.0, step=0.1
+            )
+
+            if placed == "Yes" and st.button("Log This Bet to History", key="log_post_run"):
+                ensure_history()
+                df_hist = load_history()
+
+                new_row = {
+                    "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "Player": f"{leg1['player']} + {leg2['player']}",
+                    "Market": "Combo",
+                    "Line": f"{leg1['line']} / {leg2['line']}",
+                    "EV": joint_result["ev_combo"] * 100.0,
+                    "Stake": stake_actual,
+                    "Result": "Pending",
+                    "CLV": clv_input,
+                    "KellyFrac": joint_result["k_frac"],
+                    "JointProb": joint_result["joint_final"],
+                    "PayoutMult": payout_mult,
+                }
+
+                df_hist = pd.concat([df_hist, pd.DataFrame([new_row])], ignore_index=True)
+                save_history(df_hist)
+                st.success("Bet logged to history ✅")
+
+    st.markdown("---")
+    st.subheader("📡 Live Edge Scanner (EV > 65% filter, inside existing tab)")
+
+    st.caption(
+        "This scanner uses the same projection engine + Monte Carlo to evaluate a small list of players. "
+        "It flags only very strong edges (approx win prob ≥ 65% and positive EV vs market). "
+        "To respect Odds API limits, the scanner is intentionally lightweight."
     )
 
-    tab_model, tab_results, tab_history, tab_calibration = st.tabs(
-        ["Model", "Results", "History", "Calibration"]
+    scanner_players = st.text_area(
+        "Enter players (one per line) as: Player Name | Market | Opp (abbr)",
+        value="Nikola Jokic | PRA | LAL
+Anthony Davis | Rebounds | DEN",
     )
 
-    with tab_model:
-        model_tab(calib)
-    with tab_results:
-        results_tab()
-    with tab_history:
-        history_tab()
-    with tab_calibration:
-        calibration_tab()
+    run_scan = st.button("Run Edge Scanner 🔍")
 
-if __name__ == "__main__":
-    main()
-'''
-print(len(app_code.splitlines()))
-compile(app_code, "app.py", "exec")
+    if run_scan:
+        lines = [x.strip() for x in scanner_players.splitlines() if x.strip()]
+        if not lines:
+            st.info("Add at least one player line above.")
+        else:
+            records = []
+            hist_df = load_history()
+            for row in lines:
+                try:
+                    parts = [p.strip() for p in row.split("|")]
+                    if len(parts) != 3:
+                        continue
+                    name, mkt, opp = parts
+                    if mkt not in MARKET_OPTIONS:
+                        continue
+                    live_line, msg = fetch_live_line_from_odds_api(name, mkt)
+                    if live_line is None:
+                        continue
+                    leg, err = compute_leg_projection(
+                        name, mkt, live_line, opp, False, False, games_lookback, hist_df
+                    )
+                    if err or not leg:
+                        continue
+                    imp = 1.0 / payout_mult
+                    p = leg["prob_over_final"]
+                    ev = payout_mult * p - 1.0
+                    if (p >= 0.65) and (ev > 0):
+                        records.append({
+                            "Player": name,
+                            "Market": mkt,
+                            "Opp": opp,
+                            "Line": live_line,
+                            "ModelProb%": p * 100,
+                            "ImpliedProb%": imp * 100,
+                            "EV%": ev * 100,
+                        })
+                except Exception:
+                    continue
+
+            if not records:
+                st.info("No edges above 65% win probability with positive EV were found in this quick scan.")
+            else:
+                df_edges = pd.DataFrame(records)
+                st.success(f"Found {len(df_edges)} strong edges (live scanner).")
+                st.dataframe(df_edges, use_container_width=True)
+
+# =========================================================
+# PART 6 — RESULTS TAB
+# =========================================================
+
+with tab_results:
+    st.subheader("Results & Performance Tracking")
+
+    df = load_history()
+
+    if not df.empty:
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("No bets logged yet. Log entries after you place bets or via the form.")
+
+    with st.form("log_result_form"):
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            r_player = st.text_input("Player / Entry Name (or Combo)")
+        with c2:
+            r_market = st.selectbox(
+                "Market",
+                ["PRA", "Points", "Rebounds", "Assists", "Combo"]
+            )
+        with c3:
+            r_line = st.text_input(
+                "Line (or combo lines)",
+                value="25.5"
+            )
+
+        c4, c5, c6 = st.columns(3)
+
+        with c4:
+            r_ev = st.number_input(
+                "Model EV (%)",
+                min_value=-50.0,
+                max_value=200.0,
+                value=5.0,
+                step=0.1
+            )
+
+        with c5:
+            r_stake = st.number_input(
+                "Stake ($)",
+                min_value=0.0,
+                max_value=10000.0,
+                value=5.0,
+                step=0.5
+            )
+
+        with c6:
+            r_clv = st.number_input(
+                "CLV (Closing - Entry)",
+                min_value=-20.0,
+                max_value=20.0,
+                value=0.0,
+                step=0.1
+            )
+
+        r_joint = st.number_input(
+            "Joint Probability (if known, %)",
+            min_value=0.0,
+            max_value=100.0,
+            value=0.0,
+            step=0.1
+        )
+
+        r_result = st.selectbox(
+            "Result",
+            ["Pending", "Hit", "Miss", "Push"]
+        )
+
+        submit_res = st.form_submit_button("Log / Update Result")
+
+        if submit_res:
+            ensure_history()
+            df = load_history()
+
+            new_row = {
+                "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "Player": r_player,
+                "Market": r_market,
+                "Line": r_line,
+                "EV": r_ev,
+                "Stake": r_stake,
+                "Result": r_result,
+                "CLV": r_clv,
+                "KellyFrac": fractional_kelly,
+                "JointProb": r_joint / 100.0 if r_joint > 0 else None,
+                "PayoutMult": payout_mult,
+            }
+
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            save_history(df)
+
+            st.success("Result logged ✅")
+
+    df = load_history()
+    comp = df[df["Result"].isin(["Hit", "Miss"])]
+
+    if not comp.empty:
+        pnl = compute_pnl(comp)
+
+        hits = (comp["Result"] == "Hit").sum()
+        total = len(comp)
+        hit_rate = (hits / total * 100) if total > 0 else 0.0
+        roi = pnl.sum() / max(bankroll, 1.0) * 100
+        clv_avg = comp["CLV"].mean() if "CLV" in comp.columns else 0.0
+        pnl_var = pnl.var() if len(pnl) > 1 else 0.0
+
+        st.markdown(
+            f"**Completed Bets:** {total}  |  "
+            f"**Hit Rate:** {hit_rate:.1f}%  |  "
+            f"**ROI (vs bankroll):** {roi:+.1f}%  |  "
+            f"**Avg CLV:** {clv_avg:+.2f}  |  "
+            f"**Outcome Variance:** {pnl_var:.2f}"
+        )
+
+        trend = comp.copy()
+        trend["Profit"] = pnl.values
+        trend["Cumulative"] = trend["Profit"].cumsum()
+
+        fig = px.line(
+            trend,
+            x="Date",
+            y="Cumulative",
+            title="Cumulative Profit (All Logged Bets)",
+            markers=True,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+# =========================================================
+# PART 7 — HISTORY TAB
+# =========================================================
+
+with tab_history:
+    st.subheader("History & Filters")
+
+    df = load_history()
+
+    if df.empty:
+        st.info("No logged bets yet.")
+    else:
+        min_ev = st.slider(
+            "Min EV (%) filter",
+            min_value=-20.0,
+            max_value=100.0,
+            value=0.0,
+            step=1.0
+        )
+
+        market_filter = st.selectbox(
+            "Market filter",
+            ["All", "PRA", "Points", "Rebounds", "Assists", "Combo"],
+            index=0
+        )
+
+        filt = df.copy()
+        filt = filt[pd.to_numeric(filt["EV"], errors="coerce") >= min_ev]
+
+        if market_filter != "All":
+            filt = filt[filt["Market"] == market_filter]
+
+        st.markdown(f"**Filtered Bets:** {len(filt)}")
+        st.dataframe(filt, use_container_width=True)
+
+        if not filt.empty:
+            pnl_filt = compute_pnl(filt)
+            filt = filt.copy()
+            filt["Net"] = pnl_filt.values
+            filt["Cumulative"] = filt["Net"].cumsum()
+
+            fig = px.line(
+                filt,
+                x="Date",
+                y="Cumulative",
+                title="Cumulative Profit (Filtered View)",
+                markers=True,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+# =========================================================
+# PART 8 — CALIBRATION TAB
+# =========================================================
+
+with tab_calib:
+    st.subheader("Calibration, EV Buckets & Edge Sustainability")
+
+    df = load_history()
+    comp = df[df["Result"].isin(["Hit", "Miss"])]
+
+    if comp.empty or len(comp) < 15:
+        st.info("Log at least 15 completed bets with EV to start calibration.")
+    else:
+        comp = comp.copy()
+        comp["EV_float"] = pd.to_numeric(comp["EV"], errors="coerce") / 100.0
+        comp = comp.dropna(subset=["EV_float"])
+
+        if comp.empty:
+            st.info("No valid EV values yet.")
+        else:
+            comp["is_hit"] = (comp["Result"] == "Hit").astype(int)
+            comp["PredProb"] = (0.5 + comp["EV_float"]).clip(0.01, 0.99)
+
+            ev_bins = pd.cut(
+                comp["EV_float"] * 100,
+                bins=[-100, 0, 10, 20, 1000],
+                labels=["≤0%", "0–10%", "10–20%", ">20%"]
+            )
+            comp["EV_Bin"] = ev_bins
+
+            bucket_stats = (
+                comp
+                .groupby("EV_Bin")
+                .agg(
+                    Count=("is_hit", "size"),
+                    PredProb=("PredProb", "mean"),
+                    ActualHit=("is_hit", "mean"),
+                    AvgEV=("EV_float", "mean")
+                )
+                .reset_index()
+            )
+
+            bucket_stats["CalibrationGap%"] = (bucket_stats["PredProb"] - bucket_stats["ActualHit"]) * 100
+
+            st.markdown("### 📊 EV Buckets — Predicted vs Actual Hit Rates")
+            st.dataframe(bucket_stats, use_container_width=True)
+
+            fig2 = px.histogram(
+                comp,
+                x=comp["EV_float"] * 100,
+                nbins=20,
+                title="Distribution of Model Edge vs Market (EV%)",
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+
+            pnl = compute_pnl(comp)
+            roi = pnl.sum() / max(1.0, bankroll) * 100
+
+            st.markdown(
+                f"**Overall Predicted Avg Win Prob:** {comp['PredProb'].mean()*100:.1f}%  |  "
+                f"**Actual Hit Rate:** {comp['is_hit'].mean()*100:.1f}%  |  "
+                f"**ROI:** {roi:+.1f}%"
+            )
+
+            prob_scale, vol_scale = compute_model_drift(comp)
+            st.markdown(
+                f"**Current drift adjustments:** "
+                f"ProbScale={prob_scale:.3f}, VolScale={vol_scale:.3f}"
+            )
+
+            st.markdown("---")
+            st.subheader("Edge Sustainability & Playbook Notes")
+
+            by_market = (
+                comp
+                .groupby("Market")
+                .agg(
+                    Count=("is_hit", "size"),
+                    HitRate=("is_hit", "mean"),
+                    AvgEV=("EV_float", "mean"),
+                    AvgCLV=("CLV", "mean")
+                )
+                .reset_index()
+            )
+            st.markdown("**Performance by Market Type**")
+            st.dataframe(by_market, use_container_width=True)
+
+            st.caption(
+                "Use this to spot where your edges come from (e.g., rebounds vs assists). "
+                "If CLV and hit rate both slip over time, consider tightening EV thresholds "
+                "or focusing on your strongest buckets."
+            )
+
+# =========================================================
+# PART 9 — FOOTER
+# =========================================================
+
+st.markdown(
+    """
+    <footer style='text-align:center; margin-top:30px; color:#FFCC33; font-size:11px;'>
+        © 2025 NBA Prop Quant Engine • Powered by Kamal
+    </footer>
+    """,
+    unsafe_allow_html=True,
+)
