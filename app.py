@@ -47,6 +47,22 @@ BG = "#0D0A12"
 # Calibration state file (self-learning)
 CALIBRATION_FILE = os.path.join(TEMP_DIR, "calibration_state.json")
 
+# -------------------------
+# SESSION STATE CONTAINER
+# -------------------------
+if "model_ran" not in st.session_state:
+    st.session_state["model_ran"] = False
+
+if "last_leg1" not in st.session_state:
+    st.session_state["last_leg1"] = None
+
+if "last_leg2" not in st.session_state:
+    st.session_state["last_leg2"] = None
+
+if "last_combo" not in st.session_state:
+    st.session_state["last_combo"] = None
+
+
 # =========================================================
 #  GLOBAL STYLE
 # =========================================================
@@ -1029,6 +1045,89 @@ with tab_model:
                 f"**{leg2['player']} Model Prob:** {leg2['prob_over']*100:.1f}% "
                 f"→ Edge vs 50/50: {(leg2['prob_over'] - 0.5)*100:+.1f}%"
             )
+
+        if run:
+    # Mark that the model ran
+    st.session_state["model_ran"] = True
+
+    # Compute legs (your existing code)
+    run_loader()
+
+    # ---- existing code for computing leg1, leg2, joint, EV, Kelly, stake ----
+    # Place ALL your leg computation here, unchanged
+    # After finishing computing leg1, leg2, and joint_result:
+
+    # Save results to session so they persist after rerun
+    st.session_state["last_leg1"] = leg1
+    st.session_state["last_leg2"] = leg2
+    st.session_state["last_combo"] = {
+        "ev_combo": ev_combo,
+        "stake": stake,
+        "k_adj": k_adj,
+        "joint": joint,
+    }
+
+# -----------------------------------------------------------
+# ALWAYS SHOW LOGGING SECTION AFTER MODEL HAS RUN
+# EVEN AFTER RERUNS
+# -----------------------------------------------------------
+if st.session_state["model_ran"] and st.session_state["last_leg1"] and st.session_state["last_leg2"]:
+    st.markdown("---")
+    st.subheader("📝 Quick Bet Logging")
+
+    leg1 = st.session_state["last_leg1"]
+    leg2 = st.session_state["last_leg2"]
+    combo_data = st.session_state["last_combo"]
+
+    log_choice = st.radio(
+        "Did you place this bet?",
+        ["No", "Yes"],
+        horizontal=True
+    )
+
+    if log_choice == "Yes":
+        stake_input = st.number_input(
+            "Stake used ($)",
+            min_value=0.0,
+            max_value=10000.0,
+            value=combo_data["stake"],
+            step=0.5
+        )
+
+        result_input = st.selectbox(
+            "Result:",
+            ["Pending", "Hit", "Miss", "Push"],
+            index=0
+        )
+
+        clv_input = st.number_input(
+            "CLV (optional, %)",
+            min_value=-50.0,
+            max_value=50.0,
+            value=0.0,
+            step=0.1
+        )
+
+        if st.button("Log Bet"):
+            ensure_history()
+            df_hist = load_history()
+
+            new_row = {
+                "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "Player": f"{leg1['player']} + {leg2['player']}",
+                "Market": "Combo",
+                "Line": f"{leg1['line']} / {leg2['line']}",
+                "EV": round(combo_data["ev_combo"] * 100, 2),
+                "Stake": stake_input,
+                "Result": result_input,
+                "CLV": clv_input,
+                "KellyFrac": combo_data["k_adj"],
+            }
+
+            df_hist = pd.concat([df_hist, pd.DataFrame([new_row])], ignore_index=True)
+            save_history(df_hist)
+            st.success("Bet logged successfully! 🎯")
+
 
         # 2-PICK COMBO
         if leg1 and leg2:
