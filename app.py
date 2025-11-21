@@ -1068,6 +1068,69 @@ with tab_model:
             st.markdown(f"- Risk-Adjusted Kelly Fraction: **{k_adj*100:.2f}%**")
             st.markdown(f"- Suggested Stake: **${stake:.2f}**")
             st.markdown(f"- **Recommendation:** {decision}")
+            # ---------------------------------------------------------
+            # AUTO-LOG PROMPT AFTER MODEL RUN
+            # ---------------------------------------------------------
+            
+            st.markdown("---")
+            st.subheader("📝 Quick Bet Logging")
+            
+            log_choice = st.radio(
+                "Did you place this bet?",
+                ["No", "Yes"],
+                horizontal=True
+            )
+            
+            if log_choice == "Yes" and (leg1 and leg2):
+                st.markdown("### 📥 Enter Bet Details")
+            
+                # Ask for stake
+                stake_input = st.number_input(
+                    "Stake used ($)",
+                    min_value=0.0,
+                    max_value=10000.0,
+                    value=float(stake),
+                    step=0.50
+                )
+            
+                # Ask for result
+                result_input = st.selectbox(
+                    "Result of this entry:",
+                    ["Pending", "Hit", "Miss", "Push"],
+                    index=0
+                )
+            
+                # Ask for CLV
+                clv_input = st.number_input(
+                    "Closing Line Value (optional, %)",
+                    min_value=-50.0,
+                    max_value=50.0,
+                    value=0.0,
+                    step=0.1
+                )
+            
+                # Log button
+                if st.button("Log to History"):
+                    ensure_history()
+                    df_hist = load_history()
+            
+                    new_row = {
+                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "Player": f"{leg1['player']} + {leg2['player']}",
+                        "Market": "Combo",
+                        "Line": f"{leg1['line']} / {leg2['line']}",
+                        "EV": round(ev_combo * 100, 2),
+                        "Stake": stake_input,
+                        "Result": result_input,
+                        "CLV": clv_input,
+                        "KellyFrac": k_adj if 'k_adj' in locals() else fractional_kelly
+                    }
+            
+                    df_hist = pd.concat([df_hist, pd.DataFrame([new_row])], ignore_index=True)
+                    save_history(df_hist)
+            
+                    st.success("Bet successfully logged into History tab! ✅")
+
             if risk_note:
                 st.warning(risk_note)
 
