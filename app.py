@@ -25,7 +25,56 @@ from scipy.stats import norm
 import requests
 
 from nba_api.stats.static import players as nba_players
-from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats
+from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats, CommonPlayerInfo
+
+
+PLAYER_POSITION_CACHE: dict[str, str] = {}
+
+def get_player_position(name: str) -> str:
+    """Resolve player position using nba_api and cache the result."""
+    key = name.strip().lower()
+    if not key:
+        return "Unknown"
+    if key in PLAYER_POSITION_CACHE:
+        return PLAYER_POSITION_CACHE[key]
+    try:
+        matches = nba_players.find_players_by_full_name(name)
+    except Exception:
+        matches = []
+    if not matches:
+        PLAYER_POSITION_CACHE[key] = "Unknown"
+        return "Unknown"
+    pid = matches[0].get("id")
+    pos = "Unknown"
+    if pid:
+        try:
+            info = CommonPlayerInfo(player_id=pid).get_data_frames()[0]
+            # NBA API position formats like 'G', 'F', 'C', 'G-F', 'F-C'
+            raw = str(info.get("POSITION", "") or info.get("POSITION_SHORT", "") or "")
+            pos = raw if raw else "Unknown"
+        except Exception:
+            pos = "Unknown"
+    PLAYER_POSITION_CACHE[key] = pos
+    return pos
+
+
+def get_position_bucket(pos: str) -> str:
+    """Map detailed position (e.g. 'G-F') into Guard / Wing / Big buckets."""
+    if not pos:
+        return "Unknown"
+    pos = pos.upper()
+    if pos.startswith("G"):
+        return "Guard"
+    if pos.startswith("F"):
+        return "Wing"
+    if pos.startswith("C"):
+        return "Big"
+    # Combo tags
+    if "G" in pos and "F" in pos:
+        return "Wing"
+    if "F" in pos and "C" in pos:
+        return "Big"
+    return "Unknown"
 
 # =========================================================
 #  STREAMLIT CONFIG
@@ -259,12 +308,33 @@ def get_team_context():
 TEAM_CTX, LEAGUE_CTX = get_team_context()
 
 
-def get_context_multiplier(opp_abbrev: str | None, market: str) -> float:
-    """Advanced opponent context multiplier using defense, pace, and glass/playmaking."""
-    if not opp_abbrev or opp_abbrev not in TEAM_CTX or not LEAGUE_CTX:
+
+def get_context_multiplier(opp_abbrev: str | None, market: str, position: str | None = None) -> float:
+    """Advanced opponent + positional context multiplier.
+
+    Uses:
+    - Team-level pace & defense from TEAM_CTX / LEAGUE_CTX
+    - Rebound & assist context for glass / playmaking markets
+    - Positional bucket (Guard / Wing / Big) to refine matchup
+    """
+    # If team context failed to load, fall back to neutral with a tiny positional tweak
+    if not LEAGUE_CTX:
+        base = 1.0
+        bucket = get_position_bucket(position or "")
+        if bucket == "Guard" and market in ["Assists", "Rebs+Asts"]:
+            base *= 1.03
+        elif bucket == "Big" and market in ["Rebounds", "Rebs+Asts"]:
+            base *= 1.04
+        return float(np.clip(base, 0.90, 1.10))
+
+    if not opp_abbrev:
         return 1.0
 
-    opp = TEAM_CTX[opp_abbrev]
+    opp_key = opp_abbrev.strip().upper()
+    if opp_key not in TEAM_CTX:
+        return 1.0
+
+    opp = TEAM_CTX[opp_key]
 
     pace_f = opp["PACE"] / LEAGUE_CTX["PACE"]
     def_f = LEAGUE_CTX["DEF_RATING"] / opp["DEF_RATING"]
@@ -278,16 +348,28 @@ def get_context_multiplier(opp_abbrev: str | None, market: str) -> float:
         if market in ["Assists", "Rebs+Asts"] else 1.0
     )
 
-    if market == "Rebounds":
-        mult = 0.35 * pace_f + 0.30 * def_f + 0.35 * reb_adj
-    elif market == "Assists":
-        mult = 0.35 * pace_f + 0.30 * def_f + 0.35 * ast_adj
-    elif market == "Rebs+Asts":
-        mult = 0.30 * pace_f + 0.25 * def_f + 0.25 * reb_adj + 0.20 * ast_adj
-    else:
-        mult = 0.55 * pace_f + 0.45 * def_f
+    bucket = get_position_bucket(position or "")
+    pos_factor = 1.0
+    if bucket == "Guard":
+        # Guards care a lot about pace & assist environment
+        pos_factor = 0.5 * (opp["AST_PCT"] / LEAGUE_CTX["AST_PCT"]) + 0.5 * pace_f
+    elif bucket == "Wing":
+        # Wings are more sensitive to overall defense + pace
+        pos_factor = 0.5 * def_f + 0.5 * pace_f
+    elif bucket == "Big":
+        # Bigs care about glass + paint protection
+        pos_factor = 0.6 * (LEAGUE_CTX["REB_PCT"] / opp["DREB_PCT"]) + 0.4 * def_f
 
-    return float(np.clip(mult, 0.78, 1.30))
+    if market == "Rebounds":
+        mult = 0.30 * pace_f + 0.25 * def_f + 0.30 * reb_adj + 0.15 * pos_factor
+    elif market == "Assists":
+        mult = 0.30 * pace_f + 0.25 * def_f + 0.30 * ast_adj + 0.15 * pos_factor
+    elif market == "Rebs+Asts":
+        mult = 0.25 * pace_f + 0.20 * def_f + 0.25 * reb_adj + 0.20 * ast_adj + 0.10 * pos_factor
+    else:
+        mult = 0.45 * pace_f + 0.40 * def_f + 0.15 * pos_factor
+
+    return float(np.clip(mult, 0.80, 1.30))
 
 
 # =========================================================
@@ -385,14 +467,47 @@ def auto_detect_matchup_from_board(player: str, board: dict):
 
     return None, None
 
-def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> bool:
+
+def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> float:
+    """Estimate blowout probability (0–1) from board spreads.
+
+    Uses game spread when available; otherwise returns a small base risk (~5%).
     """
-    Very simple blowout risk proxy:
-    - If we can find a spread and abs(spread) >= 10 → blowout risk high.
-    Otherwise False.
-    """
+    base_risk = 0.05
     if not team or not opp or not board:
-        return False
+        return base_risk
+
+    try:
+        games = board.get("included", [])
+    except AttributeError:
+        games = []
+
+    for g in games:
+        try:
+            attr = g.get("attributes", {})
+            home = attr.get("home_team") or attr.get("home_team_abbrev")
+            away = attr.get("away_team") or attr.get("away_team_abbrev")
+            if not home or not away:
+                continue
+            teams = {home.upper(), away.upper()}
+            if team.upper() in teams and opp.upper() in teams:
+                spread = attr.get("spread")
+                if spread is None:
+                    continue
+                s = abs(float(spread))
+                if s < 5:
+                    return 0.05
+                if s < 8:
+                    return 0.10
+                if s < 12:
+                    return 0.18
+                if s < 16:
+                    return 0.26
+                return 0.33
+        except Exception:
+            continue
+
+    return base_risk
 
     try:
         games = board.get("included", [])
@@ -633,7 +748,9 @@ def estimate_player_correlation(leg1: dict, leg2: dict) -> float:
         corr -= 0.05
 
     # 4. Blowout risk — if same game & high risk, correlation increases
-    if leg1.get("blowout") and leg2.get("blowout"):
+    b1 = float(leg1.get("blowout_prob", 0.0))
+    b2 = float(leg2.get("blowout_prob", 0.0))
+    if b1 >= 0.20 and b2 >= 0.20:
         corr += 0.03
 
     corr = float(np.clip(corr, -0.25, 0.40))
@@ -651,30 +768,43 @@ def apply_calibration_to_prob(p: float) -> float:
     return float(np.clip(adj, 0.02, 0.98))
 
 
-def game_script_simulation(samples, minutes, line, ctx_mult, blowout_flag):
-    """Game script simulation layered on top of empirical samples."""
+
+def game_script_simulation(samples, minutes, line, ctx_mult, blowout_prob: float):
+    """Game script simulation layered on top of empirical samples.
+
+    blowout_prob is a probability (0–1) that tilts scenarios towards mild/severe blowouts.
+    """
     samples = np.array(samples, dtype=float)
     minutes = np.array(minutes, dtype=float)
     if len(samples) == 0:
         return 0.5, 0.0, 1.0
 
-    base_min = minutes.mean() if len(minutes) > 0 else 32.0
+    blowout_prob = float(np.clip(blowout_prob, 0.0, 0.8))
+
+    base_comp = 0.70 - 0.4 * blowout_prob
+    base_mild = 0.20 + 0.25 * blowout_prob
+    base_severe = 0.10 + 0.15 * blowout_prob
+    total = base_comp + base_mild + base_severe
+    w_comp = base_comp / total
+    w_mild = base_mild / total
+    w_severe = base_severe / total
+
     n_sims = 6000
     draws = []
     for _ in range(n_sims):
         r = np.random.rand()
-        if r < 0.65:  # competitive
+        if r < w_comp:  # competitive
             min_mult = np.random.normal(1.0, 0.04)
-        elif r < 0.90:  # mild blowout
-            min_mult = np.random.normal(0.9, 0.05)
+        elif r < w_comp + w_mild:  # mild blowout
+            min_mult = np.random.normal(0.9, 0.06)
         else:  # severe blowout / foul issues
             min_mult = np.random.normal(0.8, 0.08)
-        if blowout_flag:
-            min_mult *= 0.95
+
         usage_mult = ctx_mult
         base_sample = np.random.choice(samples)
         val = base_sample * min_mult * usage_mult
         draws.append(val)
+
     draws = np.array(draws)
     mu = float(draws.mean())
     sd = float(max(draws.std(ddof=1), 0.75))
@@ -711,6 +841,7 @@ def player_similarity_factor(samples):
     return 1.0
 
 
+
 def compute_leg_projection(player: str, market: str, line: float | None,
                            user_opp: str | None, n_games: int,
                            board: dict):
@@ -722,17 +853,23 @@ def compute_leg_projection(player: str, market: str, line: float | None,
     if line is None or line <= 0:
         return None, "No valid line for this player/market."
 
+    # Resolve opponent
     opp = None
     if user_opp:
         opp = user_opp.strip().upper()
     else:
         t_board, opp_board = auto_detect_matchup_from_board(player, board)
         if opp_board:
-            opp = opp_board
+            opp = str(opp_board).upper()
         elif last_opp:
             opp = str(last_opp).upper()
 
-    ctx_mult = get_context_multiplier(opp, market)
+    # Resolve player position via NBA API
+    position_raw = get_player_position(player)
+    pos_bucket = get_position_bucket(position_raw)
+
+    # Context multiplier (pace + defense + positional flavor)
+    ctx_mult = get_context_multiplier(opp, market, position_raw)
 
     minutes_arr = np.array(minutes, dtype=float)
     avg_min = float(minutes_arr.mean()) if len(minutes_arr) > 0 else 32.0
@@ -744,17 +881,17 @@ def compute_leg_projection(player: str, market: str, line: float | None,
     elif recent_min <= max(10.0, avg_min - 5):
         usage_boost = 0.94
 
-    blowout = estimate_blowout_risk(team, opp, board)
+    blowout_prob = estimate_blowout_risk(team, opp, board)
 
     base_samples = samples.astype(float) * ctx_mult * usage_boost
-    if blowout:
-        base_samples *= 0.95
+    if blowout_prob >= 0.20:
+        base_samples *= 0.96
 
     bayesian_samples = role_based_bayesian_prior(base_samples, line)
     sim_factor = player_similarity_factor(bayesian_samples)
     bayesian_samples = (bayesian_samples - bayesian_samples.mean()) * sim_factor + bayesian_samples.mean()
 
-    gs_prob, mu_gs, sd_gs = game_script_simulation(bayesian_samples, minutes, line, ctx_mult, blowout)
+    gs_prob, mu_gs, sd_gs = game_script_simulation(bayesian_samples, minutes, line, ctx_mult, blowout_prob)
 
     n_sims = 10000
     draws_emp = np.random.choice(base_samples, size=n_sims, replace=True)
@@ -770,19 +907,37 @@ def compute_leg_projection(player: str, market: str, line: float | None,
     ev_leg_even = p_over - (1.0 - p_over)
 
     opp_display = opp if opp else "Unknown"
+
     matchup_text = "Neutral matchup."
-    if opp and opp in TEAM_CTX and LEAGUE_CTX:
-        opp_ctx = TEAM_CTX[opp]
-        pace_rel = opp_ctx["PACE"] / LEAGUE_CTX["PACE"]
-        def_rel = opp_ctx["DEF_RATING"] / LEAGUE_CTX["DEF_RATING"]
-        if def_rel > 1.05 and pace_rel < 0.97:
-            matchup_text = "Tough defensive matchup (slow, strong defense)."
-        elif def_rel < 0.95 and pace_rel > 1.03:
-            matchup_text = "Very favorable matchup (fast pace, weak defense)."
-        elif def_rel < 0.97:
-            matchup_text = "Soft defense vs this type of production."
-        elif def_rel > 1.03:
-            matchup_text = "Above-average defense; expectation tempered."
+    if opp and LEAGUE_CTX:
+        opp_key = opp.strip().upper()
+        if opp_key in TEAM_CTX:
+            opp_ctx = TEAM_CTX[opp_key]
+            pace_rel = opp_ctx["PACE"] / LEAGUE_CTX["PACE"]
+            def_rel = opp_ctx["DEF_RATING"] / LEAGUE_CTX["DEF_RATING"]
+
+            pieces = []
+            if def_rel > 1.06:
+                pieces.append("strong team defense")
+            elif def_rel < 0.94:
+                pieces.append("soft team defense")
+
+            if pace_rel > 1.05:
+                pieces.append("very fast pace")
+            elif pace_rel < 0.95:
+                pieces.append("slow tempo")
+
+            if pos_bucket == "Guard":
+                pieces.append("guard-centric defensive environment")
+            elif pos_bucket == "Wing":
+                pieces.append("wing matchup emphasis")
+            elif pos_bucket == "Big":
+                pieces.append("big-man matchup in the paint")
+
+            if pieces:
+                matchup_text = ", ".join(pieces).capitalize() + "."
+            else:
+                matchup_text = "Slightly neutral matchup with no extreme flags."
 
     leg = {
         "player": player,
@@ -797,11 +952,15 @@ def compute_leg_projection(player: str, market: str, line: float | None,
         "opp": opp_display,
         "ctx_mult": float(ctx_mult),
         "msg": msg,
-        "blowout": bool(blowout),
+        "blowout_prob": float(blowout_prob),
         "usage_boost": float(usage_boost),
         "matchup_text": matchup_text,
+        "position": position_raw,
+        "pos_bucket": pos_bucket,
+        # key_teammate_out will be attached in the MODEL tab when logging legs
     }
     return leg, None
+
 
 
 # =========================================================
@@ -888,6 +1047,7 @@ def combo_decision(ev_combo: float) -> str:
 #  PART 11 — UI RENDERING
 # =========================================================
 
+
 def render_leg_card(leg: dict, container, compact=False):
     player = leg["player"]
     market = leg["market"]
@@ -900,46 +1060,49 @@ def render_leg_card(leg: dict, container, compact=False):
     ctx = leg["ctx_mult"]
     even_ev = leg["ev_leg_even"]
     opp = leg.get("opp", "Unknown")
-    blowout = leg.get("blowout", False)
+    blowout_prob = float(leg.get("blowout_prob", 0.0))
     usage_boost = leg.get("usage_boost", 1.0)
     matchup_text = leg.get("matchup_text", "Neutral matchup.")
+    key_out = bool(leg.get("key_teammate_out", False))
+    position = leg.get("position", "Unknown")
+    pos_bucket = leg.get("pos_bucket", "Unknown")
 
-    headshot = get_headshot_url(player)
+    boost_emoji = " 🔋" if key_out else ""
 
     with container:
-        st.markdown(
-            f"""
-            <div class="card">
-                <h3 style="margin-top:0;color:#FFCC33;">{player} — {market}</h3>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        if compact:
+            st.markdown(
+                f"**{player} {boost_emoji}** — {market} o{line:.1f} vs {opp}  "
+                f"(p={p*100:.1f}%, ctx={ctx:.3f})"
+            )
+        else:
+            st.markdown(f"### {player}{boost_emoji} — {market} o{line:.1f}")
+            st.caption(f"Opponent: {opp} • Position: {position} ({pos_bucket})")
 
-        cols = st.columns([1, 2]) if not compact else st.columns([1, 2])
-        with cols[0]:
-            if headshot:
-                st.image(headshot, width=120)
-        with cols[1]:
-            st.write(f"🆚 **Opponent:** {opp}")
-            st.write(f"📌 **Line:** {line}")
-            st.write(f"📊 **Model Mean (def-adj):** {mu:.2f}")
-            st.write(f"📉 **Model SD (volatility):** {sd:.2f}")
-            st.write(f"⏱️ **Context Multiplier:** {ctx:.3f}")
-            st.write(f"🎯 **Raw Bootstrapped Prob Over:** {p_raw*100:.1f}%")
-            st.write(f"🎯 **Calibrated Prob Over:** {p*100:.1f}%")
-            st.write(f"💵 **Even-Money EV:** {even_ev*100:+.1f}%")
+            cols = st.columns(2)
+
+            with cols[0]:
+                st.write(f"🎯 **Calibrated Prob Over:** {p*100:.1f}%")
+                st.write(f"🎯 **Raw Bootstrapped Prob Over:** {p_raw*100:.1f}%")
+                st.write(f"💵 **Even-Money EV:** {even_ev*100:+.1f}%")
+
+                st.write(f"⏱️ **Context Multiplier:** {ctx:.3f}")
+                st.write(f"📊 **Mean / SD:** {mu:.2f} ± {sd:.2f}")
+
+            with cols[1]:
+                st.write(f"🔥 **Blowout Risk:** {blowout_prob*100:.1f}%")
+                if usage_boost > 1.02:
+                    st.info("Usage / minutes have trended UP recently (auto-boost applied).")
+                elif usage_boost < 0.98:
+                    st.warning("Usage / minutes have trended DOWN recently (auto-trim applied).")
+
+                if blowout_prob >= 0.20:
+                    st.warning("Model trimmed for elevated blowout risk in this matchup.")
+
+                st.caption(f"📎 Matchup: {matchup_text}")
 
             st.caption(f"📝 {msg}")
-            st.caption(f"📎 Matchup: {matchup_text}")
 
-            if usage_boost > 1.02:
-                st.info("Usage / minutes have trended UP recently (auto-boost applied).")
-            elif usage_boost < 0.98:
-                st.warning("Usage / minutes have trended DOWN recently (auto-trim applied).")
-
-            if blowout:
-                st.warning("Blowout risk detected for this matchup (auto-trim applied).")
 
 def run_loader():
     load_ph = st.empty()
@@ -971,6 +1134,7 @@ tab_model, tab_results, tab_history, tab_calib = st.tabs(
 # ---------------------------------------------------------
 
 
+
 with tab_model:
     st.subheader("Up to 4-Leg Projection & Edge (Bootstrap + Game Scripts)")
 
@@ -987,7 +1151,8 @@ with tab_model:
         manual1 = st.checkbox("P1: Manual line override", value=False)
         l1 = st.number_input("P1 Line", min_value=0.0, value=25.0, step=0.5, key="p1_line")
         o1 = st.text_input("P1 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
-        leg_inputs.append((p1, m1, manual1, l1, o1))
+        t1 = st.checkbox("P1 Key teammate OUT?", value=False)
+        leg_inputs.append((p1, m1, manual1, l1, o1, t1))
 
     with cols[1]:
         p2 = st.text_input("Player 2 Name")
@@ -995,7 +1160,8 @@ with tab_model:
         manual2 = st.checkbox("P2: Manual line override", value=False)
         l2 = st.number_input("P2 Line", min_value=0.0, value=25.0, step=0.5, key="p2_line")
         o2 = st.text_input("P2 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
-        leg_inputs.append((p2, m2, manual2, l2, o2))
+        t2 = st.checkbox("P2 Key teammate OUT?", value=False)
+        leg_inputs.append((p2, m2, manual2, l2, o2, t2))
 
     with cols2[0]:
         p3 = st.text_input("Player 3 Name")
@@ -1003,7 +1169,8 @@ with tab_model:
         manual3 = st.checkbox("P3: Manual line override", value=False)
         l3 = st.number_input("P3 Line", min_value=0.0, value=25.0, step=0.5, key="p3_line")
         o3 = st.text_input("P3 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
-        leg_inputs.append((p3, m3, manual3, l3, o3))
+        t3 = st.checkbox("P3 Key teammate OUT?", value=False)
+        leg_inputs.append((p3, m3, manual3, l3, o3, t3))
 
     with cols2[1]:
         p4 = st.text_input("Player 4 Name")
@@ -1011,7 +1178,8 @@ with tab_model:
         manual4 = st.checkbox("P4: Manual line override", value=False)
         l4 = st.number_input("P4 Line", min_value=0.0, value=25.0, step=0.5, key="p4_line")
         o4 = st.text_input("P4 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
-        leg_inputs.append((p4, m4, manual4, l4, o4))
+        t4 = st.checkbox("P4 Key teammate OUT?", value=False)
+        leg_inputs.append((p4, m4, manual4, l4, o4, t4))
 
     run = st.button("Run Model ⚡")
 
@@ -1023,7 +1191,7 @@ with tab_model:
         run_loader()
 
         legs = []
-        for idx, (player, market, manual, line_inp, opp_inp) in enumerate(leg_inputs, start=1):
+        for idx, (player, market, manual, line_inp, opp_inp, key_out) in enumerate(leg_inputs, start=1):
             if not player:
                 continue
 
@@ -1045,6 +1213,7 @@ with tab_model:
                 if err:
                     st.error(f"P{idx}: {err}")
                 else:
+                    leg["key_teammate_out"] = bool(key_out)
                     legs.append(leg)
                     update_market_library(leg["player"], leg["market"], leg["line"])
             else:
@@ -1148,8 +1317,7 @@ with tab_model:
                 else:
                     st.info("Bet not logged. Returning to home state.")
                     st.experimental_rerun()
-# ---------------------------------------------------------
-#  RESULTS TAB
+
 # ---------------------------------------------------------
 
 with tab_results:
