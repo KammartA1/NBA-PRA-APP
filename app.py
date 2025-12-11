@@ -25,13 +25,13 @@ from scipy.stats import norm
 import requests
 
 from nba_api.stats.static import players as nba_players
-from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats, CommonPlayerInfo
+from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats, CommonPlayerInfo, ScoreboardV2
 
 
 PLAYER_POSITION_CACHE: dict[str, str] = {}
 
 def get_player_position(name: str) -> str:
-    """Resolve player position using nba_api and cache the result."""
+    """Resolve player position using nba_api and cache (G/F/C, combos)."""
     key = name.strip().lower()
     if not key:
         return "Unknown"
@@ -49,7 +49,6 @@ def get_player_position(name: str) -> str:
     if pid:
         try:
             info = CommonPlayerInfo(player_id=pid).get_data_frames()[0]
-            # NBA API position formats like 'G', 'F', 'C', 'G-F', 'F-C'
             raw = str(info.get("POSITION", "") or info.get("POSITION_SHORT", "") or "")
             pos = raw if raw else "Unknown"
         except Exception:
@@ -59,7 +58,7 @@ def get_player_position(name: str) -> str:
 
 
 def get_position_bucket(pos: str) -> str:
-    """Map detailed position (e.g. 'G-F') into Guard / Wing / Big buckets."""
+    """Bucket a raw position string into Guard / Wing / Big."""
     if not pos:
         return "Unknown"
     pos = pos.upper()
@@ -69,12 +68,61 @@ def get_position_bucket(pos: str) -> str:
         return "Wing"
     if pos.startswith("C"):
         return "Big"
-    # Combo tags
     if "G" in pos and "F" in pos:
         return "Wing"
     if "F" in pos and "C" in pos:
         return "Big"
     return "Unknown"
+
+
+def get_todays_opponent_from_nba(player_name: str) -> str | None:
+    """Use nba_api ScoreboardV2 + CommonPlayerInfo to infer today's opponent.
+
+    - Finds player's current team via CommonPlayerInfo
+    - Looks at today's scoreboard
+    - Locates game that includes that team
+    - Returns opposing team abbreviation if found
+    """
+    try:
+        matches = nba_players.find_players_by_full_name(player_name)
+    except Exception:
+        matches = []
+    if not matches:
+        return None
+
+    pid = matches[0].get("id")
+    team_abbrev = None
+    if pid:
+        try:
+            info = CommonPlayerInfo(player_id=pid).get_data_frames()[0]
+            team_abbrev = str(info.get("TEAM_ABBREVIATION", "")).upper()
+        except Exception:
+            team_abbrev = None
+    if not team_abbrev:
+        return None
+
+    try:
+        sb = ScoreboardV2()
+        dfs = sb.get_data_frames()
+        line_df = None
+        for df in dfs:
+            if "TEAM_ABBREVIATION" in df.columns and "GAME_ID" in df.columns:
+                line_df = df
+                break
+        if line_df is None:
+            return None
+        sub = line_df[line_df["TEAM_ABBREVIATION"] == team_abbrev]
+        if sub.empty:
+            return None
+        game_id = sub.iloc[0]["GAME_ID"]
+        game_rows = line_df[line_df["GAME_ID"] == game_id]
+        opp_row = game_rows[game_rows["TEAM_ABBREVIATION"] != team_abbrev]
+        if opp_row.empty:
+            return None
+        opp_abbrev = str(opp_row.iloc[0]["TEAM_ABBREVIATION"]).upper()
+        return opp_abbrev
+    except Exception:
+        return None
 
 # =========================================================
 #  STREAMLIT CONFIG
@@ -317,7 +365,7 @@ def get_context_multiplier(opp_abbrev: str | None, market: str, position: str | 
     - Rebound & assist context for glass / playmaking markets
     - Positional bucket (Guard / Wing / Big) to refine matchup
     """
-    # If team context failed to load, fall back to neutral with a tiny positional tweak
+    # If league context failed to load, apply only a mild positional bump
     if not LEAGUE_CTX:
         base = 1.0
         bucket = get_position_bucket(position or "")
@@ -351,13 +399,10 @@ def get_context_multiplier(opp_abbrev: str | None, market: str, position: str | 
     bucket = get_position_bucket(position or "")
     pos_factor = 1.0
     if bucket == "Guard":
-        # Guards care a lot about pace & assist environment
         pos_factor = 0.5 * (opp["AST_PCT"] / LEAGUE_CTX["AST_PCT"]) + 0.5 * pace_f
     elif bucket == "Wing":
-        # Wings are more sensitive to overall defense + pace
         pos_factor = 0.5 * def_f + 0.5 * pace_f
     elif bucket == "Big":
-        # Bigs care about glass + paint protection
         pos_factor = 0.6 * (LEAGUE_CTX["REB_PCT"] / opp["DREB_PCT"]) + 0.4 * def_f
 
     if market == "Rebounds":
@@ -489,7 +534,7 @@ def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> flo
             away = attr.get("away_team") or attr.get("away_team_abbrev")
             if not home or not away:
                 continue
-            teams = {home.upper(), away.upper()}
+            teams = {str(home).upper(), str(away).upper()}
             if team.upper() in teams and opp.upper() in teams:
                 spread = attr.get("spread")
                 if spread is None:
@@ -845,7 +890,7 @@ def player_similarity_factor(samples):
 def compute_leg_projection(player: str, market: str, line: float | None,
                            user_opp: str | None, n_games: int,
                            board: dict):
-    """Core projection engine for a single leg with advanced Tier-C features."""
+    """Core projection engine for a single leg with advanced Tier-C features + positional context."""
     samples, minutes, team, last_opp, msg = get_player_game_samples(player, n_games, market)
     if samples is None:
         return None, msg
@@ -853,7 +898,7 @@ def compute_leg_projection(player: str, market: str, line: float | None,
     if line is None or line <= 0:
         return None, "No valid line for this player/market."
 
-    # Resolve opponent
+    # Resolve opponent in layered way: user input -> PrizePicks board -> NBA scoreboard -> last opponent
     opp = None
     if user_opp:
         opp = user_opp.strip().upper()
@@ -861,10 +906,15 @@ def compute_leg_projection(player: str, market: str, line: float | None,
         t_board, opp_board = auto_detect_matchup_from_board(player, board)
         if opp_board:
             opp = str(opp_board).upper()
-        elif last_opp:
-            opp = str(last_opp).upper()
+        else:
+            # Try NBA.com scoreboard via nba_api
+            auto_opp = get_todays_opponent_from_nba(player)
+            if auto_opp:
+                opp = auto_opp
+            elif last_opp:
+                opp = str(last_opp).upper()
 
-    # Resolve player position via NBA API
+    # Resolve player position + bucket
     position_raw = get_player_position(player)
     pos_bucket = get_position_bucket(position_raw)
 
@@ -957,10 +1007,9 @@ def compute_leg_projection(player: str, market: str, line: float | None,
         "matchup_text": matchup_text,
         "position": position_raw,
         "pos_bucket": pos_bucket,
-        # key_teammate_out will be attached in the MODEL tab when logging legs
+        # key_teammate_out will be set on the MODEL tab
     }
     return leg, None
-
 
 
 # =========================================================
@@ -1072,7 +1121,7 @@ def render_leg_card(leg: dict, container, compact=False):
     with container:
         if compact:
             st.markdown(
-                f"**{player} {boost_emoji}** — {market} o{line:.1f} vs {opp}  "
+                f"**{player}{boost_emoji}** — {market} o{line:.1f} vs {opp}  "
                 f"(p={p*100:.1f}%, ctx={ctx:.3f})"
             )
         else:
@@ -1085,7 +1134,6 @@ def render_leg_card(leg: dict, container, compact=False):
                 st.write(f"🎯 **Calibrated Prob Over:** {p*100:.1f}%")
                 st.write(f"🎯 **Raw Bootstrapped Prob Over:** {p_raw*100:.1f}%")
                 st.write(f"💵 **Even-Money EV:** {even_ev*100:+.1f}%")
-
                 st.write(f"⏱️ **Context Multiplier:** {ctx:.3f}")
                 st.write(f"📊 **Mean / SD:** {mu:.2f} ± {sd:.2f}")
 
@@ -1317,6 +1365,8 @@ with tab_model:
                 else:
                     st.info("Bet not logged. Returning to home state.")
                     st.experimental_rerun()
+# ---------------------------------------------------------
+#  RESULTS TAB
 
 # ---------------------------------------------------------
 
