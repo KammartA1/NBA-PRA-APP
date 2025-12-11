@@ -28,6 +28,20 @@ from nba_api.stats.static import players as nba_players
 from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats, CommonPlayerInfo, ScoreboardV2
 
 
+def _safe_rerun():
+    """Compatibility wrapper for Streamlit rerun across versions."""
+    try:
+        import streamlit as _st_mod
+        if hasattr(_st_mod, "rerun"):
+            _st_mod.rerun()
+        elif hasattr(_st_mod, "experimental_rerun"):
+            _st_mod.experimental_rerun()
+    except Exception:
+        pass
+
+
+
+
 PLAYER_POSITION_CACHE: dict[str, str] = {}
 
 def get_player_position(name: str) -> str:
@@ -1364,7 +1378,7 @@ with tab_model:
                     st.success("Bet logged to history as Pending ✅")
                 else:
                     st.info("Bet not logged. Returning to home state.")
-                    st.experimental_rerun()
+                    _safe_rerun()
 # ---------------------------------------------------------
 #  RESULTS TAB
 
@@ -1629,3 +1643,4 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
