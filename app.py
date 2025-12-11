@@ -11,6 +11,7 @@
 # =========================================================
 
 import os
+import json
 import time
 import random
 import difflib
@@ -109,13 +110,14 @@ def current_season() -> str:
     return f"{year}-{str(year + 1)[-2:]}"
 
 # NBA markets
-MARKET_OPTIONS = ["PRA", "Points", "Rebounds", "Assists"]
+MARKET_OPTIONS = ["PRA", "Points", "Rebounds", "Assists", "Rebs+Asts"]
 
 MARKET_METRICS = {
     "PRA": ["PTS", "REB", "AST"],
     "Points": ["PTS"],
     "Rebounds": ["REB"],
     "Assists": ["AST"],
+    "Rebs+Asts": ["REB", "AST"],
 }
 
 # Map our UI markets to PrizePicks stat types
@@ -124,6 +126,7 @@ PRIZEPICKS_MARKET_MAP = {
     "Points": ["Points"],
     "Rebounds": ["Rebounds"],
     "Assists": ["Assists"],
+    "Rebs+Asts": ["Rebs+Asts", "Rebounds+Asts", "Reb+Asts", "RA"],
 }
 
 MAX_KELLY_PCT = 0.03  # 3% hard cap
@@ -255,11 +258,9 @@ def get_team_context():
 
 TEAM_CTX, LEAGUE_CTX = get_team_context()
 
+
 def get_context_multiplier(opp_abbrev: str | None, market: str) -> float:
-    """
-    Adjust projection using advanced opponent factors.
-    Everything is defense-adjusted through this multiplier.
-    """
+    """Advanced opponent context multiplier using defense, pace, and glass/playmaking."""
     if not opp_abbrev or opp_abbrev not in TEAM_CTX or not LEAGUE_CTX:
         return 1.0
 
@@ -270,22 +271,24 @@ def get_context_multiplier(opp_abbrev: str | None, market: str) -> float:
 
     reb_adj = (
         LEAGUE_CTX["REB_PCT"] / opp["DREB_PCT"]
-        if market == "Rebounds" else 1.0
+        if market in ["Rebounds", "Rebs+Asts"] else 1.0
     )
     ast_adj = (
         LEAGUE_CTX["AST_PCT"] / opp["AST_PCT"]
-        if market == "Assists" else 1.0
+        if market in ["Assists", "Rebs+Asts"] else 1.0
     )
 
-    # Simple blended multiplier
     if market == "Rebounds":
-        mult = 0.4 * pace_f + 0.3 * def_f + 0.3 * reb_adj
+        mult = 0.35 * pace_f + 0.30 * def_f + 0.35 * reb_adj
     elif market == "Assists":
-        mult = 0.4 * pace_f + 0.3 * def_f + 0.3 * ast_adj
+        mult = 0.35 * pace_f + 0.30 * def_f + 0.35 * ast_adj
+    elif market == "Rebs+Asts":
+        mult = 0.30 * pace_f + 0.25 * def_f + 0.25 * reb_adj + 0.20 * ast_adj
     else:
-        mult = 0.6 * pace_f + 0.4 * def_f
+        mult = 0.55 * pace_f + 0.45 * def_f
 
-    return float(np.clip(mult, 0.80, 1.25))
+    return float(np.clip(mult, 0.78, 1.30))
+
 
 # =========================================================
 #  PART 4 — PRIZEPICKS MIRROR & MATCHUP HELPERS
@@ -641,35 +644,84 @@ def estimate_player_correlation(leg1: dict, leg2: dict) -> float:
 # =========================================================
 
 def apply_calibration_to_prob(p: float) -> float:
-    """
-    Applies self-learning calibration scaling around 50%.
-    """
+    """Applies self-learning calibration scaling around 50%."""
     scale = float(CAL_STATE.get("prob_scale", 1.0))
-    # move p towards / away from 0.5 depending on scale
     centered = p - 0.5
     adj = 0.5 + centered * scale
     return float(np.clip(adj, 0.02, 0.98))
 
+
+def game_script_simulation(samples, minutes, line, ctx_mult, blowout_flag):
+    """Game script simulation layered on top of empirical samples."""
+    samples = np.array(samples, dtype=float)
+    minutes = np.array(minutes, dtype=float)
+    if len(samples) == 0:
+        return 0.5, 0.0, 1.0
+
+    base_min = minutes.mean() if len(minutes) > 0 else 32.0
+    n_sims = 6000
+    draws = []
+    for _ in range(n_sims):
+        r = np.random.rand()
+        if r < 0.65:  # competitive
+            min_mult = np.random.normal(1.0, 0.04)
+        elif r < 0.90:  # mild blowout
+            min_mult = np.random.normal(0.9, 0.05)
+        else:  # severe blowout / foul issues
+            min_mult = np.random.normal(0.8, 0.08)
+        if blowout_flag:
+            min_mult *= 0.95
+        usage_mult = ctx_mult
+        base_sample = np.random.choice(samples)
+        val = base_sample * min_mult * usage_mult
+        draws.append(val)
+    draws = np.array(draws)
+    mu = float(draws.mean())
+    sd = float(max(draws.std(ddof=1), 0.75))
+    p_over = float(np.mean(draws > line))
+    return p_over, mu, sd
+
+
+def role_based_bayesian_prior(samples, line):
+    """Add a simple Bayesian prior around the market line to stabilize projections."""
+    samples = np.array(samples, dtype=float)
+    if len(samples) == 0:
+        return np.array([line])
+    prior_mean = line
+    prior_sd = max(np.std(samples), 4.0)
+    prior_draws = np.random.normal(prior_mean, prior_sd, size=2000)
+    combined = np.concatenate([samples, prior_draws])
+    return combined
+
+
+def player_similarity_factor(samples):
+    """Crude player 'self-similarity' stability factor based on volatility."""
+    samples = np.array(samples, dtype=float)
+    if len(samples) < 4:
+        return 1.0
+    sd = np.std(samples)
+    mu = np.mean(samples)
+    if mu <= 0:
+        return 1.0
+    cv = sd / mu
+    if cv < 0.25:
+        return 0.9  # more stable, shrink variance
+    if cv > 0.6:
+        return 1.1  # very volatile
+    return 1.0
+
+
 def compute_leg_projection(player: str, market: str, line: float | None,
                            user_opp: str | None, n_games: int,
                            board: dict):
-    """
-    Core projection engine for a single leg.
-    Uses:
-      - empirical bootstrap over last N games
-      - opponent context
-      - auto blowout & usage adjustments
-    Returns (leg_dict, error_message).
-    """
+    """Core projection engine for a single leg with advanced Tier-C features."""
     samples, minutes, team, last_opp, msg = get_player_game_samples(player, n_games, market)
     if samples is None:
         return None, msg
 
-    # If line is None or <= 0, caller should handle
     if line is None or line <= 0:
         return None, "No valid line for this player/market."
 
-    # Opponent detection — preference: user input → PrizePicks → last game
     opp = None
     if user_opp:
         opp = user_opp.strip().upper()
@@ -682,47 +734,42 @@ def compute_leg_projection(player: str, market: str, line: float | None,
 
     ctx_mult = get_context_multiplier(opp, market)
 
-    # Usage / role expansion heuristic: compare last 3 games vs overall
-    try:
-        avg_min = float(minutes.mean())
-        recent_min = float(np.mean(minutes[: min(3, len(minutes))]))
-        usage_boost = 1.0
-        if recent_min >= avg_min + 4:
-            usage_boost = 1.06
-        elif recent_min <= max(10.0, avg_min - 5):
-            usage_boost = 0.94
-    except Exception:
-        avg_min = float(np.mean(minutes))
-        recent_min = avg_min
-        usage_boost = 1.0
+    minutes_arr = np.array(minutes, dtype=float)
+    avg_min = float(minutes_arr.mean()) if len(minutes_arr) > 0 else 32.0
+    recent_min = float(np.mean(minutes_arr[: min(3, len(minutes_arr))])) if len(minutes_arr) > 0 else avg_min
 
-    # Blowout risk from board
+    usage_boost = 1.0
+    if recent_min >= avg_min + 4:
+        usage_boost = 1.06
+    elif recent_min <= max(10.0, avg_min - 5):
+        usage_boost = 0.94
+
     blowout = estimate_blowout_risk(team, opp, board)
 
-    # Build adjusted samples
-    samples_adj = samples.astype(float) * ctx_mult * usage_boost
+    base_samples = samples.astype(float) * ctx_mult * usage_boost
     if blowout:
-        # Slight trim due to reduced minutes
-        samples_adj *= 0.95
+        base_samples *= 0.95
 
-    mu = float(np.mean(samples_adj))
-    sd = float(max(np.std(samples_adj, ddof=1), 0.75))
+    bayesian_samples = role_based_bayesian_prior(base_samples, line)
+    sim_factor = player_similarity_factor(bayesian_samples)
+    bayesian_samples = (bayesian_samples - bayesian_samples.mean()) * sim_factor + bayesian_samples.mean()
 
-    # Empirical bootstrap Monte Carlo
+    gs_prob, mu_gs, sd_gs = game_script_simulation(bayesian_samples, minutes, line, ctx_mult, blowout)
+
     n_sims = 10000
-    draws = np.random.choice(samples_adj, size=n_sims, replace=True)
-    over_flags = draws > line
-    p_over_raw = float(np.mean(over_flags))
+    draws_emp = np.random.choice(base_samples, size=n_sims, replace=True)
+    p_over_emp = float(np.mean(draws_emp > line))
+    mu_emp = float(draws_emp.mean())
+    sd_emp = float(max(draws_emp.std(ddof=1), 0.75))
 
-    # Apply calibration layer
+    p_over_raw = 0.6 * p_over_emp + 0.4 * gs_prob
+    mu = 0.6 * mu_emp + 0.4 * mu_gs
+    sd = 0.6 * sd_emp + 0.4 * sd_gs
+
     p_over = apply_calibration_to_prob(p_over_raw)
-
-    # EV vs even odds
     ev_leg_even = p_over - (1.0 - p_over)
 
     opp_display = opp if opp else "Unknown"
-
-    # Simple positional / matchup text proxy
     matchup_text = "Neutral matchup."
     if opp and opp in TEAM_CTX and LEAGUE_CTX:
         opp_ctx = TEAM_CTX[opp]
@@ -755,6 +802,7 @@ def compute_leg_projection(player: str, market: str, line: float | None,
         "matchup_text": matchup_text,
     }
     return leg, None
+
 
 # =========================================================
 #  PART 10 — KELLY + RISK CONTROLS
@@ -922,31 +970,48 @@ tab_model, tab_results, tab_history, tab_calib = st.tabs(
 #  MODEL TAB
 # ---------------------------------------------------------
 
+
 with tab_model:
-    st.subheader("2-Pick Projection & Edge (Bootstrap Monte Carlo)")
+    st.subheader("Up to 4-Leg Projection & Edge (Bootstrap + Game Scripts)")
 
     board = fetch_prizepicks_board()
 
-    c1, c2 = st.columns(2)
+    cols = st.columns(2)
+    cols2 = st.columns(2)
 
-    # LEFT LEG
-    with c1:
+    leg_inputs = []
+
+    with cols[0]:
         p1 = st.text_input("Player 1 Name")
         m1 = st.selectbox("P1 Market", MARKET_OPTIONS, key="p1_market")
         manual1 = st.checkbox("P1: Manual line override", value=False)
         l1 = st.number_input("P1 Line", min_value=0.0, value=25.0, step=0.5, key="p1_line")
         o1 = st.text_input("P1 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
+        leg_inputs.append((p1, m1, manual1, l1, o1))
 
-    # RIGHT LEG
-    with c2:
+    with cols[1]:
         p2 = st.text_input("Player 2 Name")
         m2 = st.selectbox("P2 Market", MARKET_OPTIONS, key="p2_market")
         manual2 = st.checkbox("P2: Manual line override", value=False)
         l2 = st.number_input("P2 Line", min_value=0.0, value=25.0, step=0.5, key="p2_line")
         o2 = st.text_input("P2 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
+        leg_inputs.append((p2, m2, manual2, l2, o2))
 
-    leg1 = None
-    leg2 = None
+    with cols2[0]:
+        p3 = st.text_input("Player 3 Name")
+        m3 = st.selectbox("P3 Market", MARKET_OPTIONS, key="p3_market")
+        manual3 = st.checkbox("P3: Manual line override", value=False)
+        l3 = st.number_input("P3 Line", min_value=0.0, value=25.0, step=0.5, key="p3_line")
+        o3 = st.text_input("P3 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
+        leg_inputs.append((p3, m3, manual3, l3, o3))
+
+    with cols2[1]:
+        p4 = st.text_input("Player 4 Name")
+        m4 = st.selectbox("P4 Market", MARKET_OPTIONS, key="p4_market")
+        manual4 = st.checkbox("P4: Manual line override", value=False)
+        l4 = st.number_input("P4 Line", min_value=0.0, value=25.0, step=0.5, key="p4_line")
+        o4 = st.text_input("P4 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
+        leg_inputs.append((p4, m4, manual4, l4, o4))
 
     run = st.button("Run Model ⚡")
 
@@ -957,130 +1022,132 @@ with tab_model:
 
         run_loader()
 
-        # Auto fetch lines if manual override is off
-        line1_used = None
-        line2_used = None
+        legs = []
+        for idx, (player, market, manual, line_inp, opp_inp) in enumerate(leg_inputs, start=1):
+            if not player:
+                continue
 
-        if p1 and not manual1:
-            auto_line1 = get_prizepicks_line(p1, m1, board)
-            if auto_line1 is None:
-                st.warning("Could not auto-fetch PrizePicks line for Player 1. Please enable manual override and enter line.")
+            line_used = None
+            if not manual:
+                auto_line = get_prizepicks_line(player, market, board)
+                if auto_line is None:
+                    st.warning(f"P{idx}: Could not auto-fetch PrizePicks line. Enable manual override.")
+                else:
+                    line_used = auto_line
+                    st.info(f"P{idx} auto PrizePicks line detected: {auto_line:.1f}")
             else:
-                line1_used = auto_line1
-                st.info(f"P1 auto PrizePicks line detected: {auto_line1:.1f}")
-        elif p1 and manual1:
-            line1_used = l1
+                line_used = line_inp
 
-        if p2 and not manual2:
-            auto_line2 = get_prizepicks_line(p2, m2, board)
-            if auto_line2 is None:
-                st.warning("Could not auto-fetch PrizePicks line for Player 2. Please enable manual override and enter line.")
+            if line_used and line_used > 0:
+                leg, err = compute_leg_projection(
+                    player, market, line_used, opp_inp, games_lookback, board
+                )
+                if err:
+                    st.error(f"P{idx}: {err}")
+                else:
+                    legs.append(leg)
+                    update_market_library(leg["player"], leg["market"], leg["line"])
             else:
-                line2_used = auto_line2
-                st.info(f"P2 auto PrizePicks line detected: {auto_line2:.1f}")
-        elif p2 and manual2:
-            line2_used = l2
+                st.error(f"P{idx} does not have a valid line.")
 
-        # Compute legs
-        if p1 and line1_used and line1_used > 0:
-            leg1, err1 = compute_leg_projection(
-                p1, m1, line1_used, o1, games_lookback, board
-            )
-            if err1:
-                st.error(f"P1: {err1}")
-        elif p1:
-            st.error("P1 does not have a valid line.")
+        if not legs:
+            st.warning("No valid legs configured.")
+        else:
+            st.markdown("---")
+            st.subheader("Leg Detail Cards")
+            grid_rows = [st.columns(2), st.columns(2)]
+            for i, leg in enumerate(legs):
+                row = grid_rows[i // 2]
+                col = row[i % 2]
+                render_leg_card(leg, col, compact_mode)
 
-        if p2 and line2_used and line2_used > 0:
-            leg2, err2 = compute_leg_projection(
-                p2, m2, line2_used, o2, games_lookback, board
-            )
-            if err2:
-                st.error(f"P2: {err2}")
-        elif p2:
-            st.error("P2 does not have a valid line.")
+            st.markdown("---")
+            st.subheader("📈 Market vs Model Probability Check")
 
-        # Render legs
-        colL, colR = st.columns(2)
-        if leg1:
-            render_leg_card(leg1, colL, compact_mode)
-            update_market_library(leg1["player"], leg1["market"], leg1["line"])
-        if leg2:
-            render_leg_card(leg2, colR, compact_mode)
-            update_market_library(leg2["player"], leg2["market"], leg2["line"])
+            def implied_probability(mult):
+                return 1.0 / mult
 
-        # Market implied probability from payout
-        st.markdown("---")
-        st.subheader("📈 Market vs Model Probability Check")
+            imp_prob = implied_probability(payout_mult)
+            st.markdown(f"**Market Implied Combo Probability (approx):** {imp_prob*100:.1f}%")
 
-        def implied_probability(mult):
-            return 1.0 / mult
+            for leg in legs:
+                st.markdown(
+                    f"**{leg['player']} {leg['market']} Model Prob:** {leg['prob_over']*100:.1f}% "
+                    f"→ Edge vs 50/50: {(leg['prob_over'] - 0.5)*100:+.1f}%"
+                )
 
-        imp_prob = implied_probability(payout_mult)
-        st.markdown(f"**Market Implied Combo Probability (approx):** {imp_prob*100:.1f}%")
+            if len(legs) >= 2:
+                st.markdown("### 🎯 Multi-Leg Combo Result (Joint Monte Carlo)")
 
-        if leg1:
-            st.markdown(
-                f"**{leg1['player']} Model Prob:** {leg1['prob_over']*100:.1f}% "
-                f"→ Edge vs 50/50: {(leg1['prob_over'] - 0.5)*100:+.1f}%"
-            )
-        if leg2:
-            st.markdown(
-                f"**{leg2['player']} Model Prob:** {leg2['prob_over']*100:.1f}% "
-                f"→ Edge vs 50/50: {(leg2['prob_over'] - 0.5)*100:+.1f}%"
-            )
+                probs = np.array([leg["prob_over"] for leg in legs], dtype=float)
+                n = len(probs)
+                corr_mat = np.eye(n)
+                for i in range(n):
+                    for j in range(i+1, n):
+                        c = estimate_player_correlation(legs[i], legs[j])
+                        corr_mat[i, j] = c
+                        corr_mat[j, i] = c
 
-        # 2-PICK COMBO
-        if leg1 and leg2:
-            corr_est = estimate_player_correlation(leg1, leg2)
+                eigvals, eigvecs = np.linalg.eigh(corr_mat)
+                eigvals_clipped = np.clip(eigvals, 1e-6, None)
+                corr_psd = eigvecs @ np.diag(eigvals_clipped) @ eigvecs.T
 
-            p1 = leg1["prob_over"]
-            p2 = leg2["prob_over"]
+                sims = 12000
+                z = np.random.multivariate_normal(
+                    mean=np.zeros(n),
+                    cov=corr_psd,
+                    size=sims
+                )
+                from scipy.stats import norm as _norm_local
+                u = _norm_local.cdf(z)
+                hits = (u < probs).all(axis=1)
+                joint = float(hits.mean())
 
-            # Correlated Bernoulli via Gaussian copula
-            rho = float(np.clip(corr_est, -0.99, 0.99))
-            n_joint = 10000
-            z1 = np.random.normal(size=n_joint)
-            z2 = rho * z1 + np.sqrt(max(1.0 - rho**2, 1e-6)) * np.random.normal(size=n_joint)
-            u1 = norm.cdf(z1)
-            u2 = norm.cdf(z2)
-            leg1_over_sim = u1 < p1
-            leg2_over_sim = u2 < p2
-            joint_sim = np.mean(leg1_over_sim & leg2_over_sim)
+                ev_combo = payout_mult * joint - 1.0
+                raw_kelly = kelly_for_combo(joint, payout_mult, fractional_kelly)
 
-            joint = float(np.clip(joint_sim, 0.0, 1.0))
+                hist_df = load_history()
+                k_adj, risk_note = adjust_kelly_for_risk(
+                    raw_kelly, hist_df, bankroll, max_daily_loss_pct, max_weekly_loss_pct
+                )
+                stake = round(bankroll * k_adj, 2)
+                decision = combo_decision(ev_combo)
 
-            ev_combo = payout_mult * joint - 1.0
-            raw_kelly = kelly_for_combo(joint, payout_mult, fractional_kelly)
+                st.markdown(f"- Legs in Combo: **{len(legs)}**")
+                st.markdown(f"- Joint Hit Probability: **{joint*100:.1f}%**")
+                st.markdown(f"- EV (per $1): **{ev_combo*100:+.1f}%**")
+                st.markdown(f"- Raw Kelly Fraction: **{raw_kelly*100:.2f}%**")
+                st.markdown(f"- Risk-Adjusted Kelly Fraction: **{k_adj*100:.2f}%**")
+                st.markdown(f"- Suggested Stake: **${stake:.2f}**")
+                st.markdown(f"- **Recommendation:** {decision}")
+                if risk_note:
+                    st.warning(risk_note)
 
-            hist_df = load_history()
-            k_adj, risk_note = adjust_kelly_for_risk(
-                raw_kelly, hist_df, bankroll, max_daily_loss_pct, max_weekly_loss_pct
-            )
-            stake = round(bankroll * k_adj, 2)
-            decision = combo_decision(ev_combo)
+                st.markdown("---")
+                st.subheader("💾 Log This Bet?")
+                choice = st.radio("Did you place this bet?", ["No", "Yes"], horizontal=True)
 
-            st.markdown("### 🎯 **2-Pick Combo Result (Joint Monte Carlo)**")
-            st.markdown(f"- Estimated Correlation: **{corr_est:+.2f}**")
-            st.markdown(f"- Joint Hit Probability: **{joint*100:.1f}%**")
-            st.markdown(f"- EV (per $1): **{ev_combo*100:+.1f}%**")
-            st.markdown(f"- Raw Kelly Fraction: **{raw_kelly*100:.2f}%**")
-            st.markdown(f"- Risk-Adjusted Kelly Fraction: **{k_adj*100:.2f}%**")
-            st.markdown(f"- Suggested Stake: **${stake:.2f}**")
-            st.markdown(f"- **Recommendation:** {decision}")
-            if risk_note:
-                st.warning(risk_note)
-
-            # Baseline library recap
-            for leg in [leg1, leg2]:
-                if leg:
-                    mean_b, med_b = get_market_baseline(leg["player"], leg["market"])
-                    if mean_b:
-                        st.caption(
-                            f"📊 Market Baseline for {leg['player']} {leg['market']}: "
-                            f"mean={mean_b:.1f}, median={med_b:.1f}"
-                        )
-
+                if choice == "Yes":
+                    ensure_history()
+                    df_hist = load_history()
+                    combo_name = " + ".join([f"{leg['player']} {leg['market']}" for leg in legs])
+                    new_row = {
+                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "Player": combo_name,
+                        "Market": f"{len(legs)}-Leg Combo",
+                        "Line": 0.0,
+                        "EV": ev_combo * 100.0,
+                        "Stake": stake,
+                        "Result": "Pending",
+                        "CLV": 0.0,
+                        "KellyFrac": k_adj
+                    }
+                    df_hist = pd.concat([df_hist, pd.DataFrame([new_row])], ignore_index=True)
+                    save_history(df_hist)
+                    st.success("Bet logged to history as Pending ✅")
+                else:
+                    st.info("Bet not logged. Returning to home state.")
+                    st.experimental_rerun()
 # ---------------------------------------------------------
 #  RESULTS TAB
 # ---------------------------------------------------------
