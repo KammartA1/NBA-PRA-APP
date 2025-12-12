@@ -240,7 +240,49 @@ PRIZEPICKS_MARKET_MAP = {
     "Rebs+Asts": ["Rebs+Asts", "Rebounds+Asts", "Reb+Asts", "RA"],
 }
 
-MAX_KELLY_PCT = 0.03  # 3% hard cap
+MAX_KELLY_PCT = 0.03
+
+
+RESID_CORR_DF: pd.DataFrame | None = None
+
+def load_residual_correlation():
+    """Optional: load residual correlation data from CSV if available.
+
+    Expected columns: player1, player2, corr
+    """
+    global RESID_CORR_DF
+    if RESID_CORR_DF is not None:
+        return RESID_CORR_DF
+    fname = "residual_correlation.csv"
+    if not os.path.exists(fname):
+        RESID_CORR_DF = None
+        return None
+    try:
+        df = pd.read_csv(fname)
+        for col in ["player1", "player2"]:
+            df[col] = df[col].astype(str).str.strip().str.lower()
+        RESID_CORR_DF = df
+        return df
+    except Exception:
+        RESID_CORR_DF = None
+        return None
+
+
+def residual_corr_lookup(p1: str, p2: str) -> float | None:
+    """Lookup residual correlation between two players if CSV is present."""
+    df = load_residual_correlation()
+    if df is None:
+        return None
+    a = str(p1).strip().lower()
+    b = str(p2).strip().lower()
+    sub = df[((df["player1"] == a) & (df["player2"] == b)) | ((df["player1"] == b) & (df["player2"] == a))]
+    if sub.empty:
+        return None
+    try:
+        return float(sub.iloc[0]["corr"])
+    except Exception:
+        return None
+  # 3% hard cap
 
 # Public PrizePicks mirror endpoint
 PRIZEPICKS_MIRROR_URL = "https://pp-public-mirror.vercel.app/api/board"
@@ -788,14 +830,46 @@ def get_player_game_samples(name: str, n_games: int, market: str):
 
     return samples_arr, minutes_arr, team, last_opp, msg
 
+
+
+def estimate_minutes_distribution(minutes, blowout_prob: float, key_teammate_out: bool) -> tuple[float, float]:
+    """Estimate minutes mean and std for future simulation.
+
+    Uses historical minutes plus simple adjustments for blowout risk and key teammate out.
+    """
+    mins = np.array(minutes, dtype=float)
+    if len(mins) == 0:
+        base_mean = 32.0
+        base_sd = 4.0
+    else:
+        base_mean = float(mins.mean())
+        base_sd = float(max(mins.std(ddof=1), 2.0))
+
+    # If key teammate is out, bump minutes a bit
+    if key_teammate_out:
+        base_mean *= 1.05
+
+    # Higher blowout risk -> slightly reduce expected minutes
+    base_mean *= float(1.0 - 0.35 * np.clip(blowout_prob, 0.0, 0.8))
+
+    return base_mean, base_sd
+
 # =========================================================
 #  PART 8 — CORRELATION ENGINE
 # =========================================================
 
 def estimate_player_correlation(leg1: dict, leg2: dict) -> float:
+    """Contextual correlation estimate between two legs.
+
+    Combines:
+    - Rule-based structural correlation
+    - Optional residual correlation CSV override when available
     """
-    Contextual correlation estimate between two legs.
-    """
+    # 0. Residual correlation override if available
+    rc = residual_corr_lookup(leg1.get("player", ""), leg2.get("player", ""))
+    if rc is not None:
+        return float(np.clip(rc, -0.35, 0.60))
+
     corr = 0.0
 
     # 1. Same-team baseline
@@ -808,18 +882,21 @@ def estimate_player_correlation(leg1: dict, leg2: dict) -> float:
     if m1 == "Points" and m2 == "Points":
         corr += 0.08
 
-    if (m1 == "Points" and m2 == "Assists") or (m1 == "Assists" and m2 == "Points"):
-        corr -= 0.10
+    if set([m1, m2]) == {"Points", "PRA"}:
+        corr += 0.12
+    if set([m1, m2]) == {"Points", "Rebs+Asts"}:
+        corr += 0.04
 
-    if (m1 == "Rebounds" and m2 == "Points") or (m1 == "Points" and m2 == "Rebounds"):
-        corr -= 0.06
+    # Rebounds correlation, especially same team / Rebs+Asts
+    if m1 in ["Rebounds", "Rebs+Asts"] and m2 in ["Rebounds", "Rebs+Asts"]:
+        corr += 0.06
 
-    if m1 == "PRA" or m2 == "PRA":
-        corr += 0.03
+    # Assists correlation
+    if m1 in ["Assists", "Rebs+Asts"] and m2 in ["Assists", "Rebs+Asts"]:
+        corr += 0.05
 
-    # 3. Context interaction
+    # 3. Context multiplier similarity
     ctx1, ctx2 = leg1.get("ctx_mult", 1.0), leg2.get("ctx_mult", 1.0)
-
     if ctx1 > 1.03 and ctx2 > 1.03:
         corr += 0.04
     if ctx1 < 0.97 and ctx2 < 0.97:
@@ -835,7 +912,6 @@ def estimate_player_correlation(leg1: dict, leg2: dict) -> float:
 
     corr = float(np.clip(corr, -0.25, 0.40))
     return corr
-
 # =========================================================
 #  PART 9 — MONTE CARLO (EMPIRICAL BOOTSTRAP)
 # =========================================================
@@ -849,15 +925,18 @@ def apply_calibration_to_prob(p: float) -> float:
 
 
 
-def game_script_simulation(samples, minutes, line, ctx_mult, blowout_prob: float):
+def game_script_simulation(samples, minutes_params, line, ctx_mult, blowout_prob: float):
     """Game script simulation layered on top of empirical samples.
 
+    minutes_params: (mean_minutes, sd_minutes)
     blowout_prob is a probability (0–1) that tilts scenarios towards mild/severe blowouts.
     """
     samples = np.array(samples, dtype=float)
-    minutes = np.array(minutes, dtype=float)
     if len(samples) == 0:
         return 0.5, 0.0, 1.0
+
+    m_mean, m_sd = minutes_params
+    m_sd = float(max(m_sd, 1.5))
 
     blowout_prob = float(np.clip(blowout_prob, 0.0, 0.8))
 
@@ -874,11 +953,14 @@ def game_script_simulation(samples, minutes, line, ctx_mult, blowout_prob: float
     for _ in range(n_sims):
         r = np.random.rand()
         if r < w_comp:  # competitive
-            min_mult = np.random.normal(1.0, 0.04)
+            min_draw = np.random.normal(m_mean, m_sd * 0.6)
+            min_mult = min_draw / max(m_mean, 1e-6)
         elif r < w_comp + w_mild:  # mild blowout
-            min_mult = np.random.normal(0.9, 0.06)
+            min_draw = np.random.normal(m_mean * 0.9, m_sd)
+            min_mult = min_draw / max(m_mean, 1e-6)
         else:  # severe blowout / foul issues
-            min_mult = np.random.normal(0.8, 0.08)
+            min_draw = np.random.normal(m_mean * 0.8, m_sd * 1.2)
+            min_mult = min_draw / max(m_mean, 1e-6)
 
         usage_mult = ctx_mult
         base_sample = np.random.choice(samples)
@@ -890,7 +972,6 @@ def game_script_simulation(samples, minutes, line, ctx_mult, blowout_prob: float
     sd = float(max(draws.std(ddof=1), 0.75))
     p_over = float(np.mean(draws > line))
     return p_over, mu, sd
-
 
 def role_based_bayesian_prior(samples, line):
     """Add a simple Bayesian prior around the market line to stabilize projections."""
@@ -968,6 +1049,10 @@ def compute_leg_projection(player: str, market: str, line: float | None,
 
     blowout_prob = estimate_blowout_risk(team, opp, board)
 
+    # Minutes distribution engine (uses blowout + key teammate context)
+    # key_teammate_out is attached later on the MODEL tab; assume False here and adjust again when rendering
+    min_mean, min_sd = estimate_minutes_distribution(minutes, blowout_prob, key_teammate_out=False)
+
     base_samples = samples.astype(float) * ctx_mult * usage_boost
     if blowout_prob >= 0.20:
         base_samples *= 0.96
@@ -976,7 +1061,8 @@ def compute_leg_projection(player: str, market: str, line: float | None,
     sim_factor = player_similarity_factor(bayesian_samples)
     bayesian_samples = (bayesian_samples - bayesian_samples.mean()) * sim_factor + bayesian_samples.mean()
 
-    gs_prob, mu_gs, sd_gs = game_script_simulation(bayesian_samples, minutes, line, ctx_mult, blowout_prob)
+    # Use minutes distribution parameters inside game script simulation
+    gs_prob, mu_gs, sd_gs = game_script_simulation(bayesian_samples, (min_mean, min_sd), line, ctx_mult, blowout_prob)
 
     n_sims = 10000
     draws_emp = np.random.choice(base_samples, size=n_sims, replace=True)
@@ -1367,18 +1453,37 @@ with tab_model:
                 corr_psd = eigvecs @ np.diag(eigvals_clipped) @ eigvecs.T
 
                 sims = 12000
-                z = np.random.multivariate_normal(
-                    mean=np.zeros(n),
-                    cov=corr_psd,
-                    size=sims
-                )
-                from scipy.stats import norm as _norm_local
+
+                # Try quasi–Monte Carlo (Sobol) for better joint estimation; fallback to normal MC
+                try:
+                    from scipy.stats import qmc
+                    sampler = qmc.Sobol(d=n, scramble=True)
+                    # Generate in (0,1) then map to normal via inverse CDF and apply Cholesky
+                    u_base = sampler.random_base2(int(math.log2(sims)))
+                    from scipy.stats import norm as _norm_local
+                    z_indep = _norm_local.ppf(u_base)
+                    L = np.linalg.cholesky(corr_psd)
+                    z = z_indep @ L.T
+                except Exception:
+                    z = np.random.multivariate_normal(
+                        mean=np.zeros(n),
+                        cov=corr_psd,
+                        size=sims
+                    )
+                    from scipy.stats import norm as _norm_local
+
                 u = _norm_local.cdf(z)
                 hits = (u < probs).all(axis=1)
                 joint = float(hits.mean())
 
                 ev_combo = payout_mult * joint - 1.0
                 raw_kelly = kelly_for_combo(joint, payout_mult, fractional_kelly)
+
+                # Volatility-aware Kelly: downscale based on average leg volatility
+                vol_cvs = [float(leg.get("volatility_cv", 0.0)) for leg in legs]
+                avg_vol_cv = float(np.mean(vol_cvs)) if vol_cvs else 0.0
+                vol_scale = float(1.0 / (1.0 + avg_vol_cv))  # higher volatility -> smaller stake
+                raw_kelly *= vol_scale
 
                 hist_df = load_history()
                 k_adj, risk_note = adjust_kelly_for_risk(
