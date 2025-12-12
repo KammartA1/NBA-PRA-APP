@@ -71,7 +71,7 @@ def sdio_games_by_date(date_iso: str) -> list[dict]:
     except Exception:
         # fallback: YYYY-MMM-DD
         try:
-            dt = datetime.datetime.fromisoformat(date_iso)
+            dt = dtmod.datetime.fromisoformat(date_iso)
             d2 = dt.strftime("%Y-%b-%d").upper()
             return _try(d2)
         except Exception:
@@ -1543,10 +1543,10 @@ with tab_model:
 
 
 # --- SportsDataIO Live Lines ---
-today_iso = datetime.date.today().isoformat()
+today_iso = dtmod.date.today().isoformat()
 if "sdio_date" not in st.session_state:
     st.session_state["sdio_date"] = today_iso
-sdio_date = st.date_input("Lines date", value=datetime.date.fromisoformat(st.session_state["sdio_date"]))
+sdio_date = st.date_input("Lines date", value=dtmod.date.fromisoformat(st.session_state["sdio_date"]))
 st.session_state["sdio_date"] = sdio_date.isoformat()
 
 cA, cB, cC = st.columns([1,1,2])
@@ -1561,7 +1561,7 @@ if clear_lines:
 if refresh_lines or ("sdio_offers" not in st.session_state):
     with st.spinner("Pulling live player props + games from SportsDataIO..."):
         st.session_state["sdio_offers"] = fetch_sdio_live_player_props(st.session_state["sdio_date"])
-        st.session_state["sdio_offers_ts"] = datetime.datetime.now().isoformat(timespec="seconds")
+        st.session_state["sdio_offers_ts"] = dtmod.datetime.now().isoformat(timespec="seconds")
 
 sdio_offers = st.session_state.get("sdio_offers", [])
 if sdio_offers:
