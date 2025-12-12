@@ -4,7 +4,7 @@
 #   - Empirical Bootstrap Monte Carlo (10,000 sims)
 #   - Defensive Matchup Engine (team-context aware)
 #   - Pace-adjusted minutes & usage context
-#   - Auto SportsDataIO line pulling via public JSON mirror
+#   - Auto PrizePicks line pulling via public JSON mirror
 #   - Auto opponent detection + blowout risk inference
 #   - Expanded History + Calibration + Risk Controls
 #   - EVERYTHING DEFENSE-ADJUSTED
@@ -42,10 +42,8 @@ def _safe_rerun():
 
 
 # ============================
-# SportsDataIO (Odds + Stats + Headshots)
+# SportsDataIO (Live Lines + Games + Players + Headshots)
 # ============================
-# API keys can be provided via Streamlit secrets or environment variable.
-# You asked to hardwire it, so we provide a default. (You can override with SDIO_API_KEY env var.)
 SDIO_API_KEY_DEFAULT = "946b5ea5e7504852b4c46f7f09cbe340"
 SDIO_API_KEY = os.getenv("SDIO_API_KEY", SDIO_API_KEY_DEFAULT).strip()
 
@@ -54,7 +52,6 @@ SDIO_BASE_STATS = "https://api.sportsdata.io/v3/nba/stats"
 SDIO_BASE_HEADSHOTS = "https://api.sportsdata.io/v3/nba/headshots"
 
 def sdio_get(url: str, params: dict | None = None, timeout: int = 20):
-    """GET helper for SportsDataIO with subscription-key header."""
     headers = {"Ocp-Apim-Subscription-Key": SDIO_API_KEY}
     r = requests.get(url, params=params or {}, headers=headers, timeout=timeout)
     r.raise_for_status()
@@ -62,30 +59,23 @@ def sdio_get(url: str, params: dict | None = None, timeout: int = 20):
 
 @st.cache_data(ttl=60*30, show_spinner=False)
 def sdio_games_by_date(date_iso: str) -> list[dict]:
-    """Games by date (YYYY-MMM-DD or YYYY-MM-DD accepted by SDIO)."""
-    # SDIO docs show examples like 2015-JUL-31; but it also accepts ISO in practice for many feeds.
-    # We will try ISO first, then fallback to SDIO format.
     def _try(d: str):
         return sdio_get(f"{SDIO_BASE_STATS}/json/GamesByDate/{d}")
     try:
         return _try(date_iso)
     except Exception:
-        # fallback: YYYY-MMM-DD
         try:
-            dt = dtmod.datetime.fromisoformat(date_iso)
-            d2 = dt.strftime("%Y-%b-%d").upper()
+            d2 = dtmod.date.fromisoformat(date_iso).strftime("%Y-%b-%d").upper()
             return _try(d2)
         except Exception:
             return []
 
-@st.cache_data(ttl=60*30, show_spinner=False)
-def sdio_players_active() -> list[dict]:
-    """Player details (includes InjuryStatus, Team, Position)."""
+@st.cache_data(ttl=60*60*6, show_spinner=False)
+def sdio_players() -> list[dict]:
     return sdio_get(f"{SDIO_BASE_STATS}/json/Players")
 
 @st.cache_data(ttl=60*60*6, show_spinner=False)
 def sdio_headshots() -> list[dict]:
-    """Headshots for all players."""
     return sdio_get(f"{SDIO_BASE_HEADSHOTS}/json/Headshots")
 
 @st.cache_data(ttl=60*10, show_spinner=False)
@@ -96,16 +86,13 @@ def sdio_betting_events_by_date(date_iso: str) -> list[dict]:
 def sdio_betting_markets_by_event(event_id: int | str, include: str = "available") -> list[dict]:
     return sdio_get(f"{SDIO_BASE_ODDS}/json/BettingMarkets/{event_id}", params={"include": include})
 
-def _sdio_team_abbrev(x: str | None) -> str:
-    if not x:
-        return ""
-    return str(x).strip().upper()
+def _sdio_team(x: str | None) -> str:
+    return str(x).strip().upper() if x else ""
 
 def _normalize_market_name(raw: str) -> str | None:
     if not raw:
         return None
     s = str(raw).strip().lower()
-    # Try to map to our canonical markets
     if "points" in s and "reb" not in s and "ast" not in s:
         return "Points"
     if "rebounds" in s and "assists" not in s:
@@ -114,20 +101,18 @@ def _normalize_market_name(raw: str) -> str | None:
         return "Assists"
     if ("points" in s and "rebounds" in s and "assists" in s) or ("pra" in s):
         return "PRA"
-    if ("rebounds" in s and "assists" in s) or ("ra" in s) or ("reb+ast" in s) or ("reb & ast" in s):
+    if ("rebounds" in s and "assists" in s) or ("reb+ast" in s) or ("reb & ast" in s) or (s == "ra"):
         return "Rebs+Asts"
     return None
 
-def _extract_player_name_from_outcome(outcome: dict) -> str | None:
-    # SportsDataIO typically includes Participant / PlayerName fields for player props.
+def _extract_player_name(outcome: dict) -> str | None:
     for k in ("Participant", "ParticipantName", "PlayerName", "Name"):
         v = outcome.get(k)
         if v and isinstance(v, str) and len(v) >= 3:
             return v.strip()
     return None
 
-def _extract_line_from_outcome(outcome: dict) -> float | None:
-    # Common fields: Value, Total, Point, Line
+def _extract_line(outcome: dict) -> float | None:
     for k in ("Value", "Total", "Point", "Line", "Handicap"):
         v = outcome.get(k)
         try:
@@ -149,31 +134,33 @@ def _extract_price_american(outcome: dict) -> int | None:
             continue
     return None
 
-def _is_over_under_pair(outcomes: list[dict]) -> bool:
-    if not outcomes or len(outcomes) < 2:
-        return False
-    names = " ".join([str(o.get("Name","")) + " " + str(o.get("OutcomeType","")) for o in outcomes]).lower()
-    return ("over" in names and "under" in names)
-
-def fetch_sdio_live_player_props(date_iso: str, sportsbook_whitelist: set[str] | None = None) -> list[dict]:
-    """Fetch *sportsbook* player prop markets via BettingEvents->BettingMarkets.
-    Returns normalized offers: {player, market, line, team, opp, book, over_price, under_price, game_id}
-    """
+@st.cache_data(ttl=60*10, show_spinner=False)
+def fetch_sdio_offers(date_iso: str) -> list[dict]:
     games = sdio_games_by_date(date_iso)
-    # map GameID -> (home, away)
     game_map = {}
     for g in games or []:
-        gid = g.get("GameID") or g.get("GameId") or g.get("GameID".lower())
+        gid = g.get("GameID") or g.get("GameId")
         if gid is None:
             continue
-        home = _sdio_team_abbrev(g.get("HomeTeam"))
-        away = _sdio_team_abbrev(g.get("AwayTeam"))
-        game_map[int(gid)] = (home, away)
+        game_map[int(gid)] = (_sdio_team(g.get("HomeTeam")), _sdio_team(g.get("AwayTeam")))
+
+    players = sdio_players()
+    pmap = {}
+    for p in players or []:
+        name = (p.get("Name") or p.get("DraftKingsName") or p.get("FanDuelName") or "").strip()
+        if not name:
+            continue
+        pmap[name.lower()] = {
+            "PlayerID": p.get("PlayerID") or p.get("PlayerId"),
+            "Team": _sdio_team(p.get("Team")),
+            "Position": p.get("Position") or "",
+            "InjuryStatus": p.get("InjuryStatus") or "",
+        }
 
     events = sdio_betting_events_by_date(date_iso)
     offers: list[dict] = []
     for ev in events or []:
-        event_id = ev.get("BettingEventID") or ev.get("BettingEventId") or ev.get("EventId") or ev.get("EventID") or ev.get("EventId".lower())
+        event_id = ev.get("BettingEventID") or ev.get("BettingEventId") or ev.get("EventId") or ev.get("EventID")
         game_id = ev.get("GameID") or ev.get("GameId")
         try:
             event_id = int(event_id)
@@ -186,136 +173,72 @@ def fetch_sdio_live_player_props(date_iso: str, sportsbook_whitelist: set[str] |
 
         markets = sdio_betting_markets_by_event(event_id, include="available")
         for m in markets or []:
-            m_name = m.get("BettingMarketType") or m.get("BettingMarketTypeName") or m.get("Name") or ""
-            market = _normalize_market_name(m_name)
+            raw_name = m.get("BettingMarketType") or m.get("BettingMarketTypeName") or m.get("Name") or ""
+            market = _normalize_market_name(raw_name)
             if market is None:
                 continue
-
-            # filter to player props only: heuristic (market type contains 'Player')
-            mtype = str(m.get("BettingMarketType","") or m.get("BettingBetType","") or m.get("Name","")).lower()
-            if "player" not in mtype and "prop" not in mtype:
-                # still allow if it looks like a player market by having participant names
-                pass
-
             outcomes = m.get("BettingOutcomes") or m.get("Outcomes") or []
             if not outcomes or len(outcomes) < 2:
                 continue
 
-            # Attempt group by player within the market if outcomes include participant names.
-            # Many feeds provide separate marketId per player, but some include multiple players.
-            # We'll group by participant.
             by_player = {}
             for o in outcomes:
-                pname = _extract_player_name_from_outcome(o)
-                if not pname:
-                    continue
-                by_player.setdefault(pname, []).append(o)
-
-            # Determine sportsbook name if present
-            book = m.get("Sportsbook") or m.get("SportsbookName") or m.get("Book") or ""
-            if sportsbook_whitelist and book:
-                if str(book).strip().lower() not in {b.lower() for b in sportsbook_whitelist}:
-                    continue
-
-            # If outcomes not grouped, treat the market as a single player prop
+                pname = _extract_player_name(o)
+                if pname:
+                    by_player.setdefault(pname, []).append(o)
             if not by_player:
-                # try to infer player from market name or outcomes
-                pname = None
-                for o in outcomes:
-                    pname = _extract_player_name_from_outcome(o)
-                    if pname:
-                        break
-                if not pname:
-                    continue
-                by_player = {pname: outcomes}
+                continue
+
+            book = str(m.get("Sportsbook") or m.get("SportsbookName") or m.get("Book") or "").strip()
 
             for pname, outs in by_player.items():
-                # Extract over/under + line
                 line = None
                 over_price = None
                 under_price = None
                 for o in outs:
-                    oname = str(o.get("Name","") or o.get("OutcomeType","") or "").lower()
                     if line is None:
-                        line = _extract_line_from_outcome(o)
+                        line = _extract_line(o)
+                    nm = str(o.get("Name","") or o.get("OutcomeType","") or "").lower()
                     price = _extract_price_american(o)
-                    if "over" in oname:
+                    if "over" in nm:
                         over_price = price
-                    if "under" in oname:
+                    elif "under" in nm:
                         under_price = price
                 if line is None:
                     continue
 
-                # Determine player's team and opponent from games list if possible
-                team = ""
-                opp = ""
-                if game_id_int is not None and game_id_int in game_map:
+                info = pmap.get(pname.strip().lower(), {})
+                team = info.get("Team","")
+                pos = info.get("Position","")
+                pid = info.get("PlayerID")
+                inj = info.get("InjuryStatus","")
+
+                opp_team = ""
+                if game_id_int is not None and game_id_int in game_map and team:
                     home, away = game_map[game_id_int]
-                    # We will later map player->team via SDIO players list; for now store home/away.
-                    # team/opp will be filled post-merge.
-                    team = ""
-                    opp = f"{away} @ {home}"  # placeholder
+                    opp_team = away if team == home else (home if team == away else "")
 
                 offers.append({
                     "player": pname,
+                    "player_id": pid,
+                    "team": team,
+                    "position": pos,
+                    "injury_status": inj,
                     "market": market,
                     "line": float(line),
-                    "team": team,
-                    "opp": opp,
-                    "book": str(book) if book else "",
-                    "over_price": over_price,
-                    "under_price": under_price,
+                    "opp_team": opp_team,
                     "game_id": game_id_int,
                     "event_id": event_id,
-                    "market_type_raw": str(m_name),
+                    "book": book,
+                    "over_price": over_price,
+                    "under_price": under_price,
                 })
-
-    # Merge player team/position/injury from Players feed
-    players = sdio_players_active()
-    pmap = {}
-    for p in players or []:
-        name = p.get("Name") or p.get("DraftKingsName") or p.get("FanDuelName") or p.get("FirstName","") + " " + p.get("LastName","")
-        if not name:
-            continue
-        pmap[name.strip().lower()] = {
-            "PlayerID": p.get("PlayerID") or p.get("PlayerId"),
-            "Team": _sdio_team_abbrev(p.get("Team")),
-            "Position": p.get("Position") or "",
-            "InjuryStatus": p.get("InjuryStatus") or "",
-            "InjuryBodyPart": p.get("InjuryBodyPart") or "",
-        }
-
-    # Opponent mapping: use game_id -> (home,away) and player's team to set opp
-    for o in offers:
-        info = pmap.get(str(o["player"]).strip().lower())
-        if info:
-            o["player_id"] = info.get("PlayerID")
-            o["team"] = info.get("Team","")
-            o["position"] = info.get("Position","")
-            o["injury_status"] = info.get("InjuryStatus","")
-        gid = o.get("game_id")
-        if gid is not None and gid in game_map and o.get("team"):
-            home, away = game_map[gid]
-            tm = o["team"]
-            if tm == home:
-                o["opp_team"] = away
-                o["opp"] = away
-                o["is_home"] = True
-            elif tm == away:
-                o["opp_team"] = home
-                o["opp"] = home
-                o["is_home"] = False
-            else:
-                o["opp_team"] = ""
-                o["is_home"] = None
-
     return offers
 
 @st.cache_data(ttl=60*60*6, show_spinner=False)
-def sdio_headshot_map() -> dict[str, str]:
-    hs = sdio_headshots()
+def sdio_headshot_map() -> dict:
     out = {}
-    for h in hs or []:
+    for h in sdio_headshots() or []:
         name = (h.get("Name") or "").strip()
         url = h.get("PreferredHostedHeadshotUrl") or h.get("HostedHeadshotWithBackgroundUrl") or h.get("HostedHeadshotNoBackgroundUrl")
         if name and url:
@@ -323,8 +246,26 @@ def sdio_headshot_map() -> dict[str, str]:
     return out
 
 def get_headshot_url_sdio(player_name: str) -> str | None:
-    m = sdio_headshot_map()
-    return m.get(player_name.strip().lower())
+    return sdio_headshot_map().get(player_name.strip().lower())
+
+def get_live_line_from_sdio(player: str, market: str, offers: list[dict]) -> tuple:
+    key_p = player.strip().lower()
+    key_m = market.strip().lower()
+    best = None
+    for o in offers or []:
+        if str(o.get("player","")).strip().lower() != key_p:
+            continue
+        if str(o.get("market","")).strip().lower() != key_m:
+            continue
+        score = 0
+        if o.get("over_price") is not None: score += 1
+        if o.get("under_price") is not None: score += 1
+        if best is None or score > best[0]:
+            best = (score, o)
+    if best is None:
+        return None, None
+    o = best[1]
+    return float(o.get("line")), (o.get("opp_team") or None)
 
 
 
@@ -519,7 +460,7 @@ MARKET_METRICS = {
     "Rebs+Asts": ["REB", "AST"],
 }
 
-# Map our UI markets to SportsDataIO stat types
+# Map our UI markets to PrizePicks stat types
 PRIZEPICKS_MARKET_MAP = {
     "PRA": ["Pts+Rebs+Asts", "PRA"],
     "Points": ["Points"],
@@ -572,7 +513,7 @@ def residual_corr_lookup(p1: str, p2: str) -> float | None:
         return None
   # 3% hard cap
 
-# Public SportsDataIO mirror endpoint
+# Public PrizePicks mirror endpoint
 PRIZEPICKS_MIRROR_URL = "https://pp-public-mirror.vercel.app/api/board"
 
 # =========================================================
@@ -593,7 +534,7 @@ compact_mode = st.sidebar.checkbox("Compact Mode (mobile)", value=False)
 max_daily_loss_pct = st.sidebar.slider("Max Daily Loss % (stop)", 5, 50, 15)
 max_weekly_loss_pct = st.sidebar.slider("Max Weekly Loss % (stop)", 10, 60, 25)
 
-st.sidebar.caption("Model auto-pulls NBA stats & lines. Lines auto-fill from SportsDataIO when possible.")
+st.sidebar.caption("Model auto-pulls NBA stats & lines. Lines auto-fill from PrizePicks when possible.")
 
 # =========================================================
 #  PART 3 — PLAYER & TEAM HELPERS
@@ -730,42 +671,32 @@ def get_context_multiplier(opp_abbrev: str | None, market: str, position: str | 
 
 @st.cache_data(show_spinner=False, ttl=60)
 def fetch_prizepicks_board(*args, **kwargs):
-    """(Deprecated) SportsDataIO removed. Using SportsDataIO live lines."""
+    """(Removed) PrizePicks disabled. Using SportsDataIO lines."""
     return {}
 
 def normalize_player_name_for_pp(name: str) -> str:
     return _norm_name(name)
 
-def get_live_line_from_sdio(player: str, market: str, offers: list[dict]) -> tuple[float|None, str|None]:
-    """Return (line, opp_team) from SDIO normalized offers."""
-    key_p = player.strip().lower()
-    key_m = market.strip().lower()
-    best = None
-    for o in offers or []:
-        if str(o.get("player","")).strip().lower() != key_p:
-            continue
-        if str(o.get("market","")).strip().lower() != key_m:
-            continue
-        # Prefer offers that have both prices
-        score = 0
-        if o.get("over_price") is not None: score += 1
-        if o.get("under_price") is not None: score += 1
-        if best is None or score > best[0]:
-            best = (score, o)
-    if best is None:
-        return None, None
-    o = best[1]
-    return float(o.get("line")), (o.get("opp_team") or o.get("opp"))
+def get_prizepicks_line(player: str, market: str, board):
+    """Compat wrapper: returns SportsDataIO live line for (player, market) from cached offers."""
+    offers = st.session_state.get("sdio_offers", [])
+    line, _ = get_live_line_from_sdio(player, market, offers)
+    return line
 
-def auto_detect_matchup_from_board(player: str, board: dict | None):
-    """(Deprecated) PrizePicks board removed. Kept for compatibility."""
+def auto_detect_matchup_from_board(player: str, board):
+    """Compat: determine (team, opp) from SportsDataIO offers cache."""
+    offers = st.session_state.get("sdio_offers", [])
+    key = player.strip().lower()
+    for o in offers or []:
+        if str(o.get("player","")).strip().lower() == key:
+            return (o.get("team") or None), (o.get("opp_team") or None)
     return None, None
 
 def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> float:
     """Estimate blowout probability (0–1) using board spreads and NBA.com team context.
 
     Priority:
-    1. Use spread from the SportsDataIO / board data if available (when both teams known).
+    1. Use spread from the PrizePicks / board data if available (when both teams known).
     2. Otherwise, fall back to relative team strength from TEAM_CTX / LEAGUE_CTX (when both teams known).
     3. If that also fails or teams are missing, create a stable, matchup-specific risk via hash.
     """
@@ -1185,7 +1116,9 @@ def player_similarity_factor(samples):
 
 
 
-def compute_leg_projection(player: str, market: str, line: float, opp: str | None, n_games: int, board: dict | None = None):
+def compute_leg_projection(player: str, market: str, line: float | None,
+                           user_opp: str | None, n_games: int,
+                           board: dict):
     """Core projection engine for a single leg with advanced Tier-C features + positional context."""
     samples, minutes, team, last_opp, msg = get_player_game_samples(player, n_games, market)
     if samples is None:
@@ -1194,7 +1127,7 @@ def compute_leg_projection(player: str, market: str, line: float, opp: str | Non
     if line is None or line <= 0:
         return None, "No valid line for this player/market."
 
-    # Resolve opponent in layered way: user input -> SportsDataIO board -> NBA scoreboard -> last opponent
+    # Resolve opponent in layered way: user input -> PrizePicks board -> NBA scoreboard -> last opponent
     opp = None
     if user_opp:
         opp = user_opp.strip().upper()
@@ -1529,8 +1462,8 @@ def run_loader():
 #  PART 12 — APP TABS
 # =========================================================
 
-tab_model, tab_results, tab_scanner, tab_history, tab_calib = st.tabs(
-    ["📊 Model", "📓 Results", "🔎 Live Scanner", "📜 History", "🧠 Calibration"]
+tab_model, tab_results, tab_history, tab_calib = st.tabs(
+    ["📊 Model", "📓 Results", "📜 History", "🧠 Calibration"]
 )
 
 # ---------------------------------------------------------
@@ -1543,32 +1476,34 @@ with tab_model:
     st.subheader("Up to 4-Leg Projection & Edge (Bootstrap + Game Scripts)")
 
 
-# --- SportsDataIO Live Lines ---
-today_iso = dtmod.date.today().isoformat()
-if "sdio_date" not in st.session_state:
-    st.session_state["sdio_date"] = today_iso
-sdio_date = st.date_input("Lines date", value=dtmod.date.fromisoformat(st.session_state["sdio_date"]))
-st.session_state["sdio_date"] = sdio_date.isoformat()
+    # SportsDataIO offers cache (auto-lines + opponent + headshots)
+    if "sdio_date" not in st.session_state:
+        st.session_state["sdio_date"] = dtmod.date.today().isoformat()
+    sdio_date = st.date_input("Lines date", value=dtmod.date.fromisoformat(st.session_state["sdio_date"]))
+    st.session_state["sdio_date"] = sdio_date.isoformat()
 
-cA, cB, cC = st.columns([1,1,2])
-with cA:
-    refresh_lines = st.button("Pull Live Lines (SportsDataIO) 🔄")
-with cB:
-    clear_lines = st.button("Clear Cached Lines 🧹")
-if clear_lines:
-    st.session_state.pop("sdio_offers", None)
-    st.session_state.pop("sdio_offers_ts", None)
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        pull_lines = st.button("Pull Live Lines (SportsDataIO) 🔄")
+    with c2:
+        clear_lines = st.button("Clear Cached Lines 🧹")
 
-if refresh_lines or ("sdio_offers" not in st.session_state):
-    with st.spinner("Pulling live player props + games from SportsDataIO..."):
-        st.session_state["sdio_offers"] = fetch_sdio_live_player_props(st.session_state["sdio_date"])
-        st.session_state["sdio_offers_ts"] = dtmod.datetime.now().isoformat(timespec="seconds")
+    if clear_lines:
+        st.session_state.pop("sdio_offers", None)
+        st.session_state.pop("sdio_offers_ts", None)
 
-sdio_offers = st.session_state.get("sdio_offers", [])
-if sdio_offers:
-    st.caption(f"✅ Loaded {len(sdio_offers)} offers · Last pull: {st.session_state.get('sdio_offers_ts','')}")
-else:
-    st.warning("No live offers found. Try another date or verify your SportsDataIO subscription access.")
+    if pull_lines or ("sdio_offers" not in st.session_state):
+        with st.spinner("Pulling SportsDataIO offers..."):
+            st.session_state["sdio_offers"] = fetch_sdio_offers(st.session_state["sdio_date"])
+            st.session_state["sdio_offers_ts"] = dtmod.datetime.now().isoformat(timespec="seconds")
+
+    offers = st.session_state.get("sdio_offers", [])
+    if offers:
+        st.caption(f"✅ Loaded {len(offers)} offers · Last pull: {st.session_state.get('sdio_offers_ts','')}")
+    else:
+        st.info("No offers cached yet. Click 'Pull Live Lines' to auto-fill lines/opponents.")
+
+    board = {}  # compatibility stub
 
 
     cols = st.columns(2)
@@ -1576,25 +1511,41 @@ else:
 
     leg_inputs = []
 
-    st.markdown("#### Legs (enter **Player name + Market** — lines/opponents auto-fill from SportsDataIO)")
-    cols = st.columns(2)
+    with cols[0]:
+        p1 = st.text_input("Player 1 Name")
+        m1 = st.selectbox("P1 Market", MARKET_OPTIONS, key="p1_market")
+        manual1 = st.checkbox("P1: Manual line override", value=False)
+        l1 = st.number_input("P1 Line", min_value=0.0, value=25.0, step=0.5, key="p1_line")
+        o1 = st.text_input("P1 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
+        t1 = st.checkbox("P1 Key teammate OUT?", value=False)
+        leg_inputs.append((p1, m1, manual1, l1, o1, t1))
 
-    def _leg_block(i: int, col):
-        with col:
-            p = st.text_input(f"Player {i} Name", key=f"p{i}_name")
-            m = st.selectbox(f"P{i} Market", MARKET_OPTIONS, key=f"p{i}_market")
-            # Optional overrides live inside expander to keep the UI clean
-            with st.expander(f"P{i} optional overrides", expanded=False):
-                manual = st.checkbox(f"P{i}: Manual line override", value=False, key=f"p{i}_manual")
-                l = st.number_input(f"P{i} Line", min_value=0.0, value=25.0, step=0.5, key=f"p{i}_line")
-                o = st.text_input(f"P{i} Opponent (Team Abbrev, optional)", key=f"p{i}_opp")
-                t = st.checkbox(f"P{i} Key teammate OUT? (adds boost emoji + context)", value=False, key=f"p{i}_keyout")
-            leg_inputs.append((p, m, manual, l, o, t))
+    with cols[1]:
+        p2 = st.text_input("Player 2 Name")
+        m2 = st.selectbox("P2 Market", MARKET_OPTIONS, key="p2_market")
+        manual2 = st.checkbox("P2: Manual line override", value=False)
+        l2 = st.number_input("P2 Line", min_value=0.0, value=25.0, step=0.5, key="p2_line")
+        o2 = st.text_input("P2 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
+        t2 = st.checkbox("P2 Key teammate OUT?", value=False)
+        leg_inputs.append((p2, m2, manual2, l2, o2, t2))
 
-    _leg_block(1, cols[0])
-    _leg_block(2, cols[1])
-    _leg_block(3, cols[0])
-    _leg_block(4, cols[1])
+    with cols2[0]:
+        p3 = st.text_input("Player 3 Name")
+        m3 = st.selectbox("P3 Market", MARKET_OPTIONS, key="p3_market")
+        manual3 = st.checkbox("P3: Manual line override", value=False)
+        l3 = st.number_input("P3 Line", min_value=0.0, value=25.0, step=0.5, key="p3_line")
+        o3 = st.text_input("P3 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
+        t3 = st.checkbox("P3 Key teammate OUT?", value=False)
+        leg_inputs.append((p3, m3, manual3, l3, o3, t3))
+
+    with cols2[1]:
+        p4 = st.text_input("Player 4 Name")
+        m4 = st.selectbox("P4 Market", MARKET_OPTIONS, key="p4_market")
+        manual4 = st.checkbox("P4: Manual line override", value=False)
+        l4 = st.number_input("P4 Line", min_value=0.0, value=25.0, step=0.5, key="p4_line")
+        o4 = st.text_input("P4 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
+        t4 = st.checkbox("P4 Key teammate OUT?", value=False)
+        leg_inputs.append((p4, m4, manual4, l4, o4, t4))
 
     run = st.button("Run Model ⚡")
 
@@ -1610,24 +1561,20 @@ else:
             if not player:
                 continue
 
-            
-            line_used: float | None = None
-            opp_used: str | None = (opp_inp.strip().upper() if isinstance(opp_inp, str) and opp_inp.strip() else None)
-
+            line_used = None
             if not manual:
-                auto_line, auto_opp = get_live_line_from_sdio(player, market, sdio_offers)
+                auto_line = get_prizepicks_line(player, market, board)
                 if auto_line is None:
-                    st.warning(f"P{idx}: Could not auto-fetch SportsDataIO line for {player} ({market}). Enable manual override or refresh live lines.")
+                    st.warning(f"P{idx}: Could not auto-fetch PrizePicks line. Enable manual override.")
                 else:
-                    line_used = float(auto_line)
-                    if not opp_used and auto_opp:
-                        opp_used = str(auto_opp).strip().upper()
-                    st.info(f"P{idx} auto SportsDataIO line detected: {line_used:.1f}" + (f" vs {opp_used}" if opp_used else ""))
+                    line_used = auto_line
+                    st.info(f"P{idx} auto PrizePicks line detected: {auto_line:.1f}")
             else:
-                line_used = float(line_inp) if line_inp is not None else None
+                line_used = line_inp
+
             if line_used and line_used > 0:
                 leg, err = compute_leg_projection(
-                    player, market, line_used, opp_used, games_lookback, None
+                    player, market, line_used, opp_inp, games_lookback, board
                 )
                 if err:
                     st.error(f"P{idx}: {err}")
@@ -1718,17 +1665,6 @@ else:
                     raw_kelly, hist_df, bankroll, max_daily_loss_pct, max_weekly_loss_pct
                 )
                 stake = round(bankroll * k_adj, 2)
-
-# Persist latest bet context for logging (Streamlit reruns on button clicks)
-                st.session_state["last_bet"] = {
-                    "timestamp": dtmod.datetime.now().isoformat(timespec="seconds"),
-                    "legs": legs,
-                    "ev_combo": float(ev_combo),
-                    "stake": float(stake),
-                    "k_adj": float(k_adj),
-                    "payout_mult": float(payout_mult),
-                    "joint_prob": float(joint),
-                }
                 decision = combo_decision(ev_combo)
 
                 st.markdown(f"- Legs in Combo: **{len(legs)}**")
@@ -1741,6 +1677,42 @@ else:
                 if risk_note:
                     st.warning(risk_note)
 
+                
+st.markdown("---")
+st.subheader("💾 Log This Bet?")
+choice = st.radio("Did you place this bet?", ["No", "Yes"], horizontal=True)
+
+col_log, col_reset = st.columns(2)
+with col_log:
+    confirm_log = st.button("Confirm Log Decision")
+with col_reset:
+    reset_home = st.button("Reset to Home")
+
+if confirm_log:
+    if choice == "Yes":
+        ensure_history()
+        df_hist = load_history()
+        combo_name = " + ".join([f"{leg['player']} {leg['market']}" for leg in legs])
+        new_row = {
+            "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "Player": combo_name,
+            "Market": f"{len(legs)}-Leg Combo",
+            "Line": 0.0,
+            "EV": ev_combo * 100.0,
+            "Stake": stake,
+            "Result": "Pending",
+            "CLV": 0.0,
+            "KellyFrac": k_adj
+        }
+        df_hist = pd.concat([df_hist, pd.DataFrame([new_row])], ignore_index=True)
+        save_history(df_hist)
+        st.success("Bet logged to history as Pending ✅")
+    else:
+        st.info("You chose not to log this bet.")
+
+if reset_home:
+    _safe_rerun()
+
 # ---------------------------------------------------------
 #  RESULTS TAB
 
@@ -1748,59 +1720,6 @@ else:
 
 with tab_results:
     st.subheader("Results & Personal Tracking")
-
-
-# -------------------------
-# Latest Run + Log Prompt
-# -------------------------
-last_bet = st.session_state.get("last_bet")
-if last_bet and last_bet.get("legs"):
-    st.markdown("---")
-    st.subheader("💾 Log This Bet?")
-
-    legs_lb = last_bet["legs"]
-    combo_name = " + ".join([f"{leg['player']} {leg['market']}" for leg in legs_lb])
-    st.write(f"**Entry:** {combo_name}")
-    st.write(f"**Joint Hit Prob:** {last_bet.get('joint_prob',0.0)*100:.1f}%")
-    st.write(f"**Combo EV:** {last_bet.get('ev_combo',0.0)*100:+.1f}%")
-    st.write(f"**Suggested Stake:** ${last_bet.get('stake',0.0):.2f} (KellyFrac={last_bet.get('k_adj',0.0):.3f})")
-
-    choice = st.radio("Did you place this bet?", ["No", "Yes"], horizontal=True, key="log_choice")
-    stake_override = st.number_input("Stake used (optional override)", min_value=0.0, value=float(last_bet.get("stake",0.0)), step=1.0, key="stake_override")
-
-    col_log, col_reset = st.columns(2)
-    with col_log:
-        confirm_log = st.button("Confirm Log Decision ✅", key="confirm_log_btn")
-    with col_reset:
-        reset_home = st.button("Reset to Home ↩️", key="reset_home_btn")
-
-    if confirm_log:
-        if choice == "Yes":
-            ensure_history()
-            df_hist = load_history()
-            new_row = {
-                "Date": dtmod.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "Player": combo_name,
-                "Market": f"{len(legs_lb)}-Leg Combo",
-                "Line": 0.0,
-                "EV": float(last_bet.get("ev_combo",0.0)) * 100.0,
-                "Stake": float(stake_override),
-                "Result": "Pending",
-                "CLV": 0.0,
-                "KellyFrac": float(last_bet.get("k_adj",0.0)),
-            }
-            df_hist = pd.concat([df_hist, pd.DataFrame([new_row])], ignore_index=True)
-            save_history(df_hist)
-            st.success("Bet logged to History as Pending ✅ (see History tab)")
-        else:
-            st.info("Not logged.")
-
-    if reset_home:
-        # Clear last bet to avoid stale logging and return to Model tab view
-        st.session_state.pop("last_bet", None)
-        _safe_rerun()
-else:
-    st.caption("Run the model to generate an entry, then log it here.")
 
     df = load_history()
 
@@ -1913,112 +1832,6 @@ else:
 # ---------------------------------------------------------
 #  HISTORY TAB
 # ---------------------------------------------------------
-
-
-# ---------------------------------------------------------
-#  LIVE SCANNER TAB (SportsDataIO)
-# ---------------------------------------------------------
-with tab_scanner:
-    st.subheader("🔎 Live Scanner — Single-Leg Edges (SportsDataIO Lines)")
-
-    st.caption("Scans live SportsDataIO player-prop lines and runs the model to find **single-leg EV above threshold**.")
-    today_iso = dtmod.date.today().isoformat()
-    if "sdio_scan_date" not in st.session_state:
-        st.session_state["sdio_scan_date"] = today_iso
-    scan_date = st.date_input("Scanner date", value=dtmod.date.fromisoformat(st.session_state["sdio_scan_date"]), key="scan_date")
-    st.session_state["sdio_scan_date"] = scan_date.isoformat()
-
-    cA, cB, cC = st.columns([1,1,2])
-    with cA:
-        refresh_scan_lines = st.button("Pull/Refresh Lines 🔄", key="scan_refresh")
-    with cB:
-        clear_scan = st.button("Clear Scanner Cache 🧹", key="scan_clear")
-    if clear_scan:
-        st.session_state.pop("sdio_scan_offers", None)
-        st.session_state.pop("sdio_scan_ts", None)
-
-    if refresh_scan_lines or ("sdio_scan_offers" not in st.session_state):
-        with st.spinner("Pulling SportsDataIO offers for scanner..."):
-            st.session_state["sdio_scan_offers"] = fetch_sdio_live_player_props(st.session_state["sdio_scan_date"])
-            st.session_state["sdio_scan_ts"] = dtmod.datetime.now().isoformat(timespec="seconds")
-
-    scan_offers = st.session_state.get("sdio_scan_offers", [])
-    if scan_offers:
-        st.caption(f"✅ Loaded {len(scan_offers)} offers · Last pull: {st.session_state.get('sdio_scan_ts','')}")
-    else:
-        st.warning("No offers found for this date.")
-
-    st.markdown("#### Scanner Controls")
-    mcols = st.columns(3)
-    with mcols[0]:
-        markets_sel = st.multiselect("Markets", MARKET_OPTIONS, default=["Points","Rebounds","Assists","PRA","Rebs+Asts"], key="scan_markets")
-    with mcols[1]:
-        max_props = st.number_input("Max props to evaluate", min_value=50, max_value=1200, value=300, step=50, key="scan_max_props")
-    with mcols[2]:
-        ev_thresh = st.number_input("EV threshold (Even-money)", min_value=0.05, max_value=2.00, value=0.65, step=0.05, key="scan_ev_thresh")
-
-    run_scan = st.button("Run Live Scan ⚡", key="run_live_scan")
-
-    if run_scan:
-        if not scan_offers:
-            st.error("No live offers loaded.")
-        else:
-            # Deduplicate to one line per (player, market)
-            seen = set()
-            uniq = []
-            for o in scan_offers:
-                mk = o.get("market")
-                if mk not in markets_sel:
-                    continue
-                key = (str(o.get("player","")).strip().lower(), str(mk).lower())
-                if key in seen:
-                    continue
-                if o.get("line") is None:
-                    continue
-                if not o.get("opp_team") and not o.get("opp"):
-                    continue
-                seen.add(key)
-                uniq.append(o)
-                if len(uniq) >= int(max_props):
-                    break
-
-            st.write(f"Evaluating **{len(uniq)}** unique props...")
-
-            rows = []
-            prog = st.progress(0)
-            for i, o in enumerate(uniq):
-                prog.progress((i+1)/max(1,len(uniq)))
-                player = str(o.get("player","")).strip()
-                market = str(o.get("market","")).strip()
-                line = float(o.get("line"))
-                opp = str(o.get("opp_team") or o.get("opp") or "").strip().upper() or None
-
-                try:
-                    leg = compute_leg_projection(player, market, line, opp, int(games_lookback), None)
-                    p_over = float(leg.get("prob_over", 0.0))
-                    ev_even = float(2*p_over - 1.0)
-                    if ev_even >= float(ev_thresh):
-                        rows.append({
-                            "Player": player,
-                            "Market": market,
-                            "Line": line,
-                            "Opp": opp or "",
-                            "ProbOver%": round(p_over*100, 1),
-                            "EV_even%": round(ev_even*100, 1),
-                            "Ctx": round(float(leg.get("ctx_mult",1.0)), 3),
-                            "Blowout%": round(float(leg.get("blowout_prob",0.0))*100, 1),
-                            "Vol": leg.get("volatility_label",""),
-                        })
-                except Exception:
-                    continue
-
-            prog.empty()
-            if rows:
-                df_scan = pd.DataFrame(rows).sort_values("EV_even%", ascending=False).reset_index(drop=True)
-                st.success(f"Found {len(df_scan)} props with EV ≥ {ev_thresh:.2f} (even-money).")
-                st.dataframe(df_scan, use_container_width=True)
-            else:
-                st.info("No props met threshold. Try lowering EV threshold or increasing max props.")
 
 with tab_history:
     st.subheader("History & Filters")
