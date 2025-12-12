@@ -1529,8 +1529,8 @@ def run_loader():
 #  PART 12 — APP TABS
 # =========================================================
 
-tab_model, tab_results, tab_history, tab_calib = st.tabs(
-    ["📊 Model", "📓 Results", "📜 History", "🧠 Calibration"]
+tab_model, tab_results, tab_scanner, tab_history, tab_calib = st.tabs(
+    ["📊 Model", "📓 Results", "🔎 Live Scanner", "📜 History", "🧠 Calibration"]
 )
 
 # ---------------------------------------------------------
@@ -1576,41 +1576,25 @@ else:
 
     leg_inputs = []
 
-    with cols[0]:
-        p1 = st.text_input("Player 1 Name")
-        m1 = st.selectbox("P1 Market", MARKET_OPTIONS, key="p1_market")
-        manual1 = st.checkbox("P1: Manual line override", value=False)
-        l1 = st.number_input("P1 Line", min_value=0.0, value=25.0, step=0.5, key="p1_line")
-        o1 = st.text_input("P1 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
-        t1 = st.checkbox("P1 Key teammate OUT?", value=False)
-        leg_inputs.append((p1, m1, manual1, l1, o1, t1))
+    st.markdown("#### Legs (enter **Player name + Market** — lines/opponents auto-fill from SportsDataIO)")
+    cols = st.columns(2)
 
-    with cols[1]:
-        p2 = st.text_input("Player 2 Name")
-        m2 = st.selectbox("P2 Market", MARKET_OPTIONS, key="p2_market")
-        manual2 = st.checkbox("P2: Manual line override", value=False)
-        l2 = st.number_input("P2 Line", min_value=0.0, value=25.0, step=0.5, key="p2_line")
-        o2 = st.text_input("P2 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
-        t2 = st.checkbox("P2 Key teammate OUT?", value=False)
-        leg_inputs.append((p2, m2, manual2, l2, o2, t2))
+    def _leg_block(i: int, col):
+        with col:
+            p = st.text_input(f"Player {i} Name", key=f"p{i}_name")
+            m = st.selectbox(f"P{i} Market", MARKET_OPTIONS, key=f"p{i}_market")
+            # Optional overrides live inside expander to keep the UI clean
+            with st.expander(f"P{i} optional overrides", expanded=False):
+                manual = st.checkbox(f"P{i}: Manual line override", value=False, key=f"p{i}_manual")
+                l = st.number_input(f"P{i} Line", min_value=0.0, value=25.0, step=0.5, key=f"p{i}_line")
+                o = st.text_input(f"P{i} Opponent (Team Abbrev, optional)", key=f"p{i}_opp")
+                t = st.checkbox(f"P{i} Key teammate OUT? (adds boost emoji + context)", value=False, key=f"p{i}_keyout")
+            leg_inputs.append((p, m, manual, l, o, t))
 
-    with cols2[0]:
-        p3 = st.text_input("Player 3 Name")
-        m3 = st.selectbox("P3 Market", MARKET_OPTIONS, key="p3_market")
-        manual3 = st.checkbox("P3: Manual line override", value=False)
-        l3 = st.number_input("P3 Line", min_value=0.0, value=25.0, step=0.5, key="p3_line")
-        o3 = st.text_input("P3 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
-        t3 = st.checkbox("P3 Key teammate OUT?", value=False)
-        leg_inputs.append((p3, m3, manual3, l3, o3, t3))
-
-    with cols2[1]:
-        p4 = st.text_input("Player 4 Name")
-        m4 = st.selectbox("P4 Market", MARKET_OPTIONS, key="p4_market")
-        manual4 = st.checkbox("P4: Manual line override", value=False)
-        l4 = st.number_input("P4 Line", min_value=0.0, value=25.0, step=0.5, key="p4_line")
-        o4 = st.text_input("P4 Opponent (Team Abbrev, optional)", help="Leave blank to auto-detect")
-        t4 = st.checkbox("P4 Key teammate OUT?", value=False)
-        leg_inputs.append((p4, m4, manual4, l4, o4, t4))
+    _leg_block(1, cols[0])
+    _leg_block(2, cols[1])
+    _leg_block(3, cols[0])
+    _leg_block(4, cols[1])
 
     run = st.button("Run Model ⚡")
 
@@ -1734,6 +1718,17 @@ else:
                     raw_kelly, hist_df, bankroll, max_daily_loss_pct, max_weekly_loss_pct
                 )
                 stake = round(bankroll * k_adj, 2)
+
+# Persist latest bet context for logging (Streamlit reruns on button clicks)
+                st.session_state["last_bet"] = {
+                    "timestamp": dtmod.datetime.now().isoformat(timespec="seconds"),
+                    "legs": legs,
+                    "ev_combo": float(ev_combo),
+                    "stake": float(stake),
+                    "k_adj": float(k_adj),
+                    "payout_mult": float(payout_mult),
+                    "joint_prob": float(joint),
+                }
                 decision = combo_decision(ev_combo)
 
                 st.markdown(f"- Legs in Combo: **{len(legs)}**")
@@ -1746,42 +1741,6 @@ else:
                 if risk_note:
                     st.warning(risk_note)
 
-                
-st.markdown("---")
-st.subheader("💾 Log This Bet?")
-choice = st.radio("Did you place this bet?", ["No", "Yes"], horizontal=True)
-
-col_log, col_reset = st.columns(2)
-with col_log:
-    confirm_log = st.button("Confirm Log Decision")
-with col_reset:
-    reset_home = st.button("Reset to Home")
-
-if confirm_log:
-    if choice == "Yes":
-        ensure_history()
-        df_hist = load_history()
-        combo_name = " + ".join([f"{leg['player']} {leg['market']}" for leg in legs])
-        new_row = {
-            "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "Player": combo_name,
-            "Market": f"{len(legs)}-Leg Combo",
-            "Line": 0.0,
-            "EV": ev_combo * 100.0,
-            "Stake": stake,
-            "Result": "Pending",
-            "CLV": 0.0,
-            "KellyFrac": k_adj
-        }
-        df_hist = pd.concat([df_hist, pd.DataFrame([new_row])], ignore_index=True)
-        save_history(df_hist)
-        st.success("Bet logged to history as Pending ✅")
-    else:
-        st.info("You chose not to log this bet.")
-
-if reset_home:
-    _safe_rerun()
-
 # ---------------------------------------------------------
 #  RESULTS TAB
 
@@ -1789,6 +1748,59 @@ if reset_home:
 
 with tab_results:
     st.subheader("Results & Personal Tracking")
+
+
+# -------------------------
+# Latest Run + Log Prompt
+# -------------------------
+last_bet = st.session_state.get("last_bet")
+if last_bet and last_bet.get("legs"):
+    st.markdown("---")
+    st.subheader("💾 Log This Bet?")
+
+    legs_lb = last_bet["legs"]
+    combo_name = " + ".join([f"{leg['player']} {leg['market']}" for leg in legs_lb])
+    st.write(f"**Entry:** {combo_name}")
+    st.write(f"**Joint Hit Prob:** {last_bet.get('joint_prob',0.0)*100:.1f}%")
+    st.write(f"**Combo EV:** {last_bet.get('ev_combo',0.0)*100:+.1f}%")
+    st.write(f"**Suggested Stake:** ${last_bet.get('stake',0.0):.2f} (KellyFrac={last_bet.get('k_adj',0.0):.3f})")
+
+    choice = st.radio("Did you place this bet?", ["No", "Yes"], horizontal=True, key="log_choice")
+    stake_override = st.number_input("Stake used (optional override)", min_value=0.0, value=float(last_bet.get("stake",0.0)), step=1.0, key="stake_override")
+
+    col_log, col_reset = st.columns(2)
+    with col_log:
+        confirm_log = st.button("Confirm Log Decision ✅", key="confirm_log_btn")
+    with col_reset:
+        reset_home = st.button("Reset to Home ↩️", key="reset_home_btn")
+
+    if confirm_log:
+        if choice == "Yes":
+            ensure_history()
+            df_hist = load_history()
+            new_row = {
+                "Date": dtmod.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "Player": combo_name,
+                "Market": f"{len(legs_lb)}-Leg Combo",
+                "Line": 0.0,
+                "EV": float(last_bet.get("ev_combo",0.0)) * 100.0,
+                "Stake": float(stake_override),
+                "Result": "Pending",
+                "CLV": 0.0,
+                "KellyFrac": float(last_bet.get("k_adj",0.0)),
+            }
+            df_hist = pd.concat([df_hist, pd.DataFrame([new_row])], ignore_index=True)
+            save_history(df_hist)
+            st.success("Bet logged to History as Pending ✅ (see History tab)")
+        else:
+            st.info("Not logged.")
+
+    if reset_home:
+        # Clear last bet to avoid stale logging and return to Model tab view
+        st.session_state.pop("last_bet", None)
+        _safe_rerun()
+else:
+    st.caption("Run the model to generate an entry, then log it here.")
 
     df = load_history()
 
@@ -1901,6 +1913,112 @@ with tab_results:
 # ---------------------------------------------------------
 #  HISTORY TAB
 # ---------------------------------------------------------
+
+
+# ---------------------------------------------------------
+#  LIVE SCANNER TAB (SportsDataIO)
+# ---------------------------------------------------------
+with tab_scanner:
+    st.subheader("🔎 Live Scanner — Single-Leg Edges (SportsDataIO Lines)")
+
+    st.caption("Scans live SportsDataIO player-prop lines and runs the model to find **single-leg EV above threshold**.")
+    today_iso = dtmod.date.today().isoformat()
+    if "sdio_scan_date" not in st.session_state:
+        st.session_state["sdio_scan_date"] = today_iso
+    scan_date = st.date_input("Scanner date", value=dtmod.date.fromisoformat(st.session_state["sdio_scan_date"]), key="scan_date")
+    st.session_state["sdio_scan_date"] = scan_date.isoformat()
+
+    cA, cB, cC = st.columns([1,1,2])
+    with cA:
+        refresh_scan_lines = st.button("Pull/Refresh Lines 🔄", key="scan_refresh")
+    with cB:
+        clear_scan = st.button("Clear Scanner Cache 🧹", key="scan_clear")
+    if clear_scan:
+        st.session_state.pop("sdio_scan_offers", None)
+        st.session_state.pop("sdio_scan_ts", None)
+
+    if refresh_scan_lines or ("sdio_scan_offers" not in st.session_state):
+        with st.spinner("Pulling SportsDataIO offers for scanner..."):
+            st.session_state["sdio_scan_offers"] = fetch_sdio_live_player_props(st.session_state["sdio_scan_date"])
+            st.session_state["sdio_scan_ts"] = dtmod.datetime.now().isoformat(timespec="seconds")
+
+    scan_offers = st.session_state.get("sdio_scan_offers", [])
+    if scan_offers:
+        st.caption(f"✅ Loaded {len(scan_offers)} offers · Last pull: {st.session_state.get('sdio_scan_ts','')}")
+    else:
+        st.warning("No offers found for this date.")
+
+    st.markdown("#### Scanner Controls")
+    mcols = st.columns(3)
+    with mcols[0]:
+        markets_sel = st.multiselect("Markets", MARKET_OPTIONS, default=["Points","Rebounds","Assists","PRA","Rebs+Asts"], key="scan_markets")
+    with mcols[1]:
+        max_props = st.number_input("Max props to evaluate", min_value=50, max_value=1200, value=300, step=50, key="scan_max_props")
+    with mcols[2]:
+        ev_thresh = st.number_input("EV threshold (Even-money)", min_value=0.05, max_value=2.00, value=0.65, step=0.05, key="scan_ev_thresh")
+
+    run_scan = st.button("Run Live Scan ⚡", key="run_live_scan")
+
+    if run_scan:
+        if not scan_offers:
+            st.error("No live offers loaded.")
+        else:
+            # Deduplicate to one line per (player, market)
+            seen = set()
+            uniq = []
+            for o in scan_offers:
+                mk = o.get("market")
+                if mk not in markets_sel:
+                    continue
+                key = (str(o.get("player","")).strip().lower(), str(mk).lower())
+                if key in seen:
+                    continue
+                if o.get("line") is None:
+                    continue
+                if not o.get("opp_team") and not o.get("opp"):
+                    continue
+                seen.add(key)
+                uniq.append(o)
+                if len(uniq) >= int(max_props):
+                    break
+
+            st.write(f"Evaluating **{len(uniq)}** unique props...")
+
+            rows = []
+            prog = st.progress(0)
+            for i, o in enumerate(uniq):
+                prog.progress((i+1)/max(1,len(uniq)))
+                player = str(o.get("player","")).strip()
+                market = str(o.get("market","")).strip()
+                line = float(o.get("line"))
+                opp = str(o.get("opp_team") or o.get("opp") or "").strip().upper() or None
+
+                try:
+                    leg = compute_leg_projection(player, market, line, opp, int(games_lookback), None)
+                    p_over = float(leg.get("prob_over", 0.0))
+                    ev_even = float(2*p_over - 1.0)
+                    if ev_even >= float(ev_thresh):
+                        rows.append({
+                            "Player": player,
+                            "Market": market,
+                            "Line": line,
+                            "Opp": opp or "",
+                            "ProbOver%": round(p_over*100, 1),
+                            "EV_even%": round(ev_even*100, 1),
+                            "Ctx": round(float(leg.get("ctx_mult",1.0)), 3),
+                            "Blowout%": round(float(leg.get("blowout_prob",0.0))*100, 1),
+                            "Vol": leg.get("volatility_label",""),
+                        })
+                except Exception:
+                    continue
+
+            prog.empty()
+            if rows:
+                df_scan = pd.DataFrame(rows).sort_values("EV_even%", ascending=False).reset_index(drop=True)
+                st.success(f"Found {len(df_scan)} props with EV ≥ {ev_thresh:.2f} (even-money).")
+                st.dataframe(df_scan, use_container_width=True)
+            else:
+                st.info("No props met threshold. Try lowering EV threshold or increasing max props.")
 
 with tab_history:
     st.subheader("History & Filters")
