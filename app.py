@@ -4,7 +4,7 @@
 #   - Empirical Bootstrap Monte Carlo (10,000 sims)
 #   - Defensive Matchup Engine (team-context aware)
 #   - Pace-adjusted minutes & usage context
-#   - Auto PrizePicks line pulling via public JSON mirror
+#   - Auto SportsDataIO line pulling via public JSON mirror
 #   - Auto opponent detection + blowout risk inference
 #   - Expanded History + Calibration + Risk Controls
 #   - EVERYTHING DEFENSE-ADJUSTED
@@ -460,7 +460,7 @@ MARKET_METRICS = {
     "Rebs+Asts": ["REB", "AST"],
 }
 
-# Map our UI markets to PrizePicks stat types
+# Map our UI markets to SportsDataIO stat types
 PRIZEPICKS_MARKET_MAP = {
     "PRA": ["Pts+Rebs+Asts", "PRA"],
     "Points": ["Points"],
@@ -513,7 +513,7 @@ def residual_corr_lookup(p1: str, p2: str) -> float | None:
         return None
   # 3% hard cap
 
-# Public PrizePicks mirror endpoint
+# Public SportsDataIO mirror endpoint
 PRIZEPICKS_MIRROR_URL = "https://pp-public-mirror.vercel.app/api/board"
 
 # =========================================================
@@ -534,7 +534,7 @@ compact_mode = st.sidebar.checkbox("Compact Mode (mobile)", value=False)
 max_daily_loss_pct = st.sidebar.slider("Max Daily Loss % (stop)", 5, 50, 15)
 max_weekly_loss_pct = st.sidebar.slider("Max Weekly Loss % (stop)", 10, 60, 25)
 
-st.sidebar.caption("Model auto-pulls NBA stats & lines. Lines auto-fill from PrizePicks when possible.")
+st.sidebar.caption("Model auto-pulls NBA stats & lines. Lines auto-fill from SportsDataIO when possible.")
 
 # =========================================================
 #  PART 3 — PLAYER & TEAM HELPERS
@@ -671,7 +671,7 @@ def get_context_multiplier(opp_abbrev: str | None, market: str, position: str | 
 
 @st.cache_data(show_spinner=False, ttl=60)
 def fetch_prizepicks_board(*args, **kwargs):
-    """(Removed) PrizePicks disabled. Using SportsDataIO lines."""
+    """(Removed) SportsDataIO disabled. Using SportsDataIO lines."""
     return {}
 
 def normalize_player_name_for_pp(name: str) -> str:
@@ -696,7 +696,7 @@ def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> flo
     """Estimate blowout probability (0–1) using board spreads and NBA.com team context.
 
     Priority:
-    1. Use spread from the PrizePicks / board data if available (when both teams known).
+    1. Use spread from the SportsDataIO / board data if available (when both teams known).
     2. Otherwise, fall back to relative team strength from TEAM_CTX / LEAGUE_CTX (when both teams known).
     3. If that also fails or teams are missing, create a stable, matchup-specific risk via hash.
     """
@@ -1127,7 +1127,7 @@ def compute_leg_projection(player: str, market: str, line: float | None,
     if line is None or line <= 0:
         return None, "No valid line for this player/market."
 
-    # Resolve opponent in layered way: user input -> PrizePicks board -> NBA scoreboard -> last opponent
+    # Resolve opponent in layered way: user input -> SportsDataIO board -> NBA scoreboard -> last opponent
     opp = None
     if user_opp:
         opp = user_opp.strip().upper()
@@ -1550,6 +1550,14 @@ with tab_model:
     run = st.button("Run Model ⚡")
 
     if run:
+        # Ensure SportsDataIO offers are available for auto-lines (avoid needing manual override)
+        if "sdio_offers" not in st.session_state or not st.session_state.get("sdio_offers"):
+            try:
+                with st.spinner("Auto-pulling SportsDataIO live lines..."):
+                    st.session_state["sdio_offers"] = fetch_sdio_offers(st.session_state.get("sdio_date", dtmod.date.today().isoformat()))
+                    st.session_state["sdio_offers_ts"] = dtmod.datetime.now().isoformat(timespec="seconds")
+            except Exception:
+                pass
         if payout_mult <= 1.0:
             st.error("Payout multiplier must be > 1.0")
             st.stop()
@@ -1565,10 +1573,10 @@ with tab_model:
             if not manual:
                 auto_line = get_prizepicks_line(player, market, board)
                 if auto_line is None:
-                    st.warning(f"P{idx}: Could not auto-fetch PrizePicks line. Enable manual override.")
+                    st.warning(f"P{idx}: Could not auto-fetch SportsDataIO line. Enable manual override.")
                 else:
                     line_used = auto_line
-                    st.info(f"P{idx} auto PrizePicks line detected: {auto_line:.1f}")
+                    st.info(f"P{idx} auto SportsDataIO line detected: {auto_line:.1f}")
             else:
                 line_used = line_inp
 
