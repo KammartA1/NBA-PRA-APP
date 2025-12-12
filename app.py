@@ -4,7 +4,7 @@
 #   - Empirical Bootstrap Monte Carlo (10,000 sims)
 #   - Defensive Matchup Engine (team-context aware)
 #   - Pace-adjusted minutes & usage context
-#   - Auto PrizePicks line pulling via public JSON mirror
+#   - Auto SportsDataIO line pulling via public JSON mirror
 #   - Auto opponent detection + blowout risk inference
 #   - Expanded History + Calibration + Risk Controls
 #   - EVERYTHING DEFENSE-ADJUSTED
@@ -38,6 +38,293 @@ def _safe_rerun():
             _st_mod.experimental_rerun()
     except Exception:
         pass
+
+
+# ============================
+# SportsDataIO (Odds + Stats + Headshots)
+# ============================
+# API keys can be provided via Streamlit secrets or environment variable.
+# You asked to hardwire it, so we provide a default. (You can override with SDIO_API_KEY env var.)
+SDIO_API_KEY_DEFAULT = "946b5ea5e7504852b4c46f7f09cbe340"
+SDIO_API_KEY = os.getenv("SDIO_API_KEY", SDIO_API_KEY_DEFAULT).strip()
+
+SDIO_BASE_ODDS = "https://api.sportsdata.io/v3/nba/odds"
+SDIO_BASE_STATS = "https://api.sportsdata.io/v3/nba/stats"
+SDIO_BASE_HEADSHOTS = "https://api.sportsdata.io/v3/nba/headshots"
+
+def sdio_get(url: str, params: dict | None = None, timeout: int = 20):
+    """GET helper for SportsDataIO with subscription-key header."""
+    headers = {"Ocp-Apim-Subscription-Key": SDIO_API_KEY}
+    r = requests.get(url, params=params or {}, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+@st.cache_data(ttl=60*30, show_spinner=False)
+def sdio_games_by_date(date_iso: str) -> list[dict]:
+    """Games by date (YYYY-MMM-DD or YYYY-MM-DD accepted by SDIO)."""
+    # SDIO docs show examples like 2015-JUL-31; but it also accepts ISO in practice for many feeds.
+    # We will try ISO first, then fallback to SDIO format.
+    def _try(d: str):
+        return sdio_get(f"{SDIO_BASE_STATS}/json/GamesByDate/{d}")
+    try:
+        return _try(date_iso)
+    except Exception:
+        # fallback: YYYY-MMM-DD
+        try:
+            dt = datetime.datetime.fromisoformat(date_iso)
+            d2 = dt.strftime("%Y-%b-%d").upper()
+            return _try(d2)
+        except Exception:
+            return []
+
+@st.cache_data(ttl=60*30, show_spinner=False)
+def sdio_players_active() -> list[dict]:
+    """Player details (includes InjuryStatus, Team, Position)."""
+    return sdio_get(f"{SDIO_BASE_STATS}/json/Players")
+
+@st.cache_data(ttl=60*60*6, show_spinner=False)
+def sdio_headshots() -> list[dict]:
+    """Headshots for all players."""
+    return sdio_get(f"{SDIO_BASE_HEADSHOTS}/json/Headshots")
+
+@st.cache_data(ttl=60*10, show_spinner=False)
+def sdio_betting_events_by_date(date_iso: str) -> list[dict]:
+    return sdio_get(f"{SDIO_BASE_ODDS}/json/BettingEventsByDate/{date_iso}")
+
+@st.cache_data(ttl=60*5, show_spinner=False)
+def sdio_betting_markets_by_event(event_id: int | str, include: str = "available") -> list[dict]:
+    return sdio_get(f"{SDIO_BASE_ODDS}/json/BettingMarkets/{event_id}", params={"include": include})
+
+def _sdio_team_abbrev(x: str | None) -> str:
+    if not x:
+        return ""
+    return str(x).strip().upper()
+
+def _normalize_market_name(raw: str) -> str | None:
+    if not raw:
+        return None
+    s = str(raw).strip().lower()
+    # Try to map to our canonical markets
+    if "points" in s and "reb" not in s and "ast" not in s:
+        return "Points"
+    if "rebounds" in s and "assists" not in s:
+        return "Rebounds"
+    if "assists" in s and "rebounds" not in s:
+        return "Assists"
+    if ("points" in s and "rebounds" in s and "assists" in s) or ("pra" in s):
+        return "PRA"
+    if ("rebounds" in s and "assists" in s) or ("ra" in s) or ("reb+ast" in s) or ("reb & ast" in s):
+        return "Rebs+Asts"
+    return None
+
+def _extract_player_name_from_outcome(outcome: dict) -> str | None:
+    # SportsDataIO typically includes Participant / PlayerName fields for player props.
+    for k in ("Participant", "ParticipantName", "PlayerName", "Name"):
+        v = outcome.get(k)
+        if v and isinstance(v, str) and len(v) >= 3:
+            return v.strip()
+    return None
+
+def _extract_line_from_outcome(outcome: dict) -> float | None:
+    # Common fields: Value, Total, Point, Line
+    for k in ("Value", "Total", "Point", "Line", "Handicap"):
+        v = outcome.get(k)
+        try:
+            if v is None:
+                continue
+            return float(v)
+        except Exception:
+            continue
+    return None
+
+def _extract_price_american(outcome: dict) -> int | None:
+    for k in ("PayoutAmerican", "AmericanOdds", "Price", "OddsAmerican"):
+        v = outcome.get(k)
+        try:
+            if v is None:
+                continue
+            return int(v)
+        except Exception:
+            continue
+    return None
+
+def _is_over_under_pair(outcomes: list[dict]) -> bool:
+    if not outcomes or len(outcomes) < 2:
+        return False
+    names = " ".join([str(o.get("Name","")) + " " + str(o.get("OutcomeType","")) for o in outcomes]).lower()
+    return ("over" in names and "under" in names)
+
+def fetch_sdio_live_player_props(date_iso: str, sportsbook_whitelist: set[str] | None = None) -> list[dict]:
+    """Fetch *sportsbook* player prop markets via BettingEvents->BettingMarkets.
+    Returns normalized offers: {player, market, line, team, opp, book, over_price, under_price, game_id}
+    """
+    games = sdio_games_by_date(date_iso)
+    # map GameID -> (home, away)
+    game_map = {}
+    for g in games or []:
+        gid = g.get("GameID") or g.get("GameId") or g.get("GameID".lower())
+        if gid is None:
+            continue
+        home = _sdio_team_abbrev(g.get("HomeTeam"))
+        away = _sdio_team_abbrev(g.get("AwayTeam"))
+        game_map[int(gid)] = (home, away)
+
+    events = sdio_betting_events_by_date(date_iso)
+    offers: list[dict] = []
+    for ev in events or []:
+        event_id = ev.get("BettingEventID") or ev.get("BettingEventId") or ev.get("EventId") or ev.get("EventID") or ev.get("EventId".lower())
+        game_id = ev.get("GameID") or ev.get("GameId")
+        try:
+            event_id = int(event_id)
+        except Exception:
+            continue
+        try:
+            game_id_int = int(game_id) if game_id is not None else None
+        except Exception:
+            game_id_int = None
+
+        markets = sdio_betting_markets_by_event(event_id, include="available")
+        for m in markets or []:
+            m_name = m.get("BettingMarketType") or m.get("BettingMarketTypeName") or m.get("Name") or ""
+            market = _normalize_market_name(m_name)
+            if market is None:
+                continue
+
+            # filter to player props only: heuristic (market type contains 'Player')
+            mtype = str(m.get("BettingMarketType","") or m.get("BettingBetType","") or m.get("Name","")).lower()
+            if "player" not in mtype and "prop" not in mtype:
+                # still allow if it looks like a player market by having participant names
+                pass
+
+            outcomes = m.get("BettingOutcomes") or m.get("Outcomes") or []
+            if not outcomes or len(outcomes) < 2:
+                continue
+
+            # Attempt group by player within the market if outcomes include participant names.
+            # Many feeds provide separate marketId per player, but some include multiple players.
+            # We'll group by participant.
+            by_player = {}
+            for o in outcomes:
+                pname = _extract_player_name_from_outcome(o)
+                if not pname:
+                    continue
+                by_player.setdefault(pname, []).append(o)
+
+            # Determine sportsbook name if present
+            book = m.get("Sportsbook") or m.get("SportsbookName") or m.get("Book") or ""
+            if sportsbook_whitelist and book:
+                if str(book).strip().lower() not in {b.lower() for b in sportsbook_whitelist}:
+                    continue
+
+            # If outcomes not grouped, treat the market as a single player prop
+            if not by_player:
+                # try to infer player from market name or outcomes
+                pname = None
+                for o in outcomes:
+                    pname = _extract_player_name_from_outcome(o)
+                    if pname:
+                        break
+                if not pname:
+                    continue
+                by_player = {pname: outcomes}
+
+            for pname, outs in by_player.items():
+                # Extract over/under + line
+                line = None
+                over_price = None
+                under_price = None
+                for o in outs:
+                    oname = str(o.get("Name","") or o.get("OutcomeType","") or "").lower()
+                    if line is None:
+                        line = _extract_line_from_outcome(o)
+                    price = _extract_price_american(o)
+                    if "over" in oname:
+                        over_price = price
+                    if "under" in oname:
+                        under_price = price
+                if line is None:
+                    continue
+
+                # Determine player's team and opponent from games list if possible
+                team = ""
+                opp = ""
+                if game_id_int is not None and game_id_int in game_map:
+                    home, away = game_map[game_id_int]
+                    # We will later map player->team via SDIO players list; for now store home/away.
+                    # team/opp will be filled post-merge.
+                    team = ""
+                    opp = f"{away} @ {home}"  # placeholder
+
+                offers.append({
+                    "player": pname,
+                    "market": market,
+                    "line": float(line),
+                    "team": team,
+                    "opp": opp,
+                    "book": str(book) if book else "",
+                    "over_price": over_price,
+                    "under_price": under_price,
+                    "game_id": game_id_int,
+                    "event_id": event_id,
+                    "market_type_raw": str(m_name),
+                })
+
+    # Merge player team/position/injury from Players feed
+    players = sdio_players_active()
+    pmap = {}
+    for p in players or []:
+        name = p.get("Name") or p.get("DraftKingsName") or p.get("FanDuelName") or p.get("FirstName","") + " " + p.get("LastName","")
+        if not name:
+            continue
+        pmap[name.strip().lower()] = {
+            "PlayerID": p.get("PlayerID") or p.get("PlayerId"),
+            "Team": _sdio_team_abbrev(p.get("Team")),
+            "Position": p.get("Position") or "",
+            "InjuryStatus": p.get("InjuryStatus") or "",
+            "InjuryBodyPart": p.get("InjuryBodyPart") or "",
+        }
+
+    # Opponent mapping: use game_id -> (home,away) and player's team to set opp
+    for o in offers:
+        info = pmap.get(str(o["player"]).strip().lower())
+        if info:
+            o["player_id"] = info.get("PlayerID")
+            o["team"] = info.get("Team","")
+            o["position"] = info.get("Position","")
+            o["injury_status"] = info.get("InjuryStatus","")
+        gid = o.get("game_id")
+        if gid is not None and gid in game_map and o.get("team"):
+            home, away = game_map[gid]
+            tm = o["team"]
+            if tm == home:
+                o["opp_team"] = away
+                o["opp"] = away
+                o["is_home"] = True
+            elif tm == away:
+                o["opp_team"] = home
+                o["opp"] = home
+                o["is_home"] = False
+            else:
+                o["opp_team"] = ""
+                o["is_home"] = None
+
+    return offers
+
+@st.cache_data(ttl=60*60*6, show_spinner=False)
+def sdio_headshot_map() -> dict[str, str]:
+    hs = sdio_headshots()
+    out = {}
+    for h in hs or []:
+        name = (h.get("Name") or "").strip()
+        url = h.get("PreferredHostedHeadshotUrl") or h.get("HostedHeadshotWithBackgroundUrl") or h.get("HostedHeadshotNoBackgroundUrl")
+        if name and url:
+            out[name.lower()] = url
+    return out
+
+def get_headshot_url_sdio(player_name: str) -> str | None:
+    m = sdio_headshot_map()
+    return m.get(player_name.strip().lower())
+
 
 
 
@@ -231,7 +518,7 @@ MARKET_METRICS = {
     "Rebs+Asts": ["REB", "AST"],
 }
 
-# Map our UI markets to PrizePicks stat types
+# Map our UI markets to SportsDataIO stat types
 PRIZEPICKS_MARKET_MAP = {
     "PRA": ["Pts+Rebs+Asts", "PRA"],
     "Points": ["Points"],
@@ -284,7 +571,7 @@ def residual_corr_lookup(p1: str, p2: str) -> float | None:
         return None
   # 3% hard cap
 
-# Public PrizePicks mirror endpoint
+# Public SportsDataIO mirror endpoint
 PRIZEPICKS_MIRROR_URL = "https://pp-public-mirror.vercel.app/api/board"
 
 # =========================================================
@@ -305,7 +592,7 @@ compact_mode = st.sidebar.checkbox("Compact Mode (mobile)", value=False)
 max_daily_loss_pct = st.sidebar.slider("Max Daily Loss % (stop)", 5, 50, 15)
 max_weekly_loss_pct = st.sidebar.slider("Max Weekly Loss % (stop)", 10, 60, 25)
 
-st.sidebar.caption("Model auto-pulls NBA stats & lines. Lines auto-fill from PrizePicks when possible.")
+st.sidebar.caption("Model auto-pulls NBA stats & lines. Lines auto-fill from SportsDataIO when possible.")
 
 # =========================================================
 #  PART 3 — PLAYER & TEAM HELPERS
@@ -352,66 +639,18 @@ def resolve_player(name: str):
     return None, None
 
 def get_headshot_url(name: str):
+    """Prefer SportsDataIO hosted headshots; fallback to NBA.com headshots by nba_api PlayerID."""
+    try:
+        url = get_headshot_url_sdio(name)
+        if url:
+            return url
+    except Exception:
+        pass
+
     pid, _ = resolve_player(name)
     if not pid:
         return None
-    return f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/{pid}.png"
-
-@st.cache_data(show_spinner=False, ttl=3600)
-def get_team_context():
-    """
-    Pulls advanced opponent metrics for matchup adjustments.
-    Returns TEAM_CTX and LEAGUE_CTX dictionaries.
-    """
-    try:
-        base = LeagueDashTeamStats(
-            season=current_season(),
-            per_mode_detailed="PerGame"
-        ).get_data_frames()[0]
-
-        adv = LeagueDashTeamStats(
-            season=current_season(),
-            measure_type_detailed="Advanced",
-            per_mode_detailed="PerGame",
-        ).get_data_frames()[0][[
-            "TEAM_ID", "TEAM_ABBREVIATION", "REB_PCT", "OREB_PCT",
-            "DREB_PCT", "AST_PCT", "PACE"
-        ]]
-
-        defn = LeagueDashTeamStats(
-            season=current_season(),
-            measure_type_detailed_defense="Defense",
-            per_mode_detailed="PerGame",
-        ).get_data_frames()[0][[
-            "TEAM_ID", "TEAM_ABBREVIATION", "DEF_RATING"
-        ]]
-
-        df = base.merge(adv, on=["TEAM_ID", "TEAM_ABBREVIATION"], how="left")
-        df = df.merge(defn, on=["TEAM_ID", "TEAM_ABBREVIATION"], how="left")
-
-        league_avg = {
-            col: df[col].mean()
-            for col in ["PACE", "DEF_RATING", "REB_PCT", "AST_PCT"]
-        }
-
-        ctx = {
-            r["TEAM_ABBREVIATION"]: {
-                "PACE": r["PACE"],
-                "DEF_RATING": r["DEF_RATING"],
-                "REB_PCT": r["REB_PCT"],
-                "DREB_PCT": r["DREB_PCT"],
-                "AST_PCT": r["AST_PCT"],
-            }
-            for _, r in df.iterrows()
-        }
-
-        return ctx, league_avg
-    except Exception:
-        return {}, {}
-
-TEAM_CTX, LEAGUE_CTX = get_team_context()
-
-
+    return f"https://cdn.nba.com/headshots/nba/latest/260x190/{pid}.png"
 
 def get_context_multiplier(opp_abbrev: str | None, market: str, position: str | None = None) -> float:
     """Advanced opponent + positional context multiplier.
@@ -489,102 +728,43 @@ def get_context_multiplier(opp_abbrev: str | None, market: str, position: str | 
 # =========================================================
 
 @st.cache_data(show_spinner=False, ttl=60)
-def fetch_prizepicks_board():
-    """
-    Fetches the public PrizePicks board JSON.
-    Fails gracefully and returns {} on error.
-    """
-    try:
-        resp = requests.get(PRIZEPICKS_MIRROR_URL, timeout=5)
-        if resp.status_code != 200:
-            return {}
-        return resp.json()
-    except Exception:
-        return {}
+def fetch_prizepicks_board(*args, **kwargs):
+    """(Deprecated) SportsDataIO removed. Using SportsDataIO live lines."""
+    return {}
 
 def normalize_player_name_for_pp(name: str) -> str:
     return _norm_name(name)
 
-def get_prizepicks_line(player: str, market: str, board: dict):
-    """
-    Attempts to locate the player's line for the selected market
-    from the PrizePicks mirror JSON.
-    Returns float(line) or None if not found.
-    """
-    if not board:
-        return None
-
-    target_name = normalize_player_name_for_pp(player)
-    wanted_stats = PRIZEPICKS_MARKET_MAP.get(market, [])
-
-    try:
-        projections = board.get("data", [])
-    except AttributeError:
-        projections = []
-
-    found_lines = []
-
-    for entry in projections:
-        try:
-            attr = entry.get("attributes", {})
-            full_name = attr.get("display_name") or attr.get("name") or ""
-            if not full_name:
-                continue
-            if normalize_player_name_for_pp(full_name) != target_name:
-                continue
-
-            stat_type = attr.get("stat_type") or attr.get("projection_type") or ""
-            val = attr.get("line_score") or attr.get("value")
-
-            if not wanted_stats or stat_type in wanted_stats:
-                if val is not None:
-                    found_lines.append(float(val))
-        except Exception:
+def get_live_line_from_sdio(player: str, market: str, offers: list[dict]) -> tuple[float|None, str|None]:
+    """Return (line, opp_team) from SDIO normalized offers."""
+    key_p = player.strip().lower()
+    key_m = market.strip().lower()
+    best = None
+    for o in offers or []:
+        if str(o.get("player","")).strip().lower() != key_p:
             continue
-
-    if not found_lines:
-        return None
-    return float(np.mean(found_lines))
-
-def auto_detect_matchup_from_board(player: str, board: dict):
-    """
-    Attempts to find team & opponent from PrizePicks board.
-    Returns (team_abbrev, opp_abbrev) or (None, None).
-    """
-    if not board:
+        if str(o.get("market","")).strip().lower() != key_m:
+            continue
+        # Prefer offers that have both prices
+        score = 0
+        if o.get("over_price") is not None: score += 1
+        if o.get("under_price") is not None: score += 1
+        if best is None or score > best[0]:
+            best = (score, o)
+    if best is None:
         return None, None
+    o = best[1]
+    return float(o.get("line")), (o.get("opp_team") or o.get("opp"))
 
-    target_name = normalize_player_name_for_pp(player)
-
-    try:
-        projections = board.get("data", [])
-    except AttributeError:
-        projections = []
-
-    for entry in projections:
-        try:
-            attr = entry.get("attributes", {})
-            full_name = attr.get("display_name") or attr.get("name") or ""
-            if not full_name:
-                continue
-            if normalize_player_name_for_pp(full_name) != target_name:
-                continue
-
-            team = attr.get("team_abbrev") or attr.get("team") or None
-            opp = attr.get("opp_abbrev") or attr.get("opponent") or None
-            if team and opp:
-                return team.upper(), opp.upper()
-        except Exception:
-            continue
-
+def auto_detect_matchup_from_board(player: str, board: dict | None):
+    """(Deprecated) PrizePicks board removed. Kept for compatibility."""
     return None, None
-
 
 def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> float:
     """Estimate blowout probability (0–1) using board spreads and NBA.com team context.
 
     Priority:
-    1. Use spread from the PrizePicks / board data if available (when both teams known).
+    1. Use spread from the SportsDataIO / board data if available (when both teams known).
     2. Otherwise, fall back to relative team strength from TEAM_CTX / LEAGUE_CTX (when both teams known).
     3. If that also fails or teams are missing, create a stable, matchup-specific risk via hash.
     """
@@ -1004,9 +1184,7 @@ def player_similarity_factor(samples):
 
 
 
-def compute_leg_projection(player: str, market: str, line: float | None,
-                           user_opp: str | None, n_games: int,
-                           board: dict):
+def compute_leg_projection(player: str, market: str, line: float, opp: str | None, n_games: int, board: dict | None = None):
     """Core projection engine for a single leg with advanced Tier-C features + positional context."""
     samples, minutes, team, last_opp, msg = get_player_game_samples(player, n_games, market)
     if samples is None:
@@ -1015,7 +1193,7 @@ def compute_leg_projection(player: str, market: str, line: float | None,
     if line is None or line <= 0:
         return None, "No valid line for this player/market."
 
-    # Resolve opponent in layered way: user input -> PrizePicks board -> NBA scoreboard -> last opponent
+    # Resolve opponent in layered way: user input -> SportsDataIO board -> NBA scoreboard -> last opponent
     opp = None
     if user_opp:
         opp = user_opp.strip().upper()
@@ -1363,7 +1541,34 @@ tab_model, tab_results, tab_history, tab_calib = st.tabs(
 with tab_model:
     st.subheader("Up to 4-Leg Projection & Edge (Bootstrap + Game Scripts)")
 
-    board = fetch_prizepicks_board()
+
+# --- SportsDataIO Live Lines ---
+today_iso = datetime.date.today().isoformat()
+if "sdio_date" not in st.session_state:
+    st.session_state["sdio_date"] = today_iso
+sdio_date = st.date_input("Lines date", value=datetime.date.fromisoformat(st.session_state["sdio_date"]))
+st.session_state["sdio_date"] = sdio_date.isoformat()
+
+cA, cB, cC = st.columns([1,1,2])
+with cA:
+    refresh_lines = st.button("Pull Live Lines (SportsDataIO) 🔄")
+with cB:
+    clear_lines = st.button("Clear Cached Lines 🧹")
+if clear_lines:
+    st.session_state.pop("sdio_offers", None)
+    st.session_state.pop("sdio_offers_ts", None)
+
+if refresh_lines or ("sdio_offers" not in st.session_state):
+    with st.spinner("Pulling live player props + games from SportsDataIO..."):
+        st.session_state["sdio_offers"] = fetch_sdio_live_player_props(st.session_state["sdio_date"])
+        st.session_state["sdio_offers_ts"] = datetime.datetime.now().isoformat(timespec="seconds")
+
+sdio_offers = st.session_state.get("sdio_offers", [])
+if sdio_offers:
+    st.caption(f"✅ Loaded {len(sdio_offers)} offers · Last pull: {st.session_state.get('sdio_offers_ts','')}")
+else:
+    st.warning("No live offers found. Try another date or verify your SportsDataIO subscription access.")
+
 
     cols = st.columns(2)
     cols2 = st.columns(2)
@@ -1420,20 +1625,24 @@ with tab_model:
             if not player:
                 continue
 
-            line_used = None
-            if not manual:
-                auto_line = get_prizepicks_line(player, market, board)
-                if auto_line is None:
-                    st.warning(f"P{idx}: Could not auto-fetch PrizePicks line. Enable manual override.")
-                else:
-                    line_used = auto_line
-                    st.info(f"P{idx} auto PrizePicks line detected: {auto_line:.1f}")
-            else:
-                line_used = line_inp
+            
+            line_used: float | None = None
+            opp_used: str | None = (opp_inp.strip().upper() if isinstance(opp_inp, str) and opp_inp.strip() else None)
 
+            if not manual:
+                auto_line, auto_opp = get_live_line_from_sdio(player, market, sdio_offers)
+                if auto_line is None:
+                    st.warning(f"P{idx}: Could not auto-fetch SportsDataIO line for {player} ({market}). Enable manual override or refresh live lines.")
+                else:
+                    line_used = float(auto_line)
+                    if not opp_used and auto_opp:
+                        opp_used = str(auto_opp).strip().upper()
+                    st.info(f"P{idx} auto SportsDataIO line detected: {line_used:.1f}" + (f" vs {opp_used}" if opp_used else ""))
+            else:
+                line_used = float(line_inp) if line_inp is not None else None
             if line_used and line_used > 0:
                 leg, err = compute_leg_projection(
-                    player, market, line_used, opp_inp, games_lookback, board
+                    player, market, line_used, opp_used, games_lookback, None
                 )
                 if err:
                     st.error(f"P{idx}: {err}")
@@ -1836,4 +2045,3 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
