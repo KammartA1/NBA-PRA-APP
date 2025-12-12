@@ -155,103 +155,126 @@ def _extract_price_american(outcome: dict) -> int | None:
 
 @st.cache_data(ttl=60*10, show_spinner=False)
 def fetch_sdio_offers(date_iso: str) -> list[dict]:
-    games = sdio_games_by_date(date_iso)
-    game_map = {}
-    for g in games or []:
-        gid = g.get("GameID") or g.get("GameId")
-        if gid is None:
-            continue
-        game_map[int(gid)] = (_sdio_team(g.get("HomeTeam")), _sdio_team(g.get("AwayTeam")))
+    """Fetch SportsDataIO offers for the given date.
 
-    players = sdio_players()
-    pmap = {}
-    for p in players or []:
-        name = (p.get("Name") or p.get("DraftKingsName") or p.get("FanDuelName") or "").strip()
-        if not name:
-            continue
-        pmap[name.lower()] = {
-            "PlayerID": p.get("PlayerID") or p.get("PlayerId"),
-            "Team": _sdio_team(p.get("Team")),
-            "Position": p.get("Position") or "",
-            "InjuryStatus": p.get("InjuryStatus") or "",
-        }
-
-    events = sdio_betting_events_by_date(date_iso)
+    IMPORTANT: SportsDataIO Odds objects often encode the *stat* in BettingBetType (e.g., 'Points', 'Rebounds'),
+    while BettingMarketType can be generic like 'Player Prop'. We normalize using BettingBetType first.
+    """
     offers: list[dict] = []
-    for ev in events or []:
-        event_id = ev.get("BettingEventID") or ev.get("BettingEventId") or ev.get("EventId") or ev.get("EventID")
-        game_id = ev.get("GameID") or ev.get("GameId")
-        try:
-            event_id = int(event_id)
-        except Exception:
+
+    events = sdio_betting_events_by_date(date_iso) or []
+    if not events:
+        return offers
+
+    # Map games for opponent inference
+    games = sdio_games_by_date(date_iso) or []
+    game_map = {}
+    for g in games:
+        gid = g.get("GameID") or g.get("GameId")
+        home = _sdio_team(g.get("HomeTeam"))
+        away = _sdio_team(g.get("AwayTeam"))
+        if gid is not None:
+            game_map[int(gid)] = {"home": home, "away": away}
+
+    for ev in events:
+        ev_id = ev.get("BettingEventID") or ev.get("BettingEventId") or ev.get("EventID") or ev.get("EventId")
+        if ev_id is None:
             continue
+
+        # Try to connect BettingEvent -> GameID if present
+        game_id = ev.get("GameID") or ev.get("GameId") or ev.get("GlobalGameID") or ev.get("GlobalGameId")
         try:
-            game_id_int = int(game_id) if game_id is not None else None
+            game_id = int(game_id) if game_id is not None else None
         except Exception:
-            game_id_int = None
+            game_id = None
 
-        markets = sdio_betting_markets_by_event(event_id, include="available")
-        for m in markets or []:
-            raw_name = m.get("BettingMarketType") or m.get("BettingMarketTypeName") or m.get("Name") or ""
-            market = _normalize_market_name(raw_name)
-            if market is None:
-                continue
-            outcomes = m.get("BettingOutcomes") or m.get("Outcomes") or []
-            if not outcomes or len(outcomes) < 2:
-                continue
+        try:
+            markets = sdio_betting_markets_by_event(int(ev_id), include="available") or []
+        except Exception:
+            markets = []
 
-            by_player = {}
-            for o in outcomes:
-                pname = _extract_player_name(o)
-                if pname:
-                    by_player.setdefault(pname, []).append(o)
-            if not by_player:
+        for mk in markets:
+            # Determine stat bet type (Points/Rebounds/etc.)
+            bet_type = mk.get("BettingBetType") or mk.get("BettingBetTypeName") or mk.get("BetType") or mk.get("Name") or ""
+            market_type = mk.get("BettingMarketType") or mk.get("BettingMarketTypeName") or ""
+
+            stat_norm = _normalize_market_name(bet_type) or _normalize_market_name(market_type)
+            if stat_norm is None:
+                # skip non-supported markets (totals/spreads/etc.)
                 continue
 
-            book = str(m.get("Sportsbook") or m.get("SportsbookName") or m.get("Book") or "").strip()
+            # sportsbook/book
+            book = mk.get("Sportsbook") or mk.get("SportsbookName") or mk.get("Book") or mk.get("Provider") or "SDIO"
 
-            for pname, outs in by_player.items():
-                line = None
-                over_price = None
-                under_price = None
-                for o in outs:
-                    if line is None:
-                        line = _extract_line(o)
-                    nm = str(o.get("Name","") or o.get("OutcomeType","") or "").lower()
-                    price = _extract_price_american(o)
-                    if "over" in nm:
-                        over_price = price
-                    elif "under" in nm:
-                        under_price = price
-                if line is None:
+            outs = mk.get("BettingOutcomes") or mk.get("Outcomes") or []
+            if not outs:
+                continue
+
+            # Some markets return multiple players in a single market; others are per-player.
+            for oc in outs:
+                pname = _extract_player_name(oc)
+                if not pname:
                     continue
 
-                info = pmap.get(pname.strip().lower(), {})
-                team = info.get("Team","")
-                pos = info.get("Position","")
-                pid = info.get("PlayerID")
-                inj = info.get("InjuryStatus","")
+                # Line value
+                line_val = _extract_line_value(oc)
+                if line_val is None:
+                    # Some schemas store line on market
+                    line_val = mk.get("Value") or mk.get("BettingMarketTypeValue") or mk.get("BettingBetTypeValue")
+                try:
+                    line_val = float(line_val) if line_val is not None else None
+                except Exception:
+                    line_val = None
+                if line_val is None:
+                    continue
 
-                opp_team = ""
-                if game_id_int is not None and game_id_int in game_map and team:
-                    home, away = game_map[game_id_int]
-                    opp_team = away if team == home else (home if team == away else "")
+                # Outcome type: Over/Under
+                otype = str(oc.get("BettingOutcomeType") or oc.get("OutcomeType") or oc.get("Type") or "").strip().lower()
+                price = oc.get("PayoutAmerican") or oc.get("AmericanOdds") or oc.get("OddsAmerican") or oc.get("Price")
+                try:
+                    price = int(price) if price is not None else None
+                except Exception:
+                    price = None
 
-                offers.append({
+                # Team + opponent inference
+                team = _sdio_team(oc.get("Team") or oc.get("TeamAbbr") or oc.get("TeamAbbreviation") or mk.get("Team") or "")
+                opp = None
+                if game_id is not None and game_id in game_map and team:
+                    home = game_map[game_id]["home"]
+                    away = game_map[game_id]["away"]
+                    if team == home:
+                        opp = away
+                    elif team == away:
+                        opp = home
+
+                # Normalize name "Last, First" -> "First Last"
+                if "," in pname:
+                    parts = [p.strip() for p in pname.split(",") if p.strip()]
+                    if len(parts) >= 2:
+                        pname = parts[1] + " " + parts[0]
+
+                row = {
                     "player": pname,
-                    "player_id": pid,
-                    "team": team,
-                    "position": pos,
-                    "injury_status": inj,
-                    "market": market,
-                    "line": float(line),
-                    "opp_team": opp_team,
-                    "game_id": game_id_int,
-                    "event_id": event_id,
-                    "book": book,
-                    "over_price": over_price,
-                    "under_price": under_price,
-                })
+                    "market": stat_norm,
+                    "line": line_val,
+                    "book": str(book),
+                    "game_id": game_id,
+                    "team": team or None,
+                    "opp_team": opp,
+                    "over_price": None,
+                    "under_price": None,
+                }
+
+                if "over" in otype:
+                    row["over_price"] = price
+                elif "under" in otype:
+                    row["under_price"] = price
+                else:
+                    # If outcome type not labeled, treat as over
+                    row["over_price"] = price
+
+                offers.append(row)
+
     return offers
 
 @st.cache_data(ttl=60*60*6, show_spinner=False)
@@ -1657,6 +1680,25 @@ with st.expander("✅ SportsDataIO Connection Test", expanded=False):
             st.session_state.pop(k, None)
         st.success("Cleared cached offers. Click Pull Live Lines again.")
     cols = st.columns(2)
+
+
+with st.expander("🔎 Offer Search (Why lines aren't matching)", expanded=False):
+    st.caption("Search the cached SDIO offers to confirm the player + market exist.")
+    if "sdio_offers" in st.session_state and st.session_state.get("sdio_offers"):
+        offers_df = pd.DataFrame(st.session_state["sdio_offers"])
+        st.write("Offers cached:", len(offers_df))
+        q_player = st.text_input("Search player contains", value="")
+        q_market = st.selectbox("Market filter", ["(any)", "Points", "Rebounds", "Assists", "PRA", "Rebs+Asts"], index=0)
+        df2 = offers_df.copy()
+        if q_player.strip():
+            df2 = df2[df2["player"].astype(str).str.contains(q_player.strip(), case=False, na=False)]
+        if q_market != "(any)":
+            df2 = df2[df2["market"].astype(str).str.lower() == q_market.lower()]
+        st.dataframe(df2.head(200), use_container_width=True)
+        st.caption("If this table is empty for your player+market, SDIO simply isn't providing that line for the date/books returned.")
+    else:
+        st.warning("No offers cached yet. Click Pull Live Lines first.")
+
     cols2 = st.columns(2)
 
     leg_inputs = []
