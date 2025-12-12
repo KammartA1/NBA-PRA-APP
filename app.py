@@ -1354,31 +1354,42 @@ with tab_model:
                 if risk_note:
                     st.warning(risk_note)
 
-                st.markdown("---")
-                st.subheader("💾 Log This Bet?")
-                choice = st.radio("Did you place this bet?", ["No", "Yes"], horizontal=True)
+                
+st.markdown("---")
+st.subheader("💾 Log This Bet?")
+choice = st.radio("Did you place this bet?", ["No", "Yes"], horizontal=True)
 
-                if choice == "Yes":
-                    ensure_history()
-                    df_hist = load_history()
-                    combo_name = " + ".join([f"{leg['player']} {leg['market']}" for leg in legs])
-                    new_row = {
-                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "Player": combo_name,
-                        "Market": f"{len(legs)}-Leg Combo",
-                        "Line": 0.0,
-                        "EV": ev_combo * 100.0,
-                        "Stake": stake,
-                        "Result": "Pending",
-                        "CLV": 0.0,
-                        "KellyFrac": k_adj
-                    }
-                    df_hist = pd.concat([df_hist, pd.DataFrame([new_row])], ignore_index=True)
-                    save_history(df_hist)
-                    st.success("Bet logged to history as Pending ✅")
-                else:
-                    st.info("Bet not logged. Returning to home state.")
-                    _safe_rerun()
+col_log, col_reset = st.columns(2)
+with col_log:
+    confirm_log = st.button("Confirm Log Decision")
+with col_reset:
+    reset_home = st.button("Reset to Home")
+
+if confirm_log:
+    if choice == "Yes":
+        ensure_history()
+        df_hist = load_history()
+        combo_name = " + ".join([f"{leg['player']} {leg['market']}" for leg in legs])
+        new_row = {
+            "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "Player": combo_name,
+            "Market": f"{len(legs)}-Leg Combo",
+            "Line": 0.0,
+            "EV": ev_combo * 100.0,
+            "Stake": stake,
+            "Result": "Pending",
+            "CLV": 0.0,
+            "KellyFrac": k_adj
+        }
+        df_hist = pd.concat([df_hist, pd.DataFrame([new_row])], ignore_index=True)
+        save_history(df_hist)
+        st.success("Bet logged to history as Pending ✅")
+    else:
+        st.info("You chose not to log this bet.")
+
+if reset_home:
+    _safe_rerun()
+
 # ---------------------------------------------------------
 #  RESULTS TAB
 
@@ -1643,4 +1654,3 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
