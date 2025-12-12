@@ -420,9 +420,9 @@ def get_context_multiplier(opp_abbrev: str | None, market: str, position: str | 
     - Team-level pace & defense from TEAM_CTX / LEAGUE_CTX
     - Rebound & assist context for glass / playmaking markets
     - Positional bucket (Guard / Wing / Big) to refine matchup
+    Falls back to an opponent-specific deterministic adjustment when NBA.com context is unavailable.
     """
-    # If league context failed to load, still create opponent- and position-aware variation.
-    if not LEAGUE_CTX:
+    def _fallback_positional(opp_abbrev_inner: str | None) -> float:
         base = 1.0
         bucket = get_position_bucket(position or "")
         # Small positional bump
@@ -431,21 +431,25 @@ def get_context_multiplier(opp_abbrev: str | None, market: str, position: str | 
         elif bucket == "Big" and market in ["Rebounds", "Rebs+Asts"]:
             base *= 1.04
 
-        # Introduce a stable, opponent-specific adjustment even without TEAM_CTX
-        if opp_abbrev:
-            key = opp_abbrev.strip().upper()
+        # Introduce a stable, opponent-specific adjustment even without TEAM_CTX / LEAGUE_CTX
+        if opp_abbrev_inner:
+            key = opp_abbrev_inner.strip().upper()
             h = sum(ord(c) for c in key)  # deterministic hash
             offset = ((h % 15) - 7) / 200.0  # roughly [-0.035, +0.035]
             base *= (1.0 + offset)
 
         return float(np.clip(base, 0.90, 1.10))
 
+    # If league context failed to load, still create opponent- and position-aware variation.
+    if not LEAGUE_CTX or not TEAM_CTX:
+        return _fallback_positional(opp_abbrev)
+
     if not opp_abbrev:
-        return 1.0
+        return _fallback_positional(opp_abbrev)
 
     opp_key = opp_abbrev.strip().upper()
     if opp_key not in TEAM_CTX:
-        return 1.0
+        return _fallback_positional(opp_abbrev)
 
     opp = TEAM_CTX[opp_key]
 
@@ -580,20 +584,16 @@ def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> flo
     """Estimate blowout probability (0–1) using board spreads and NBA.com team context.
 
     Priority:
-    1. Use spread from the PrizePicks / board data if available.
-    2. Otherwise, fall back to relative team strength from TEAM_CTX / LEAGUE_CTX
-       (built from NBA.com LeagueDashTeamStats).
-    3. If that also fails, create a stable, matchup-specific risk using a hash of team/opponent.
+    1. Use spread from the PrizePicks / board data if available (when both teams known).
+    2. Otherwise, fall back to relative team strength from TEAM_CTX / LEAGUE_CTX (when both teams known).
+    3. If that also fails or teams are missing, create a stable, matchup-specific risk via hash.
     """
     base_risk = 0.05
 
-    if not team or not opp:
-        return base_risk
+    team_u = str(team).upper() if team else None
+    opp_u = str(opp).upper() if opp else None
 
-    team = str(team).upper()
-    opp = str(opp).upper()
-
-    # --- 1) Try to use board spread if available ---
+    # --- 1) Try to use board spread if both teams are known ---
     games = []
     if board:
         try:
@@ -601,36 +601,37 @@ def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> flo
         except AttributeError:
             games = []
 
-    for g in games:
-        try:
-            attr = g.get("attributes", {})
-            home = attr.get("home_team") or attr.get("home_team_abbrev")
-            away = attr.get("away_team") or attr.get("away_team_abbrev")
-            if not home or not away:
-                continue
-            teams = {str(home).upper(), str(away).upper()}
-            if team in teams and opp in teams:
-                spread = attr.get("spread")
-                if spread is None:
+    if team_u and opp_u:
+        for g in games:
+            try:
+                attr = g.get("attributes", {})
+                home = attr.get("home_team") or attr.get("home_team_abbrev")
+                away = attr.get("away_team") or attr.get("away_team_abbrev")
+                if not home or not away:
                     continue
-                s = abs(float(spread))
-                if s < 5:
-                    return 0.05
-                if s < 8:
-                    return 0.10
-                if s < 12:
-                    return 0.18
-                if s < 16:
-                    return 0.26
-                return 0.33
-        except Exception:
-            continue
+                teams = {str(home).upper(), str(away).upper()}
+                if team_u in teams and opp_u in teams:
+                    spread = attr.get("spread")
+                    if spread is None:
+                        continue
+                    s = abs(float(spread))
+                    if s < 5:
+                        return 0.05
+                    if s < 8:
+                        return 0.10
+                    if s < 12:
+                        return 0.18
+                    if s < 16:
+                        return 0.26
+                    return 0.33
+            except Exception:
+                continue
 
-    # --- 2) Use NBA.com team context as a proxy for blowout risk ---
+    # --- 2) Use NBA.com team context as a proxy for blowout risk when we know both teams ---
     try:
-        if LEAGUE_CTX and team in TEAM_CTX and opp in TEAM_CTX:
-            t = TEAM_CTX[team]
-            o = TEAM_CTX[opp]
+        if LEAGUE_CTX and TEAM_CTX and team_u and opp_u and team_u in TEAM_CTX and opp_u in TEAM_CTX:
+            t = TEAM_CTX[team_u]
+            o = TEAM_CTX[opp_u]
 
             def_gap = abs(o["DEF_RATING"] - t["DEF_RATING"]) / LEAGUE_CTX["DEF_RATING"]
             pace_avg = (t["PACE"] + o["PACE"]) / (2 * LEAGUE_CTX["PACE"])
@@ -651,9 +652,9 @@ def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> flo
         pass
 
     # --- 3) Fallback: stable, matchup-specific pseudo risk so it's not flat everywhere ---
-    key = f"{team}_{opp}"
+    key = f"{team_u or 'UNK'}_{opp_u or 'UNK'}"
     h = sum(ord(c) for c in key)
-    # Map into [0.06, 0.22]
+    # Map deterministically into [0.06, 0.22]
     return 0.06 + (h % 17) / 100.0
 # =========================================================
 #  PART 5 — MARKET BASELINE LIBRARY
@@ -1802,3 +1803,4 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
