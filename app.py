@@ -528,18 +528,28 @@ def auto_detect_matchup_from_board(player: str, board: dict):
 
 
 def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> float:
-    """Estimate blowout probability (0–1) from board spreads.
+    """Estimate blowout probability (0–1) using board spreads and NBA.com team context.
 
-    Uses game spread when available; otherwise returns a small base risk (~5%).
+    Priority:
+    1. Use spread from the PrizePicks / board data if available.
+    2. Otherwise, fall back to relative team strength from TEAM_CTX / LEAGUE_CTX
+       (built from NBA.com LeagueDashTeamStats).
     """
     base_risk = 0.05
-    if not team or not opp or not board:
+
+    if not team or not opp:
         return base_risk
 
-    try:
-        games = board.get("included", [])
-    except AttributeError:
-        games = []
+    team = str(team).upper()
+    opp = str(opp).upper()
+
+    # --- 1) Try to use board spread if available ---
+    games = []
+    if board:
+        try:
+            games = board.get("included", [])
+        except AttributeError:
+            games = []
 
     for g in games:
         try:
@@ -549,7 +559,7 @@ def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> flo
             if not home or not away:
                 continue
             teams = {str(home).upper(), str(away).upper()}
-            if team.upper() in teams and opp.upper() in teams:
+            if team in teams and opp in teams:
                 spread = attr.get("spread")
                 if spread is None:
                     continue
@@ -566,31 +576,35 @@ def estimate_blowout_risk(team: str | None, opp: str | None, board: dict) -> flo
         except Exception:
             continue
 
-    return base_risk
-
+    # --- 2) Use NBA.com team context as a proxy for blowout risk ---
     try:
-        games = board.get("included", [])
-    except AttributeError:
-        games = []
+        if LEAGUE_CTX and team in TEAM_CTX and opp in TEAM_CTX:
+            t = TEAM_CTX[team]
+            o = TEAM_CTX[opp]
 
-    for g in games:
-        try:
-            attr = g.get("attributes", {})
-            home = attr.get("home_team") or attr.get("home_team_abbrev")
-            away = attr.get("away_team") or attr.get("away_team_abbrev")
-            if not home or not away:
-                continue
-            teams = {home.upper(), away.upper()}
-            if team.upper() in teams and opp.upper() in teams:
-                spread = attr.get("spread")
-                if spread is None:
-                    continue
-                if abs(float(spread)) >= 10.0:
-                    return True
-        except Exception:
-            continue
+            # Relative defensive strength difference
+            def_gap = abs(o["DEF_RATING"] - t["DEF_RATING"]) / LEAGUE_CTX["DEF_RATING"]
 
-    return False
+            # How fast this game is relative to league
+            pace_avg = (t["PACE"] + o["PACE"]) / (2 * LEAGUE_CTX["PACE"])
+            pace_gap = abs(pace_avg - 1.0)
+
+            strength_index = def_gap + 0.25 * pace_gap
+
+            if strength_index < 0.05:
+                return 0.06
+            if strength_index < 0.10:
+                return 0.10
+            if strength_index < 0.18:
+                return 0.18
+            if strength_index < 0.26:
+                return 0.24
+            return 0.32
+    except Exception:
+        pass
+
+    # Fallback neutral risk
+    return base_risk
 
 # =========================================================
 #  PART 5 — MARKET BASELINE LIBRARY
@@ -1654,3 +1668,4 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
