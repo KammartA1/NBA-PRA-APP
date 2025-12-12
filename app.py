@@ -1253,15 +1253,48 @@ def render_leg_card(leg: dict, container, compact=False):
     vol_cv = float(leg.get("volatility_cv", 0.0))
     vol_label = leg.get("volatility_label", "Unknown")
 
+    # If upstream logic could not build a descriptive matchup, construct one here
+    if not matchup_text or matchup_text.strip().lower() in {"neutral matchup.", "neutral matchup"}:
+        pieces = []
+        # Context-driven description
+        if ctx > 1.05:
+            pieces.append("favorable context (pace/efficiency boost)")
+        elif ctx < 0.95:
+            pieces.append("tough context (slow/strong defense)")
+        else:
+            pieces.append("mostly neutral pace/defense environment")
+
+        # Blowout risk description
+        if blowout_prob >= 0.30:
+            pieces.append("high blowout risk")
+        elif blowout_prob >= 0.18:
+            pieces.append("moderate blowout risk")
+        elif blowout_prob >= 0.10:
+            pieces.append("slight blowout concern")
+        else:
+            pieces.append("low blowout risk")
+
+        # Position flavor
+        if pos_bucket == "Guard":
+            pieces.append("guard-oriented matchup")
+        elif pos_bucket == "Wing":
+            pieces.append("wing-oriented matchup")
+        elif pos_bucket == "Big":
+            pieces.append("big-oriented paint battle")
+
+        matchup_text = ", ".join(pieces).capitalize() + "."
+
     boost_emoji = " 🔋" if key_out else ""
 
     with container:
         if compact:
+            import streamlit as st
             st.markdown(
                 f"**{player}{boost_emoji}** — {market} o{line:.1f} vs {opp}  "
                 f"(p={p*100:.1f}%, ctx={ctx:.3f})"
             )
         else:
+            import streamlit as st
             # Header row with headshot + basic info
             header_cols = st.columns([1, 3])
             with header_cols[0]:
@@ -1803,3 +1836,4 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
