@@ -52,17 +52,23 @@ SDIO_BASE_STATS = "https://api.sportsdata.io/v3/nba/stats"
 SDIO_BASE_HEADSHOTS = "https://api.sportsdata.io/v3/nba/headshots"
 
 def sdio_get(url: str, params: dict | None = None, timeout: int = 30, retries: int = 3):
-    """GET helper for SportsDataIO with retries + exponential backoff (Streamlit Cloud friendly)."""
+    """GET helper for SportsDataIO with retries + exponential backoff (Streamlit Cloud friendly).
+
+    SportsDataIO commonly authenticates via `?key=YOUR_KEY` query param. We send it that way for compatibility,
+    and also include the Azure-style header as a fallback.
+    """
+    base_params = dict(params or {})
+    base_params["key"] = SDIO_API_KEY
+
     headers = {"Ocp-Apim-Subscription-Key": SDIO_API_KEY}
     last_err = None
     for attempt in range(retries):
         try:
-            r = requests.get(url, params=params or {}, headers=headers, timeout=timeout)
+            r = requests.get(url, params=base_params, headers=headers, timeout=timeout)
             r.raise_for_status()
             return r.json()
         except Exception as e:
             last_err = e
-            # backoff: 0.8s, 1.6s, 3.2s
             try:
                 import time
                 time.sleep(0.8 * (2 ** attempt))
@@ -1631,6 +1637,25 @@ with st.expander("🛠️ SportsDataIO Props Coverage Debugger (click if lines d
         st.error(f"Debugger failed: {e}")
 
 
+
+with st.expander("✅ SportsDataIO Connection Test", expanded=False):
+    st.caption("Quick sanity checks to confirm your key has access to Stats + Odds feeds.")
+    try:
+        test_games = sdio_games_by_date(st.session_state["sdio_date"])
+        st.write("GamesByDate ok ✅", f"({len(test_games)} games)")
+    except Exception as e:
+        st.error(f"GamesByDate failed: {e}")
+
+    try:
+        test_events = sdio_betting_events_by_date(st.session_state["sdio_date"])
+        st.write("BettingEventsByDate ok ✅", f"({len(test_events)} events)")
+    except Exception as e:
+        st.error(f"BettingEventsByDate failed: {e}")
+
+    if st.button("Force refresh SDIO caches 🔁"):
+        for k in ["sdio_offers","sdio_offers_ts"]:
+            st.session_state.pop(k, None)
+        st.success("Cleared cached offers. Click Pull Live Lines again.")
     cols = st.columns(2)
     cols2 = st.columns(2)
 
