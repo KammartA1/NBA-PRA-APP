@@ -11,19 +11,12 @@
 # =========================================================
 
 import os
+SDIO_API_KEY = st.secrets.get("SDIO_API_KEY") or os.getenv("SDIO_API_KEY") or "946b5ea5e7504852b4c46f7f09cbe340"
 import json
 import time
 import random
 import difflib
 from datetime import datetime, date, timedelta
-import streamlit as st
-
-# Load SportsDataIO API key.  The key can be provided via Streamlit secrets or the environment.
-SDIO_API_KEY = (
-    st.secrets.get("SDIO_API_KEY")
-    or os.getenv("SDIO_API_KEY")
-    or "946b5ea5e7504852b4c46f7f09cbe340"
-)
 
 import numpy as np
 import pandas as pd
@@ -578,7 +571,14 @@ def fetch_sdio_offers(date_iso: str) -> list[dict]:
         return None
 
     offers: list[dict] = []
-    games = sdio_get(f"{SDIO_SCORES_BASE}/GamesByDate/{date_iso}") or []
+    # Attempt to pull the list of games for the date.  If this request fails (e.g.
+    # due to an HTTP error or missing odds entitlements), return an empty
+    # list to avoid crashing the app.  This prevents uncaught HTTP errors
+    # from propagating into Streamlit's cache logic.
+    try:
+        games = sdio_get(f"{SDIO_SCORES_BASE}/GamesByDate/{date_iso}") or []
+    except Exception:
+        return []
 
     for g in games:
         game_id = g.get("GameID") or g.get("GameId")
