@@ -28,6 +28,20 @@ import requests
 from nba_api.stats.static import players as nba_players
 from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats, CommonPlayerInfo, ScoreboardV2
 
+# =========================================================
+#  THE ODDS API — CONFIG (define before UI references)
+# =========================================================
+
+ODDSAPI_SPORT_KEY = "basketball_nba"  # NBA
+ODDSAPI_REGION = "us"                # US books
+ODDSAPI_MARKETS = {
+    "Points": "player_points",
+    "Rebounds": "player_rebounds",
+    "Assists": "player_assists",
+    "PRA": "player_points_rebounds_assists",
+    "Rebs+Asts": "player_rebounds_assists",
+}
+
 
 def _safe_rerun():
     """Compatibility wrapper for Streamlit rerun across versions."""
@@ -511,17 +525,6 @@ def get_context_multiplier(opp_abbrev: str | None, market: str, position: str | 
 # =========================================================
 #  PART 4 — THE ODDS API (LIVE LINES) + MATCHUP HELPERS
 # =========================================================
-
-ODDSAPI_SPORT_KEY = "basketball_nba"
-ODDSAPI_REGION = "us"
-ODDSAPI_MARKETS = {
-    "Points": "player_points",
-    "Rebounds": "player_rebounds",
-    "Assists": "player_assists",
-    "PRA": "player_points_rebounds_assists",
-    # Optional
-    "Rebs+Asts": "player_rebounds_assists",
-}
 
 # Persist a lightweight request ledger to keep usage predictable on Streamlit Cloud.
 _ODDS_LEDGER_PATH = os.getenv("ODDS_LEDGER_PATH", ".oddsapi_usage.json")
@@ -2012,4 +2015,3 @@ st.markdown(
     "<footer style='text-align:center; margin-top:30px; color:#FFCC33; font-size:11px;'>(c) 2025 NBA Prop Quant Engine - Powered by Kamal</footer>",
     unsafe_allow_html=True,
 )
-
