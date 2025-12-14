@@ -11,6 +11,7 @@
 # =========================================================
 
 import os
+import streamlit as st  # ensure Streamlit is imported before referencing st.secrets
 SDIO_API_KEY = st.secrets.get("SDIO_API_KEY") or os.getenv("SDIO_API_KEY") or "946b5ea5e7504852b4c46f7f09cbe340"
 import json
 import time
@@ -504,7 +505,8 @@ def sdio_get(url: str, params: dict | None = None, timeout: int = 25, retries: i
                 time.sleep(0.75 * (2 ** attempt))
             except Exception:
                 pass
-    raise last_err
+    # If all attempts fail, return None instead of raising to avoid crashing.
+    return None
 
 @st.cache_data(show_spinner=False, ttl=120)
 def fetch_sdio_offers(date_iso: str) -> list[dict]:
@@ -668,10 +670,17 @@ def sdio_filter_offers_by_book(offers, book):
     return [o for o in (offers or []) if str(o.get("book") or "").strip().lower() == b]
 
 @st.cache_data(show_spinner=False, ttl=120)
-def fetch_prizepicks_board():
-    # Compatibility wrapper: keep old call sites working, but source from SportsDataIO.
+def fetch_board():
+    """
+    Retrieve the daily board of player prop offers.  This function
+    sources all props from SportsDataIO rather than PrizePicks and
+    returns a dictionary with an `offers` list and a `date` stamp.
+    """
     today = date.today().isoformat()
     return {"offers": fetch_sdio_offers(today), "date": today}
+
+# Keep an alias for backwards compatibility with older code paths.
+fetch_prizepicks_board = fetch_board
 
 def normalize_player_name_for_pp(name: str) -> str:
     return _norm_name(name)
@@ -1512,7 +1521,8 @@ tab_model, tab_results, tab_scanner, tab_history, tab_calib = st.tabs(
 with tab_model:
     st.subheader("Up to 4-Leg Projection & Edge (Bootstrap + Game Scripts)")
 
-    board = fetch_prizepicks_board()
+    # Pull the daily player prop board from SportsDataIO
+    board = fetch_board()
     offers_all = board.get("offers", []) if isinstance(board, dict) else []
     books = sdio_available_books(offers_all)
     if "sdio_book" not in st.session_state:
