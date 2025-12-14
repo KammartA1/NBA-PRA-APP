@@ -11,12 +11,19 @@
 # =========================================================
 
 import os
-SDIO_API_KEY = st.secrets.get("SDIO_API_KEY") or os.getenv("SDIO_API_KEY") or "946b5ea5e7504852b4c46f7f09cbe340"
 import json
 import time
 import random
 import difflib
 from datetime import datetime, date, timedelta
+import streamlit as st
+
+# Load SportsDataIO API key.  The key can be provided via Streamlit secrets or the environment.
+SDIO_API_KEY = (
+    st.secrets.get("SDIO_API_KEY")
+    or os.getenv("SDIO_API_KEY")
+    or "946b5ea5e7504852b4c46f7f09cbe340"
+)
 
 import numpy as np
 import pandas as pd
@@ -571,13 +578,7 @@ def fetch_sdio_offers(date_iso: str) -> list[dict]:
         return None
 
     offers: list[dict] = []
-    # Fetch the games for the date.  If the request fails (e.g., invalid key,
-    # no odds subscription, or network issue), return an empty list so that
-    # the app can continue to run gracefully instead of throwing an HTTPError.
-    try:
-        games = sdio_get(f"{SDIO_SCORES_BASE}/GamesByDate/{date_iso}") or []
-    except Exception:
-        return []
+    games = sdio_get(f"{SDIO_SCORES_BASE}/GamesByDate/{date_iso}") or []
 
     for g in games:
         game_id = g.get("GameID") or g.get("GameId")
@@ -597,7 +598,6 @@ def fetch_sdio_offers(date_iso: str) -> list[dict]:
                 params={"include": "available"},
             ) or []
         except Exception:
-            # If fetching markets fails for this game, skip it silently.
             markets = []
 
         for mk in markets:
