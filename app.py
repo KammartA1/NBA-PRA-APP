@@ -11,7 +11,6 @@
 # =========================================================
 
 import os
-SDIO_API_KEY = st.secrets.get("SDIO_API_KEY") or os.getenv("SDIO_API_KEY") or "946b5ea5e7504852b4c46f7f09cbe340"
 import json
 import time
 import random
@@ -24,6 +23,11 @@ import plotly.express as px
 import streamlit as st
 from scipy.stats import norm
 import requests
+
+# Load SportsDataIO API key.
+# ``streamlit`` must be imported before referencing st.secrets.
+# SDIO_API_KEY can be defined via Streamlit secrets or environment variable.
+SDIO_API_KEY = st.secrets.get("SDIO_API_KEY") or os.getenv("SDIO_API_KEY") or "946b5ea5e7504852b4c46f7f09cbe340"
 
 from nba_api.stats.static import players as nba_players
 from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats, CommonPlayerInfo, ScoreboardV2
