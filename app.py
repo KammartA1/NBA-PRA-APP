@@ -766,60 +766,6 @@ def infer_opponent_from_board(player_team_abbr: str, board: dict) -> str | None:
     return None
 
 
-# =========================================================
-#  NBA API HELPERS (robust wrappers)
-# =========================================================
-
-@st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
-def fetch_common_player_info(player_id: int) -> dict:
-    """Return a small, stable CommonPlayerInfo payload.
-
-    This wrapper exists because several UI components (headshots, team abbrev,
-    position) should never hard-crash the app if nba_api is rate-limited or the
-    endpoint temporarily fails.
-    """
-    if not player_id:
-        return {}
-    try:
-        df = CommonPlayerInfo(player_id=player_id).get_data_frames()[0]
-        row = df.iloc[0].to_dict() if len(df) else {}
-        team_abbr = str(row.get("TEAM_ABBREVIATION") or "").upper()
-        pos = str(row.get("POSITION") or row.get("POSITION_SHORT") or "")
-        # NBA CDN headshot pattern (works for most active players)
-        headshot = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{int(player_id)}.png"
-        return {
-            "player_id": int(player_id),
-            "team_abbr": team_abbr,
-            "team_id": row.get("TEAM_ID"),
-            "position": pos,
-            "first_name": row.get("FIRST_NAME"),
-            "last_name": row.get("LAST_NAME"),
-            "headshot": headshot,
-        }
-    except Exception:
-        return {"player_id": int(player_id)}
-
-
-def auto_detect_matchup_from_board(player_name: str, board: dict) -> tuple[str | None, str | None]:
-    """Infer (team_abbr, opponent_abbr) using nba_api team + Odds API events.
-
-    Falls back gracefully to (None, None) if anything fails.
-    """
-    try:
-        matches = nba_players.find_players_by_full_name(player_name)
-    except Exception:
-        matches = []
-    if not matches:
-        return None, None
-    pid = matches[0].get("id")
-    if not pid:
-        return None, None
-    info = fetch_common_player_info(int(pid))
-    team_abbr = (info.get("team_abbr") or "").upper() or None
-    opp = infer_opponent_from_board(team_abbr, board) if team_abbr else None
-    return team_abbr, opp
-
-
 def get_oddsapi_line(player: str, market: str, board: dict, book: str = "Consensus") -> float | None:
     """Lookup a player prop line from the flattened Odds API offers."""
     if not player or not market or not isinstance(board, dict):
@@ -2120,4 +2066,3 @@ st.markdown(
     "<footer style='text-align:center; margin-top:30px; color:#FFCC33; font-size:11px;'>(c) 2025 NBA Prop Quant Engine - Powered by Kamal</footer>",
     unsafe_allow_html=True,
 )
-
