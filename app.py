@@ -27,6 +27,7 @@ from scipy.stats import norm
 import requests
 
 from nba_api.stats.static import players as nba_players
+from nba_api.stats.static import teams as nba_teams
 from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats, CommonPlayerInfo, ScoreboardV2
 
 # Global lock used to serialize API pulls / ledger writes on Streamlit Cloud.
@@ -582,6 +583,22 @@ def oddsapi_get(url: str, params: dict | None = None, timeout: int = 25) -> tupl
         return None, {}
 
 
+
+def american_to_prob(american: float | int | None) -> float | None:
+    """Convert American odds to implied probability."""
+    try:
+        if american is None:
+            return None
+        a = float(american)
+        if a == 0:
+            return None
+        if a > 0:
+            return 100.0 / (a + 100.0)
+        return (-a) / ((-a) + 100.0)
+    except Exception:
+        return None
+
+
 def _canon_player_name(name: str) -> str:
     if not name:
         return ""
@@ -596,6 +613,40 @@ def _canon_player_name(name: str) -> str:
     return n.lower()
 
 
+# --- Team name normalization for Odds API (team names) -> NBA abbreviations
+try:
+    _TEAMS = nba_teams.get_teams()
+except Exception:
+    _TEAMS = []
+_TEAM_NAME_TO_ABBR = {}
+_TEAM_ABBR_SET = set()
+for t in _TEAMS:
+    name = str(t.get('full_name') or '').strip().lower()
+    abbr = str(t.get('abbreviation') or '').strip().upper()
+    if name and abbr:
+        _TEAM_NAME_TO_ABBR[name] = abbr
+        _TEAM_ABBR_SET.add(abbr)
+
+# Common aliases seen in some feeds
+_TEAM_NAME_ALIASES = {
+    'la clippers': 'LAC',
+    'los angeles clippers': 'LAC',
+    'la lakers': 'LAL',
+    'los angeles lakers': 'LAL',
+}
+
+def team_name_to_abbrev(name_or_abbrev: str) -> str | None:
+    if not name_or_abbrev:
+        return None
+    s = str(name_or_abbrev).strip()
+    if len(s) in (3,4) and s.upper() in _TEAM_ABBR_SET:
+        return s.upper()
+    key = s.lower()
+    if key in _TEAM_NAME_ALIASES:
+        return _TEAM_NAME_ALIASES[key]
+    return _TEAM_NAME_TO_ABBR.get(key)
+
+
 def _median(vals: list[float]) -> float | None:
     try:
         v = [float(x) for x in vals if x is not None]
@@ -606,6 +657,49 @@ def _median(vals: list[float]) -> float | None:
         return v[mid] if len(v) % 2 == 1 else 0.5 * (v[mid - 1] + v[mid])
     except Exception:
         return None
+
+from zoneinfo import ZoneInfo
+
+_US_TZ_CANDIDATES = [
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+]
+
+def _parse_iso_utc(dt_str: str):
+    try:
+        if not dt_str:
+            return None
+        ds = str(dt_str).replace("Z", "+00:00")
+        # fromisoformat can parse offsets; normalize to UTC tz-aware
+        return __import__('datetime').datetime.fromisoformat(ds).astimezone(ZoneInfo("UTC"))
+    except Exception:
+        return None
+
+def _event_matches_target_date(commence_time_iso: str, target_date_iso: str) -> bool:
+    """Match an Odds API event to a local calendar date.
+
+    The Odds API returns commence_time in ISO UTC; for US evening games,
+    the UTC date can be the next day. We treat an event as matching if its
+    local date in any major US timezone equals target_date_iso.
+    """
+    try:
+        if not commence_time_iso or not target_date_iso:
+            return False
+        dt_utc = _parse_iso_utc(commence_time_iso)
+        if dt_utc is None:
+            return str(commence_time_iso).startswith(str(target_date_iso))
+        target = __import__('datetime').date.fromisoformat(str(target_date_iso))
+        for tz_name in _US_TZ_CANDIDATES:
+            try:
+                if dt_utc.astimezone(ZoneInfo(tz_name)).date() == target:
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
 
 
 @st.cache_data(show_spinner=False, ttl=180)
@@ -643,17 +737,18 @@ def fetch_oddsapi_board(
         return {"events": [], "offers": [], "meta": {"error": "No events returned", "headers": hdrs_events}, "books": []}
 
     # Filter events to keep credit usage predictable.
-    # - If target_date_iso is provided, only query that date.
-    # - Otherwise, default to today + tomorrow.
+    #
+    # Key fix: commence_time is ISO UTC; for US evening games the UTC date can be
+    # the *next* day. We match by local calendar date across major US timezones.
     if target_date_iso:
-        wanted = {str(target_date_iso)}
+        wanted_dates = [str(target_date_iso)]
     else:
-        wanted = {date.today().isoformat(), (date.today() + timedelta(days=1)).isoformat()}
+        wanted_dates = [date.today().isoformat(), (date.today() + timedelta(days=1)).isoformat()]
 
     filtered = []
     for ev in events:
         ct = str(ev.get("commence_time") or "")
-        if any(ct.startswith(d) for d in wanted):
+        if any(_event_matches_target_date(ct, d) for d in wanted_dates):
             filtered.append(ev)
     events = filtered
 
@@ -672,6 +767,8 @@ def fetch_oddsapi_board(
         commence_time = ev.get("commence_time")
         home = ev.get("home_team")
         away = ev.get("away_team")
+        home_abbr = team_name_to_abbrev(home)
+        away_abbr = team_name_to_abbrev(away)
 
         odds_url = f"https://api.the-odds-api.com/v4/sports/{ODDSAPI_SPORT_KEY}/events/{event_id}/odds"
         params = {
@@ -710,11 +807,15 @@ def fetch_oddsapi_board(
                         "canon": _canon_player_name(pname),
                         "market": ui_market,
                         "line": float(point),
+                        "price": out.get("price"),
+                        "implied_prob": american_to_prob(out.get("price")),
                         "book": str(title),
                         "event_id": event_id,
                         "commence_time": commence_time,
                         "home_team": home,
                         "away_team": away,
+                        "home_abbr": home_abbr,
+                        "away_abbr": away_abbr,
                     })
 
         # Consensus per (player, market) within this event
@@ -751,18 +852,24 @@ def fetch_oddsapi_board(
     return {"events": events, "offers": offers, "meta": meta, "books": sorted(books)}
 
 
+
 def infer_opponent_from_board(player_team_abbr: str, board: dict) -> str | None:
-    """Infer opponent team abbreviation from Odds API events (home/away) using player's team abbr."""
+    """Infer opponent team abbreviation from Odds API events.
+
+    Odds API events include team *names*; we normalize to NBA abbreviations.
+    """
     if not player_team_abbr or not isinstance(board, dict):
         return None
-    t = str(player_team_abbr).upper()
+    t = str(player_team_abbr).upper().strip()
     for ev in (board.get("events") or []):
-        home = str(ev.get("home_team") or "").upper()
-        away = str(ev.get("away_team") or "").upper()
-        if t == home and away:
-            return away
-        if t == away and home:
-            return home
+        home_abbr = team_name_to_abbrev(ev.get("home_team"))
+        away_abbr = team_name_to_abbrev(ev.get("away_team"))
+        if not home_abbr or not away_abbr:
+            continue
+        if t == home_abbr:
+            return away_abbr
+        if t == away_abbr:
+            return home_abbr
     return None
 
 
@@ -2120,4 +2227,3 @@ st.markdown(
     "<footer style='text-align:center; margin-top:30px; color:#FFCC33; font-size:11px;'>(c) 2025 NBA Prop Quant Engine - Powered by Kamal</footer>",
     unsafe_allow_html=True,
 )
-
