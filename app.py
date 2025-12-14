@@ -12,6 +12,7 @@
 
 import os
 import streamlit as st
+import threading
 ODDS_API_KEY = st.secrets.get("ODDS_API_KEY") or os.getenv("ODDS_API_KEY") or "ebfee8e02dd2f143c8ef3ccf7ecca49b"
 import json
 import time
@@ -27,6 +28,9 @@ import requests
 
 from nba_api.stats.static import players as nba_players
 from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats, CommonPlayerInfo, ScoreboardV2
+
+# Global lock used to serialize API pulls / ledger writes on Streamlit Cloud.
+zip_lock = threading.Lock()
 
 # =========================================================
 #  THE ODDS API — CONFIG (define before UI references)
@@ -608,13 +612,21 @@ def _median(vals: list[float]) -> float | None:
 def fetch_oddsapi_board(
     markets_csv: str,
     max_requests_per_day: int,
+    target_date_iso: str | None = None,
 ) -> dict:
-    """Pull upcoming NBA player props from The Odds API (US region).
-    Returns a dict with:
-      - events: raw event list (subset)
-      - offers: flattened offers rows (book-level + consensus)
-      - meta: request usage headers
-      - books: list of sportsbook titles seen
+    """Pull NBA player props from The Odds API (US region).
+
+    IMPORTANT: Per The Odds API documentation, player props must be fetched
+    one event at a time using the /events/{eventId}/odds endpoint.
+
+    Args:
+        markets_csv: Comma-separated Odds API market keys.
+        max_requests_per_day: Local safety cap to avoid burning credits.
+        target_date_iso: Optional YYYY-MM-DD; if provided only events on that
+            date are queried.
+
+    Returns:
+        dict with keys: events, offers, meta, books
     """
     if not ODDS_API_KEY:
         return {"events": [], "offers": [], "meta": {"error": "Missing ODDS_API_KEY"}, "books": []}
@@ -622,39 +634,67 @@ def fetch_oddsapi_board(
     if not _oddsapi_can_request(max_requests_per_day):
         return {"events": [], "offers": [], "meta": {"error": "Daily Odds API request cap reached"}, "books": []}
 
-    url = f"https://api.the-odds-api.com/v4/sports/{ODDSAPI_SPORT_KEY}/odds"
-    params = {
-        "regions": ODDSAPI_REGION,
-        "markets": markets_csv,
-        "oddsFormat": "american",
-        "dateFormat": "iso",
-    }
-
-    data, hdrs = oddsapi_get(url, params=params)
+    # 1) Get upcoming events
+    events_url = f"https://api.the-odds-api.com/v4/sports/{ODDSAPI_SPORT_KEY}/events"
+    events, hdrs_events = oddsapi_get(events_url, params={"dateFormat": "iso"})
     _oddsapi_note_request()
 
-    if not isinstance(data, list):
-        return {"events": [], "offers": [], "meta": {"error": "No data returned", "headers": hdrs}, "books": []}
+    if not isinstance(events, list):
+        return {"events": [], "offers": [], "meta": {"error": "No events returned", "headers": hdrs_events}, "books": []}
 
-    offers = []
-    books = set()
+    # Filter events to keep credit usage predictable.
+    # - If target_date_iso is provided, only query that date.
+    # - Otherwise, default to today + tomorrow.
+    if target_date_iso:
+        wanted = {str(target_date_iso)}
+    else:
+        wanted = {date.today().isoformat(), (date.today() + timedelta(days=1)).isoformat()}
 
-    for ev in data:
+    filtered = []
+    for ev in events:
+        ct = str(ev.get("commence_time") or "")
+        if any(ct.startswith(d) for d in wanted):
+            filtered.append(ev)
+    events = filtered
+
+    offers: list[dict] = []
+    books: set[str] = set()
+    hdrs_last: dict = dict(hdrs_events or {})
+
+    # 2) For each event, fetch player props via event-odds endpoint
+    for ev in events:
+        if not _oddsapi_can_request(max_requests_per_day):
+            break
         event_id = ev.get("id")
+        if not event_id:
+            continue
+
         commence_time = ev.get("commence_time")
         home = ev.get("home_team")
         away = ev.get("away_team")
 
-        # bookmakers
-        bms = ev.get("bookmakers") or []
+        odds_url = f"https://api.the-odds-api.com/v4/sports/{ODDSAPI_SPORT_KEY}/events/{event_id}/odds"
+        params = {
+            "regions": ODDSAPI_REGION,
+            "markets": markets_csv,
+            "oddsFormat": "american",
+            "dateFormat": "iso",
+        }
+        data, hdrs = oddsapi_get(odds_url, params=params)
+        hdrs_last = dict(hdrs or hdrs_last)
+        _oddsapi_note_request()
+
+        if not isinstance(data, dict):
+            continue
+
+        bms = data.get("bookmakers") or []
         for bm in bms:
             title = bm.get("title") or bm.get("key") or "Unknown"
             books.add(str(title))
             for mk in (bm.get("markets") or []):
                 mk_key = mk.get("key")
-                # map Odds API market key to our UI market
                 ui_market = None
-                for k,v in ODDSAPI_MARKETS.items():
+                for k, v in ODDSAPI_MARKETS.items():
                     if v == mk_key:
                         ui_market = k
                         break
@@ -677,12 +717,10 @@ def fetch_oddsapi_board(
                         "away_team": away,
                     })
 
-        # Consensus offer: median line across all books per (player, market)
-        # Build from book-level offers already collected for this event
-        # (Do it per event to avoid mixing multiple games)
+        # Consensus per (player, market) within this event
         ev_rows = [o for o in offers if o.get("event_id") == event_id]
         if ev_rows:
-            by_key = {}
+            by_key: dict[tuple[str, str], list[float]] = {}
             for o in ev_rows:
                 key = (o.get("canon"), o.get("market"))
                 by_key.setdefault(key, []).append(o.get("line"))
@@ -690,8 +728,7 @@ def fetch_oddsapi_board(
                 med = _median(vals)
                 if med is None:
                     continue
-                # use the first row to pull display name and event metadata
-                sample = next((o for o in ev_rows if o.get("canon")==canon and o.get("market")==mkt), None)
+                sample = next((o for o in ev_rows if o.get("canon") == canon and o.get("market") == mkt), None)
                 if not sample:
                     continue
                 offers.append({
@@ -707,11 +744,11 @@ def fetch_oddsapi_board(
                 })
 
     meta = {
-        "headers": hdrs,
-        "requests_remaining": hdrs.get("x-requests-remaining"),
-        "requests_used": hdrs.get("x-requests-used"),
+        "headers": hdrs_last,
+        "requests_remaining": (hdrs_last or {}).get("x-requests-remaining"),
+        "requests_used": (hdrs_last or {}).get("x-requests-used"),
     }
-    return {"events": data, "offers": offers, "meta": meta, "books": sorted(books)}
+    return {"events": events, "offers": offers, "meta": meta, "books": sorted(books)}
 
 
 def infer_opponent_from_board(player_team_abbr: str, board: dict) -> str | None:
@@ -734,7 +771,17 @@ def get_oddsapi_line(player: str, market: str, board: dict, book: str = "Consens
     if not player or not market or not isinstance(board, dict):
         return None
     canon = _canon_player_name(player)
-    rows = [o for o in (board.get("offers") or []) if o.get("canon") == canon and o.get("market") == market]
+    offers = board.get("offers") or []
+    rows = [o for o in offers if o.get("canon") == canon and o.get("market") == market]
+    # Fuzzy fallback (Odds API sometimes formats names differently)
+    if not rows:
+        try:
+            candidates = sorted({o.get("canon") for o in offers if o.get("market") == market and o.get("canon")})
+            best = difflib.get_close_matches(canon, candidates, n=1, cutoff=0.88)
+            if best:
+                rows = [o for o in offers if o.get("canon") == best[0] and o.get("market") == market]
+        except Exception:
+            pass
     if not rows:
         return None
     # Prefer chosen book; fallback to consensus; then any
@@ -1818,7 +1865,11 @@ with tab_scanner:
         if st.button("Fetch Live Lines"):
             with zip_lock:
                 with st.spinner("Pulling The Odds API lines..."):
-                    st.session_state["scan_board"] = fetch_oddsapi_board(scan_markets_csv, int(max_requests_per_day))
+                    st.session_state["scan_board"] = fetch_oddsapi_board(
+                        scan_markets_csv,
+                        int(max_requests_per_day),
+                        target_date_iso=scan_iso,
+                    )
                     if isinstance(st.session_state["scan_board"], dict):
                         st.session_state["oddsapi_meta"] = st.session_state["scan_board"].get("meta", {})
 
