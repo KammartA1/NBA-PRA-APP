@@ -11,6 +11,7 @@
 # =========================================================
 
 import os
+SDIO_API_KEY = st.secrets.get("SDIO_API_KEY") or os.getenv("SDIO_API_KEY") or "946b5ea5e7504852b4c46f7f09cbe340"
 import json
 import time
 import random
@@ -490,15 +491,11 @@ def get_context_multiplier(opp_abbrev: str | None, market: str, position: str | 
 
 @st.cache_data(show_spinner=False, ttl=120)
 def sdio_get(url: str, params: dict | None = None, timeout: int = 25, retries: int = 3):
-    # SportsDataIO GET helper. Uses both query param and header.
-    SDIO_API_KEY = "946b5ea5e7504852b4c46f7f09cbe340"  # hardwired
-    base_params = dict(params or {})
-    base_params["key"] = SDIO_API_KEY
     headers = {"Ocp-Apim-Subscription-Key": SDIO_API_KEY}
     last_err = None
     for attempt in range(retries):
         try:
-            r = requests.get(url, params=base_params, headers=headers, timeout=timeout)
+            r = requests.get(url, params=params, headers=headers, timeout=timeout)
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -511,6 +508,10 @@ def sdio_get(url: str, params: dict | None = None, timeout: int = 25, retries: i
 
 @st.cache_data(show_spinner=False, ttl=120)
 def fetch_sdio_offers(date_iso: str) -> list[dict]:
+    """Pull all available player prop markets for a date via:
+    Scores -> GamesByDate (GameID), then Odds -> BettingMarketsByGameID.
+    Adds a synthetic 'Consensus' book using ConsensusOutcome when present.
+    """
     SDIO_SCORES_BASE = "https://api.sportsdata.io/v3/nba/scores/json"
     SDIO_ODDS_BASE = "https://api.sportsdata.io/v3/nba/odds/json"
 
@@ -537,9 +538,8 @@ def fetch_sdio_offers(date_iso: str) -> list[dict]:
         if not raw:
             return None
         s = str(raw).strip().lower()
-        s = s.replace("&", "and").replace("+", " plus ").replace("/", " ").replace("-", " ")
+        s = s.replace("&", "and").replace("+", " ").replace("/", " ").replace("-", " ")
         s = " ".join(s.split())
-        s = s.replace("pts", "points").replace("reb", "rebounds").replace("ast", "assists")
         if ("points" in s and "rebounds" in s and "assists" in s) or ("pra" in s):
             return "PRA"
         if ("rebounds" in s and "assists" in s) and ("points" not in s):
@@ -553,20 +553,14 @@ def fetch_sdio_offers(date_iso: str) -> list[dict]:
         return None
 
     def _extract_player_name(outcome: dict) -> str | None:
-        for k in ("Participant", "ParticipantName", "PlayerName", "Name", "Competitor", "CompetitorName"):
+        for k in ("Participant", "ParticipantName", "PlayerName", "Name"):
             v = outcome.get(k)
             if isinstance(v, str) and v.strip():
                 return v.strip()
-        part = outcome.get("Participant") if isinstance(outcome.get("Participant"), dict) else None
-        if part:
-            for k in ("Name", "ParticipantName", "PlayerName"):
-                v = part.get(k)
-                if isinstance(v, str) and v.strip():
-                    return v.strip()
         return None
 
     def _extract_line_value(obj: dict) -> float | None:
-        for k in ("Value", "BettingOutcomeValue", "BettingBetTypeValue", "BettingMarketTypeValue", "Line", "Total"):
+        for k in ("Value", "Line", "Total"):
             v = obj.get(k)
             if v is None:
                 continue
@@ -577,69 +571,69 @@ def fetch_sdio_offers(date_iso: str) -> list[dict]:
         return None
 
     offers: list[dict] = []
-    events = sdio_get(f"{SDIO_ODDS_BASE}/BettingEventsByDate/{date_iso}") or []
-    if not events:
-        return offers
-
     games = sdio_get(f"{SDIO_SCORES_BASE}/GamesByDate/{date_iso}") or []
-    game_map = {}
+
     for g in games:
-        gid = g.get("GameID") or g.get("GameId")
+        game_id = g.get("GameID") or g.get("GameId")
+        if game_id is None:
+            continue
+        try:
+            game_id = int(game_id)
+        except Exception:
+            continue
+
         home = _team(g.get("HomeTeam"))
         away = _team(g.get("AwayTeam"))
-        if gid is not None:
-            try:
-                game_map[int(gid)] = {"home": home, "away": away}
-            except Exception:
-                pass
-
-    for ev in events:
-        ev_id = ev.get("BettingEventID") or ev.get("BettingEventId") or ev.get("EventID") or ev.get("EventId")
-        if ev_id is None:
-            continue
-        game_id = ev.get("GameID") or ev.get("GameId") or ev.get("GlobalGameID") or ev.get("GlobalGameId")
-        try:
-            game_id = int(game_id) if game_id is not None else None
-        except Exception:
-            game_id = None
 
         try:
-            markets = sdio_get(f"{SDIO_ODDS_BASE}/BettingMarketsByBettingEventID/{int(ev_id)}", params={"include":"available"}) or []
+            markets = sdio_get(
+                f"{SDIO_ODDS_BASE}/BettingMarketsByGameID/{game_id}",
+                params={"include": "available"},
+            ) or []
         except Exception:
             markets = []
 
         for mk in markets:
-            bet_type = mk.get("BettingBetType") or mk.get("BettingBetTypeName") or mk.get("BetType") or mk.get("Name") or ""
-            market_type = mk.get("BettingMarketType") or mk.get("BettingMarketTypeName") or ""
-            market_norm = _normalize_market(bet_type) or _normalize_market(market_type)
+            mtype = mk.get("BettingMarketType") or mk.get("BettingMarketTypeName") or mk.get("Name") or ""
+            market_norm = _normalize_market(mtype)
             if market_norm is None:
                 continue
 
-            book = mk.get("Sportsbook") or mk.get("SportsbookName") or mk.get("Book") or mk.get("Provider") or "SDIO"
-            outs = mk.get("BettingOutcomes") or mk.get("Outcomes") or []
-            if not outs:
-                continue
+            cons = mk.get("ConsensusOutcome")
+            if isinstance(cons, dict):
+                pname = _extract_player_name(cons)
+                line_val = _extract_line_value(cons) or _extract_line_value(mk)
+                if pname and line_val is not None:
+                    team = _team(cons.get("Team") or "")
+                    opp = None
+                    if team and home and away:
+                        if team == home:
+                            opp = away
+                        elif team == away:
+                            opp = home
+                    offers.append({
+                        "player": pname,
+                        "market": market_norm,
+                        "line": float(line_val),
+                        "book": "Consensus",
+                        "team": team or None,
+                        "opp_team": opp,
+                        "canon": _canon(pname),
+                    })
 
+            outs = mk.get("BettingOutcomes") or mk.get("Outcomes") or []
             for oc in outs:
                 pname = _extract_player_name(oc)
                 if not pname:
                     continue
-                if "," in pname:
-                    parts = [p.strip() for p in pname.split(",") if p.strip()]
-                    if len(parts) >= 2:
-                        pname = parts[1] + " " + parts[0]
-
-                line_val = _extract_line_value(oc)
-                if line_val is None:
-                    line_val = _extract_line_value(mk)
+                line_val = _extract_line_value(oc) or _extract_line_value(mk)
                 if line_val is None:
                     continue
 
-                team = _team(oc.get("Team") or oc.get("TeamAbbr") or oc.get("TeamAbbreviation") or mk.get("Team") or "")
+                book = oc.get("Sportsbook") or oc.get("SportsbookName") or mk.get("Sportsbook") or mk.get("SportsbookName") or "Unknown"
+                team = _team(oc.get("Team") or "")
                 opp = None
-                if game_id is not None and game_id in game_map and team:
-                    home = game_map[game_id]["home"]
-                    away = game_map[game_id]["away"]
+                if team and home and away:
                     if team == home:
                         opp = away
                     elif team == away:
@@ -654,8 +648,8 @@ def fetch_sdio_offers(date_iso: str) -> list[dict]:
                     "opp_team": opp,
                     "canon": _canon(pname),
                 })
-    return offers
 
+    return offers
 
 def sdio_available_books(offers):
     return sorted({str(o.get("book") or "").strip() for o in (offers or []) if str(o.get("book") or "").strip()})
@@ -1515,7 +1509,7 @@ with tab_model:
     offers_all = board.get("offers", []) if isinstance(board, dict) else []
     books = sdio_available_books(offers_all)
     if "sdio_book" not in st.session_state:
-        st.session_state["sdio_book"] = "All"
+        st.session_state["sdio_book"] = "Consensus"
     selected_book = st.selectbox(
         "Sportsbook source (SportsDataIO)",
         ["All"] + books,
@@ -2053,4 +2047,3 @@ st.markdown(
     "<footer style='text-align:center; margin-top:30px; color:#FFCC33; font-size:11px;'>(c) 2025 NBA Prop Quant Engine - Powered by Kamal</footer>",
     unsafe_allow_html=True,
 )
-
