@@ -1,7 +1,7 @@
-streamlit
-pandas
-numpy
-requests
-nba_api
-plotly
-scipy
+streamlit>=1.33
+nba_api>=1.4.1
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11
+plotly>=5.18
+requests>=2.31
