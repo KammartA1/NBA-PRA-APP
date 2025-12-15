@@ -793,8 +793,12 @@ section[data-testid="stSidebar"] {
 }
 div[data-testid="stSidebarContent"] * { color: #f3f3f3; }
 /* Cards */
-.block-container { padding-top: 1.2rem; }
-/* Ensure tabs are visible above custom header/sidebar */
+.block-container { padding-top: 4rem !important; }
+/* Ensure header doesn't cover tabs */
+div[data-testid="stHeader"] {
+    z-index: 0 !important;
+}
+/* Tabs container above header */
 div[data-testid="stTabs"] {
     position: relative;
     z-index: 10 !important;
@@ -879,22 +883,42 @@ with tabs[0]:
         key="scan_dates",
         help="Select one or more dates to pull lines from. The first available line across dates will be used for each player."
     )
-    # Normalize to list of date objects
-    if isinstance(scan_dates_input, list):
-        date_list = []
+    # Normalize to list of date objects or ranges
+    # Streamlit may return a single date, a tuple (start,end) for range, or a list of dates
+    if isinstance(scan_dates_input, (list, tuple)):
+        _tmp_list = []
         for dval in scan_dates_input:
-            if hasattr(dval, "date"):
-                # datetime.date or datetime.datetime
-                date_list.append(dval.date() if hasattr(dval, "date") and not isinstance(dval, date) else dval)
+            if hasattr(dval, "date") and not isinstance(dval, date):
+                # if it's a datetime, convert to date
+                _tmp_list.append(dval.date())
             else:
-                date_list.append(dval)
+                _tmp_list.append(dval)
+        # If two dates selected, assume a range and generate inclusive sequence
+        if len(_tmp_list) == 2 and isinstance(_tmp_list[0], date) and isinstance(_tmp_list[1], date):
+            start_date = min(_tmp_list)
+            end_date = max(_tmp_list)
+            date_list = []
+            d_iter = start_date
+            while d_iter <= end_date:
+                date_list.append(d_iter)
+                d_iter = d_iter + timedelta(days=1)
+        else:
+            date_list = _tmp_list
     else:
-        date_list = [scan_dates_input]
+        # single date or value
+        if hasattr(scan_dates_input, "date") and not isinstance(scan_dates_input, date):
+            date_list = [scan_dates_input.date()]
+        else:
+            date_list = [scan_dates_input]
 
     # sportsbook dropdown
     # Use the first selected date to derive sportsbook choices
     if date_list:
-        scan_date_iso = date_list[0].isoformat()
+        _first = date_list[0]
+        if hasattr(_first, "isoformat"):
+            scan_date_iso = _first.isoformat()
+        else:
+            scan_date_iso = str(_first)
     else:
         scan_date_iso = date.today().isoformat()
     book_choices, book_err = get_sportsbook_choices(scan_date_iso)
@@ -1264,3 +1288,4 @@ with tabs[4]:
 
 # Footer
 st.caption("© 2025 NBA Prop Quant Engine — Powered by Kamal")
+
