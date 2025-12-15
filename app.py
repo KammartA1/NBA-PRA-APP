@@ -85,6 +85,24 @@ def _safe_rerun():
 def _now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
+def safe_float(x, default=None):
+    """Best-effort float coercion for UI rendering and calculations."""
+    try:
+        if x is None or (isinstance(x, str) and x.strip()==""):
+            return default
+        return float(x)
+    except Exception:
+        return default
+
+def safe_round(x, nd=2, default=None):
+    v = safe_float(x, default=None)
+    if v is None:
+        return default
+    try:
+        return round(v, nd)
+    except Exception:
+        return default
+
 def normalize_name(name: str) -> str:
     """Canonical player name normalization shared across:
        - line lookup
@@ -1212,16 +1230,16 @@ with tabs[0]:
                 if leg.get("headshot"):
                     st.image(leg["headshot"], use_container_width=True)
                 st.write(f"Line: {leg.get('line')}")
-                st.write(f"Proj: {None if leg.get('proj') is None else round(float(leg['proj']),2)}")
-                st.write(f"P(Over): {None if leg.get('p_over') is None else round(float(leg['p_over']),3)}")
-                st.write(f"Edge: {None if leg.get('edge') is None else round(float(leg['edge']),3)}")
+                st.write(f"Proj: {safe_round(leg.get('proj'),2,default=None)}")
+                st.write(f"P(Over): {safe_round(leg.get('p_over'),3,default=None)}")
+                st.write(f"Edge: {safe_round(leg.get('edge'),3,default=None)}")
                 tm = leg.get("team") or "?"
                 op = leg.get("opp") or "?"
                 st.caption(f"Matchup: {tm} vs {op}")
                 if leg.get("spread_abs") is not None:
-                    st.caption(f"Spread |abs|: {round(float(leg.get('spread_abs')),1)}")
-                st.caption(f"Ctx: {round(float(leg.get('ctx_mult',1.0)),3)} | Usage: {round(float(leg.get('usage_boost',1.0)),3)} | Blowout: {round(float(leg.get('blowout_prob',0.1)),3)}")
-                st.caption(f"Volatility: {leg.get('volatility_label','?')} (CV={round(float(leg.get('volatility_cv',0.0)),2)})")
+                    st.caption(f"Spread |abs|: {safe_round(leg.get('spread_abs'),1,default=None)}")
+                st.caption(f"Ctx: {safe_round(leg.get('ctx_mult'),3,default=None)} | Blowout: {safe_round(leg.get('blowout_prob'),3,default=None)}")
+                st.caption(f"Volatility: {leg.get('volatility_label','?')} (CV={safe_round(leg.get('volatility_cv'),2,default=None)})")
                 if leg.get("matchup_text"):
                     st.caption(leg["matchup_text"])
                 if leg.get("errors"):
@@ -1426,11 +1444,17 @@ with tabs[2]:
                 else:
                     dropped.append({"player": pname, "market": mkt, "reason": f"p_over<{min_prob:.2f}"})
 
-            out_df = pd.DataFrame(out_rows).sort_values("p_over", ascending=False).head(int(max_rows))
-            st.markdown("#### Scanner Results")
+            out_df = pd.DataFrame(out_rows)
             if out_df.empty:
-                st.warning("No legs met the threshold.")
+                st.markdown("#### Scanner Results")
+                st.warning("No legs met the threshold (or projections failed).")
             else:
+                # Defensive: older cached frames or different build paths could rename columns
+                if "p_over" not in out_df.columns and "P_over" in out_df.columns:
+                    out_df = out_df.rename(columns={"P_over":"p_over"})
+                if "p_over" in out_df.columns:
+                    out_df = out_df.sort_values("p_over", ascending=False).head(int(max_rows))
+                st.markdown("#### Scanner Results")
                 st.dataframe(out_df, use_container_width=True)
 
             with st.expander("Why legs were excluded (debug)", expanded=False):
@@ -1486,4 +1510,3 @@ with tabs[4]:
 
 # Footer
 st.caption("© 2025 NBA Prop Quant Engine — Powered by Kamal")
-
