@@ -1220,71 +1220,72 @@ with tabs[0]:
 
     run = st.button("Run Model ⚡")
 
-        if run:
-            results = []
-            warnings = []
-            tasks: list[tuple[str, str, str, float, dict | None, bool, str | None]] = []
+    if run:
+        results = []
+        warnings = []
+        tasks: list[tuple[str, str, str, float, dict | None, bool, str | None]] = []
 
-            # Build computation tasks for each configured leg
-            for tag, pname, mkt, manual, manual_line, opp_in, teammate_out in players:
-                pname = (pname or "").strip()
-                if not pname:
-                    continue
-                market_key = ODDS_MARKETS.get(mkt) or ODDS_MARKETS_OPTIONAL.get(mkt)
-                if not market_key:
-                    warnings.append(f"{tag}: Unsupported market {mkt}")
-                    continue
-                line = manual_line
-                meta = None
-                # If not manual override, fetch auto line across selected dates
-                if not manual:
-                    line_found = None
-                    ferr = None
-                    for dt in date_list:
-                        iso = dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
-                        val, m_meta, err_msg = find_player_line_from_events(pname, market_key, iso, sportsbook)
-                        if val is not None:
-                            line_found = float(val)
-                            meta = m_meta
-                            ferr = None
-                            break
-                        ferr = err_msg
-                    if line_found is None:
-                        if ferr:
-                            warnings.append(f"{tag}: Could not auto-fetch The Odds API line ({ferr}). Enable manual override.")
-                    else:
-                        line = float(line_found)
-                        st.info(f"{tag} auto The Odds API line detected: {line}")
-                # Validate line
-                if line is None or float(line) <= 0:
-                    warnings.append(f"{tag}: does not have a valid line.")
-                    continue
-                tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out), opp_in))
-            # Run projections concurrently
-            if tasks:
-                max_workers = min(8, len(tasks))
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = [executor.submit(compute_leg_projection, pname, mkt, line, meta, n_games=n_games, key_teammate_out=teammate_out) for (tag, pname, mkt, line, meta, teammate_out, opp_in) in tasks]
-                    for (tag, pname, mkt, line, meta, teammate_out, opp_in), fut in zip(tasks, futures):
-                        leg = fut.result()
-                        # Apply user-provided opponent override only for display
-                        if opp_in:
-                            leg["opp"] = opp_in.strip().upper()
-                        results.append(leg)
-            # Display warnings and results
-            if warnings:
-                for w in warnings:
-                    st.warning(w)
-            if not results:
-                st.warning("No valid legs configured.")
-            else:
-                st.session_state["last_results"] = results
-                st.success(f"Computed {len(results)} legs. See Results tab.")
-                # persist inputs
-                st.session_state["p1"], st.session_state["m1"], st.session_state["l1"], st.session_state["opp1"] = p1, m1, l1, t1
-                st.session_state["p2"], st.session_state["m2"], st.session_state["l2"], st.session_state["opp2"] = p2, m2, l2, t2
-                st.session_state["p3"], st.session_state["m3"], st.session_state["l3"], st.session_state["opp3"] = p3, m3, l3, t3
-                st.session_state["p4"], st.session_state["m4"], st.session_state["l4"], st.session_state["opp4"] = p4, m4, l4, t4
+        # Build computation tasks for each configured leg
+        for tag, pname, mkt, manual, manual_line, opp_in, teammate_out in players:
+            pname = (pname or "").strip()
+            if not pname:
+                continue
+            market_key = ODDS_MARKETS.get(mkt) or ODDS_MARKETS_OPTIONAL.get(mkt)
+            if not market_key:
+                warnings.append(f"{tag}: Unsupported market {mkt}")
+                continue
+            line = manual_line
+            meta = None
+            # If not manual override, fetch auto line across selected dates
+            if not manual:
+                line_found = None
+                ferr = None
+                for dt in date_list:
+                    iso = dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+                    val, m_meta, err_msg = find_player_line_from_events(pname, market_key, iso, sportsbook)
+                    if val is not None:
+                        line_found = float(val)
+                        meta = m_meta
+                        ferr = None
+                        break
+                    ferr = err_msg
+                if line_found is None:
+                    if ferr:
+                        warnings.append(f"{tag}: Could not auto-fetch The Odds API line ({ferr}). Enable manual override.")
+                else:
+                    line = float(line_found)
+                    st.info(f"{tag} auto The Odds API line detected: {line}")
+            # Validate line
+            if line is None or float(line) <= 0:
+                warnings.append(f"{tag}: does not have a valid line.")
+                continue
+            tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out), opp_in))
+
+        # Run projections concurrently
+        if tasks:
+            max_workers = min(8, len(tasks))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(compute_leg_projection, pname, mkt, line, meta, n_games=n_games, key_teammate_out=teammate_out) for (tag, pname, mkt, line, meta, teammate_out, opp_in) in tasks]
+                for (tag, pname, mkt, line, meta, teammate_out, opp_in), fut in zip(tasks, futures):
+                    leg = fut.result()
+                    # Apply user-provided opponent override only for display
+                    if opp_in:
+                        leg["opp"] = opp_in.strip().upper()
+                    results.append(leg)
+        # Display warnings and results
+        if warnings:
+            for w in warnings:
+                st.warning(w)
+        if not results:
+            st.warning("No valid legs configured.")
+        else:
+            st.session_state["last_results"] = results
+            st.success(f"Computed {len(results)} legs. See Results tab.")
+            # persist inputs
+            st.session_state["p1"], st.session_state["m1"], st.session_state["l1"], st.session_state["opp1"] = p1, m1, l1, t1
+            st.session_state["p2"], st.session_state["m2"], st.session_state["l2"], st.session_state["opp2"] = p2, m2, l2, t2
+            st.session_state["p3"], st.session_state["m3"], st.session_state["l3"], st.session_state["opp3"] = p3, m3, l3, t3
+            st.session_state["p4"], st.session_state["m4"], st.session_state["l4"], st.session_state["opp4"] = p4, m4, l4, t4
 
     # Logging block (doesn't throw)
     st.markdown("---")
@@ -1556,3 +1557,4 @@ with tabs[4]:
 
 # Footer
 st.caption("© 2025 NBA Prop Quant Engine — Powered by Kamal")
+
