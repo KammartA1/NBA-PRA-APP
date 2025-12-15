@@ -46,6 +46,53 @@ def safe_round(value, digits=2):
     except Exception:
         return None
 
+# ------------------------------------------------------------------
+# Player Position Resolution
+#
+# Some engines require the player's position (Guard, Wing, Big) to adjust
+# context multipliers based on opponent defensive strengths. The function
+# below resolves a player's official position using nba_api's static
+# player lookup and CommonPlayerInfo endpoint. Results are cached to
+# avoid repeated API calls during a single session. If a player's
+# position cannot be determined, an empty string is returned so that
+# downstream functions can fall back gracefully.
+
+# Cache for resolved player positions by lowercase full name
+PLAYER_POSITION_CACHE: dict[str, str] = {}
+
+def get_player_position(name: str) -> str:
+    """
+    Resolve a player's official position string (e.g. 'G', 'F-C')
+    using nba_api. Returns an empty string if not found or on error.
+
+    The result is cached per lowercase player name for efficiency.
+    """
+    key = str(name or "").strip().lower()
+    if not key:
+        return ""
+    # Return cached value if available
+    if key in PLAYER_POSITION_CACHE:
+        return PLAYER_POSITION_CACHE[key]
+    # Attempt to locate player via static lookup
+    try:
+        matches = nba_players.find_players_by_full_name(name)
+    except Exception:
+        matches = []
+    if not matches:
+        PLAYER_POSITION_CACHE[key] = ""
+        return ""
+    pid = matches[0].get("id")
+    pos = ""
+    if pid:
+        try:
+            info = CommonPlayerInfo(player_id=pid).get_data_frames()[0]
+            raw = str(info.get("POSITION", "") or info.get("POSITION_SHORT", "") or "")
+            pos = raw if raw else ""
+        except Exception:
+            pos = ""
+    PLAYER_POSITION_CACHE[key] = pos
+    return pos
+
 @st.cache_data(ttl=60*60, show_spinner=False)
 def get_season_string(today=None):
     """
