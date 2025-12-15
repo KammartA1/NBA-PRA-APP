@@ -36,6 +36,25 @@ def current_nba_season_str(d: date) -> str:
     return f"{start_year}-{str(start_year + 1)[-2:]}"
 
 
+
+@st.cache_data(ttl=60*30, show_spinner=False)
+def fetch_player_gamelog_df(player_id: int, season_str: str, n_games: int = 15) -> pd.DataFrame:
+    """
+    Robust wrapper around nba_api PlayerGameLog across nba_api versions.
+    - Tries season_nullable then season.
+    - Returns most recent n_games (already sorted by date desc in response).
+    """
+    try:
+        gl = playergamelog.PlayerGameLog(player_id=player_id, season_nullable=season_str)
+        df = gl.get_data_frames()[0]
+    except TypeError:
+        gl = playergamelog.PlayerGameLog(player_id=player_id, season=season_str)
+        df = gl.get_data_frames()[0]
+    except Exception:
+        return pd.DataFrame()
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df.head(int(max(1, n_games))).copy()
 def infer_team_opp_from_gamelog(gl: pd.DataFrame):
     """Infer team/opponent abbreviations from nba_api PlayerGameLog MATCHUP column."""
     try:
@@ -449,7 +468,7 @@ def resolve_opponent_from_odds_event(meta: dict) -> tuple[str|None, str|None]:
 def resolve_player_team_abbr_from_nba(player_id: int, game_date: date) -> str | None:
     """Best-effort: infer player's team abbreviation from most recent game log up to date."""
     try:
-        gl = playergamelog.PlayerGameLog(player_id=player_id, date_from_nullable=None, date_to_nullable=game_date.strftime("%m/%d/%Y"))
+        gl = playergamelog.PlayerGameLog(player_id=player_id, season_nullable=current_nba_season_str(game_date))
         df = gl.get_data_frames()[0]
         if df.empty:
             return None
@@ -781,7 +800,7 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
 
     # Fetch full season gamelog but keep last n_games
     try:
-        gl = playergamelog.PlayerGameLog(player_id=player_id, season_nullable=current_nba_season_str(date.today())).get_data_frames()[0]
+        gl = fetch_player_gamelog_df(player_id, current_nba_season_str(date.today()), n_games=n_games)
     except Exception as e:
         errors.append(f"NBA API gamelog error: {type(e).__name__}")
         gl = pd.DataFrame()
