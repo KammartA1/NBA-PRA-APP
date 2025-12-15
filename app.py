@@ -1,4 +1,3 @@
-
 # ============================================================
 # NBA PROP MODEL — QUANT ENGINE (The Odds API + NBA API)
 # Single-file Streamlit app
@@ -649,6 +648,111 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
         "errors": errors,
     }
 
+# ------------------------------------------------------------------
+# Correlation & Joint Probability Support
+#
+# Provide optional residual correlation lookup and rule-based player correlation
+# to estimate joint probability across multiple legs. This mirrors the legacy
+# engine while limiting dependencies (CSV file optional).
+RESID_CORR_DF: pd.DataFrame | None = None
+
+def load_residual_correlation() -> pd.DataFrame | None:
+    """Load optional residual correlation data from CSV if available.
+
+    The CSV should have columns: player1, player2, corr. Names are matched
+    case-insensitively. Returns a DataFrame or None if not found.
+    """
+    global RESID_CORR_DF
+    if RESID_CORR_DF is not None:
+        return RESID_CORR_DF
+    fname = "residual_correlation.csv"
+    if not os.path.exists(fname):
+        RESID_CORR_DF = None
+        return None
+    try:
+        df = pd.read_csv(fname)
+        for col in ["player1", "player2"]:
+            df[col] = df[col].astype(str).str.strip().str.lower()
+        RESID_CORR_DF = df
+        return df
+    except Exception:
+        RESID_CORR_DF = None
+        return None
+
+def residual_corr_lookup(p1: str, p2: str) -> float | None:
+    """Return residual correlation override between two players if CSV loaded."""
+    df = load_residual_correlation()
+    if df is None:
+        return None
+    a = str(p1).strip().lower()
+    b = str(p2).strip().lower()
+    sub = df[((df["player1"] == a) & (df["player2"] == b)) | ((df["player1"] == b) & (df["player2"] == a))]
+    if sub.empty:
+        return None
+    try:
+        return float(sub.iloc[0]["corr"])
+    except Exception:
+        return None
+
+def estimate_player_correlation(leg1: dict, leg2: dict) -> float:
+    """Estimate correlation between two legs using simple rules.
+
+    Factors:
+    - Same team baseline
+    - Market-type interactions
+    - Context multiplier similarity
+    - Blowout risk similarity
+    """
+    # Residual override
+    rc = residual_corr_lookup(leg1.get("player", ""), leg2.get("player", ""))
+    if rc is not None:
+        return float(np.clip(rc, -0.35, 0.60))
+    corr = 0.0
+    # Same-team baseline
+    if leg1.get("team") and leg2.get("team") and leg1["team"] == leg2["team"]:
+        corr += 0.18
+    # Market-type interactions
+    m1, m2 = leg1.get("market"), leg2.get("market")
+    if m1 == "Points" and m2 == "Points":
+        corr += 0.08
+    if set([m1, m2]) == {"Points", "PRA"}:
+        corr += 0.12
+    if set([m1, m2]) == {"Points", "RA"}:
+        corr += 0.04
+    # Rebounds correlation
+    if m1 in ["Rebounds", "RA"] and m2 in ["Rebounds", "RA"]:
+        corr += 0.06
+    # Assists correlation
+    if m1 in ["Assists", "RA"] and m2 in ["Assists", "RA"]:
+        corr += 0.05
+    # Context multiplier similarity
+    ctx1 = float(leg1.get("context_mult", 1.0))
+    ctx2 = float(leg2.get("context_mult", 1.0))
+    if ctx1 > 1.03 and ctx2 > 1.03:
+        corr += 0.04
+    if ctx1 < 0.97 and ctx2 < 0.97:
+        corr += 0.03
+    if (ctx1 > 1.03 and ctx2 < 0.97) or (ctx1 < 0.97 and ctx2 > 1.03):
+        corr -= 0.05
+    # Blowout risk similarity
+    b1 = float(leg1.get("blowout_prob", 0.0))
+    b2 = float(leg2.get("blowout_prob", 0.0))
+    if b1 >= 0.20 and b2 >= 0.20:
+        corr += 0.03
+    return float(np.clip(corr, -0.25, 0.40))
+
+def kelly_for_combo(p_joint: float, payout_mult: float, frac: float) -> float:
+    """Compute Kelly fraction for a multi-leg combo bet.
+    Returns a fraction of bankroll to wager.
+    """
+    if payout_mult <= 1.0:
+        return 0.0
+    b = payout_mult - 1.0
+    q = 1.0 - p_joint
+    raw = (b * p_joint - q) / b
+    raw = max(0.0, raw)
+    return float(frac * raw)
+
 # ------------------------------
 # History persistence
 # ------------------------------
@@ -690,6 +794,11 @@ section[data-testid="stSidebar"] {
 div[data-testid="stSidebarContent"] * { color: #f3f3f3; }
 /* Cards */
 .block-container { padding-top: 1.2rem; }
+/* Ensure tabs are visible above custom header/sidebar */
+div[data-testid="stTabs"] {
+    position: relative;
+    z-index: 10 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -763,10 +872,31 @@ def get_sportsbook_choices(scan_date_iso: str):
 
 with tabs[0]:
     st.markdown("### Up to 4-Leg Projection & Edge (Bootstrap + Context)")
-    scan_date = st.date_input("Lines date", value=date.today())
-    scan_date_iso = scan_date.isoformat()
+    # Allow multiple date selections so players can be mixed across slates
+    scan_dates_input = st.date_input(
+        "Lines date(s)",
+        value=[date.today()],
+        key="scan_dates",
+        help="Select one or more dates to pull lines from. The first available line across dates will be used for each player."
+    )
+    # Normalize to list of date objects
+    if isinstance(scan_dates_input, list):
+        date_list = []
+        for dval in scan_dates_input:
+            if hasattr(dval, "date"):
+                # datetime.date or datetime.datetime
+                date_list.append(dval.date() if hasattr(dval, "date") and not isinstance(dval, date) else dval)
+            else:
+                date_list.append(dval)
+    else:
+        date_list = [scan_dates_input]
 
     # sportsbook dropdown
+    # Use the first selected date to derive sportsbook choices
+    if date_list:
+        scan_date_iso = date_list[0].isoformat()
+    else:
+        scan_date_iso = date.today().isoformat()
     book_choices, book_err = get_sportsbook_choices(scan_date_iso)
     if book_err:
         st.info(book_err)
@@ -827,9 +957,23 @@ with tabs[0]:
             meta = None
 
             if not manual:
-                line_found, meta, ferr = find_player_line_from_events(pname, market_key, scan_date_iso, sportsbook)
-                if ferr:
-                    warnings.append(f"{tag}: Could not auto-fetch The Odds API line ({ferr}). Enable manual override.")
+                line_found = None
+                meta = None
+                ferr = None
+                # Search across all selected dates until a line is found
+                for dt in date_list:
+                    iso = dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+                    val, m_meta, err_msg = find_player_line_from_events(pname, market_key, iso, sportsbook)
+                    if val is not None:
+                        line_found = float(val)
+                        meta = m_meta
+                        ferr = None
+                        break
+                    # Record last error if nothing found
+                    ferr = err_msg
+                if line_found is None:
+                    if ferr:
+                        warnings.append(f"{tag}: Could not auto-fetch The Odds API line ({ferr}). Enable manual override.")
                 else:
                     line = float(line_found)
                     st.info(f"{tag} auto The Odds API line detected: {line}")
@@ -918,6 +1062,40 @@ with tabs[1]:
                     st.caption("Notes: " + "; ".join(leg["errors"]))
 
         st.markdown("---")
+
+        # If multiple legs were computed, estimate joint probability via Monte Carlo
+        if len(res) >= 2:
+            st.markdown("### 🎯 Multi-Leg Combo (Joint Monte Carlo)")
+            try:
+                import numpy as _np
+                from scipy.stats import norm as _norm_mc
+                n = len(res)
+                probs = _np.array([float(leg.get("p_over", 0.0) or 0.0) for leg in res], dtype=float)
+                # Build correlation matrix
+                corr_mat = _np.eye(n)
+                for i in range(n):
+                    for j in range(i+1, n):
+                        c = estimate_player_correlation(res[i], res[j])
+                        corr_mat[i, j] = c
+                        corr_mat[j, i] = c
+                # Ensure positive semi-definite via eigen decomposition
+                eigvals, eigvecs = _np.linalg.eigh(corr_mat)
+                eigvals = _np.clip(eigvals, 1e-6, None)
+                corr_psd = eigvecs @ _np.diag(eigvals) @ eigvecs.T
+                sims = 8000
+                # Draw correlated standard normals
+                z = _np.random.multivariate_normal(_np.zeros(n), corr_psd, sims)
+                u = _norm_mc.cdf(z)
+                hits = (u < probs).all(axis=1)
+                joint = float(hits.mean())
+                # Compute EV per $1 using the configured payout multiplier (assumes same payout for multi-leg)
+                payout_mult = float(st.session_state.get("payout_2pick", 3.0))
+                ev_combo = payout_mult * joint - 1.0
+                st.markdown(f"**Joint Hit Probability:** {joint*100:.1f}%")
+                st.markdown(f"**Combo EV per $1:** {ev_combo*100:+.1f}%")
+            except Exception as e:
+                st.caption(f"Joint combo calculation error: {type(e).__name__}")
+
         st.dataframe(pd.DataFrame(res), use_container_width=True)
 
 with tabs[2]:
