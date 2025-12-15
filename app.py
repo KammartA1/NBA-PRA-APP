@@ -1,3 +1,4 @@
+
 # ============================================================
 # NBA PROP MODEL — QUANT ENGINE (The Odds API + NBA API)
 # Single-file Streamlit app
@@ -25,6 +26,67 @@ import streamlit as st
 from nba_api.stats.static import players as nba_players
 from nba_api.stats.static import teams as nba_teams
 from nba_api.stats.endpoints import playergamelog, scoreboardv2
+
+# ------------------------------------------------------------------
+# Utility functions to guard against None/NaN when converting to float/int
+def safe_float(value, default=0.0):
+    """Convert a value to float, returning default for None or non-numeric."""
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+def safe_round(value, digits=2):
+    """Round a value to the given digits; returns None if value is None."""
+    try:
+        if value is None:
+            return None
+        return round(float(value), digits)
+    except Exception:
+        return None
+
+@st.cache_data(ttl=60*60, show_spinner=False)
+def get_season_string(today=None):
+    """
+    Return current NBA season string (e.g. '2025-26').
+    Uses date.today() if no argument.
+    """
+    d = today or date.today()
+    year = d.year
+    # Season typically spans Oct-June; if before July we are in year-1 - year
+    start_year = year if d.month >= 10 else year - 1
+    end_year = (start_year + 1) % 100
+    return f"{start_year}-{end_year:02d}"
+
+def fetch_player_gamelog(player_id: int, max_games: int = 10) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Fetch recent NBA game logs for a player.
+    Tries multiple parameter names for season to support nba_api version differences.
+    Returns (DataFrame, errors list).
+    """
+    errs: list[str] = []
+    season_str = get_season_string()
+    params_variants = [
+        {"season_nullable": season_str},
+        {"season": season_str},
+        {},  # fallback to default season
+    ]
+    for params in params_variants:
+        try:
+            gl = playergamelog.PlayerGameLog(player_id=player_id, **params)
+            df = gl.get_data_frames()[0]
+            if not df.empty:
+                return df.head(int(max_games)).copy(), errs
+            errs.append(f"Empty gamelog returned with params {params}")
+        except TypeError as te:
+            errs.append(f"TypeError using params {params}: {type(te).__name__}")
+            continue
+        except Exception as e:
+            errs.append(f"{type(e).__name__}: {e}")
+            continue
+    return pd.DataFrame(), errs
 
 # ------------------------------
 # Global constants
@@ -1024,4 +1086,3 @@ with tabs[4]:
 
 # Footer
 st.caption("© 2025 NBA Prop Quant Engine — Powered by Kamal")
-
