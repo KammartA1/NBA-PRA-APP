@@ -20,6 +20,7 @@ import pandas as pd
 import numpy as np
 import requests
 import streamlit as st
+from concurrent.futures import ThreadPoolExecutor
 
 # nba_api (stats endpoints)
 from nba_api.stats.static import players as nba_players
@@ -106,6 +107,7 @@ def get_season_string(today=None):
     end_year = (start_year + 1) % 100
     return f"{start_year}-{end_year:02d}"
 
+@st.cache_data(ttl=60*30, show_spinner=False)
 def fetch_player_gamelog(player_id: int, max_games: int = 10) -> tuple[pd.DataFrame, list[str]]:
     """
     Fetch recent NBA game logs for a player.
@@ -133,6 +135,30 @@ def fetch_player_gamelog(player_id: int, max_games: int = 10) -> tuple[pd.DataFr
             errs.append(f"{type(e).__name__}: {e}")
             continue
     return pd.DataFrame(), errs
+
+# ------------------------------------------------------------------
+# Edge classification helper
+def classify_edge(edge: float | None) -> str | None:
+    """
+    Classify the betting edge into categories.
+
+    - Return None if edge is None.
+    - |edge| < 0.02 → "No edge"
+    - |edge| < 0.07 → "Lean Edge"
+    - Otherwise → "Strong Edge"
+    """
+    if edge is None:
+        return None
+    try:
+        e = abs(float(edge))
+    except Exception:
+        return None
+    if e < 0.02:
+        return "No edge"
+    elif e < 0.07:
+        return "Lean Edge"
+    else:
+        return "Strong Edge"
 
 # ------------------------------
 # Global constants
@@ -1194,77 +1220,71 @@ with tabs[0]:
 
     run = st.button("Run Model ⚡")
 
-    if run:
-        results = []
-        warnings = []
-        for tag, pname, mkt, manual, manual_line, opp_in, teammate_out in players:
-            pname = (pname or "").strip()
-            if not pname:
-                continue
+        if run:
+            results = []
+            warnings = []
+            tasks: list[tuple[str, str, str, float, dict | None, bool, str | None]] = []
 
-            market_key = ODDS_MARKETS.get(mkt) or ODDS_MARKETS_OPTIONAL.get(mkt)
-            if not market_key:
-                warnings.append(f"{tag}: Unsupported market {mkt}")
-                continue
-
-            line = manual_line
-            meta = None
-
-            if not manual:
-                line_found = None
+            # Build computation tasks for each configured leg
+            for tag, pname, mkt, manual, manual_line, opp_in, teammate_out in players:
+                pname = (pname or "").strip()
+                if not pname:
+                    continue
+                market_key = ODDS_MARKETS.get(mkt) or ODDS_MARKETS_OPTIONAL.get(mkt)
+                if not market_key:
+                    warnings.append(f"{tag}: Unsupported market {mkt}")
+                    continue
+                line = manual_line
                 meta = None
-                ferr = None
-                # Search across all selected dates until a line is found
-                for dt in date_list:
-                    iso = dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
-                    val, m_meta, err_msg = find_player_line_from_events(pname, market_key, iso, sportsbook)
-                    if val is not None:
-                        line_found = float(val)
-                        meta = m_meta
-                        ferr = None
-                        break
-                    # Record last error if nothing found
-                    ferr = err_msg
-                if line_found is None:
-                    if ferr:
-                        warnings.append(f"{tag}: Could not auto-fetch The Odds API line ({ferr}). Enable manual override.")
-                else:
-                    line = float(line_found)
-                    st.info(f"{tag} auto The Odds API line detected: {line}")
-
-            if line is None or float(line) <= 0:
-                warnings.append(f"{tag}: does not have a valid line.")
-                continue
-
-            leg = compute_leg_projection(
-                player_name=pname,
-                market_name=mkt,
-                line=float(line),
-                meta=meta,
-                n_games=n_games,
-                key_teammate_out=bool(teammate_out),
-            )
-
-            # user-provided opponent overrides do not block; they only override display
-            if opp_in:
-                leg["opp"] = opp_in.strip().upper()
-
-            results.append(leg)
-
-        if warnings:
-            for w in warnings:
-                st.warning(w)
-
-        if not results:
-            st.warning("No valid legs configured.")
-        else:
-            st.session_state["last_results"] = results
-            st.success(f"Computed {len(results)} legs. See Results tab.")
-            # persist inputs
-            st.session_state["p1"], st.session_state["m1"], st.session_state["l1"], st.session_state["opp1"] = p1, m1, l1, t1
-            st.session_state["p2"], st.session_state["m2"], st.session_state["l2"], st.session_state["opp2"] = p2, m2, l2, t2
-            st.session_state["p3"], st.session_state["m3"], st.session_state["l3"], st.session_state["opp3"] = p3, m3, l3, t3
-            st.session_state["p4"], st.session_state["m4"], st.session_state["l4"], st.session_state["opp4"] = p4, m4, l4, t4
+                # If not manual override, fetch auto line across selected dates
+                if not manual:
+                    line_found = None
+                    ferr = None
+                    for dt in date_list:
+                        iso = dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+                        val, m_meta, err_msg = find_player_line_from_events(pname, market_key, iso, sportsbook)
+                        if val is not None:
+                            line_found = float(val)
+                            meta = m_meta
+                            ferr = None
+                            break
+                        ferr = err_msg
+                    if line_found is None:
+                        if ferr:
+                            warnings.append(f"{tag}: Could not auto-fetch The Odds API line ({ferr}). Enable manual override.")
+                    else:
+                        line = float(line_found)
+                        st.info(f"{tag} auto The Odds API line detected: {line}")
+                # Validate line
+                if line is None or float(line) <= 0:
+                    warnings.append(f"{tag}: does not have a valid line.")
+                    continue
+                tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out), opp_in))
+            # Run projections concurrently
+            if tasks:
+                max_workers = min(8, len(tasks))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(compute_leg_projection, pname, mkt, line, meta, n_games=n_games, key_teammate_out=teammate_out) for (tag, pname, mkt, line, meta, teammate_out, opp_in) in tasks]
+                    for (tag, pname, mkt, line, meta, teammate_out, opp_in), fut in zip(tasks, futures):
+                        leg = fut.result()
+                        # Apply user-provided opponent override only for display
+                        if opp_in:
+                            leg["opp"] = opp_in.strip().upper()
+                        results.append(leg)
+            # Display warnings and results
+            if warnings:
+                for w in warnings:
+                    st.warning(w)
+            if not results:
+                st.warning("No valid legs configured.")
+            else:
+                st.session_state["last_results"] = results
+                st.success(f"Computed {len(results)} legs. See Results tab.")
+                # persist inputs
+                st.session_state["p1"], st.session_state["m1"], st.session_state["l1"], st.session_state["opp1"] = p1, m1, l1, t1
+                st.session_state["p2"], st.session_state["m2"], st.session_state["l2"], st.session_state["opp2"] = p2, m2, l2, t2
+                st.session_state["p3"], st.session_state["m3"], st.session_state["l3"], st.session_state["opp3"] = p3, m3, l3, t3
+                st.session_state["p4"], st.session_state["m4"], st.session_state["l4"], st.session_state["opp4"] = p4, m4, l4, t4
 
     # Logging block (doesn't throw)
     st.markdown("---")
@@ -1308,6 +1328,10 @@ with tabs[1]:
                 st.write(f"Proj (ctx): {None if leg.get('proj') is None else round(leg['proj'],2)}")
                 st.write(f"P(Over): {None if leg.get('p_over') is None else round(leg['p_over'],3)}")
                 st.write(f"Edge vs 50%: {None if leg.get('edge') is None else round(leg['edge'],3)}")
+                # Display qualitative edge classification
+                cat = classify_edge(leg.get('edge'))
+                if cat:
+                    st.caption(f"Edge rating: {cat}")
                 tm = leg.get("team") or "?"
                 op = leg.get("opp") or "?"
                 st.caption(f"Matchup: {tm} vs {op}")
@@ -1441,6 +1465,8 @@ with tabs[2]:
                 st.warning("No Over-side outcomes found in offers. (Some books may name sides differently.)")
                 df2 = df.copy()
 
+            # Prepare tasks for concurrent processing
+            candidates: list[tuple[str, str, float, dict, dict]] = []
             for _, r in df2.iterrows():
                 pname = r.get("player")
                 mkt = r.get("market")
@@ -1454,24 +1480,36 @@ with tabs[2]:
                     "away_team": r.get("away_team"),
                     "commence_time": r.get("commence_time"),
                 }
-                leg = compute_leg_projection(pname, mkt, float(line), meta, n_games=n_games, key_teammate_out=False)
-                if leg.get("p_over") is None:
-                    dropped.append({"player": pname, "market": mkt, "reason": "Projection failed"})
-                    continue
-                if leg["p_over"] >= float(min_prob):
-                    out_rows.append({
-                        "player": pname,
-                        "market": mkt,
-                        "line": float(line),
-                        "p_over": float(leg["p_over"]),
-                        "proj": leg.get("proj"),
-                        "team": leg.get("team"),
-                        "opp": leg.get("opp"),
-                        "book": r.get("book"),
-                        "event_id": r.get("event_id"),
-                    })
-                else:
-                    dropped.append({"player": pname, "market": mkt, "reason": f"p_over<{min_prob:.2f}"})
+                candidates.append((pname, mkt, float(line), meta, r))
+
+            # Run projections concurrently
+            if candidates:
+                max_workers = min(8, len(candidates))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(compute_leg_projection, pname, mkt, line, meta, n_games=n_games, key_teammate_out=False) for (pname, mkt, line, meta, _r) in candidates]
+                    for (pname, mkt, line, meta, row), fut in zip(candidates, futures):
+                        leg = fut.result()
+                        if leg.get("p_over") is None:
+                            dropped.append({"player": pname, "market": mkt, "reason": "Projection failed"})
+                            continue
+                        # Apply probability threshold
+                        if leg["p_over"] >= float(min_prob):
+                            # Classify edge
+                            cat = classify_edge(leg.get("edge")) or ""
+                            out_rows.append({
+                                "player": pname,
+                                "market": mkt,
+                                "line": float(line),
+                                "p_over": float(leg["p_over"]),
+                                "proj": leg.get("proj"),
+                                "team": leg.get("team"),
+                                "opp": leg.get("opp"),
+                                "book": row.get("book"),
+                                "event_id": row.get("event_id"),
+                                "edge_cat": cat,
+                            })
+                        else:
+                            dropped.append({"player": pname, "market": mkt, "reason": f"p_over<{min_prob:.2f}"})
 
             out_df = pd.DataFrame(out_rows).sort_values("p_over", ascending=False).head(int(max_rows))
             st.markdown("#### Scanner Results")
@@ -1518,4 +1556,3 @@ with tabs[4]:
 
 # Footer
 st.caption("© 2025 NBA Prop Quant Engine — Powered by Kamal")
-
