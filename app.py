@@ -140,25 +140,58 @@ def fetch_player_gamelog(player_id: int, max_games: int = 10) -> tuple[pd.DataFr
 # Edge classification helper
 def classify_edge(edge: float | None) -> str | None:
     """
-    Classify the betting edge into categories.
+    Classify the betting edge into categories based on its sign and magnitude.
 
-    - Return None if edge is None.
-    - |edge| < 0.02 → "No edge"
-    - |edge| < 0.07 → "Lean Edge"
-    - Otherwise → "Strong Edge"
+    This function treats negative or zero edges as "No edge" because a negative
+    edge implies the bet has a negative expected value. Only positive edges
+    produce "Lean" or "Strong" ratings. Thresholds are tuned empirically:
+
+    - edge <= 0 → "No edge"
+    - 0 < edge < 0.07 → "Lean Edge"
+    - edge ≥ 0.07 → "Strong Edge"
     """
     if edge is None:
         return None
     try:
-        e = abs(float(edge))
+        e = float(edge)
     except Exception:
         return None
-    if e < 0.02:
+    # Negative or zero EV is not an edge
+    if e <= 0.0:
         return "No edge"
-    elif e < 0.07:
+    if e < 0.07:
         return "Lean Edge"
+    return "Strong Edge"
+
+# ------------------------------------------------------------------
+# Volatility engine
+def compute_volatility(stat_series: pd.Series) -> tuple[float | None, str | None]:
+    """
+    Compute coefficient of variation (CV) and a volatility label for a stat series.
+
+    Returns (cv, label) where label is one of 'Low', 'Moderate', 'High', or None.
+    """
+    if stat_series is None:
+        return None, None
+    try:
+        arr = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
+    except Exception:
+        return None, None
+    if arr.size < 2:
+        return None, None
+    mean = arr.mean()
+    std = arr.std(ddof=1)
+    if mean == 0:
+        return None, None
+    cv = float(std / mean)
+    # classify
+    if cv < 0.15:
+        label = "Low"
+    elif cv < 0.30:
+        label = "Moderate"
     else:
-        return "Strong Edge"
+        label = "High"
+    return cv, label
 
 # ------------------------------
 # Global constants
@@ -648,6 +681,9 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
     else:
         stat_series = pd.Series([], dtype=float)
 
+    # Derive volatility (coefficient of variation and label)
+    vol_cv, vol_label = compute_volatility(stat_series)
+
     # bootstrap-based probability of going over line
     p_over, mu, sigma = bootstrap_prob_over(stat_series, float(line))
 
@@ -719,6 +755,8 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
         "headshot": nba_headshot_url(player_id),
         "blowout_prob": float(blowout_prob),
         "context_mult": float(ctx_mult),
+        "volatility_cv": vol_cv,
+        "volatility_label": vol_label,
         "errors": errors,
     }
 
@@ -1333,6 +1371,15 @@ with tabs[1]:
                 cat = classify_edge(leg.get('edge'))
                 if cat:
                     st.caption(f"Edge rating: {cat}")
+                # Display volatility information if available
+                vlabel = leg.get('volatility_label')
+                vcv = leg.get('volatility_cv')
+                if vlabel:
+                    try:
+                        vcv_disp = round(float(vcv), 2) if vcv is not None else None
+                        st.caption(f"Volatility: {vlabel} (CV={vcv_disp})")
+                    except Exception:
+                        st.caption(f"Volatility: {vlabel}")
                 tm = leg.get("team") or "?"
                 op = leg.get("opp") or "?"
                 st.caption(f"Matchup: {tm} vs {op}")
@@ -1372,6 +1419,10 @@ with tabs[1]:
                 ev_combo = payout_mult * joint - 1.0
                 st.markdown(f"**Joint Hit Probability:** {joint*100:.1f}%")
                 st.markdown(f"**Combo EV per $1:** {ev_combo*100:+.1f}%")
+                # Qualitative edge classification for the combo based on EV
+                combo_cat = classify_edge(ev_combo)
+                if combo_cat:
+                    st.caption(f"Combo edge rating: {combo_cat}")
             except Exception as e:
                 st.caption(f"Joint combo calculation error: {type(e).__name__}")
 
@@ -1512,7 +1563,12 @@ with tabs[2]:
                         else:
                             dropped.append({"player": pname, "market": mkt, "reason": f"p_over<{min_prob:.2f}"})
 
-            out_df = pd.DataFrame(out_rows).sort_values("p_over", ascending=False).head(int(max_rows))
+            # Build DataFrame and sort if p_over available
+            out_df = pd.DataFrame(out_rows)
+            if not out_df.empty and "p_over" in out_df.columns:
+                out_df = out_df.sort_values("p_over", ascending=False)
+            # Limit rows
+            out_df = out_df.head(int(max_rows))
             st.markdown("#### Scanner Results")
             if out_df.empty:
                 st.warning("No legs met the threshold.")
@@ -1557,4 +1613,3 @@ with tabs[4]:
 
 # Footer
 st.caption("© 2025 NBA Prop Quant Engine — Powered by Kamal")
-
