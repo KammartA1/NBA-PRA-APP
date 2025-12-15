@@ -1,3 +1,4 @@
+
 # ============================================================
 # NBA PROP MODEL — QUANT ENGINE (The Odds API + NBA API)
 # Single-file Streamlit app
@@ -25,6 +26,32 @@ import streamlit as st
 from nba_api.stats.static import players as nba_players
 from nba_api.stats.static import teams as nba_teams
 from nba_api.stats.endpoints import playergamelog, scoreboardv2
+
+
+
+
+def current_nba_season_str(d: date) -> str:
+    """Return season string like '2025-26' as expected by nba_api endpoints."""
+    start_year = d.year if d.month >= 10 else d.year - 1
+    return f"{start_year}-{str(start_year + 1)[-2:]}"
+
+
+def infer_team_opp_from_gamelog(gl: pd.DataFrame):
+    """Infer team/opponent abbreviations from nba_api PlayerGameLog MATCHUP column."""
+    try:
+        if gl is None or gl.empty:
+            return None, None
+        matchup = str(gl.iloc[0].get("MATCHUP", "")).strip()
+        # Common formats: 'BKN vs. MIA' or 'BKN @ MIA'
+        parts = matchup.split()
+        if len(parts) >= 3:
+            team = parts[0].strip()
+            opp = parts[2].strip()
+            return team if team else None, opp if opp else None
+    except Exception:
+        pass
+    return None, None
+
 
 # ------------------------------
 # Global constants
@@ -754,7 +781,7 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
 
     # Fetch full season gamelog but keep last n_games
     try:
-        gl = playergamelog.PlayerGameLog(player_id=player_id, season_nullable=None).get_data_frames()[0]
+        gl = playergamelog.PlayerGameLog(player_id=player_id, season_nullable=current_nba_season_str(date.today())).get_data_frames()[0]
     except Exception as e:
         errors.append(f"NBA API gamelog error: {type(e).__name__}")
         gl = pd.DataFrame()
@@ -800,27 +827,35 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
 
     # Team + opponent inference
     gdate = date.today()
-    team_abbr = None
-    opp_abbr = None
-    try:
-        team_abbr = resolve_player_team_abbr_from_nba(player_id, gdate)
-    except Exception:
-        team_abbr = None
+    team_abbr, opp_abbr = infer_team_opp_from_gamelog(gl)
 
+    # Prefer Odds API event metadata when available
     if meta:
         home_abbr, away_abbr = resolve_opponent_from_odds_event(meta)
-        if team_abbr and home_abbr and away_abbr:
-            if team_abbr == home_abbr:
-                opp_abbr = away_abbr
-            elif team_abbr == away_abbr:
-                opp_abbr = home_abbr
-        if not team_abbr and home_abbr and away_abbr:
-            team_abbr, opp_abbr = home_abbr, away_abbr
+        if home_abbr and away_abbr:
+            if team_abbr:
+                if team_abbr == home_abbr:
+                    opp_abbr = away_abbr
+                elif team_abbr == away_abbr:
+                    opp_abbr = home_abbr
+            else:
+                # If we cannot infer the player's team, at least attach the event teams
+                team_abbr, opp_abbr = home_abbr, away_abbr
+
+    # Fallback to nba_api team resolver (non-blocking)
+    if not team_abbr:
+        try:
+            team_abbr = resolve_player_team_abbr_from_nba(player_id, gdate)
+        except Exception:
+            team_abbr = None
 
     if team_abbr and not opp_abbr:
-        opp_abbr = opponent_from_team_abbr(team_abbr, gdate)
+        try:
+            opp_abbr = opponent_from_team_abbr(team_abbr, gdate)
+        except Exception:
+            opp_abbr = None
 
-    # Position + context multiplier
+# Position + context multiplier
     position_raw = get_player_position(player_name)
     pos_bucket = get_position_bucket(position_raw)
     ctx_mult = get_context_multiplier(opp_abbr, market_name, position_raw)
