@@ -1,4 +1,3 @@
-
 # ============================================================
 # NBA PROP MODEL — QUANT ENGINE (The Odds API + NBA API)
 # Single-file Streamlit app
@@ -72,6 +71,17 @@ STAT_FIELDS = {
 # ------------------------------
 # Utilities
 # ------------------------------
+
+def _safe_rerun():
+    """Compatibility wrapper for Streamlit rerun across versions."""
+    try:
+        if hasattr(st, "rerun"):
+            st.rerun()
+        elif hasattr(st, "experimental_rerun"):
+            st.experimental_rerun()
+    except Exception:
+        pass
+
 def _now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
@@ -419,48 +429,205 @@ def opponent_from_team_abbr(team_abbr: str, game_date: date) -> str | None:
             return ha
     return None
 
-# ------------------------------
-# Projection engine (robust + deterministic)
-# ------------------------------
-def compute_stat_from_gamelog(df: pd.DataFrame, market_name: str) -> pd.Series:
-    f = STAT_FIELDS.get(market_name)
-    if f is None:
-        return pd.Series([], dtype=float)
-    if isinstance(f, tuple):
-        s = pd.Series(0.0, index=df.index)
-        for col in f:
-            s = s + pd.to_numeric(df.get(col), errors="coerce").fillna(0.0)
-        return s
-    return pd.to_numeric(df.get(f), errors="coerce")
 
-def bootstrap_prob_over(stat_series: pd.Series, line: float, n_sims: int = 4000) -> tuple[float, float, float]:
-    """Empirical bootstrap: returns (p_over, mu, sigma)."""
-    x = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
-    if x.size < 4:
-        # fallback normal approximation with conservative sigma
-        mu = float(np.nanmean(x)) if x.size else 0.0
-        sigma = float(np.nanstd(x)) if x.size else max(1.0, 0.25*max(line,1.0))
-        p = float(1.0 - 0.5*(1+math.erf((line-mu)/(sigma*math.sqrt(2)+1e-9))))
-        return max(0.0, min(1.0, p)), mu, sigma
-    rng = np.random.default_rng(7)  # deterministic
-    sims = rng.choice(x, size=(n_sims, x.size), replace=True).mean(axis=1)
-    p_over = float((sims > line).mean())
-    return p_over, float(x.mean()), float(x.std(ddof=1) if x.size>1 else 0.0)
+# ------------------------------
+# Advanced context engines (legacy stack)
+# ------------------------------
 
-def estimate_blowout_risk(team_abbr: str | None, opp_abbr: str | None, spread_abs: float | None) -> float:
-    """
-    Conservative blowout risk estimator.
-    - If we have spread magnitude, use it.
-    - Else return baseline 0.10
-    """
+@st.cache_data(ttl=60*60, show_spinner=False)
+def get_team_context_current_season():
+    """Team opponent context (pace/defense/assist/reb profiles). Best-effort; never blocks the app."""
+    try:
+        # Determine current NBA season in NBA API format YYYY-YY (rolls in Oct)
+        today = datetime.now()
+        year = today.year if today.month >= 10 else today.year - 1
+        season = f"{year}-{str(year+1)[-2:]}"
+        from nba_api.stats.endpoints import leaguedashteamstats
+        base = leaguedashteamstats.LeagueDashTeamStats(
+            season=season, per_mode_detailed="PerGame"
+        ).get_data_frames()[0]
+
+        adv = leaguedashteamstats.LeagueDashTeamStats(
+            season=season,
+            measure_type_detailed="Advanced",
+            per_mode_detailed="PerGame",
+        ).get_data_frames()[0][[
+            "TEAM_ID","TEAM_ABBREVIATION","REB_PCT","OREB_PCT","DREB_PCT","AST_PCT","PACE"
+        ]]
+
+        defn = leaguedashteamstats.LeagueDashTeamStats(
+            season=season,
+            measure_type_detailed_defense="Defense",
+            per_mode_detailed="PerGame",
+        ).get_data_frames()[0][[
+            "TEAM_ID","TEAM_ABBREVIATION","DEF_RATING"
+        ]]
+
+        df = base.merge(adv, on=["TEAM_ID","TEAM_ABBREVIATION"], how="left").merge(defn, on=["TEAM_ID","TEAM_ABBREVIATION"], how="left")
+
+        league_avg = {col: float(df[col].mean()) for col in ["PACE","DEF_RATING","REB_PCT","AST_PCT"]}
+        team_ctx = {
+            str(r["TEAM_ABBREVIATION"]).upper(): {
+                "PACE": float(r.get("PACE", np.nan)),
+                "DEF_RATING": float(r.get("DEF_RATING", np.nan)),
+                "REB_PCT": float(r.get("REB_PCT", np.nan)),
+                "DREB_PCT": float(r.get("DREB_PCT", np.nan)),
+                "AST_PCT": float(r.get("AST_PCT", np.nan)),
+            } for _, r in df.iterrows()
+        }
+        return team_ctx, league_avg, None
+    except Exception as e:
+        return {}, {}, f"{type(e).__name__}: {e}"
+
+TEAM_CTX, LEAGUE_CTX, _TEAM_CTX_ERR = get_team_context_current_season()
+
+PLAYER_POSITION_CACHE: dict[str, str] = {}
+
+def get_player_position(name: str) -> str:
+    """Resolve player position with nba_api (cached)."""
+    key = normalize_name(name)
+    if not key:
+        return "Unknown"
+    if key in PLAYER_POSITION_CACHE:
+        return PLAYER_POSITION_CACHE[key]
+    try:
+        pid = lookup_player_id(name)
+        pos = "Unknown"
+        if pid:
+            from nba_api.stats.endpoints import commonplayerinfo
+            info = commonplayerinfo.CommonPlayerInfo(player_id=pid).get_data_frames()[0]
+            raw = str(info.get("POSITION", "") or "")
+            pos = raw if raw else "Unknown"
+        PLAYER_POSITION_CACHE[key] = pos
+        return pos
+    except Exception:
+        PLAYER_POSITION_CACHE[key] = "Unknown"
+        return "Unknown"
+
+def get_position_bucket(pos: str) -> str:
+    if not pos:
+        return "Unknown"
+    p = pos.upper()
+    if p.startswith("G"):
+        return "Guard"
+    if p.startswith("F"):
+        return "Wing"
+    if p.startswith("C"):
+        return "Big"
+    if "G" in p and "F" in p:
+        return "Wing"
+    if "F" in p and "C" in p:
+        return "Big"
+    return "Unknown"
+
+def get_context_multiplier(opp_abbrev: str | None, market: str, position: str | None = None) -> float:
+    """Opponent/pace/defense/positional context multiplier. Deterministic fallback if TEAM_CTX unavailable."""
+    def _fallback(opp: str | None) -> float:
+        base = 1.0
+        bucket = get_position_bucket(position or "")
+        if bucket == "Guard" and market in ["Assists","PA","PRA","RA"]:
+            base *= 1.03
+        elif bucket == "Big" and market in ["Rebounds","PR","PRA","RA","Blocks"]:
+            base *= 1.04
+        if opp:
+            h = sum(ord(c) for c in opp.strip().upper())
+            offset = ((h % 15) - 7) / 200.0
+            base *= (1.0 + offset)
+        return float(np.clip(base, 0.90, 1.10))
+
+    if not opp_abbrev:
+        return _fallback(None)
+    opp_key = opp_abbrev.strip().upper()
+
+    if not TEAM_CTX or not LEAGUE_CTX or opp_key not in TEAM_CTX:
+        return _fallback(opp_key)
+
+    opp = TEAM_CTX[opp_key]
+    pace_f = float(opp["PACE"] / max(LEAGUE_CTX["PACE"], 1e-6))
+    def_f = float(max(LEAGUE_CTX["DEF_RATING"], 1e-6) / max(opp["DEF_RATING"], 1e-6))
+
+    reb_adj = float(max(LEAGUE_CTX.get("REB_PCT",1.0),1e-6) / max(opp.get("DREB_PCT",1.0),1e-6)) if market in ["Rebounds","PR","PRA","RA"] else 1.0
+    ast_adj = float(max(LEAGUE_CTX.get("AST_PCT",1.0),1e-6) / max(opp.get("AST_PCT",1.0),1e-6)) if market in ["Assists","PA","PRA","RA"] else 1.0
+
+    bucket = get_position_bucket(position or "")
+    pos_factor = 1.0
+    if bucket == "Guard":
+        pos_factor = 0.5 * float(opp["AST_PCT"] / max(LEAGUE_CTX["AST_PCT"],1e-6)) + 0.5 * pace_f
+    elif bucket == "Wing":
+        pos_factor = 0.5 * def_f + 0.5 * pace_f
+    elif bucket == "Big":
+        pos_factor = 0.6 * float(max(LEAGUE_CTX["REB_PCT"],1e-6) / max(opp["DREB_PCT"],1e-6)) + 0.4 * def_f
+
+    if market in ["Rebounds"]:
+        mult = 0.30*pace_f + 0.25*def_f + 0.30*reb_adj + 0.15*pos_factor
+    elif market in ["Assists"]:
+        mult = 0.30*pace_f + 0.25*def_f + 0.30*ast_adj + 0.15*pos_factor
+    elif market in ["RA"]:  # rebs+asts
+        mult = 0.25*pace_f + 0.20*def_f + 0.25*reb_adj + 0.20*ast_adj + 0.10*pos_factor
+    else:
+        mult = 0.45*pace_f + 0.40*def_f + 0.15*pos_factor
+
+    return float(np.clip(mult, 0.80, 1.30))
+
+# ------------------------------
+# Calibration (self-learning)
+# ------------------------------
+def calibration_file_path(user_id: str) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_\-]", "_", (user_id or "default"))
+    return f"calibration_state_{safe}.json"
+
+def load_calibration_state(user_id: str) -> dict:
+    fp = calibration_file_path(user_id)
+    if not os.path.exists(fp):
+        return {"prob_scale": 1.0, "last_updated": None}
+    try:
+        with open(fp, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"prob_scale": 1.0, "last_updated": None}
+
+def save_calibration_state(user_id: str, prob_scale: float):
+    fp = calibration_file_path(user_id)
+    state = {"prob_scale": float(prob_scale), "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    with open(fp, "w") as f:
+        json.dump(state, f)
+
+def apply_calibration_to_prob(p: float, cal_state: dict) -> float:
+    scale = float(cal_state.get("prob_scale", 1.0))
+    centered = float(p) - 0.5
+    adj = 0.5 + centered * scale
+    return float(np.clip(adj, 0.02, 0.98))
+
+# ------------------------------
+# Blowout risk from Odds API spreads
+# ------------------------------
+@st.cache_data(ttl=60*10, show_spinner=False)
+def odds_get_event_spread_abs(event_id: str) -> float | None:
+    """Returns median absolute spread across books for the event (if available)."""
+    odds, err = odds_get_event_odds(event_id, ("spreads",))
+    if err or not odds:
+        return None
+    spreads = []
+    for b in odds.get("bookmakers", []) or []:
+        for mk in b.get("markets", []) or []:
+            if mk.get("key") != "spreads":
+                continue
+            for out in mk.get("outcomes", []) or []:
+                pt = out.get("point")
+                if pt is None:
+                    continue
+                try:
+                    spreads.append(abs(float(pt)))
+                except Exception:
+                    pass
+    if not spreads:
+        return None
+    return float(np.median(spreads))
+
+def estimate_blowout_risk_from_spread(spread_abs: float | None) -> float:
     if spread_abs is None:
         return 0.10
-    try:
-        s = float(abs(spread_abs))
-    except Exception:
-        return 0.10
-    # map spread to probability bucket
-    # 0-5 => 8%, 5-10 => 14%, 10-15 => 22%, 15+ => 30%
+    s = float(abs(spread_abs))
     if s < 5:
         return 0.08
     if s < 10:
@@ -469,120 +636,364 @@ def estimate_blowout_risk(team_abbr: str | None, opp_abbr: str | None, spread_ab
         return 0.22
     return 0.30
 
-def context_multiplier(team_abbr: str | None, opp_abbr: str | None, key_teammate_out: bool) -> float:
-    """Simple, stable context multiplier."""
-    m = 1.00
+def estimate_minutes_distribution(minutes: np.ndarray, blowout_prob: float, key_teammate_out: bool) -> tuple[float, float]:
+    mins = np.array(minutes, dtype=float)
+    if mins.size == 0:
+        base_mean, base_sd = 32.0, 4.0
+    else:
+        base_mean = float(mins.mean())
+        base_sd = float(max(mins.std(ddof=1), 2.0))
     if key_teammate_out:
-        m *= 1.04
-    # placeholder for future defensive/pace adjustments
-    return float(m)
+        base_mean *= 1.05
+    base_mean *= float(1.0 - 0.35 * np.clip(blowout_prob, 0.0, 0.8))
+    return base_mean, base_sd
 
-def compute_leg_projection(player_name: str, market_name: str, line: float, meta: dict | None, n_games: int, key_teammate_out: bool):
-    """Compute single leg model outputs with defensive coding.
-       Returns: dict with projection, p_over, edge, opponent/team info, errors list.
+def role_based_bayesian_prior(samples: np.ndarray, line: float) -> np.ndarray:
+    s = np.array(samples, dtype=float)
+    if s.size == 0:
+        return np.array([float(line)])
+    prior_mean = float(line)
+    prior_sd = float(max(np.std(s), 4.0))
+    prior_draws = np.random.default_rng(13).normal(prior_mean, prior_sd, size=2000)
+    return np.concatenate([s, prior_draws])
+
+def player_similarity_factor(samples: np.ndarray) -> float:
+    s = np.array(samples, dtype=float)
+    if s.size < 4:
+        return 1.0
+    sd = float(np.std(s))
+    mu = float(np.mean(s))
+    if mu <= 0:
+        return 1.0
+    cv = sd / mu
+    if cv < 0.25:
+        return 0.9
+    if cv > 0.6:
+        return 1.1
+    return 1.0
+
+def game_script_simulation(samples: np.ndarray, minutes_params: tuple[float,float], line: float, ctx_mult: float, blowout_prob: float, n_sims: int = 6000):
+    s = np.array(samples, dtype=float)
+    if s.size == 0:
+        return 0.5, 0.0, 1.0
+    m_mean, m_sd = minutes_params
+    m_sd = float(max(m_sd, 1.5))
+    blowout_prob = float(np.clip(blowout_prob, 0.0, 0.8))
+
+    base_comp = 0.70 - 0.4 * blowout_prob
+    base_mild = 0.20 + 0.25 * blowout_prob
+    base_severe = 0.10 + 0.15 * blowout_prob
+    total = base_comp + base_mild + base_severe
+    w_comp, w_mild, w_severe = base_comp/total, base_mild/total, base_severe/total
+
+    rng = np.random.default_rng(17)
+    draws = np.empty(n_sims, dtype=float)
+    for i in range(n_sims):
+        r = rng.random()
+        if r < w_comp:
+            min_draw = rng.normal(m_mean, m_sd*0.6)
+        elif r < w_comp + w_mild:
+            min_draw = rng.normal(m_mean*0.9, m_sd)
+        else:
+            min_draw = rng.normal(m_mean*0.8, m_sd*1.2)
+        min_mult = float(min_draw / max(m_mean, 1e-6))
+        base_sample = float(rng.choice(s))
+        draws[i] = base_sample * min_mult * float(ctx_mult)
+
+    mu = float(draws.mean())
+    sd = float(max(draws.std(ddof=1), 0.75))
+    p_over = float((draws > float(line)).mean())
+    return p_over, mu, sd
+
+
+# ------------------------------
+# Projection engine (full legacy stack + Odds API lines)
+# ------------------------------
+def compute_leg_projection(player_name: str, market_name: str, line: float, meta: dict | None, n_games: int, key_teammate_out: bool, user_id: str):
+    """Compute single leg outputs using:
+       - Empirical bootstrap Monte Carlo (10,000)
+       - Game-script minutes simulation (blowout-adjusted)
+       - Defensive/pace/positional context multiplier
+       - Bayesian prior around the market line
+       - Volatility labeling
+       - Self-learning calibration (per user)
     """
     errors = []
+
+    # Resolve player id and pull game log
     player_id = lookup_player_id(player_name)
     if not player_id:
         errors.append("Could not resolve NBA player id (name mismatch).")
-        # still return minimal structure
         return {
-            "player": player_name, "market": market_name, "line": line,
+            "player": player_name, "market": market_name, "line": float(line),
             "proj": None, "p_over": None, "edge": None,
             "team": None, "opp": None, "headshot": None,
-            "blowout_prob": 0.10, "context_mult": 1.00,
+            "blowout_prob": 0.10, "ctx_mult": 1.00, "usage_boost": 1.00,
+            "matchup_text": "Unknown matchup.", "position": "Unknown", "pos_bucket": "Unknown",
+            "volatility_cv": None, "volatility_label": None,
             "errors": errors,
         }
 
-    # Pull gamelog (best-effort)
+    # Fetch full season gamelog but keep last n_games
     try:
-        gl = playergamelog.PlayerGameLog(player_id=player_id, season_nullable=None)
-        gldf = gl.get_data_frames()[0]
+        gl = playergamelog.PlayerGameLog(player_id=player_id, season_nullable=None).get_data_frames()[0]
     except Exception as e:
         errors.append(f"NBA API gamelog error: {type(e).__name__}")
-        gldf = pd.DataFrame()
+        gl = pd.DataFrame()
 
-    if not gldf.empty:
-        gldf = gldf.head(int(max(5, n_games))).copy()
-        stat_series = compute_stat_from_gamelog(gldf, market_name)
-    else:
-        stat_series = pd.Series([], dtype=float)
+    if gl is None or gl.empty:
+        errors.append("No recent game logs returned.")
+        return {
+            "player": player_name, "market": market_name, "line": float(line),
+            "proj": None, "p_over": None, "edge": None,
+            "team": None, "opp": None, "headshot": nba_headshot_url(player_id),
+            "blowout_prob": 0.10, "ctx_mult": 1.00, "usage_boost": 1.00,
+            "matchup_text": "No data.", "position": get_player_position(player_name), "pos_bucket": get_position_bucket(get_player_position(player_name)),
+            "volatility_cv": None, "volatility_label": None,
+            "errors": errors,
+        }
 
-    p_over, mu, sigma = bootstrap_prob_over(stat_series, float(line))
+    # Normalize ordering newest first
+    try:
+        gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"], errors="coerce")
+        gl = gl.sort_values("GAME_DATE", ascending=False)
+    except Exception:
+        pass
+    gl = gl.head(int(max(5, n_games))).copy()
 
-    # Team/opponent resolution:
+    # Minutes parsing
+    mins = []
+    for v in gl.get("MIN", []):
+        try:
+            if isinstance(v, str) and ":" in v:
+                mm, ss = v.split(":")
+                mins.append(float(mm) + float(ss) / 60.0)
+            else:
+                mins.append(float(v))
+        except Exception:
+            pass
+    minutes_arr = np.array(mins, dtype=float)
+
+    # Stat samples for this market
+    stat_series = compute_stat_from_gamelog(gl, market_name)
+    samples = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
+    if samples.size < 3:
+        errors.append("Insufficient stat samples for robust simulation (using fallback).")
+
+    # Team + opponent inference
     gdate = date.today()
     team_abbr = None
     opp_abbr = None
-
-    # 1) Try to infer from NBA gamelog (doesn't require Odds meta)
     try:
         team_abbr = resolve_player_team_abbr_from_nba(player_id, gdate)
     except Exception:
         team_abbr = None
 
-    # 2) Enhance using Odds event teams if available
     if meta:
         home_abbr, away_abbr = resolve_opponent_from_odds_event(meta)
-        # if player team known, pick opponent from home/away
         if team_abbr and home_abbr and away_abbr:
             if team_abbr == home_abbr:
                 opp_abbr = away_abbr
             elif team_abbr == away_abbr:
                 opp_abbr = home_abbr
-        # if we still don't know team, set both for display
         if not team_abbr and home_abbr and away_abbr:
-            team_abbr = home_abbr
-            opp_abbr = away_abbr
+            team_abbr, opp_abbr = home_abbr, away_abbr
 
-    # 3) If we have team but not opponent, try scoreboard
     if team_abbr and not opp_abbr:
         opp_abbr = opponent_from_team_abbr(team_abbr, gdate)
 
-    # Spread not pulled in current minimal version; set None (future extension)
-    blowout_prob = estimate_blowout_risk(team_abbr, opp_abbr, spread_abs=None)
-    ctx = context_multiplier(team_abbr, opp_abbr, key_teammate_out)
+    # Position + context multiplier
+    position_raw = get_player_position(player_name)
+    pos_bucket = get_position_bucket(position_raw)
+    ctx_mult = get_context_multiplier(opp_abbr, market_name, position_raw)
 
-    # Apply context multiplier to projection mean only (prob remains from empirical)
-    proj = mu * ctx if mu is not None else None
-    edge = (p_over - 0.5) if p_over is not None else None  # baseline edge vs 50/50
+    # Usage boost (recent minutes trend)
+    avg_min = float(minutes_arr.mean()) if minutes_arr.size else 32.0
+    recent_min = float(np.mean(minutes_arr[: min(3, minutes_arr.size)])) if minutes_arr.size else avg_min
+    usage_boost = 1.0
+    if recent_min >= avg_min + 4:
+        usage_boost = 1.06
+    elif recent_min <= max(10.0, avg_min - 5):
+        usage_boost = 0.94
+
+    # Blowout risk from spreads if we have event id
+    spread_abs = None
+    try:
+        eid = (meta or {}).get("event_id") or (meta or {}).get("id")
+        if eid:
+            spread_abs = odds_get_event_spread_abs(str(eid))
+    except Exception:
+        spread_abs = None
+    blowout_prob = estimate_blowout_risk_from_spread(spread_abs)
+
+    # Minutes distribution engine
+    min_mean, min_sd = estimate_minutes_distribution(minutes_arr, blowout_prob, key_teammate_out=bool(key_teammate_out))
+
+    # Build base samples with context + usage; mild blowout shrink
+    base_samples = samples.astype(float) if samples.size else np.array([float(line)])
+    base_samples = base_samples * float(ctx_mult) * float(usage_boost)
+    if blowout_prob >= 0.20:
+        base_samples *= 0.96
+
+    # Bayesian prior around market line + volatility shaping
+    rng = np.random.default_rng(23)
+    bayes = role_based_bayesian_prior(base_samples, float(line))
+    sim_factor = player_similarity_factor(bayes)
+    bayes = (bayes - bayes.mean()) * sim_factor + bayes.mean()
+
+    # Game-script simulation
+    gs_prob, mu_gs, sd_gs = game_script_simulation(bayes, (min_mean, min_sd), float(line), float(ctx_mult), blowout_prob)
+
+    # Empirical bootstrap MC (10k)
+    n_sims = 10000
+    draws_emp = rng.choice(base_samples, size=n_sims, replace=True) if base_samples.size else rng.normal(float(line), 4.0, size=n_sims)
+    p_over_emp = float((draws_emp > float(line)).mean())
+    mu_emp = float(draws_emp.mean())
+    sd_emp = float(max(draws_emp.std(ddof=1), 0.75))
+
+    # Blend
+    p_over_raw = 0.6 * p_over_emp + 0.4 * gs_prob
+    mu = 0.6 * mu_emp + 0.4 * mu_gs
+    sd = 0.6 * sd_emp + 0.4 * sd_gs
+
+    # Volatility label
+    vol_sd = float(np.std(bayes))
+    vol_mu = float(max(np.mean(bayes), 1e-6))
+    vol_cv = float(vol_sd / vol_mu)
+    if vol_cv < 0.25:
+        vol_label = "Low"
+    elif vol_cv < 0.45:
+        vol_label = "Medium"
+    else:
+        vol_label = "High"
+
+    # Calibration
+    cal_state = load_calibration_state(user_id)
+    p_over = apply_calibration_to_prob(p_over_raw, cal_state)
+
+    # Edge baseline vs 50/50
+    edge = float(p_over - 0.5)
+
+    # Projection shown is calibrated mean with context (mu already includes ctx_mult usage)
+    proj = float(mu)
+
+    # Matchup text
+    matchup_text = "Neutral matchup."
+    if opp_abbr and TEAM_CTX and LEAGUE_CTX and opp_abbr.strip().upper() in TEAM_CTX:
+        opp_ctx = TEAM_CTX[opp_abbr.strip().upper()]
+        pace_rel = float(opp_ctx["PACE"] / max(LEAGUE_CTX["PACE"], 1e-6))
+        def_rel = float(opp_ctx["DEF_RATING"] / max(LEAGUE_CTX["DEF_RATING"], 1e-6))
+        pieces = []
+        if def_rel > 1.06:
+            pieces.append("strong team defense")
+        elif def_rel < 0.94:
+            pieces.append("soft team defense")
+        if pace_rel > 1.05:
+            pieces.append("very fast pace")
+        elif pace_rel < 0.95:
+            pieces.append("slow tempo")
+        if pos_bucket == "Guard":
+            pieces.append("guard-centric matchup")
+        elif pos_bucket == "Wing":
+            pieces.append("wing matchup emphasis")
+        elif pos_bucket == "Big":
+            pieces.append("paint/big-man emphasis")
+        matchup_text = (", ".join(pieces).capitalize() + ".") if pieces else "Slightly neutral matchup with no extreme flags."
 
     return {
         "player": player_name,
         "market": market_name,
         "line": float(line),
-        "proj": float(proj) if proj is not None else None,
-        "p_over": float(p_over) if p_over is not None else None,
-        "edge": float(edge) if edge is not None else None,
+        "proj": float(proj),
+        "p_over": float(p_over),
+        "p_over_raw": float(p_over_raw),
+        "edge": float(edge),
+        "mu": float(mu),
+        "sd": float(sd),
         "team": team_abbr,
         "opp": opp_abbr,
         "headshot": nba_headshot_url(player_id),
         "blowout_prob": float(blowout_prob),
-        "context_mult": float(ctx),
+        "spread_abs": None if spread_abs is None else float(spread_abs),
+        "ctx_mult": float(ctx_mult),
+        "usage_boost": float(usage_boost),
+        "matchup_text": matchup_text,
+        "position": position_raw,
+        "pos_bucket": pos_bucket,
+        "volatility_cv": float(vol_cv),
+        "volatility_label": vol_label,
         "errors": errors,
     }
 
+
+
 # ------------------------------
-# History persistence
+# History persistence (per user) — supports PENDING + HIT/MISS/PUSH + stake
 # ------------------------------
+HISTORY_COLUMNS = [
+    "bet_id","ts_utc","date_local","user_id",
+    "entry_type","stake","payout_mult",
+    "legs_json",
+    "status","pnl","notes",
+    "avg_prob","avg_edge","avg_volatility_cv",
+    "clv","kelly_frac",
+]
+
 def history_path(user_id: str) -> str:
-    safe = re.sub(r"[^a-zA-Z0-9_\-]", "_", user_id.strip() or "default")
+    safe = re.sub(r"[^a-zA-Z0-9_\-]", "_", (user_id or "default").strip() or "default")
     return f"history_{safe}.csv"
 
-def load_history(user_id: str) -> pd.DataFrame:
+def _ensure_history_file(user_id: str):
     fp = history_path(user_id)
-    if os.path.exists(fp):
-        try:
-            return pd.read_csv(fp)
-        except Exception:
-            return pd.DataFrame()
-    return pd.DataFrame()
+    if not os.path.exists(fp):
+        pd.DataFrame(columns=HISTORY_COLUMNS).to_csv(fp, index=False)
 
-def append_history(user_id: str, row: dict):
+def load_history(user_id: str) -> pd.DataFrame:
+    _ensure_history_file(user_id)
     fp = history_path(user_id)
+    try:
+        df = pd.read_csv(fp)
+        # normalize status casing
+        if "status" in df.columns:
+            df["status"] = df["status"].astype(str).str.upper()
+        return df
+    except Exception:
+        return pd.DataFrame(columns=HISTORY_COLUMNS)
+
+def save_history(user_id: str, df: pd.DataFrame):
+    fp = history_path(user_id)
+    df.to_csv(fp, index=False)
+
+def append_history(user_id: str, entry: dict):
     df = load_history(user_id)
-    df2 = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
-    df2.to_csv(fp, index=False)
+    df2 = pd.concat([df, pd.DataFrame([entry])], ignore_index=True)
+    save_history(user_id, df2)
+
+def update_history_status(user_id: str, bet_id: str, new_status: str):
+    df = load_history(user_id)
+    if df.empty or "bet_id" not in df.columns:
+        return
+    new_status_u = (new_status or "").strip().upper()
+    if new_status_u not in ("PENDING","HIT","MISS","PUSH"):
+        return
+    idx = df.index[df["bet_id"].astype(str) == str(bet_id)]
+    if len(idx) == 0:
+        return
+    i = idx[0]
+    stake = float(df.loc[i, "stake"]) if "stake" in df.columns and pd.notna(df.loc[i, "stake"]) else 0.0
+    payout_mult = float(df.loc[i, "payout_mult"]) if "payout_mult" in df.columns and pd.notna(df.loc[i, "payout_mult"]) else 2.0
+    pnl = 0.0
+    if new_status_u == "HIT":
+        pnl = stake * (payout_mult - 1.0)
+    elif new_status_u == "MISS":
+        pnl = -stake
+    else:
+        pnl = 0.0
+
+    df.loc[i, "status"] = new_status_u
+    df.loc[i, "pnl"] = float(pnl)
+    save_history(user_id, df)
+
 
 # ------------------------------
 # Streamlit UI
@@ -602,7 +1013,10 @@ section[data-testid="stSidebar"] {
 }
 div[data-testid="stSidebarContent"] * { color: #f3f3f3; }
 /* Cards */
-.block-container { padding-top: 1.2rem; }
+.block-container { padding-top: 4rem !important; }
+/* Prevent custom headers from covering tabs */
+div[data-testid="stHeader"] { z-index: 0 !important; }
+div[data-testid="stTabs"] { position: relative; z-index: 5 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -758,6 +1172,7 @@ with tabs[0]:
                 meta=meta,
                 n_games=n_games,
                 key_teammate_out=bool(teammate_out),
+                user_id=user_id,
             )
 
             # user-provided opponent overrides do not block; they only override display
@@ -774,36 +1189,93 @@ with tabs[0]:
             st.warning("No valid legs configured.")
         else:
             st.session_state["last_results"] = results
-            st.success(f"Computed {len(results)} legs. See Results tab.")
+
+            st.session_state["model_ran"] = True
+            st.success(f"Computed {len(results)} legs.")
+
             # persist inputs
             st.session_state["p1"], st.session_state["m1"], st.session_state["l1"], st.session_state["opp1"] = p1, m1, l1, t1
             st.session_state["p2"], st.session_state["m2"], st.session_state["l2"], st.session_state["opp2"] = p2, m2, l2, t2
             st.session_state["p3"], st.session_state["m3"], st.session_state["l3"], st.session_state["opp3"] = p3, m3, l3, t3
             st.session_state["p4"], st.session_state["m4"], st.session_state["l4"], st.session_state["opp4"] = p4, m4, l4, t4
 
+
+    # Inline Results (no forced navigation)
+    if st.session_state.get("model_ran") and (st.session_state.get("last_results") or []):
+        st.markdown("#### Results Cards")
+        res_inline = st.session_state.get("last_results") or []
+        cols = st.columns(min(4, len(res_inline)))
+        for i, leg in enumerate(res_inline):
+            c = cols[i % len(cols)]
+            with c:
+                st.markdown(f"**{leg['player']} — {leg['market']}**")
+                if leg.get("headshot"):
+                    st.image(leg["headshot"], use_container_width=True)
+                st.write(f"Line: {leg.get('line')}")
+                st.write(f"Proj: {None if leg.get('proj') is None else round(float(leg['proj']),2)}")
+                st.write(f"P(Over): {None if leg.get('p_over') is None else round(float(leg['p_over']),3)}")
+                st.write(f"Edge: {None if leg.get('edge') is None else round(float(leg['edge']),3)}")
+                tm = leg.get("team") or "?"
+                op = leg.get("opp") or "?"
+                st.caption(f"Matchup: {tm} vs {op}")
+                if leg.get("spread_abs") is not None:
+                    st.caption(f"Spread |abs|: {round(float(leg.get('spread_abs')),1)}")
+                st.caption(f"Ctx: {round(float(leg.get('ctx_mult',1.0)),3)} | Usage: {round(float(leg.get('usage_boost',1.0)),3)} | Blowout: {round(float(leg.get('blowout_prob',0.1)),3)}")
+                st.caption(f"Volatility: {leg.get('volatility_label','?')} (CV={round(float(leg.get('volatility_cv',0.0)),2)})")
+                if leg.get("matchup_text"):
+                    st.caption(leg["matchup_text"])
+                if leg.get("errors"):
+                    st.caption("Notes: " + "; ".join(leg["errors"]))
+
     # Logging block (doesn't throw)
     st.markdown("---")
-    st.markdown("#### 🗃️ Log This Bet?")
-    placed = st.radio("Did you place this bet?", options=["No", "Yes"], horizontal=True, index=0)
-    if st.button("Confirm Log Decision"):
-        if placed != "Yes":
-            st.info("Not logged (you selected No).")
-        else:
-            # Log the latest run results as one entry with legs list
-            res = st.session_state.get("last_results") or []
-            if not res:
-                st.warning("Nothing to log yet. Run the model first.")
-            else:
-                entry = {
-                    "ts": _now_iso(),
-                    "user_id": user_id,
-                    "legs": json.dumps(res),
-                    "n_legs": len(res),
-                    "notes": "",
-                    "result": "Pending",
-                }
-                append_history(user_id, entry)
-                st.success("Logged to History (Pending).")
+    
+    # Logging (entry-level) — stake + pending + status updates in History tab
+    st.markdown("---")
+    st.markdown("#### 🗂️ Log Bet Entry")
+
+    res_to_log = st.session_state.get("last_results") or []
+    if not res_to_log:
+        st.info("Run the model first to log an entry.")
+    else:
+        entry_type = st.selectbox("Entry Type", options=["Single", "2-Pick", "3-Pick", "4-Pick"], index=min(len(res_to_log)-1,3))
+        default_payout = 2.0 if entry_type=="Single" else (payout_2pick if entry_type=="2-Pick" else 5.0)
+        payout_mult = st.number_input("Payout Multiplier (x)", min_value=1.0, value=float(default_payout), step=0.1)
+        stake = st.number_input("Stake ($)", min_value=0.0, value=float(st.session_state.get("stake_last", 10.0)), step=1.0)
+        st.session_state["stake_last"] = float(stake)
+        notes = st.text_input("Notes (optional)", value="")
+
+        # Summary metrics
+        probs = [float(l.get("p_over", 0.0)) for l in res_to_log if l.get("p_over") is not None]
+        edges = [float(l.get("edge", 0.0)) for l in res_to_log if l.get("edge") is not None]
+        vols = [float(l.get("volatility_cv", 0.0)) for l in res_to_log if l.get("volatility_cv") is not None]
+        avg_prob = float(np.mean(probs)) if probs else None
+        avg_edge = float(np.mean(edges)) if edges else None
+        avg_vol = float(np.mean(vols)) if vols else None
+
+        if st.button("Log as PENDING"):
+            bet_id = f"{int(time.time())}_{abs(hash(user_id))%10000}"
+            entry = {
+                "bet_id": bet_id,
+                "ts_utc": _now_iso(),
+                "date_local": datetime.now().strftime("%Y-%m-%d"),
+                "user_id": user_id,
+                "entry_type": entry_type,
+                "stake": float(stake),
+                "payout_mult": float(payout_mult),
+                "legs_json": json.dumps(res_to_log),
+                "status": "PENDING",
+                "pnl": 0.0,
+                "notes": notes,
+                "avg_prob": None if avg_prob is None else float(avg_prob),
+                "avg_edge": None if avg_edge is None else float(avg_edge),
+                "avg_volatility_cv": None if avg_vol is None else float(avg_vol),
+                "clv": None,
+                "kelly_frac": None,
+            }
+            append_history(user_id, entry)
+            st.success("Logged to History as PENDING.")
+
 
 with tabs[1]:
     st.markdown("### Results")
@@ -826,7 +1298,7 @@ with tabs[1]:
                 tm = leg.get("team") or "?"
                 op = leg.get("opp") or "?"
                 st.caption(f"Matchup: {tm} vs {op}")
-                st.caption(f"Context mult: {round(leg.get('context_mult',1.0),3)} | Blowout risk: {round(leg.get('blowout_prob',0.1),3)}")
+                st.caption(f"Ctx mult: {round(leg.get('context_mult',1.0),3)} | Blowout risk: {round(leg.get('blowout_prob',0.1),3)}")
                 if leg.get("errors"):
                     st.caption("Notes: " + "; ".join(leg["errors"]))
 
@@ -935,7 +1407,7 @@ with tabs[2]:
                     "away_team": r.get("away_team"),
                     "commence_time": r.get("commence_time"),
                 }
-                leg = compute_leg_projection(pname, mkt, float(line), meta, n_games=n_games, key_teammate_out=False)
+                leg = compute_leg_projection(pname, mkt, float(line), meta, n_games=n_games, key_teammate_out=False, user_id=user_id)
                 if leg.get("p_over") is None:
                     dropped.append({"player": pname, "market": mkt, "reason": "Projection failed"})
                     continue
@@ -967,31 +1439,46 @@ with tabs[2]:
                 else:
                     st.write("No exclusions.")
 
+
 with tabs[3]:
     st.markdown("### 🗂️ History")
     h = load_history(user_id)
     if h.empty:
         st.info("No bets logged yet.")
     else:
-        # Expand legs JSON for display
-        try:
-            h_disp = h.copy()
-            h_disp["legs_preview"] = h_disp["legs"].apply(lambda x: (json.loads(x) if isinstance(x,str) else x))
-        except Exception:
-            h_disp = h
-        st.dataframe(h_disp, use_container_width=True)
+        # Display summary table
+        disp_cols = ["bet_id","date_local","entry_type","stake","payout_mult","status","pnl","avg_prob","avg_edge","avg_volatility_cv","notes"]
+        for c in disp_cols:
+            if c not in h.columns:
+                h[c] = None
+        st.dataframe(h[disp_cols].sort_values(["date_local","ts_utc"], ascending=[False, False]), use_container_width=True)
 
-        st.markdown("#### Update Result")
-        idx = st.number_input("Row index to update", min_value=0, max_value=max(0, len(h)-1), value=0, step=1)
-        new_res = st.selectbox("Result", options=["Pending", "HIT", "MISS", "PUSH"], index=0)
-        if st.button("Update"):
-            try:
-                h2 = h.copy()
-                h2.loc[int(idx), "result"] = new_res
-                h2.to_csv(history_path(user_id), index=False)
-                st.success("Updated.")
-            except Exception as e:
-                st.error(f"Update failed: {e}")
+        st.markdown("#### Update Status (HIT / MISS / PUSH)")
+        pending = h[h["status"].astype(str).str.upper() == "PENDING"].copy()
+        if pending.empty:
+            st.info("No PENDING entries.")
+        else:
+            bet_choice = st.selectbox("Select a pending bet_id", options=pending["bet_id"].astype(str).tolist())
+            new_status = st.selectbox("New status", options=["HIT","MISS","PUSH"], index=0)
+            if st.button("Apply Status Update"):
+                update_history_status(user_id, bet_choice, new_status)
+                st.success("Updated. Refreshing...")
+                _safe_rerun()
+
+        with st.expander("View legs for a bet_id", expanded=False):
+            bet_view = st.selectbox("bet_id", options=h["bet_id"].astype(str).tolist(), key="bet_view_id")
+            row = h[h["bet_id"].astype(str) == str(bet_view)]
+            if not row.empty:
+                legs_json = row.iloc[0].get("legs_json")
+                try:
+                    legs = json.loads(legs_json) if isinstance(legs_json, str) else legs_json
+                except Exception:
+                    legs = None
+                if legs:
+                    st.dataframe(pd.DataFrame(legs), use_container_width=True)
+                else:
+                    st.write("No legs payload.")
+
 
 with tabs[4]:
     st.markdown("### 🧪 Calibration (stub)")
@@ -999,3 +1486,4 @@ with tabs[4]:
 
 # Footer
 st.caption("© 2025 NBA Prop Quant Engine — Powered by Kamal")
+
