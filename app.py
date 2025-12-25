@@ -138,30 +138,28 @@ def fetch_player_gamelog(player_id: int, max_games: int = 10) -> tuple[pd.DataFr
 
 # ------------------------------------------------------------------
 # Edge classification helper
-def classify_edge(edge: float | None) -> str | None:
-    """
-    Classify the betting edge into categories based on its sign and magnitude.
+def classify_edge(ev: float | None) -> str | None:
+    """Classify edge based on *expected value* (EV) per $1 stake.
 
-    This function treats negative or zero edges as "No edge" because a negative
-    edge implies the bet has a negative expected value. Only positive edges
-    produce "Lean" or "Strong" ratings. Thresholds are tuned empirically:
+    Negative or zero EV is not an edge. Thresholds are intentionally conservative:
+    - EV <= 0%  -> No edge
+    - 0%–4%     -> Lean Edge
+    - >= 4%     -> Strong Edge
 
-    - edge <= 0 → "No edge"
-    - 0 < edge < 0.07 → "Lean Edge"
-    - edge ≥ 0.07 → "Strong Edge"
+    NOTE: This is EV-based, not (p - 0.50). Using p-0.50 mislabels many losing bets.
     """
-    if edge is None:
+    if ev is None:
         return None
     try:
-        e = float(edge)
+        e = float(ev)
     except Exception:
         return None
-    # Negative or zero EV is not an edge
     if e <= 0.0:
         return "No edge"
-    if e < 0.07:
+    if e < 0.04:
         return "Lean Edge"
     return "Strong Edge"
+
 
 # ------------------------------------------------------------------
 # Volatility engine
@@ -193,6 +191,69 @@ def compute_volatility(stat_series: pd.Series) -> tuple[float | None, str | None
         label = "High"
     return cv, label
 
+
+# ------------------------------------------------------------------
+# Market-aware pricing & decision helpers
+
+def implied_prob_from_decimal(price_decimal: float | None) -> float | None:
+    """Convert decimal odds to implied probability (vig not removed)."""
+    if price_decimal is None:
+        return None
+    try:
+        p = 1.0 / float(price_decimal)
+        return float(np.clip(p, 0.0, 1.0))
+    except Exception:
+        return None
+
+def ev_per_dollar(p_win: float | None, price_decimal: float | None) -> float | None:
+    """Expected value per $1 stake using decimal odds.
+    EV = p*(price-1) - (1-p)
+    """
+    if p_win is None or price_decimal is None:
+        return None
+    try:
+        p = float(p_win)
+        price = float(price_decimal)
+        if price <= 1.0:
+            return None
+        return float(p * (price - 1.0) - (1.0 - p))
+    except Exception:
+        return None
+
+def volatility_penalty_factor(cv: float | None) -> float:
+    """Penalty factor applied to EV to reflect variance / stability.
+    High win-rate portfolios require rejecting or heavily discounting high-CV props.
+    """
+    if cv is None:
+        return 0.0
+    try:
+        v = float(cv)
+    except Exception:
+        return 0.0
+    if v <= 0.20:
+        return 1.00
+    if v <= 0.25:
+        return 0.85
+    if v <= 0.30:
+        return 0.65
+    if v <= 0.35:
+        return 0.45
+    return 0.0
+
+def passes_volatility_gate(cv: float | None, ev_raw: float | None) -> tuple[bool, str]:
+    """Hard gates: reject extreme volatility and weak EV in moderate volatility."""
+    if cv is None:
+        return False, "insufficient volatility data"
+    try:
+        v = float(cv)
+    except Exception:
+        return False, "invalid volatility"
+    if v > 0.35:
+        return False, "CV>0.35"
+    # Moderate volatility needs stronger EV to justify
+    if v > 0.25 and (ev_raw is None or float(ev_raw) < 0.06):
+        return False, "CV>0.25 requires EV>=6%"
+    return True, ""
 # ------------------------------
 # Global constants
 # ------------------------------
@@ -599,19 +660,42 @@ def compute_stat_from_gamelog(df: pd.DataFrame, market_name: str) -> pd.Series:
         return s
     return pd.to_numeric(df.get(f), errors="coerce")
 
-def bootstrap_prob_over(stat_series: pd.Series, line: float, n_sims: int = 4000) -> tuple[float, float, float]:
-    """Empirical bootstrap: returns (p_over, mu, sigma)."""
+def bootstrap_prob_over(stat_series: pd.Series, line: float, n_sims: int = 6000) -> tuple[float, float, float]:
+    """Empirical bootstrap for next-game probability.
+
+    IMPORTANT: This samples historical *outcomes*, not the mean of sampled games.
+    The prior implementation bootstrapped the sample mean, which materially
+    underestimates variance and inflates confidence.
+
+    Returns (p_over, mu, sigma) where mu/sigma are estimated from recent outcomes.
+    """
     x = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
     if x.size < 4:
-        # fallback normal approximation with conservative sigma
+        # Conservative fallback normal approximation
         mu = float(np.nanmean(x)) if x.size else 0.0
-        sigma = float(np.nanstd(x)) if x.size else max(1.0, 0.25*max(line,1.0))
-        p = float(1.0 - 0.5*(1+math.erf((line-mu)/(sigma*math.sqrt(2)+1e-9))))
-        return max(0.0, min(1.0, p)), mu, sigma
+        # Use a floor tied to line to avoid sigma collapsing on small samples
+        sigma = float(np.nanstd(x, ddof=1)) if x.size > 1 else max(1.0, 0.30 * max(line, 1.0))
+        z = (line - mu) / (sigma + 1e-9)
+        p = float(1.0 - 0.5 * (1 + math.erf(z / math.sqrt(2))))
+        return float(np.clip(p, 0.0, 1.0)), mu, sigma
+
+    # Recency weighting: game logs are most-recent first; overweight recent games slightly.
+    if x.size >= 6:
+        w = np.linspace(1.4, 0.6, x.size)  # recent -> older
+        w = w / w.sum()
+    else:
+        w = None
+
     rng = np.random.default_rng(7)  # deterministic
-    sims = rng.choice(x, size=(n_sims, x.size), replace=True).mean(axis=1)
-    p_over = float((sims > line).mean())
-    return p_over, float(x.mean()), float(x.std(ddof=1) if x.size>1 else 0.0)
+    sims = rng.choice(x, size=int(n_sims), replace=True, p=w)
+    p_over = float((sims > float(line)).mean())
+
+    # Use weighted mu when available
+    mu = float(np.average(x, weights=w) if w is not None else x.mean())
+    sigma = float(np.sqrt(np.average((x - mu) ** 2, weights=w)) if w is not None else x.std(ddof=1))
+
+    return float(np.clip(p_over, 0.0, 1.0)), mu, max(1e-9, sigma)
+
 
 def estimate_blowout_risk(team_abbr: str | None, opp_abbr: str | None, spread_abs: float | None) -> float:
     """
@@ -741,15 +825,47 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
     ctx_mult = advanced_context_multiplier(player_name, market_name, opp_abbr, key_teammate_out)
 
     proj = mu * ctx_mult if mu is not None else None
-    edge = (p_over - 0.5) if p_over is not None else None
+
+    # Pricing from Odds API (decimal odds). May be None for consensus or manual lines.
+    price_decimal = None
+    try:
+        if meta and meta.get("price") is not None:
+            price_decimal = float(meta.get("price"))
+    except Exception:
+        price_decimal = None
+
+    # Raw model probability (pre-calibration)
+    p_raw = float(p_over) if p_over is not None else None
+
+    # Default calibration (identity). UI calibration can overwrite this later in the main thread.
+    p_cal = p_raw
+
+    p_implied = implied_prob_from_decimal(price_decimal) if price_decimal is not None else None
+    ev_raw = ev_per_dollar(p_cal, price_decimal) if (p_cal is not None and price_decimal is not None) else None
+
+    pen = volatility_penalty_factor(vol_cv)
+    ev_adj = float(ev_raw * pen) if (ev_raw is not None) else None
+
+    gate_ok, gate_reason = passes_volatility_gate(vol_cv, ev_raw)
+    if not gate_ok:
+        ev_adj = None  # force exclusion by policy
 
     return {
         "player": player_name,
         "market": market_name,
         "line": float(line),
         "proj": float(proj) if proj is not None else None,
-        "p_over": float(p_over) if p_over is not None else None,
-        "edge": float(edge) if edge is not None else None,
+        "p_over": float(p_raw) if p_raw is not None else None,
+        "p_raw": float(p_raw) if p_raw is not None else None,
+        "p_cal": float(p_cal) if p_cal is not None else None,
+        "price_decimal": float(price_decimal) if price_decimal is not None else None,
+        "p_implied": float(p_implied) if p_implied is not None else None,
+        "ev_raw": float(ev_raw) if ev_raw is not None else None,
+        "ev_adj": float(ev_adj) if ev_adj is not None else None,
+        "vol_penalty": float(pen),
+        "gate_ok": bool(gate_ok),
+        "gate_reason": gate_reason,
+        "edge": float(ev_adj) if ev_adj is not None else None,
         "team": team_abbr,
         "opp": opp_abbr,
         "headshot": nba_headshot_url(player_id),
@@ -1047,6 +1163,102 @@ def estimate_blowout_risk(team_abbr: str | None, opp_abbr: str | None, spread_ab
         base += ((h % 20) - 10) / 200.0  # [-0.05, +0.05]
     return float(np.clip(base, 0.04, 0.35))
 
+
+# ------------------------------
+# Calibration (lightweight, file-backed)
+# ------------------------------
+def _expand_history_legs(history_df: pd.DataFrame) -> pd.DataFrame:
+    """Expand history rows into one row per leg with outcome labels.
+    Expects history['legs'] to be JSON list of leg dicts and history['result'] in {HIT,MISS,PUSH,Pending}.
+    """
+    if history_df is None or history_df.empty:
+        return pd.DataFrame()
+    rows = []
+    for _, r in history_df.iterrows():
+        res = str(r.get("result", "Pending"))
+        if res not in ("HIT", "MISS", "PUSH"):
+            continue
+        try:
+            legs = json.loads(r.get("legs", "[]")) if isinstance(r.get("legs"), str) else (r.get("legs") or [])
+        except Exception:
+            legs = []
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            rows.append({
+                "ts": r.get("ts"),
+                "market": leg.get("market"),
+                "player": leg.get("player"),
+                "p_raw": safe_float(leg.get("p_raw") or leg.get("p_over"), default=np.nan),
+                "price_decimal": safe_float(leg.get("price_decimal"), default=np.nan),
+                "cv": safe_float(leg.get("volatility_cv"), default=np.nan),
+                "y": 1 if res == "HIT" else 0,
+                "result": res,
+            })
+    df = pd.DataFrame(rows)
+    df = df[pd.to_numeric(df["p_raw"], errors="coerce").notna()].copy() if not df.empty else df
+    return df
+
+def fit_monotone_calibrator(df_legs: pd.DataFrame, n_bins: int = 12) -> dict | None:
+    """Fit a monotone calibration map using binned empirical win rates (isotonic-like without sklearn).
+
+    Returns dict with keys: 'x' (bin centers), 'y' (monotone win rates).
+    """
+    if df_legs is None or df_legs.empty:
+        return None
+    d = df_legs.copy()
+    d = d[(d["p_raw"] >= 0.01) & (d["p_raw"] <= 0.99)]
+    if len(d) < 120:
+        return None
+    d["bin"] = pd.cut(d["p_raw"], bins=n_bins, labels=False, include_lowest=True)
+    g = d.groupby("bin", dropna=True).agg(p_mid=("p_raw","mean"), win=("y","mean"), n=("y","size")).reset_index()
+    g = g[g["n"] >= 8].sort_values("p_mid")
+    if g.empty or len(g) < 6:
+        return None
+    # enforce monotonicity (non-decreasing)
+    win = g["win"].values.astype(float)
+    win_mono = np.maximum.accumulate(win)
+    win_mono = np.clip(win_mono, 0.01, 0.99)
+    return {"x": g["p_mid"].values.astype(float).tolist(), "y": win_mono.tolist(), "n": int(len(d))}
+
+def apply_calibrator(p_raw: float | None, calib: dict | None) -> float | None:
+    if p_raw is None:
+        return None
+    try:
+        p = float(p_raw)
+    except Exception:
+        return None
+    if calib is None:
+        return float(np.clip(p, 0.0, 1.0))
+    xs = calib.get("x") or []
+    ys = calib.get("y") or []
+    if len(xs) < 2 or len(xs) != len(ys):
+        return float(np.clip(p, 0.0, 1.0))
+    try:
+        return float(np.clip(np.interp(p, xs, ys), 0.0, 1.0))
+    except Exception:
+        return float(np.clip(p, 0.0, 1.0))
+
+def recompute_pricing_fields(leg: dict, calib: dict | None) -> dict:
+    """Recompute p_cal, EV, advantage and gate fields for an existing leg dict."""
+    p_raw = leg.get("p_raw")
+    p_cal = apply_calibrator(p_raw, calib)
+    leg["p_cal"] = p_cal
+    price = leg.get("price_decimal")
+    p_imp = implied_prob_from_decimal(price) if price is not None else None
+    leg["p_implied"] = p_imp
+    ev_raw = ev_per_dollar(p_cal, price) if (p_cal is not None and price is not None) else None
+    leg["ev_raw"] = ev_raw
+    pen = volatility_penalty_factor(leg.get("volatility_cv"))
+    leg["vol_penalty"] = pen
+    gate_ok, gate_reason = passes_volatility_gate(leg.get("volatility_cv"), ev_raw)
+    leg["gate_ok"] = gate_ok
+    leg["gate_reason"] = gate_reason
+    leg["ev_adj"] = (ev_raw * pen) if (ev_raw is not None and gate_ok) else None
+    leg["edge"] = leg["ev_adj"]
+    leg["advantage"] = (p_cal - p_imp) if (p_cal is not None and p_imp is not None) else None
+    return leg
+
 # ------------------------------
 # History persistence
 # ------------------------------
@@ -1317,6 +1529,13 @@ with tabs[0]:
         if not results:
             st.warning("No valid legs configured.")
         else:
+            # Apply latest calibrator (if fitted) and recompute EV/filters in main thread
+            calib = st.session_state.get("calibrator_map")
+            if calib:
+                results = [recompute_pricing_fields(dict(leg), calib) for leg in results]
+            else:
+                results = [recompute_pricing_fields(dict(leg), None) for leg in results]
+
             st.session_state["last_results"] = results
             st.success(f"Computed {len(results)} legs. See Results tab.")
             # persist inputs
@@ -1365,10 +1584,11 @@ with tabs[1]:
                     st.image(leg["headshot"], use_container_width=True)
                 st.write(f"Line: {leg.get('line')}")
                 st.write(f"Proj (ctx): {None if leg.get('proj') is None else round(leg['proj'],2)}")
-                st.write(f"P(Over): {None if leg.get('p_over') is None else round(leg['p_over'],3)}")
-                st.write(f"Edge vs 50%: {None if leg.get('edge') is None else round(leg['edge'],3)}")
+                st.write(f"P(Over) (cal): {None if leg.get('p_cal') is None else round(leg['p_cal'],3)}")
+                st.write(f"Implied P: {None if leg.get('p_implied') is None else round(leg['p_implied'],3)}")
+                st.write("EV adj / $1: " + ("—" if leg.get("ev_adj") is None else "{:+.1f}%".format(float(leg["ev_adj"])*100)))
                 # Display qualitative edge classification
-                cat = classify_edge(leg.get('edge'))
+                cat = classify_edge(leg.get('ev_adj'))
                 if cat:
                     st.caption(f"Edge rating: {cat}")
                 # Display volatility information if available
@@ -1441,7 +1661,11 @@ with tabs[2]:
         default=["Points", "Rebounds", "Assists"],
     )
 
-    min_prob = st.slider("Min model win prob", min_value=0.50, max_value=0.80, value=0.65, step=0.01)
+    min_prob = st.slider("Min model win prob (cal)", min_value=0.50, max_value=0.80, value=0.60, step=0.01)
+    min_adv = st.slider("Min advantage vs implied P", min_value=0.00, max_value=0.10, value=0.02, step=0.005,
+                        help="Requires p_cal - p_implied >= this threshold (vig not removed).")
+    min_ev_adj = st.slider("Min volatility-adjusted EV", min_value=-0.10, max_value=0.30, value=0.01, step=0.005,
+                           help="Requires EV_adj per $1 stake >= threshold. EV is based on decimal odds when available.")
     max_rows = st.slider("Max rows shown", min_value=10, max_value=200, value=60, step=10)
 
     # sportsbook choices
@@ -1531,6 +1755,7 @@ with tabs[2]:
                     "home_team": r.get("home_team"),
                     "away_team": r.get("away_team"),
                     "commence_time": r.get("commence_time"),
+                    "price": r.get("price"),
                 }
                 candidates.append((pname, mkt, float(line), meta, r))
 
@@ -1541,32 +1766,56 @@ with tabs[2]:
                     futures = [executor.submit(compute_leg_projection, pname, mkt, line, meta, n_games=n_games, key_teammate_out=False) for (pname, mkt, line, meta, _r) in candidates]
                     for (pname, mkt, line, meta, row), fut in zip(candidates, futures):
                         leg = fut.result()
+                        # Apply calibration + pricing fields if available
+                        leg = recompute_pricing_fields(leg, st.session_state.get("calibrator_map"))
                         if leg.get("p_over") is None:
                             dropped.append({"player": pname, "market": mkt, "reason": "Projection failed"})
                             continue
-                        # Apply probability threshold
-                        if leg["p_over"] >= float(min_prob):
-                            # Classify edge
-                            cat = classify_edge(leg.get("edge")) or ""
-                            out_rows.append({
-                                "player": pname,
-                                "market": mkt,
-                                "line": float(line),
-                                "p_over": float(leg["p_over"]),
-                                "proj": leg.get("proj"),
-                                "team": leg.get("team"),
-                                "opp": leg.get("opp"),
-                                "book": row.get("book"),
-                                "event_id": row.get("event_id"),
-                                "edge_cat": cat,
-                            })
-                        else:
-                            dropped.append({"player": pname, "market": mkt, "reason": f"p_over<{min_prob:.2f}"})
+                        # Apply market-aware filters (cal prob + implied prob + EV + volatility gates)
+                        p_cal = float(leg.get("p_cal") or leg.get("p_over") or 0.0)
+                        p_imp = leg.get("p_implied")
+                        adv = float(p_cal - float(p_imp)) if p_imp is not None else None
+                        ev_adj_val = leg.get("ev_adj")
+
+                        if leg.get("gate_ok") is not True:
+                            dropped.append({"player": pname, "market": mkt, "reason": f"vol_gate:{leg.get('gate_reason','')}"})
+                            continue
+                        if p_imp is None or ev_adj_val is None:
+                            dropped.append({"player": pname, "market": mkt, "reason": "missing price/EV (book not providing decimal odds)"})
+                            continue
+                        if p_cal < float(min_prob):
+                            dropped.append({"player": pname, "market": mkt, "reason": f"p_cal<{min_prob:.2f}"})
+                            continue
+                        if adv is not None and adv < float(min_adv):
+                            dropped.append({"player": pname, "market": mkt, "reason": f"adv<{min_adv:.3f}"})
+                            continue
+                        if float(ev_adj_val) < float(min_ev_adj):
+                            dropped.append({"player": pname, "market": mkt, "reason": f"ev_adj<{min_ev_adj:.3f}"})
+                            continue
+
+                        # Classify edge using EV
+                        cat = classify_edge(float(ev_adj_val)) or ""
+                        out_rows.append({
+                            "player": pname,
+                            "market": mkt,
+                            "line": float(line),
+                            "p_cal": p_cal,
+                            "p_implied": float(p_imp),
+                            "adv": adv,
+                            "ev_adj": float(ev_adj_val),
+                            "proj": leg.get("proj"),
+                            "team": leg.get("team"),
+                            "opp": leg.get("opp"),
+                            "book": row.get("book"),
+                            "price_decimal": leg.get("price_decimal"),
+                            "event_id": row.get("event_id"),
+                            "edge_cat": cat,
+                        })
 
             # Build DataFrame and sort if p_over available
             out_df = pd.DataFrame(out_rows)
             if not out_df.empty and "p_over" in out_df.columns:
-                out_df = out_df.sort_values("p_over", ascending=False)
+                out_df = out_df.sort_values("ev_adj", ascending=False)
             # Limit rows
             out_df = out_df.head(int(max_rows))
             st.markdown("#### Scanner Results")
@@ -1608,8 +1857,56 @@ with tabs[3]:
                 st.error(f"Update failed: {e}")
 
 with tabs[4]:
-    st.markdown("### 🧪 Calibration (stub)")
-    st.info("Calibration UI is reserved for future iterations (CLV learning, drift calibration).")
+    st.markdown("### 🧪 Calibration & Performance")
+    h = load_history(user_id)
+    legs_df = _expand_history_legs(h)
+
+    if legs_df.empty:
+        st.info("No settled bets yet (HIT/MISS/PUSH). Log bets and update results in History to unlock calibration.")
+    else:
+        # Metrics
+        y = legs_df["y"].values.astype(float)
+        p_raw = legs_df["p_raw"].values.astype(float)
+        brier = float(np.mean((p_raw - y) ** 2))
+        hit_rate = float(y.mean())
+        st.metric("Hit rate (settled legs)", f"{hit_rate*100:.1f}%")
+        st.metric("Brier score (p_raw)", f"{brier:.4f}")
+
+        # Reliability table
+        n_bins = st.slider("Reliability bins", 6, 20, 12)
+        legs_df["bin"] = pd.cut(legs_df["p_raw"], bins=n_bins, include_lowest=True)
+        rel = legs_df.groupby("bin", dropna=True).agg(p_mean=("p_raw","mean"), win_rate=("y","mean"), n=("y","size")).reset_index()
+        st.markdown("#### Reliability (p_raw vs realized)")
+        st.dataframe(rel, use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("#### Fit / Update Calibrator")
+        st.caption("This fits a monotone mapping from p_raw → p_cal using your settled history. It will be applied to new model runs and scanner results.")
+        if st.button("Fit calibrator from settled history"):
+            calib = fit_monotone_calibrator(legs_df, n_bins=int(n_bins))
+            if calib is None:
+                st.warning("Not enough quality settled data to fit (need ~120+ legs with spread across probabilities). Using identity calibration for now.")
+                st.session_state["calibrator_map"] = None
+            else:
+                st.session_state["calibrator_map"] = calib
+                st.success(f"Calibrator fitted on {calib.get('n','?')} settled legs.")
+
+        # Preview calibrated reliability if available
+        calib = st.session_state.get("calibrator_map")
+        if calib:
+            legs_df["p_cal"] = legs_df["p_raw"].apply(lambda p: apply_calibrator(p, calib))
+            brier_cal = float(np.mean((legs_df["p_cal"].values.astype(float) - y) ** 2))
+            st.metric("Brier score (p_cal)", f"{brier_cal:.4f}")
+            legs_df["bin2"] = pd.cut(legs_df["p_cal"], bins=n_bins, include_lowest=True)
+            rel2 = legs_df.groupby("bin2", dropna=True).agg(p_mean=("p_cal","mean"), win_rate=("y","mean"), n=("y","size")).reset_index()
+            st.markdown("#### Reliability (p_cal vs realized)")
+            st.dataframe(rel2, use_container_width=True)
+
+            st.markdown("---")
+            st.markdown("#### Suggested Policy Check")
+            st.write("If p_cal buckets are not increasing monotonically in win_rate, your model inputs or selection policy are still leaking noise.")
+
 
 # Footer
 st.caption("© 2025 NBA Prop Quant Engine — Powered by Kamal")
+
