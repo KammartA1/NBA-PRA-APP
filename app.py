@@ -725,7 +725,7 @@ def context_multiplier(team_abbr: str | None, opp_abbr: str | None, key_teammate
     # placeholder for future defensive/pace adjustments
     return float(m)
 
-def compute_leg_projection(player_name: str, market_name: str, line: float, meta: dict | None, n_games: int, key_teammate_out: bool):
+def compute_leg_projection(player_name: str, market_name: str, line: float, meta: dict | None, n_games: int, key_teammate_out: bool, bankroll: float = 0.0, frac_kelly: float = 0.25, max_risk_frac: float = 0.05, market_prior_weight: float = 0.65):
     """Compute single leg model outputs with robust gamelog fetcher and context adjustments.
 
        Returns a dictionary with projection, probability of going over, edge vs 50/50,
@@ -835,13 +835,23 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
     except Exception:
         price_decimal = None
 
+    # Market implied probability from price (decimal odds)
+    p_implied = implied_prob_from_decimal(price_decimal) if price_decimal is not None else None
+
     # Raw model probability (pre-calibration)
-    p_raw = float(p_over) if p_over is not None else None
+    p_model = float(p_over) if p_over is not None else None
+
+    # Market-prior integration: blend model probability with market implied probability
+    # w=1.0 => pure model, w=0.0 => pure market
+    w = float(market_prior_weight) if market_prior_weight is not None else 0.65
+    if p_model is not None and p_implied is not None:
+        p_raw = float(np.clip(w * p_model + (1.0 - w) * p_implied, 1e-6, 1.0 - 1e-6))
+    else:
+        p_raw = p_model
 
     # Default calibration (identity). UI calibration can overwrite this later in the main thread.
     p_cal = p_raw
 
-    p_implied = implied_prob_from_decimal(price_decimal) if price_decimal is not None else None
     ev_raw = ev_per_dollar(p_cal, price_decimal) if (p_cal is not None and price_decimal is not None) else None
 
     pen = volatility_penalty_factor(vol_cv)
@@ -851,6 +861,17 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
     if not gate_ok:
         ev_adj = None  # force exclusion by policy
 
+    # Recommended stake (only if leg passes gate and has valid EV after penalties)
+    stake_dollars, stake_frac, stake_reason = 0.0, 0.0, "gated"
+    if gate_ok and (p_cal is not None) and (price_decimal is not None) and (ev_adj is not None) and (ev_adj > 0):
+        stake_dollars, stake_frac, stake_reason = recommended_stake(
+            bankroll=float(bankroll),
+            p=float(p_cal),
+            price_decimal=float(price_decimal),
+            frac_kelly=float(frac_kelly),
+            cap_frac=float(max_risk_frac),
+        )
+
     return {
         "player": player_name,
         "market": market_name,
@@ -858,11 +879,15 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
         "proj": float(proj) if proj is not None else None,
         "p_over": float(p_raw) if p_raw is not None else None,
         "p_raw": float(p_raw) if p_raw is not None else None,
+        "p_model": float(p_model) if p_model is not None else None,
         "p_cal": float(p_cal) if p_cal is not None else None,
         "price_decimal": float(price_decimal) if price_decimal is not None else None,
         "p_implied": float(p_implied) if p_implied is not None else None,
         "ev_raw": float(ev_raw) if ev_raw is not None else None,
         "ev_adj": float(ev_adj) if ev_adj is not None else None,
+        "stake": float(stake_dollars) if stake_dollars is not None else 0.0,
+        "stake_frac": float(stake_frac) if stake_frac is not None else 0.0,
+        "stake_reason": stake_reason,
         "vol_penalty": float(pen),
         "gate_ok": bool(gate_ok),
         "gate_reason": gate_reason,
@@ -1260,6 +1285,65 @@ def recompute_pricing_fields(leg: dict, calib: dict | None) -> dict:
     leg["advantage"] = (p_cal - p_imp) if (p_cal is not None and p_imp is not None) else None
     return leg
 
+
+# ------------------------------
+# User state persistence (bankroll per Personal ID)
+# ------------------------------
+def user_state_path(user_id: str) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_\-]", "_", (user_id or "default").strip() or "default")
+    return f"user_state_{safe}.json"
+
+def load_user_state(user_id: str) -> dict:
+    fp = user_state_path(user_id)
+    if os.path.exists(fp):
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                return json.load(f) or {}
+        except Exception:
+            return {}
+    return {}
+
+def save_user_state(user_id: str, state: dict) -> None:
+    fp = user_state_path(user_id)
+    try:
+        with open(fp, "w", encoding="utf-8") as f:
+            json.dump(state or {}, f)
+    except Exception:
+        return
+
+def kelly_fraction(p: float, price_decimal: float) -> float:
+    """Kelly fraction for a single wager with decimal odds."""
+    try:
+        p = float(p)
+        o = float(price_decimal)
+    except Exception:
+        return 0.0
+    if o <= 1.0 or p <= 0.0 or p >= 1.0:
+        return 0.0
+    b = o - 1.0
+    q = 1.0 - p
+    raw = (b * p - q) / b
+    return float(max(0.0, raw))
+
+def recommended_stake(bankroll: float, p: float | None, price_decimal: float | None, frac_kelly: float, cap_frac: float = 0.05) -> tuple[float, float, str]:
+    """Return (stake_dollars, stake_frac_of_bankroll, reason)."""
+    try:
+        br = float(bankroll)
+    except Exception:
+        br = 0.0
+    if br <= 0:
+        return 0.0, 0.0, "bankroll<=0"
+    if p is None or price_decimal is None:
+        return 0.0, 0.0, "missing p or price"
+    k = kelly_fraction(float(p), float(price_decimal))
+    f = max(0.0, min(1.0, float(frac_kelly))) * k
+    # cap risk per bet to protect from model error
+    f = min(f, float(cap_frac))
+    stake = br * f
+    if stake <= 0:
+        return 0.0, 0.0, "kelly<=0"
+    return float(stake), float(f), "ok"
+
 # ------------------------------
 # History persistence
 # ------------------------------
@@ -1315,17 +1399,62 @@ div[data-testid="stTabs"] {
 
 # Sidebar controls
 st.sidebar.markdown("## User & Bankroll")
-user_id = st.sidebar.text_input("Your ID (for personal history)", value=st.session_state.get("user_id", "Me"))
+
+user_id = st.sidebar.text_input(
+    "Your ID (for personal history)",
+    value=st.session_state.get("user_id", "Me"),
+    help="Bankroll is saved and restored per ID."
+)
 st.session_state["user_id"] = user_id
 
-bankroll = st.sidebar.number_input("Bankroll ($)", min_value=0.0, value=float(st.session_state.get("bankroll", 100.0)), step=10.0)
-st.session_state["bankroll"] = bankroll
+# Load saved bankroll when user changes
+_active = st.session_state.get("_active_user_id")
+if _active != user_id:
+    state = load_user_state(user_id)
+    saved_br = safe_float(state.get("bankroll"), default=st.session_state.get("bankroll", 100.0))
+    st.session_state["bankroll"] = float(saved_br)
+    st.session_state["_active_user_id"] = user_id
+
+bankroll = st.sidebar.number_input(
+    "Bankroll ($)",
+    min_value=0.0,
+    value=float(st.session_state.get("bankroll", 100.0)),
+    step=10.0
+)
+st.session_state["bankroll"] = float(bankroll)
+
+# Persist bankroll continuously
+_last_saved = st.session_state.get("_last_saved_bankroll")
+if _last_saved is None or float(_last_saved) != float(bankroll):
+    state = load_user_state(user_id)
+    state["bankroll"] = float(bankroll)
+    save_user_state(user_id, state)
+    st.session_state["_last_saved_bankroll"] = float(bankroll)
 
 payout_2pick = st.sidebar.number_input("2-Pick Payout (e.g. 3.0x)", min_value=1.0, value=float(st.session_state.get("payout_2pick", 3.0)), step=0.1)
 st.session_state["payout_2pick"] = payout_2pick
 
 frac_kelly = st.sidebar.slider("Fractional Kelly", min_value=0.0, max_value=1.0, value=float(st.session_state.get("frac_kelly", 0.25)), step=0.05)
 st.session_state["frac_kelly"] = frac_kelly
+market_prior_weight = st.sidebar.slider(
+    "Market Prior Weight (model vs market)",
+    min_value=0.0,
+    max_value=1.0,
+    value=float(st.session_state.get("market_prior_weight", 0.65)),
+    step=0.05,
+    help="0.0 = trust market implied probability entirely; 1.0 = trust your model probability entirely. Default blends both."
+)
+st.session_state["market_prior_weight"] = float(market_prior_weight)
+
+max_risk_per_bet = st.sidebar.slider(
+    "Max Risk Per Bet (% bankroll)",
+    min_value=0.0,
+    max_value=10.0,
+    value=float(st.session_state.get("max_risk_per_bet", 5.0)),
+    step=0.5,
+    help="Hard cap on recommended stake as a percent of bankroll (protects against model miscalibration)."
+)
+st.session_state["max_risk_per_bet"] = float(max_risk_per_bet)
 
 n_games = st.sidebar.slider("Recent Games Sample (N)", min_value=5, max_value=30, value=int(st.session_state.get("n_games", 10)))
 st.session_state["n_games"] = n_games
@@ -1516,7 +1645,7 @@ with tabs[0]:
         if tasks:
             max_workers = min(8, len(tasks))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(compute_leg_projection, pname, mkt, line, meta, n_games=n_games, key_teammate_out=teammate_out) for (tag, pname, mkt, line, meta, teammate_out, opp_in) in tasks]
+                futures = [executor.submit(compute_leg_projection, pname, mkt, line, meta, n_games=n_games, key_teammate_out=teammate_out, bankroll=bankroll, frac_kelly=frac_kelly, max_risk_frac=float(st.session_state.get("max_risk_per_bet", 5.0))/100.0, market_prior_weight=market_prior_weight) for (tag, pname, mkt, line, meta, teammate_out, opp_in) in tasks]
                 for (tag, pname, mkt, line, meta, teammate_out, opp_in), fut in zip(tasks, futures):
                     leg = fut.result()
                     # Apply user-provided opponent override only for display
@@ -1587,7 +1716,24 @@ with tabs[1]:
                 st.write(f"Proj (ctx): {None if leg.get('proj') is None else round(leg['proj'],2)}")
                 st.write(f"P(Over) (cal): {None if leg.get('p_cal') is None else round(leg['p_cal'],3)}")
                 st.write(f"Implied P: {None if leg.get('p_implied') is None else round(leg['p_implied'],3)}")
-                st.write("EV adj / $1: " + (("— (gated: " + str(leg.get("gate_reason","")) + ")") if (leg.get("ev_adj") is None and leg.get("gate_ok") is False) else ("—" if leg.get("ev_adj") is None else "{:+.1f}%".format(float(leg["ev_adj"])*100))))
+                ev_adj_val = leg.get("ev_adj")
+                if ev_adj_val is None:
+                    if not leg.get("gate_ok", True):
+                        ev_line = f"— (gated: {leg.get('gate_reason','')})"
+                    else:
+                        ev_line = "—"
+                else:
+                    ev_line = "{:+.1f}%".format(float(ev_adj_val) * 100)
+                st.write(f"EV adj / $1: {ev_line}")
+
+                stake = safe_float(leg.get("stake"), default=0.0)
+                stake_frac = safe_float(leg.get("stake_frac"), default=0.0)
+                stake_reason_str = str(leg.get("stake_reason") or "")
+                if stake > 0 and stake_frac > 0:
+                    st.write(f"Stake (rec): ${stake:,.2f} ({stake_frac*100:.1f}% BR)")
+                else:
+                    # Show why stake is unavailable (gated / missing price / kelly<=0)
+                    st.write(f"Stake (rec): — ({stake_reason_str})")
                 # Display qualitative edge classification
                 cat = classify_edge(leg.get('ev_adj'))
                 if cat:
@@ -1768,7 +1914,7 @@ with tabs[2]:
             if candidates:
                 max_workers = min(8, len(candidates))
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = [executor.submit(compute_leg_projection, pname, mkt, line, meta, n_games=n_games, key_teammate_out=False) for (pname, mkt, line, meta, _r) in candidates]
+                    futures = [executor.submit(compute_leg_projection, pname, mkt, line, meta, n_games=n_games, key_teammate_out=False, bankroll=bankroll, frac_kelly=frac_kelly, max_risk_frac=float(st.session_state.get("max_risk_per_bet", 5.0))/100.0, market_prior_weight=market_prior_weight) for (pname, mkt, line, meta, _r) in candidates]
                     for (pname, mkt, line, meta, row), fut in zip(candidates, futures):
                         leg = fut.result()
                         # Apply calibration + pricing fields if available
@@ -1815,6 +1961,8 @@ with tabs[2]:
                             "price_decimal": leg.get("price_decimal"),
                             "event_id": row.get("event_id"),
                             "edge_cat": cat,
+                                "stake": float(leg.get("stake",0.0)),
+                                "stake_frac": float(leg.get("stake_frac",0.0)),
                         })
 
             # Build DataFrame and sort if p_over available
