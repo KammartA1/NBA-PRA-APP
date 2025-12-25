@@ -2259,26 +2259,26 @@ with tabs[3]:
             except Exception as e:
                 st.error(f"Update failed: {e}")
 
-st.markdown("#### Update CLV (Market Move)")
-st.caption("Fetches the latest available line/price for each leg (original book then consensus) and stores CLV fields back into the logged legs JSON.")
-idx2 = st.number_input("Row index to CLV-update", min_value=0, max_value=max(0, len(h)-1), value=int(idx), step=1, key="clv_idx")
-if st.button("Update CLV for Row"):
-    try:
-        h2 = h.copy()
-        legs = json.loads(h2.loc[int(idx2), "legs"])
-        if not isinstance(legs, list) or not legs:
-            st.warning("No legs found on that row.")
-        else:
-            legs2, errs = apply_clv_update_to_legs(legs)
-            h2.loc[int(idx2), "legs"] = json.dumps(legs2)
-            h2.to_csv(history_path(user_id), index=False)
-            if errs:
-                st.warning("CLV updated with some warnings:")
-                for e in errs[:10]:
-                    st.write(f"- {e}")
-            st.success("CLV updated and saved.")
-    except Exception as e:
-        st.error(f"CLV update failed: {e}")
+        st.markdown("#### Update CLV (Market Move)")
+        st.caption("Fetches the latest available line/price for each leg (original book then consensus) and stores CLV fields back into the logged legs JSON.")
+        idx2 = st.number_input("Row index to CLV-update", min_value=0, max_value=max(0, len(h)-1), value=int(idx), step=1, key="clv_idx")
+        if st.button("Update CLV for Row"):
+            try:
+                h2 = h.copy()
+                legs = json.loads(h2.loc[int(idx2), "legs"])
+                if not isinstance(legs, list) or not legs:
+                    st.warning("No legs found on that row.")
+                else:
+                    legs2, errs = apply_clv_update_to_legs(legs)
+                    h2.loc[int(idx2), "legs"] = json.dumps(legs2)
+                    h2.to_csv(history_path(user_id), index=False)
+                    if errs:
+                        st.warning("CLV updated with some warnings:")
+                        for e in errs[:10]:
+                            st.write(f"- {e}")
+                    st.success("CLV updated and saved.")
+            except Exception as e:
+                st.error(f"CLV update failed: {e}")
 
 
 with tabs[4]:
