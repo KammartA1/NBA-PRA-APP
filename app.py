@@ -243,7 +243,7 @@ def volatility_penalty_factor(cv: float | None) -> float:
 def passes_volatility_gate(cv: float | None, ev_raw: float | None) -> tuple[bool, str]:
     """Hard gates: reject extreme volatility and weak EV in moderate volatility."""
     if cv is None:
-        return False, "insufficient volatility data"
+        return False, "insufficient stat history (no volatility/CV)"
     try:
         v = float(cv)
     except Exception:
@@ -660,7 +660,7 @@ def compute_stat_from_gamelog(df: pd.DataFrame, market_name: str) -> pd.Series:
         return s
     return pd.to_numeric(df.get(f), errors="coerce")
 
-def bootstrap_prob_over(stat_series: pd.Series, line: float, n_sims: int = 6000) -> tuple[float, float, float]:
+def bootstrap_prob_over(stat_series: pd.Series, line: float, n_sims: int = 6000) -> tuple[float | None, float | None, float | None]:
     """Empirical bootstrap for next-game probability.
 
     IMPORTANT: This samples historical *outcomes*, not the mean of sampled games.
@@ -671,13 +671,11 @@ def bootstrap_prob_over(stat_series: pd.Series, line: float, n_sims: int = 6000)
     """
     x = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
     if x.size < 4:
-        # Conservative fallback normal approximation
-        mu = float(np.nanmean(x)) if x.size else 0.0
-        # Use a floor tied to line to avoid sigma collapsing on small samples
-        sigma = float(np.nanstd(x, ddof=1)) if x.size > 1 else max(1.0, 0.30 * max(line, 1.0))
-        z = (line - mu) / (sigma + 1e-9)
-        p = float(1.0 - 0.5 * (1 + math.erf(z / math.sqrt(2))))
-        return float(np.clip(p, 0.0, 1.0)), mu, sigma
+        # Not enough history to estimate a next-game distribution.
+        # Returning None forces downstream gating (no "fake precision" from tiny samples).
+        mu = float(np.nanmean(x)) if x.size else None
+        sigma = float(np.nanstd(x, ddof=1)) if x.size > 1 else None
+        return None, mu, sigma
 
     # Recency weighting: game logs are most-recent first; overweight recent games slightly.
     if x.size >= 6:
@@ -770,6 +768,9 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
 
     # bootstrap-based probability of going over line
     p_over, mu, sigma = bootstrap_prob_over(stat_series, float(line))
+
+    if p_over is None:
+        errors.append("Insufficient recent stat history to estimate next-game probability (need >=4 games).")
 
     # Infer team and opponent abbreviations
     team_abbr: str | None = None
@@ -1586,7 +1587,7 @@ with tabs[1]:
                 st.write(f"Proj (ctx): {None if leg.get('proj') is None else round(leg['proj'],2)}")
                 st.write(f"P(Over) (cal): {None if leg.get('p_cal') is None else round(leg['p_cal'],3)}")
                 st.write(f"Implied P: {None if leg.get('p_implied') is None else round(leg['p_implied'],3)}")
-                st.write("EV adj / $1: " + ("—" if leg.get("ev_adj") is None else "{:+.1f}%".format(float(leg["ev_adj"])*100)))
+                st.write("EV adj / $1: " + (("— (gated: " + str(leg.get("gate_reason","")) + ")") if (leg.get("ev_adj") is None and leg.get("gate_ok") is False) else ("—" if leg.get("ev_adj") is None else "{:+.1f}%".format(float(leg["ev_adj"])*100))))
                 # Display qualitative edge classification
                 cat = classify_edge(leg.get('ev_adj'))
                 if cat:
@@ -1615,13 +1616,17 @@ with tabs[1]:
             try:
                 import numpy as _np
                 from scipy.stats import norm as _norm_mc
-                n = len(res)
-                probs = _np.array([float(leg.get("p_over", 0.0) or 0.0) for leg in res], dtype=float)
+                # Only include legs that passed gating and have calibrated probabilities.
+                legs_for_combo = [leg for leg in res if leg.get("gate_ok") is True and leg.get("p_cal") is not None]
+                if len(legs_for_combo) < 2:
+                    raise ValueError("Need >=2 gated legs with calibrated probabilities for combo.")
+                n = len(legs_for_combo)
+                probs = _np.array([float(leg.get("p_cal")) for leg in legs_for_combo], dtype=float)
                 # Build correlation matrix
                 corr_mat = _np.eye(n)
                 for i in range(n):
                     for j in range(i+1, n):
-                        c = estimate_player_correlation(res[i], res[j])
+                        c = estimate_player_correlation(legs_for_combo[i], legs_for_combo[j])
                         corr_mat[i, j] = c
                         corr_mat[j, i] = c
                 # Ensure positive semi-definite via eigen decomposition
@@ -1909,4 +1914,3 @@ with tabs[4]:
 
 # Footer
 st.caption("© 2025 NBA Prop Quant Engine — Powered by Kamal")
-
