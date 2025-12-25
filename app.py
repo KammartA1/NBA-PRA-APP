@@ -281,6 +281,72 @@ ODDS_MARKETS_OPTIONAL = {
     "Turnovers": "player_turnovers",
 }
 
+# ------------------------------------------------------------------
+# Best-in-class: Book quality weights (market sharpness)
+# Higher = sharper (trust market more / require stronger edge)
+BOOK_SHARPNESS: dict[str, float] = {
+    # Sharper books/exchanges (when present in Odds API)
+    "pinnacle": 1.00,
+    "circa": 0.95,
+    "bookmaker": 0.90,
+    "betcris": 0.85,
+    # Major US books (moderately sharp)
+    "draftkings": 0.70,
+    "fanduel": 0.70,
+    "betmgm": 0.65,
+    "caesars": 0.65,
+    "betrivers": 0.60,
+    "pointsbetus": 0.55,
+    # Softer/offshore (treat as noisier)
+    "betonlineag": 0.45,
+    "bovada": 0.40,
+    "mybookieag": 0.30,
+}
+def book_sharpness(book_key: str | None) -> float:
+    k = (book_key or "").strip().lower()
+    return float(BOOK_SHARPNESS.get(k, 0.55))  # default mid
+
+
+# ------------------------------------------------------------------
+# Best-in-class: Regime classification (stable vs chaotic environments)
+def classify_regime(vol_cv: float | None, blowout_prob: float | None, ctx_mult: float | None) -> tuple[str, float]:
+    """Return (regime_label, regime_score) where higher score = more chaotic.
+
+    This is intentionally simple and explainable:
+    - Volatility (CV) is the strongest driver
+    - Blowout probability increases chaos
+    - Extreme context multipliers indicate unstable environment (injury/role swings)
+    """
+    v = None
+    try:
+        v = float(vol_cv) if vol_cv is not None else None
+    except Exception:
+        v = None
+    b = None
+    try:
+        b = float(blowout_prob) if blowout_prob is not None else 0.10
+    except Exception:
+        b = 0.10
+    c = None
+    try:
+        c = float(ctx_mult) if ctx_mult is not None else 1.0
+    except Exception:
+        c = 1.0
+
+    # Normalize components roughly into [0,1]
+    v_score = 0.0 if v is None else float(np.clip((v - 0.15) / 0.25, 0.0, 1.0))
+    b_score = float(np.clip((b - 0.08) / 0.20, 0.0, 1.0))
+    c_score = float(np.clip((abs(c - 1.0)) / 0.20, 0.0, 1.0))
+
+    score = float(np.clip(0.55 * v_score + 0.30 * b_score + 0.15 * c_score, 0.0, 1.0))
+
+    if score >= 0.65:
+        return "Chaotic", score
+    if score >= 0.40:
+        return "Mixed", score
+    return "Stable", score
+
+
 # Simple stat mapping for projection from nba_api logs
 STAT_FIELDS = {
     "Points": "PTS",
@@ -474,10 +540,11 @@ def extract_books_from_event_odds(event_odds: dict) -> list[str]:
 def _parse_player_prop_outcomes(event_odds: dict, market_key: str, book_filter: str | None = None):
     """
     Returns list of dict rows:
-      {player, line, odds_price, book, side, market_key, event_id, home_team, away_team, commence_time}
+      {player, player_norm, line, price, book, side, market_key, event_id, home_team, away_team, commence_time}
+
     Supports:
       - book_filter=None => include all books
-      - book_filter="consensus" => compute consensus line using median across books for each player/side
+      - book_filter="consensus" => compute weighted consensus across books for each player/side
       - book_filter="<bookkey>" => only that book
     """
     if not event_odds:
@@ -488,7 +555,7 @@ def _parse_player_prop_outcomes(event_odds: dict, market_key: str, book_filter: 
     ct = event_odds.get("commence_time")
     books = event_odds.get("bookmakers", []) or []
 
-    rows = []
+    rows: list[dict] = []
     for b in books:
         bkey = b.get("key")
         if book_filter and book_filter not in ("consensus", "all") and bkey != book_filter:
@@ -497,8 +564,7 @@ def _parse_player_prop_outcomes(event_odds: dict, market_key: str, book_filter: 
             if mk.get("key") != market_key:
                 continue
             for out in mk.get("outcomes", []) or []:
-                player = out.get("description") or out.get("name")  # props use description for player in many payloads
-                # For Over/Under props, name is typically "Over"/"Under", description is player
+                player = out.get("description") or out.get("name")
                 side = out.get("name")
                 point = out.get("point")
                 price = out.get("price")
@@ -508,35 +574,61 @@ def _parse_player_prop_outcomes(event_odds: dict, market_key: str, book_filter: 
                         "player_norm": normalize_name(player),
                         "line": float(point),
                         "price": price,
-                        "book": bkey or "",
-                        "side": side or "",
+                        "book": (bkey or ""),
+                        "side": (side or ""),
                         "market_key": market_key,
                         "event_id": event_id,
                         "home_team": home,
                         "away_team": away,
                         "commence_time": ct,
                     })
+
     if book_filter == "consensus":
-        # Build consensus by median line across books for each (player_norm, side)
+        # Best-in-class consensus prior:
+        # - Line: weighted median using sportsbook sharpness weights
+        # - Price: weighted average of implied probabilities => synthetic decimal odds
         if not rows:
             return [], None
         df = pd.DataFrame(rows)
-        # Keep only numeric lines
         df = df[pd.to_numeric(df["line"], errors="coerce").notna()].copy()
         if df.empty:
             return [], None
-        g = df.groupby(["player_norm", "side"], dropna=False)["line"].median().reset_index()
-        # use one representative player string (most common)
+
+        df["w"] = df["book"].apply(lambda k: book_sharpness(str(k)))
         name_map = df.groupby("player_norm")["player"].agg(lambda x: x.value_counts().index[0]).to_dict()
-        out_rows = []
-        for _, r in g.iterrows():
+
+        out_rows: list[dict] = []
+        for (pn, side), sub in df.groupby(["player_norm", "side"], dropna=False):
+            sub = sub.copy().sort_values("line")
+            if float(sub["w"].sum() or 0.0) > 0:
+                cw = sub["w"].cumsum()
+                cutoff = 0.5 * float(sub["w"].sum())
+                line_med = float(sub.loc[cw >= cutoff, "line"].iloc[0])
+            else:
+                line_med = float(sub["line"].median())
+
+            price_syn = None
+            try:
+                valid = sub[pd.to_numeric(sub["price"], errors="coerce").notna()].copy()
+                if not valid.empty:
+                    valid["price_f"] = pd.to_numeric(valid["price"], errors="coerce").astype(float)
+                    valid = valid[valid["price_f"] > 1.0001]
+                    if not valid.empty:
+                        valid["p_imp"] = 1.0 / valid["price_f"]
+                        wsum = float(valid["w"].sum() or 0.0)
+                        p_syn = float((valid["p_imp"] * valid["w"]).sum() / max(wsum, 1e-9))
+                        p_syn = float(np.clip(p_syn, 1e-6, 1.0 - 1e-6))
+                        price_syn = float(1.0 / p_syn)
+            except Exception:
+                price_syn = None
+
             out_rows.append({
-                "player": name_map.get(r["player_norm"], r["player_norm"]),
-                "player_norm": r["player_norm"],
-                "line": float(r["line"]),
-                "price": None,
+                "player": name_map.get(pn, pn),
+                "player_norm": pn,
+                "line": float(line_med),
+                "price": price_syn,
                 "book": "consensus",
-                "side": r["side"],
+                "side": side,
                 "market_key": market_key,
                 "event_id": event_id,
                 "home_team": home,
@@ -577,6 +669,85 @@ def find_player_line_from_events(player_name: str, market_key: str, scan_date_is
             if rr:
                 return float(rr["line"]), rr, None
     return None, None, "Player/market not found in Odds API props for that date/book."
+
+
+# ------------------------------------------------------------------
+# Best-in-class: Closing Line Value (CLV) updater
+def fetch_latest_market_for_leg(leg: dict) -> tuple[float | None, float | None, str | None, str | None]:
+    """Fetch latest (line, price_decimal, book_used, err) for a logged leg using Odds API.
+
+    Uses event_id + market_key + player_norm + side. Tries the original book first,
+    then falls back to consensus if not found.
+    """
+    try:
+        event_id = leg.get("event_id")
+        market_key = leg.get("market_key")
+        if not event_id or not market_key:
+            return None, None, None, "missing event_id/market_key"
+        player_norm = leg.get("player_norm") or normalize_name(leg.get("player", ""))
+        side = (leg.get("side") or "Over").strip()
+
+        book0 = (leg.get("book") or "consensus").strip().lower()
+        # Try original book then consensus
+        for bf in [book0, "consensus"]:
+            odds, oerr = odds_get_event_odds(str(event_id), (str(market_key),))
+            if oerr or not odds:
+                return None, None, None, (oerr or "odds fetch failed")
+            rows, _ = _parse_player_prop_outcomes(odds, str(market_key), book_filter=(bf if bf != "all" else None))
+            match = next((r for r in rows if r.get("player_norm")==player_norm and str(r.get("side","")).strip()==side), None)
+            if match:
+                line = safe_float(match.get("line"))
+                price = match.get("price")
+                try:
+                    price = float(price) if price is not None else None
+                except Exception:
+                    price = None
+                return line, price, (match.get("book") or bf), None
+        return None, None, None, "player/side not found in latest odds"
+    except Exception as e:
+        return None, None, None, f"{type(e).__name__}: {e}"
+
+def apply_clv_update_to_legs(legs: list[dict]) -> tuple[list[dict], list[str]]:
+    """Update each leg with closing/updated market info and CLV fields."""
+    errs: list[str] = []
+    out = []
+    for leg in legs:
+        leg2 = dict(leg)
+        line0 = safe_float(leg2.get("line"))
+        price0 = safe_float(leg2.get("price_decimal"))
+        line1, price1, book_used, err = fetch_latest_market_for_leg(leg2)
+        leg2["close_ts"] = _now_iso()
+        leg2["line_close"] = line1
+        leg2["price_close"] = price1
+        leg2["book_close"] = book_used
+        leg2["p_implied_close"] = implied_prob_from_decimal(price1) if price1 else None
+
+        # CLV definitions:
+        # For Over: lower line is favorable (close < open)
+        # For Under: higher line is favorable (close > open)
+        side = (leg2.get("side") or "Over").strip().lower()
+        if (line0 is not None) and (line1 is not None):
+            leg2["clv_line"] = float(line1 - line0)
+            if "under" in side:
+                leg2["clv_line_fav"] = bool(line1 > line0)
+            else:
+                leg2["clv_line_fav"] = bool(line1 < line0)
+        else:
+            leg2["clv_line"] = None
+            leg2["clv_line_fav"] = None
+
+        if (price0 is not None) and (price1 is not None):
+            leg2["clv_price"] = float(price1 - price0)
+            # For Over/Under at fixed side, better price is higher decimal (bigger payout).
+            leg2["clv_price_fav"] = bool(price1 > price0)
+        else:
+            leg2["clv_price"] = None
+            leg2["clv_price_fav"] = None
+
+        if err:
+            errs.append(f"{leg2.get('player')} {leg2.get('market')}: {err}")
+        out.append(leg2)
+    return out, errs
 
 # ------------------------------
 # NBA API context (best-effort)
@@ -725,7 +896,7 @@ def context_multiplier(team_abbr: str | None, opp_abbr: str | None, key_teammate
     # placeholder for future defensive/pace adjustments
     return float(m)
 
-def compute_leg_projection(player_name: str, market_name: str, line: float, meta: dict | None, n_games: int, key_teammate_out: bool, bankroll: float = 0.0, frac_kelly: float = 0.25, max_risk_frac: float = 0.05, market_prior_weight: float = 0.65):
+def compute_leg_projection(player_name: str, market_name: str, line: float, meta: dict | None, n_games: int, key_teammate_out: bool, bankroll: float = 0.0, frac_kelly: float = 0.25, max_risk_frac: float = 0.05, market_prior_weight: float = 0.65, exclude_chaotic: bool = True):
     """Compute single leg model outputs with robust gamelog fetcher and context adjustments.
 
        Returns a dictionary with projection, probability of going over, edge vs 50/50,
@@ -825,6 +996,9 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
     # Compute context multiplier using advanced opponent & positional adjustment
     ctx_mult = advanced_context_multiplier(player_name, market_name, opp_abbr, key_teammate_out)
 
+    # Best-in-class: regime classification (filters chaotic environments)
+    regime_label, regime_score = classify_regime(vol_cv, blowout_prob, ctx_mult)
+
     proj = mu * ctx_mult if mu is not None else None
 
     # Pricing from Odds API (decimal odds). May be None for consensus or manual lines.
@@ -842,10 +1016,23 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
     p_model = float(p_over) if p_over is not None else None
 
     # Market-prior integration: blend model probability with market implied probability
-    # w=1.0 => pure model, w=0.0 => pure market
-    w = float(market_prior_weight) if market_prior_weight is not None else 0.65
+    # w_model=1.0 => pure model, w_model=0.0 => pure market
+    w_model = float(market_prior_weight) if market_prior_weight is not None else 0.65
+
+    # Best-in-class: adjust blending based on sportsbook sharpness (sharper book => trust market more)
+    bkey = None
+    try:
+        if meta and meta.get("book") is not None:
+            bkey = str(meta.get("book")).strip().lower()
+    except Exception:
+        bkey = None
+    sharp = book_sharpness(bkey)  # 0..1
+    # Effective model weight: reduce model influence as book gets sharper
+    # (protects against overfitting / spurious edges versus sharp pricing)
+    w_eff = float(np.clip(w_model * (1.0 - 0.60 * sharp) + 0.15, 0.10, 0.95))
+
     if p_model is not None and p_implied is not None:
-        p_raw = float(np.clip(w * p_model + (1.0 - w) * p_implied, 1e-6, 1.0 - 1e-6))
+        p_raw = float(np.clip(w_eff * p_model + (1.0 - w_eff) * p_implied, 1e-6, 1.0 - 1e-6))
     else:
         p_raw = p_model
 
@@ -858,6 +1045,12 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
     ev_adj = float(ev_raw * pen) if (ev_raw is not None) else None
 
     gate_ok, gate_reason = passes_volatility_gate(vol_cv, ev_raw)
+
+    # Regime filter: optionally exclude chaotic environments (improves hit-rate and reduces drawdowns)
+    if exclude_chaotic and (regime_label == "Chaotic"):
+        gate_ok = False
+        gate_reason = "chaotic regime (high-variance environment)"
+
     if not gate_ok:
         ev_adj = None  # force exclusion by policy
 
@@ -874,6 +1067,7 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
 
     return {
         "player": player_name,
+        "player_norm": normalize_name(player_name),
         "market": market_name,
         "line": float(line),
         "proj": float(proj) if proj is not None else None,
@@ -883,6 +1077,13 @@ def compute_leg_projection(player_name: str, market_name: str, line: float, meta
         "p_cal": float(p_cal) if p_cal is not None else None,
         "price_decimal": float(price_decimal) if price_decimal is not None else None,
         "p_implied": float(p_implied) if p_implied is not None else None,
+        "book": (meta.get("book") if meta else None),
+        "event_id": (meta.get("event_id") if meta else None),
+        "market_key": (meta.get("market_key") if meta else None),
+        "side": (meta.get("side") if meta else "Over"),
+        "commence_time": (meta.get("commence_time") if meta else None),
+        "regime": regime_label,
+        "regime_score": float(regime_score),
         "ev_raw": float(ev_raw) if ev_raw is not None else None,
         "ev_adj": float(ev_adj) if ev_adj is not None else None,
         "stake": float(stake_dollars) if stake_dollars is not None else 0.0,
@@ -1220,6 +1421,8 @@ def _expand_history_legs(history_df: pd.DataFrame) -> pd.DataFrame:
                 "cv": safe_float(leg.get("volatility_cv"), default=np.nan),
                 "y": 1 if res == "HIT" else 0,
                 "result": res,
+                "clv_line_fav": leg.get("clv_line_fav"),
+                "clv_price_fav": leg.get("clv_price_fav"),
             })
     df = pd.DataFrame(rows)
     df = df[pd.to_numeric(df["p_raw"], errors="coerce").notna()].copy() if not df.empty else df
@@ -1266,23 +1469,57 @@ def apply_calibrator(p_raw: float | None, calib: dict | None) -> float | None:
         return float(np.clip(p, 0.0, 1.0))
 
 def recompute_pricing_fields(leg: dict, calib: dict | None) -> dict:
-    """Recompute p_cal, EV, advantage and gate fields for an existing leg dict."""
+    """Recompute p_cal, EV, advantage, regime and stake fields for an existing leg dict."""
     p_raw = leg.get("p_raw")
     p_cal = apply_calibrator(p_raw, calib)
     leg["p_cal"] = p_cal
+
     price = leg.get("price_decimal")
     p_imp = implied_prob_from_decimal(price) if price is not None else None
     leg["p_implied"] = p_imp
+
     ev_raw = ev_per_dollar(p_cal, price) if (p_cal is not None and price is not None) else None
     leg["ev_raw"] = ev_raw
+
     pen = volatility_penalty_factor(leg.get("volatility_cv"))
     leg["vol_penalty"] = pen
+
     gate_ok, gate_reason = passes_volatility_gate(leg.get("volatility_cv"), ev_raw)
+
+    # Regime filter (if enabled)
+    regime_label, regime_score = classify_regime(leg.get("volatility_cv"), leg.get("blowout_prob"), leg.get("context_mult"))
+    leg["regime"] = regime_label
+    leg["regime_score"] = float(regime_score)
+    if bool(st.session_state.get("exclude_chaotic", True)) and regime_label == "Chaotic":
+        gate_ok, gate_reason = False, "chaotic regime (high-variance environment)"
+
     leg["gate_ok"] = gate_ok
     leg["gate_reason"] = gate_reason
+
     leg["ev_adj"] = (ev_raw * pen) if (ev_raw is not None and gate_ok) else None
     leg["edge"] = leg["ev_adj"]
     leg["advantage"] = (p_cal - p_imp) if (p_cal is not None and p_imp is not None) else None
+
+    # Recompute stake recommendation (depends on calibrated p and gate)
+    bankroll = float(st.session_state.get("bankroll", 0.0) or 0.0)
+    frac_k = float(st.session_state.get("frac_kelly", 0.25) or 0.25)
+    cap_frac = float(st.session_state.get("max_risk_per_bet", 5.0) or 5.0) / 100.0
+    if gate_ok and (p_cal is not None) and (price is not None) and (leg.get("ev_adj") is not None) and (float(leg.get("ev_adj")) > 0) and bankroll > 0:
+        stake_dollars, stake_frac, stake_reason = recommended_stake(
+            bankroll=bankroll,
+            p=float(p_cal),
+            price_decimal=float(price),
+            frac_kelly=frac_k,
+            cap_frac=cap_frac,
+        )
+        leg["stake"] = float(stake_dollars)
+        leg["stake_frac"] = float(stake_frac)
+        leg["stake_reason"] = stake_reason
+    else:
+        leg["stake"] = float(leg.get("stake", 0.0) or 0.0)
+        leg["stake_frac"] = float(leg.get("stake_frac", 0.0) or 0.0)
+        leg["stake_reason"] = leg.get("stake_reason") or "gated/invalid"
+
     return leg
 
 
@@ -1455,6 +1692,13 @@ max_risk_per_bet = st.sidebar.slider(
     help="Hard cap on recommended stake as a percent of bankroll (protects against model miscalibration)."
 )
 st.session_state["max_risk_per_bet"] = float(max_risk_per_bet)
+
+exclude_chaotic = st.sidebar.checkbox(
+    "Exclude Chaotic Regime (recommended)",
+    value=bool(st.session_state.get("exclude_chaotic", True)),
+    help="Filters out high-variance environments (high CV / blowout / unstable context). This increases win-rate and reduces drawdowns."
+)
+st.session_state["exclude_chaotic"] = bool(exclude_chaotic)
 
 n_games = st.sidebar.slider("Recent Games Sample (N)", min_value=5, max_value=30, value=int(st.session_state.get("n_games", 10)))
 st.session_state["n_games"] = n_games
@@ -1645,7 +1889,7 @@ with tabs[0]:
         if tasks:
             max_workers = min(8, len(tasks))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(compute_leg_projection, pname, mkt, line, meta, n_games=n_games, key_teammate_out=teammate_out, bankroll=bankroll, frac_kelly=frac_kelly, max_risk_frac=float(st.session_state.get("max_risk_per_bet", 5.0))/100.0, market_prior_weight=market_prior_weight) for (tag, pname, mkt, line, meta, teammate_out, opp_in) in tasks]
+                futures = [executor.submit(compute_leg_projection, pname, mkt, line, meta, n_games=n_games, key_teammate_out=teammate_out, bankroll=bankroll, frac_kelly=frac_kelly, max_risk_frac=float(st.session_state.get("max_risk_per_bet", 5.0))/100.0, market_prior_weight=market_prior_weight, exclude_chaotic=bool(exclude_chaotic)) for (tag, pname, mkt, line, meta, teammate_out, opp_in) in tasks]
                 for (tag, pname, mkt, line, meta, teammate_out, opp_in), fut in zip(tasks, futures):
                     leg = fut.result()
                     # Apply user-provided opponent override only for display
@@ -1747,6 +1991,9 @@ with tabs[1]:
                         st.caption(f"Volatility: {vlabel} (CV={vcv_disp})")
                     except Exception:
                         st.caption(f"Volatility: {vlabel}")
+                # Regime tag
+                if leg.get('regime'):
+                    st.caption(f"Regime: {leg.get('regime')} (score={round(float(leg.get('regime_score',0.0)),2)})")
                 tm = leg.get("team") or "?"
                 op = leg.get("opp") or "?"
                 st.caption(f"Matchup: {tm} vs {op}")
@@ -1907,6 +2154,9 @@ with tabs[2]:
                     "away_team": r.get("away_team"),
                     "commence_time": r.get("commence_time"),
                     "price": r.get("price"),
+                    "book": r.get("book"),
+                    "market_key": (ODDS_MARKETS.get(mkt) or ODDS_MARKETS_OPTIONAL.get(mkt)),
+                    "side": r.get("side") or "Over",
                 }
                 candidates.append((pname, mkt, float(line), meta, r))
 
@@ -1914,7 +2164,7 @@ with tabs[2]:
             if candidates:
                 max_workers = min(8, len(candidates))
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = [executor.submit(compute_leg_projection, pname, mkt, line, meta, n_games=n_games, key_teammate_out=False, bankroll=bankroll, frac_kelly=frac_kelly, max_risk_frac=float(st.session_state.get("max_risk_per_bet", 5.0))/100.0, market_prior_weight=market_prior_weight) for (pname, mkt, line, meta, _r) in candidates]
+                    futures = [executor.submit(compute_leg_projection, pname, mkt, line, meta, n_games=n_games, key_teammate_out=False, bankroll=bankroll, frac_kelly=frac_kelly, max_risk_frac=float(st.session_state.get("max_risk_per_bet", 5.0))/100.0, market_prior_weight=market_prior_weight, exclude_chaotic=bool(exclude_chaotic)) for (pname, mkt, line, meta, _r) in candidates]
                     for (pname, mkt, line, meta, row), fut in zip(candidates, futures):
                         leg = fut.result()
                         # Apply calibration + pricing fields if available
@@ -2009,6 +2259,28 @@ with tabs[3]:
             except Exception as e:
                 st.error(f"Update failed: {e}")
 
+st.markdown("#### Update CLV (Market Move)")
+st.caption("Fetches the latest available line/price for each leg (original book then consensus) and stores CLV fields back into the logged legs JSON.")
+idx2 = st.number_input("Row index to CLV-update", min_value=0, max_value=max(0, len(h)-1), value=int(idx), step=1, key="clv_idx")
+if st.button("Update CLV for Row"):
+    try:
+        h2 = h.copy()
+        legs = json.loads(h2.loc[int(idx2), "legs"])
+        if not isinstance(legs, list) or not legs:
+            st.warning("No legs found on that row.")
+        else:
+            legs2, errs = apply_clv_update_to_legs(legs)
+            h2.loc[int(idx2), "legs"] = json.dumps(legs2)
+            h2.to_csv(history_path(user_id), index=False)
+            if errs:
+                st.warning("CLV updated with some warnings:")
+                for e in errs[:10]:
+                    st.write(f"- {e}")
+            st.success("CLV updated and saved.")
+    except Exception as e:
+        st.error(f"CLV update failed: {e}")
+
+
 with tabs[4]:
     st.markdown("### 🧪 Calibration & Performance")
     h = load_history(user_id)
@@ -2024,6 +2296,14 @@ with tabs[4]:
         hit_rate = float(y.mean())
         st.metric("Hit rate (settled legs)", f"{hit_rate*100:.1f}%")
         st.metric("Brier score (p_raw)", f"{brier:.4f}")
+
+        # CLV summary (if available)
+        if "clv_line_fav" in legs_df.columns and legs_df["clv_line_fav"].notna().any():
+            clv_line_rate = float(legs_df["clv_line_fav"].dropna().astype(int).mean())
+            st.metric("CLV (line) favorable rate", f"{clv_line_rate*100:.1f}%")
+        if "clv_price_fav" in legs_df.columns and legs_df["clv_price_fav"].notna().any():
+            clv_price_rate = float(legs_df["clv_price_fav"].dropna().astype(int).mean())
+            st.metric("CLV (price) favorable rate", f"{clv_price_rate*100:.1f}%")
 
         # Reliability table
         n_bins = st.slider("Reliability bins", 6, 20, 12)
