@@ -250,10 +250,54 @@ def get_season_string(today=None):
     return f"{start}-{(start+1)%100:02d}"
 
 # ──────────────────────────────────────────────
+# BULK GAME LOG — one API call for ALL players
+# ──────────────────────────────────────────────
+@st.cache_data(ttl=60*60*6, show_spinner=False)
+def _fetch_bulk_gamelogs():
+    """LeagueGameLog: ONE call returns every player's game log for the season.
+    Replaces ~200 individual PlayerGameLog calls for a full-slate scan.
+    Returns a DataFrame sorted newest-first per player, or None on failure.
+    """
+    try:
+        from nba_api.stats.endpoints import LeagueGameLog
+        df = LeagueGameLog(
+            player_or_team_abbreviation="P",
+            season=get_season_string(),
+            season_type_all_star="Regular Season",
+        ).get_data_frames()[0]
+        if df.empty:
+            return None
+        # Normalize player ID column (LeagueGameLog uses PLAYER_ID)
+        if "PLAYER_ID" not in df.columns and "Player_ID" in df.columns:
+            df = df.rename(columns={"Player_ID": "PLAYER_ID"})
+        df["PLAYER_ID"] = pd.to_numeric(df["PLAYER_ID"], errors="coerce")
+        df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], errors="coerce")
+        # Sort newest → oldest within each player
+        df = df.sort_values(["PLAYER_ID", "GAME_DATE"], ascending=[True, False])
+        # LeagueGameLog returns MIN as float; convert to match PlayerGameLog "MM:SS" format
+        if "MIN" in df.columns:
+            df["MIN"] = pd.to_numeric(df["MIN"], errors="coerce")
+        return df
+    except Exception:
+        return None
+
+# ──────────────────────────────────────────────
 # GAME LOG FETCHER
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*30, show_spinner=False)
+@st.cache_data(ttl=60*60*6, show_spinner=False)
 def fetch_player_gamelog(player_id, max_games=15):
+    """Per-player game log. Tries the bulk cache first (instant), falls back to individual API call."""
+    # ── Fast path: bulk dataframe already in cache ──────────────
+    bulk = _fetch_bulk_gamelogs()
+    if bulk is not None:
+        pid = int(player_id)
+        player_df = bulk[bulk["PLAYER_ID"] == pid].head(int(max_games)).copy()
+        if not player_df.empty:
+            # Convert GAME_DATE back to string so downstream code (pd.to_datetime) still works
+            player_df["GAME_DATE"] = player_df["GAME_DATE"].dt.strftime("%b %d, %Y")
+            return player_df, []
+
+    # ── Slow path: individual PlayerGameLog call ────────────────
     errs = []
     season_str = get_season_string()
     for params in [{"season_nullable": season_str}, {"season": season_str}, {}]:
@@ -1508,24 +1552,39 @@ def compute_rolling_brier(legs_df, windows=(25, 50, 100)):
 # ──────────────────────────────────────────────
 def pre_warm_scanner_caches(candidates, n_games):
     """
-    Sequentially pre-fetch player IDs, game logs, and positions for all
-    unique players before threading. After this, every st.cache_data call
-    inside compute_leg_projection returns instantly from cache.
-    Returns the set of successfully resolved player names.
+    Pre-fetch player IDs, game logs, and positions for all unique players in
+    parallel (4 workers) before the main scan threads start.  Uses a session-
+    state set to skip players already warmed this session.
     """
     unique_names = list(dict.fromkeys(pname for pname, *_ in candidates))
-    # 1. Bulk position map (one API call for all players)
+    already_warm = st.session_state.get("_prewarm_done", set())
+    to_warm = [n for n in unique_names if n not in already_warm]
+    if not to_warm:
+        return set(unique_names)   # everything already cached
+
+    # Bulk game logs + bulk position map (each = ONE API call for all players)
+    _fetch_bulk_gamelogs()
     _ensure_pid_position_map()
-    resolved = set()
-    for name in unique_names:
+
+    def _warm_one(name):
         try:
             pid = lookup_player_id(name)
             if pid:
                 fetch_player_gamelog(player_id=pid, max_games=max(6, n_games + 5))
                 get_player_position(name)
-                resolved.add(name)
+                return name
         except Exception:
             pass
+        return None
+
+    resolved = set()
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for result in ex.map(_warm_one, to_warm):
+            if result:
+                resolved.add(result)
+
+    already_warm.update(resolved)
+    st.session_state["_prewarm_done"] = already_warm
     return resolved
 
 # MAIN PROJECTION ENGINE  [FIX 3: minutes filter]
@@ -2115,8 +2174,6 @@ with tabs[0]:
             tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out)))
         if tasks:
             _inj_map = st.session_state.get("injury_team_map", {})
-            model_candidates = [(pname, mkt, line, meta) for (_, pname, mkt, line, meta, _to) in tasks]
-            pre_warm_scanner_caches(model_candidates, n_games)
             with st.spinner("Computing projections..."):
                 with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as ex:
                     futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
@@ -2370,6 +2427,18 @@ with tabs[2]:
                 else:
                     st.warning("No offers returned.")
 
+    # ── Bulk game log loader (recommended before large scans) ──────
+    bulk_loaded = _fetch_bulk_gamelogs() is not None
+    _bulk_label = "✓ All Game Logs Loaded" if bulk_loaded else "Load All Game Logs (Recommended)"
+    if scan_col.button(_bulk_label, use_container_width=True, disabled=bulk_loaded):
+        with st.spinner("Loading all NBA player game logs (one-time, cached 6h)..."):
+            _fetch_bulk_gamelogs.clear()
+            result = _fetch_bulk_gamelogs()
+        if result is not None:
+            st.success(f"Loaded {len(result):,} game log rows — scans are now near-instant.")
+        else:
+            st.warning("Bulk load failed — scanner will fall back to per-player fetches.")
+
     if scan_col.button("Run Scan", use_container_width=True):
         df = st.session_state.get("scanner_offers")
         if df is None or (hasattr(df, 'empty') and df.empty):
@@ -2389,10 +2458,13 @@ with tabs[2]:
             out_rows, dropped = [], []
             if candidates:
                 _inj_map = st.session_state.get("injury_team_map", {})
-                with st.spinner(f"Pre-warming caches for {len(candidates)} candidates..."):
-                    pre_warm_scanner_caches(candidates, n_games)
+                # Auto-load bulk game logs if not already cached (one-time, ~15-30s)
+                if _fetch_bulk_gamelogs() is None:
+                    with st.spinner("Loading all NBA game logs (first scan of session)..."):
+                        _fetch_bulk_gamelogs.clear()
+                        _fetch_bulk_gamelogs()
                 with st.spinner(f"Scanning {len(candidates)} candidates..."):
-                    with ThreadPoolExecutor(max_workers=8) as ex:
+                    with ThreadPoolExecutor(max_workers=16) as ex:
                         futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
                                           n_games=n_games, key_teammate_out=False,
                                           bankroll=bankroll, frac_kelly=frac_kelly,
@@ -2511,10 +2583,8 @@ with tabs[3]:
                         pp_candidates.append((r["player"], mkt, float(r["line"]), None))
                 if pp_candidates:
                     _inj_map = st.session_state.get("injury_team_map", {})
-                    with st.spinner("Pre-warming caches..."):
-                        pre_warm_scanner_caches(pp_candidates, n_games)
                     with st.spinner(f"Scanning {len(pp_candidates)} PrizePicks props..."):
-                        with ThreadPoolExecutor(max_workers=8) as ex:
+                        with ThreadPoolExecutor(max_workers=16) as ex:
                             futs_pp = [ex.submit(compute_leg_projection, pn, mk, ln, mt,
                                                  n_games=n_games, key_teammate_out=False,
                                                  bankroll=bankroll, frac_kelly=frac_kelly,
@@ -2571,10 +2641,8 @@ with tabs[3]:
                         ud_candidates.append((r["player"], mkt, float(r["line"]), None))
                 if ud_candidates:
                     _inj_map = st.session_state.get("injury_team_map", {})
-                    with st.spinner("Pre-warming caches..."):
-                        pre_warm_scanner_caches(ud_candidates, n_games)
                     with st.spinner(f"Scanning {len(ud_candidates)} Underdog props..."):
-                        with ThreadPoolExecutor(max_workers=8) as ex:
+                        with ThreadPoolExecutor(max_workers=16) as ex:
                             futs_ud = [ex.submit(compute_leg_projection, pn, mk, ln, mt,
                                                  n_games=n_games, key_teammate_out=False,
                                                  bankroll=bankroll, frac_kelly=frac_kelly,
