@@ -1288,31 +1288,43 @@ def _pp_request(per_page=500, cookies_str=""):
 @st.cache_data(ttl=60*10, show_spinner=False)
 def _fetch_prizepicks_lines_cached(cookies_str=""):
     for per_page in (500, 250):
-        r, err = _pp_request(per_page=per_page, cookies_str=cookies_str)
-        if err:
-            return [], err
-        if r is None:
-            return [], "No response from PrizePicks"
-        if r.status_code == 429:
-            return [], "PrizePicks rate-limited (429) — wait 30s and retry"
-        if r.status_code == 403:
-            return [], (
-                "HTTP 403 — PerimeterX block. Fix: paste your PrizePicks browser "
-                "cookies into Settings → PrizePicks Cookies, then retry."
-            )
-        if not r.ok:
-            return [], f"HTTP {r.status_code}: {r.text[:300]}"
-        try:
-            rows = _parse_pp_response(r.json())
-        except Exception as e:
-            return [], f"Parse error: {e}"
-        if rows:
-            return rows, None
+        # Retry up to 3 times on 429 with backoff
+        for attempt in range(3):
+            r, err = _pp_request(per_page=per_page, cookies_str=cookies_str)
+            if err:
+                return [], err
+            if r is None:
+                return [], "No response from PrizePicks"
+            if r.status_code == 429:
+                if attempt < 2:
+                    time.sleep(2 ** (attempt + 1))  # 2s, 4s
+                    continue
+                return [], (
+                    "PrizePicks rate-limited (429) — Streamlit Cloud IP is throttled. "
+                    "Wait 60s and retry, or run the app locally."
+                )
+            if r.status_code == 403:
+                return [], (
+                    "HTTP 403 — PerimeterX block. Fix: paste your PrizePicks browser "
+                    "cookies into Settings → PrizePicks Cookies, then retry."
+                )
+            if not r.ok:
+                return [], f"HTTP {r.status_code}: {r.text[:300]}"
+            try:
+                rows = _parse_pp_response(r.json())
+            except Exception as e:
+                return [], f"Parse error: {e}"
+            if rows:
+                return rows, None
+            break  # non-429, non-error, empty — try next per_page
     return [], "No NBA props found — slate may not be posted yet"
 
 def fetch_prizepicks_lines():
     cookies_str = st.session_state.get("pp_cookies", "")
-    _fetch_prizepicks_lines_cached.clear()
+    # Only clear cache when cookies changed — avoids redundant API hits
+    if st.session_state.get("_pp_last_cookies_used") != cookies_str:
+        _fetch_prizepicks_lines_cached.clear()
+        st.session_state["_pp_last_cookies_used"] = cookies_str
     return _fetch_prizepicks_lines_cached(cookies_str=cookies_str)
 
 # ──────────────────────────────────────────────
