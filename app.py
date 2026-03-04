@@ -1209,66 +1209,110 @@ def compute_td_prob(game_log_df, n_games=10):
 # PRIZEPICKS INGESTION
 # ──────────────────────────────────────────────
 PRIZEPICKS_API = "https://api.prizepicks.com/projections"
-_PP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/vnd.api+json",
-    "Referer": "https://app.prizepicks.com/",
-    "Origin": "https://app.prizepicks.com",
-}
+
+def _parse_pp_response(data):
+    """Parse PrizePicks JSON response into list of prop dicts."""
+    included = {item["id"]: item for item in data.get("included", [])}
+    rows = []
+    for proj in data.get("data", []):
+        if proj.get("type") != "Projection":
+            continue
+        attrs = proj.get("attributes", {})
+        league = str(attrs.get("league", "") or "").upper()
+        if league and league not in ("NBA",):
+            continue
+        rels = proj.get("relationships", {})
+        player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
+        if not player_id:
+            player_id = (rels.get("player", {}).get("data", {}) or {}).get("id")
+        player_attrs = included.get(player_id, {}).get("attributes", {}) if player_id else {}
+        player_name = player_attrs.get("name", "") or attrs.get("name", "")
+        stat_type = attrs.get("stat_type", "")
+        line_score = attrs.get("line_score")
+        if player_name and stat_type and line_score is not None:
+            rows.append({
+                "player": player_name,
+                "stat_type": stat_type,
+                "line": float(line_score),
+                "start_time": attrs.get("start_time", ""),
+                "source": "prizepicks",
+            })
+    return rows
+
+def _pp_request(per_page=500, cookies_str=""):
+    """Make one PrizePicks API request.
+    Tries curl_cffi (Chrome TLS impersonation) first, then plain requests.
+    Returns (response_object_or_None, error_str_or_None).
+    """
+    url = PRIZEPICKS_API
+    params = {"league_id": "7", "per_page": str(per_page),
+              "single_stat": "true", "in_play": "false"}
+    headers = {
+        "Accept": "application/vnd.api+json",
+        "Referer": "https://app.prizepicks.com/",
+        "Origin": "https://app.prizepicks.com",
+    }
+    # Parse optional cookie string from user settings
+    cookie_dict = {}
+    if cookies_str:
+        for part in cookies_str.split(";"):
+            part = part.strip()
+            if "=" in part:
+                k, v = part.split("=", 1)
+                cookie_dict[k.strip()] = v.strip()
+
+    # ── Attempt 1: curl_cffi Chrome TLS impersonation (bypasses PerimeterX) ──
+    try:
+        from curl_cffi import requests as cffi_requests
+        r = cffi_requests.get(
+            url, params=params, headers=headers,
+            cookies=cookie_dict or None,
+            impersonate="chrome120",
+            timeout=25,
+        )
+        return r, None
+    except ImportError:
+        pass
+    except Exception as e:
+        pass  # fall through to plain requests
+
+    # ── Attempt 2: plain requests (works locally, blocked on cloud IPs) ──
+    try:
+        r = requests.get(url, params=params, headers=headers,
+                         cookies=cookie_dict or None, timeout=20)
+        return r, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
 
 @st.cache_data(ttl=60*10, show_spinner=False)
-def _fetch_prizepicks_lines_cached():
-    """Inner cached fetch — call via fetch_prizepicks_lines() which clears cache first."""
+def _fetch_prizepicks_lines_cached(cookies_str=""):
     for per_page in (500, 250):
-        try:
-            r = requests.get(
-                PRIZEPICKS_API,
-                headers=_PP_HEADERS,
-                params={"league_id": "7", "per_page": str(per_page),
-                        "single_stat": "true", "in_play": "false"},
-                timeout=20,
+        r, err = _pp_request(per_page=per_page, cookies_str=cookies_str)
+        if err:
+            return [], err
+        if r is None:
+            return [], "No response from PrizePicks"
+        if r.status_code == 429:
+            return [], "PrizePicks rate-limited (429) — wait 30s and retry"
+        if r.status_code == 403:
+            return [], (
+                "HTTP 403 — PerimeterX block. Fix: paste your PrizePicks browser "
+                "cookies into Settings → PrizePicks Cookies, then retry."
             )
-            if r.status_code == 429:
-                return [], f"PrizePicks rate-limited (429) — try again in 30s"
-            if not r.ok:
-                return [], f"HTTP {r.status_code}: {r.text[:200]}"
-            data = r.json()
-            included = {item["id"]: item for item in data.get("included", [])}
-            rows = []
-            for proj in data.get("data", []):
-                if proj.get("type") != "Projection":
-                    continue
-                attrs = proj.get("attributes", {})
-                # Skip if not NBA
-                league = str(attrs.get("league", "") or "").upper()
-                if league and league not in ("NBA",):
-                    continue
-                rels = proj.get("relationships", {})
-                player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
-                if not player_id:
-                    player_id = (rels.get("player", {}).get("data", {}) or {}).get("id")
-                player_attrs = included.get(player_id, {}).get("attributes", {}) if player_id else {}
-                player_name = player_attrs.get("name", "") or attrs.get("name","")
-                stat_type = attrs.get("stat_type", "")
-                line_score = attrs.get("line_score")
-                if player_name and stat_type and line_score is not None:
-                    rows.append({
-                        "player": player_name,
-                        "stat_type": stat_type,
-                        "line": float(line_score),
-                        "start_time": attrs.get("start_time", ""),
-                        "source": "prizepicks",
-                    })
-            if rows:
-                return rows, None
+        if not r.ok:
+            return [], f"HTTP {r.status_code}: {r.text[:300]}"
+        try:
+            rows = _parse_pp_response(r.json())
         except Exception as e:
-            return [], f"{type(e).__name__}: {e}"
-    return [], "No props found — PrizePicks may have no NBA slate posted"
+            return [], f"Parse error: {e}"
+        if rows:
+            return rows, None
+    return [], "No NBA props found — slate may not be posted yet"
 
 def fetch_prizepicks_lines():
-    """Clear cache then fetch fresh PrizePicks lines."""
+    cookies_str = st.session_state.get("pp_cookies", "")
     _fetch_prizepicks_lines_cached.clear()
-    return _fetch_prizepicks_lines_cached()
+    return _fetch_prizepicks_lines_cached(cookies_str=cookies_str)
 
 # ──────────────────────────────────────────────
 # UNDERDOG INGESTION
@@ -2948,6 +2992,29 @@ with tabs[5]:
 # ─── ALERTS TAB ───────────────────────────────────────────────
 with tabs[6]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>ALERTS — DISCORD / TELEGRAM</div>""", unsafe_allow_html=True)
+
+    # ── PrizePicks cookie auth ─────────────────────────────────
+    with st.expander("PrizePicks Cookie Auth (bypasses 403 block)", expanded=False):
+        st.markdown("""<div style='font-size:0.68rem;color:#4A607A;line-height:1.6;'>
+<b>How to get your cookies (one-time setup, lasts days):</b><br>
+1. Open <a href='https://app.prizepicks.com' target='_blank' style='color:#00FFB2;'>app.prizepicks.com</a> in Chrome and log in<br>
+2. Press <b>F12</b> → Network tab → refresh the page<br>
+3. Click any <code>projections</code> request → Headers tab<br>
+4. Find the <b>Cookie:</b> request header → copy the entire value<br>
+5. Paste below and click Save
+</div>""", unsafe_allow_html=True)
+        pp_cookies_val = st.text_area(
+            "PrizePicks Cookie String",
+            value=st.session_state.get("pp_cookies", ""),
+            height=80,
+            placeholder="_pxmvid=...; _px3=...; __cf_bm=...",
+            key="pp_cookies_input",
+            type="password" if False else "default",
+        )
+        if st.button("Save PrizePicks Cookies", use_container_width=True):
+            st.session_state["pp_cookies"] = pp_cookies_val.strip()
+            st.success("Cookies saved — Auto Fetch will now use these for auth.")
+    st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
     al_col1, al_col2 = st.columns(2)
     with al_col1:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>DISCORD WEBHOOK</div>", unsafe_allow_html=True)
