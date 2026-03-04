@@ -264,6 +264,7 @@ def _fetch_bulk_gamelogs():
             player_or_team_abbreviation="P",
             season=get_season_string(),
             season_type_all_star="Regular Season",
+            timeout=45,
         ).get_data_frames()[0]
         if df.empty:
             return None
@@ -297,12 +298,12 @@ def fetch_player_gamelog(player_id, max_games=15):
             player_df["GAME_DATE"] = player_df["GAME_DATE"].dt.strftime("%b %d, %Y")
             return player_df, []
 
-    # ── Slow path: individual PlayerGameLog call ────────────────
+    # ── Slow path: individual PlayerGameLog call (10s timeout) ──
     errs = []
     season_str = get_season_string()
     for params in [{"season_nullable": season_str}, {"season": season_str}, {}]:
         try:
-            gl = playergamelog.PlayerGameLog(player_id=player_id, **params)
+            gl = playergamelog.PlayerGameLog(player_id=player_id, timeout=10, **params)
             df = gl.get_data_frames()[0]
             if not df.empty:
                 return df.head(int(max_games)).copy(), errs
@@ -2503,12 +2504,19 @@ with tabs[2]:
             if candidates:
                 _inj_map = st.session_state.get("injury_team_map", {})
                 # Auto-load bulk game logs if not already cached (one-time, ~15-30s)
-                if _fetch_bulk_gamelogs() is None:
-                    with st.spinner("Loading all NBA game logs (first scan of session)..."):
+                bulk_ready = _fetch_bulk_gamelogs() is not None
+                if not bulk_ready:
+                    with st.spinner("Loading all NBA game logs (one-time ~20s)..."):
                         _fetch_bulk_gamelogs.clear()
-                        _fetch_bulk_gamelogs()
-                with st.spinner(f"Scanning {len(candidates)} candidates..."):
-                    with ThreadPoolExecutor(max_workers=16) as ex:
+                        bulk_ready = _fetch_bulk_gamelogs() is not None
+                _scan_workers = 16 if bulk_ready else 6
+                if not bulk_ready:
+                    st.warning(
+                        f"Bulk game log load failed — scanning with {_scan_workers} workers "
+                        f"(individual NBA API calls). Click **Load All Game Logs** above for faster scans."
+                    )
+                with st.spinner(f"Scanning {len(candidates)} candidates ({_scan_workers} workers)..."):
+                    with ThreadPoolExecutor(max_workers=_scan_workers) as ex:
                         futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
                                           n_games=n_games, key_teammate_out=False,
                                           bankroll=bankroll, frac_kelly=frac_kelly,
