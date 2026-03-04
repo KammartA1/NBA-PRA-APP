@@ -1061,29 +1061,72 @@ def positional_def_multiplier(opp_abbr, position_bucket, market):
         return 1.0
 
 # ──────────────────────────────────────────────
-# INJURY REPORT
+# INJURY REPORT  (ESPN public API — works every day, not just game days)
 # ──────────────────────────────────────────────
+_ESPN_INJURY_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+
 @st.cache_data(ttl=60*15, show_spinner=False)
 def fetch_injury_report():
-    """Fetch today's NBA injury report from the NBA API."""
+    """Fetch NBA injury report from ESPN (primary) with NBA API fallback.
+
+    Returns:
+        dict: {team_abbr_upper: [{"player": str, "status": str, "reason": str}, ...]}
+        AND sets st.session_state["injury_team_map"] = {team_abbr: [player_name, ...]} for OUT/DOUBTFUL only.
+    """
+    out = {}
     try:
-        from nba_api.stats.endpoints import InjuryReport
-        df = InjuryReport(game_date=date.today().strftime("%m/%d/%Y")).get_data_frames()[0]
-        if df.empty:
-            return {}
-        out = {}
-        for _, r in df.iterrows():
-            team = str(r.get("TEAM_TRICODE","")).upper()
-            status = str(r.get("PLAYER_STATUS","")).upper()
-            if status in ("OUT","DOUBTFUL","QUESTIONABLE"):
-                out.setdefault(team, []).append({
-                    "player": r.get("PLAYER_NAME",""),
-                    "status": status,
-                    "reason": r.get("RETURN_FROM_INJURY",""),
-                })
-        return out
+        r = requests.get(
+            _ESPN_INJURY_URL,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            timeout=15,
+        )
+        if r.ok:
+            data = r.json()
+            for entry in data.get("injuries", []):
+                team_info = entry.get("team", {})
+                abbr = str(team_info.get("abbreviation", "")).upper()
+                for inj in entry.get("injuries", []):
+                    athlete = inj.get("athlete", {})
+                    pname = athlete.get("fullName", "") or athlete.get("displayName", "")
+                    status_raw = str(inj.get("status", "")).upper()
+                    status = status_raw if status_raw in ("OUT","DOUBTFUL","QUESTIONABLE") else status_raw
+                    reason_detail = inj.get("details", {}) or {}
+                    reason = reason_detail.get("type","") or reason_detail.get("returnDate","")
+                    if pname and status:
+                        out.setdefault(abbr, []).append({
+                            "player": pname, "status": status, "reason": reason,
+                        })
     except Exception:
-        return {}
+        pass
+
+    # NBA API fallback (only on game days)
+    if not out:
+        try:
+            from nba_api.stats.endpoints import InjuryReport as NBAInjuryReport
+            df = NBAInjuryReport(game_date=date.today().strftime("%m/%d/%Y")).get_data_frames()[0]
+            for _, r in df.iterrows():
+                team = str(r.get("TEAM_TRICODE","")).upper()
+                status = str(r.get("PLAYER_STATUS","")).upper()
+                if status in ("OUT","DOUBTFUL","QUESTIONABLE"):
+                    out.setdefault(team, []).append({
+                        "player": r.get("PLAYER_NAME",""),
+                        "status": status,
+                        "reason": r.get("RETURN_FROM_INJURY",""),
+                    })
+        except Exception:
+            pass
+
+    return out
+
+def build_injury_team_map(injury_dict):
+    """Build {team_abbr: [player_name_lower]} for OUT/DOUBTFUL players only — used for auto key_teammate_out."""
+    result = {}
+    for team, players in (injury_dict or {}).items():
+        out_players = [p["player"].lower() for p in players
+                       if str(p.get("status","")).upper() in ("OUT","DOUBTFUL")]
+        if out_players:
+            result[str(team).upper()] = out_players
+    return result
 
 # ──────────────────────────────────────────────
 # DD / TD PROBABILITY
@@ -1122,84 +1165,123 @@ def compute_td_prob(game_log_df, n_games=10):
 # PRIZEPICKS INGESTION
 # ──────────────────────────────────────────────
 PRIZEPICKS_API = "https://api.prizepicks.com/projections"
+_PP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/vnd.api+json",
+    "Referer": "https://app.prizepicks.com/",
+    "Origin": "https://app.prizepicks.com",
+}
 
 @st.cache_data(ttl=60*10, show_spinner=False)
+def _fetch_prizepicks_lines_cached():
+    """Inner cached fetch — call via fetch_prizepicks_lines() which clears cache first."""
+    for per_page in (500, 250):
+        try:
+            r = requests.get(
+                PRIZEPICKS_API,
+                headers=_PP_HEADERS,
+                params={"league_id": "7", "per_page": str(per_page),
+                        "single_stat": "true", "in_play": "false"},
+                timeout=20,
+            )
+            if r.status_code == 429:
+                return [], f"PrizePicks rate-limited (429) — try again in 30s"
+            if not r.ok:
+                return [], f"HTTP {r.status_code}: {r.text[:200]}"
+            data = r.json()
+            included = {item["id"]: item for item in data.get("included", [])}
+            rows = []
+            for proj in data.get("data", []):
+                if proj.get("type") != "Projection":
+                    continue
+                attrs = proj.get("attributes", {})
+                # Skip if not NBA
+                league = str(attrs.get("league", "") or "").upper()
+                if league and league not in ("NBA",):
+                    continue
+                rels = proj.get("relationships", {})
+                player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
+                if not player_id:
+                    player_id = (rels.get("player", {}).get("data", {}) or {}).get("id")
+                player_attrs = included.get(player_id, {}).get("attributes", {}) if player_id else {}
+                player_name = player_attrs.get("name", "") or attrs.get("name","")
+                stat_type = attrs.get("stat_type", "")
+                line_score = attrs.get("line_score")
+                if player_name and stat_type and line_score is not None:
+                    rows.append({
+                        "player": player_name,
+                        "stat_type": stat_type,
+                        "line": float(line_score),
+                        "start_time": attrs.get("start_time", ""),
+                        "source": "prizepicks",
+                    })
+            if rows:
+                return rows, None
+        except Exception as e:
+            return [], f"{type(e).__name__}: {e}"
+    return [], "No props found — PrizePicks may have no NBA slate posted"
+
 def fetch_prizepicks_lines():
-    """Fetch current NBA player props from PrizePicks public API."""
-    try:
-        r = requests.get(
-            PRIZEPICKS_API,
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-            params={"league_id": "7", "per_page": "250", "single_stat": "true", "in_play": "false"},
-            timeout=15,
-        )
-        r.raise_for_status()
-        data = r.json()
-        included = {item["id"]: item for item in data.get("included", [])}
-        rows = []
-        for proj in data.get("data", []):
-            if proj.get("type") != "Projection":
-                continue
-            attrs = proj.get("attributes", {})
-            rels = proj.get("relationships", {})
-            player_id = rels.get("new_player", {}).get("data", {}).get("id")
-            player_attrs = included.get(player_id, {}).get("attributes", {})
-            player_name = player_attrs.get("name", "")
-            stat_type = attrs.get("stat_type", "")
-            line_score = attrs.get("line_score")
-            if player_name and stat_type and line_score is not None:
-                rows.append({
-                    "player": player_name,
-                    "stat_type": stat_type,
-                    "line": float(line_score),
-                    "start_time": attrs.get("start_time", ""),
-                    "source": "prizepicks",
-                })
-        return rows, None
-    except Exception as e:
-        return [], f"{type(e).__name__}: {e}"
+    """Clear cache then fetch fresh PrizePicks lines."""
+    _fetch_prizepicks_lines_cached.clear()
+    return _fetch_prizepicks_lines_cached()
 
 # ──────────────────────────────────────────────
 # UNDERDOG INGESTION
 # ──────────────────────────────────────────────
-UNDERDOG_API = "https://api.underdogfantasy.com/v3/over_under_lines"
+# Try v3 then v4 endpoint
+_UNDERDOG_ENDPOINTS = [
+    "https://api.underdogfantasy.com/v3/over_under_lines",
+    "https://api.underdogfantasy.com/v4/over_under_lines",
+]
+_UD_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+}
 
 @st.cache_data(ttl=60*10, show_spinner=False)
-def fetch_underdog_lines():
-    """Fetch current NBA player props from Underdog Fantasy public API."""
-    try:
-        r = requests.get(
-            UNDERDOG_API,
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-            timeout=15,
-        )
-        r.raise_for_status()
-        data = r.json()
-        appearances = {a["id"]: a for a in data.get("appearances", [])}
-        players_map = {p["id"]: p for p in data.get("players", [])}
-        rows = []
-        for line in data.get("over_under_lines", []):
-            app_stat = line.get("over_under", {}).get("appearance_stat", {})
-            app_id = str(app_stat.get("appearance_id", ""))
-            app = appearances.get(app_id, {})
-            sport = app.get("sport_id", "")
-            if str(sport).lower() not in ("nba", "basketball"):
+def _fetch_underdog_lines_cached():
+    """Inner cached fetch — call via fetch_underdog_lines() which clears cache first."""
+    for url in _UNDERDOG_ENDPOINTS:
+        try:
+            r = requests.get(url, headers=_UD_HEADERS, timeout=20)
+            if r.status_code == 429:
+                return [], "Underdog rate-limited (429) — try again in 30s"
+            if not r.ok:
                 continue
-            player_id = str(app.get("player_id", ""))
-            player = players_map.get(player_id, {})
-            player_name = f"{player.get('first_name','')} {player.get('last_name','')}".strip()
-            stat_type = app_stat.get("display_stat", "")
-            stat_value = line.get("stat_value")
-            if player_name and stat_type and stat_value is not None:
-                rows.append({
-                    "player": player_name,
-                    "stat_type": stat_type,
-                    "line": float(stat_value),
-                    "source": "underdog",
-                })
-        return rows, None
-    except Exception as e:
-        return [], f"{type(e).__name__}: {e}"
+            data = r.json()
+            appearances = {a["id"]: a for a in data.get("appearances", [])}
+            players_map = {p["id"]: p for p in data.get("players", [])}
+            rows = []
+            for line in data.get("over_under_lines", []):
+                app_stat = line.get("over_under", {}).get("appearance_stat", {})
+                app_id = str(app_stat.get("appearance_id", ""))
+                app = appearances.get(app_id, {})
+                sport = str(app.get("sport_id", "")).lower()
+                if sport not in ("nba", "basketball", ""):
+                    continue
+                player_id = str(app.get("player_id", ""))
+                player = players_map.get(player_id, {})
+                player_name = f"{player.get('first_name','')} {player.get('last_name','')}".strip()
+                stat_type = app_stat.get("display_stat", "")
+                stat_value = line.get("stat_value")
+                if player_name and stat_type and stat_value is not None:
+                    rows.append({
+                        "player": player_name,
+                        "stat_type": stat_type,
+                        "line": float(stat_value),
+                        "source": "underdog",
+                    })
+            if rows:
+                return rows, None
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+    return [], locals().get("last_err", "No Underdog props found — slate may not be posted yet")
+
+def fetch_underdog_lines():
+    """Clear cache then fetch fresh Underdog lines."""
+    _fetch_underdog_lines_cached.clear()
+    return _fetch_underdog_lines_cached()
 
 def map_platform_stat_to_market(stat_type):
     """Map PrizePicks/Underdog stat label to internal market name."""
@@ -1454,6 +1536,7 @@ def compute_leg_projection(
     bankroll=0.0, frac_kelly=0.25, max_risk_frac=0.05,
     market_prior_weight=0.65, exclude_chaotic=True,
     game_date=None, is_home=None,
+    injury_team_map=None,   # {team_abbr_upper: [player_name_lower, ...]} for OUT/DOUBTFUL players
 ):
     errors = []
     game_date = game_date or date.today()
@@ -1529,6 +1612,21 @@ def compute_leg_projection(
                 if team_abbr == home_abbr: opp_abbr, is_home_resolved = away_abbr, True
                 elif team_abbr == away_abbr: opp_abbr, is_home_resolved = home_abbr, False
         except Exception: pass
+
+    # ── Auto key_teammate_out from injury map ─────────────────────
+    auto_inj_triggered = False
+    auto_inj_player = None
+    if not key_teammate_out and injury_team_map and team_abbr:
+        team_key = str(team_abbr).upper()
+        out_players = injury_team_map.get(team_key, [])
+        player_lower = (player_name or "").lower()
+        # Any OUT/DOUBTFUL teammate (exclude the player themselves)
+        for op in out_players:
+            if op and op != player_lower:
+                key_teammate_out = True
+                auto_inj_triggered = True
+                auto_inj_player = op
+                break
 
     ha_mult = compute_home_away_factor(gldf_n, base_market, is_home_resolved)
     ctx_mult = advanced_context_multiplier(player_name, base_market, opp_abbr, key_teammate_out)
@@ -1669,6 +1767,9 @@ def compute_leg_projection(
         "pos_def_mult":     float(pos_def_mult),
         "half_factor":      float(half_factor),
         "pace_adj":         True if opp_abbr and TEAM_CTX.get(str(opp_abbr).upper()) else False,
+        "auto_inj":         auto_inj_triggered,
+        "auto_inj_player":  auto_inj_player,
+        "key_teammate_out": key_teammate_out,
         "errors":           errors,
     }
 
@@ -2013,6 +2114,7 @@ with tabs[0]:
                 warnings.append(f"{tag}: invalid line"); continue
             tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out)))
         if tasks:
+            _inj_map = st.session_state.get("injury_team_map", {})
             model_candidates = [(pname, mkt, line, meta) for (_, pname, mkt, line, meta, _to) in tasks]
             pre_warm_scanner_caches(model_candidates, n_games)
             with st.spinner("Computing projections..."):
@@ -2023,7 +2125,8 @@ with tabs[0]:
                                       max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
                                       market_prior_weight=market_prior_weight,
                                       exclude_chaotic=bool(exclude_chaotic),
-                                      game_date=scan_date)
+                                      game_date=scan_date,
+                                      injury_team_map=_inj_map)
                             for (tag, pname, mkt, line, meta, to) in tasks]
                     results = []
                     for f in futs:
@@ -2116,6 +2219,7 @@ with tabs[1]:
   {mv_html}
 </div>
 {sharp_html}
+{"<div style='color:#FFA500;font-size:0.62rem;'>🏥 AUTO TEAMMATE OUT: " + (leg.get("auto_inj_player") or "").title() + "</div>" if leg.get("auto_inj") else ""}
 <div style='margin-top:0.7rem;font-size:0.64rem;color:#4A607A;'>
   ctx x{leg.get("context_mult",1):.3f} | rest x{leg.get("rest_mult",1):.2f} | ha x{leg.get("ha_mult",1):.2f}<br>
   CV={f"{leg['volatility_cv']:.2f}" if leg.get("volatility_cv") else "--"} | N={n_used} games<br>
@@ -2284,6 +2388,7 @@ with tabs[2]:
                 candidates.append((pname, mkt, float(line), meta))
             out_rows, dropped = [], []
             if candidates:
+                _inj_map = st.session_state.get("injury_team_map", {})
                 with st.spinner(f"Pre-warming caches for {len(candidates)} candidates..."):
                     pre_warm_scanner_caches(candidates, n_games)
                 with st.spinner(f"Scanning {len(candidates)} candidates..."):
@@ -2294,7 +2399,8 @@ with tabs[2]:
                                           max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
                                           market_prior_weight=market_prior_weight,
                                           exclude_chaotic=bool(exclude_chaotic),
-                                          game_date=scan_start)
+                                          game_date=scan_start,
+                                          injury_team_map=_inj_map)
                                 for pname, mkt, line, meta in candidates]
                         for (pname, mkt, line, meta), fut in zip(candidates, futs):
                             try:
@@ -2315,6 +2421,8 @@ with tabs[2]:
                             if adv < min_adv: dropped.append({"player":pname,"market":mkt,"reason":f"adv<{min_adv:.3f}"}); continue
                             if float(ev) < min_ev: dropped.append({"player":pname,"market":mkt,"reason":f"ev<{min_ev:.3f}"}); continue
                             mv = leg.get("line_movement") or {}
+                            inj_flag = ("🏥 " + (leg.get("auto_inj_player") or "").title()
+                                        if leg.get("auto_inj") else "")
                             out_rows.append({
                                 "player":pname,"market":mkt,"line":line,
                                 "p_cal":round(pc,3),"p_implied":round(float(pi),3),
@@ -2329,6 +2437,7 @@ with tabs[2]:
                                 "steam": "STEAM" if mv.get("steam") else ("FADE" if mv.get("fade") else ""),
                                 "stake_$":round(leg.get("stake",0),2),
                                 "n_games":leg.get("n_games_used",0),
+                                "inj_boost": inj_flag,
                             })
             out_df = pd.DataFrame(out_rows)
             if not out_df.empty:
@@ -2401,6 +2510,7 @@ with tabs[3]:
                     if mkt and r.get("line"):
                         pp_candidates.append((r["player"], mkt, float(r["line"]), None))
                 if pp_candidates:
+                    _inj_map = st.session_state.get("injury_team_map", {})
                     with st.spinner("Pre-warming caches..."):
                         pre_warm_scanner_caches(pp_candidates, n_games)
                     with st.spinner(f"Scanning {len(pp_candidates)} PrizePicks props..."):
@@ -2410,7 +2520,8 @@ with tabs[3]:
                                                  bankroll=bankroll, frac_kelly=frac_kelly,
                                                  market_prior_weight=market_prior_weight,
                                                  exclude_chaotic=bool(exclude_chaotic),
-                                                 game_date=date.today())
+                                                 game_date=date.today(),
+                                                 injury_team_map=_inj_map)
                                        for pn, mk, ln, mt in pp_candidates]
                             pp_results = []
                             for fut in futs_pp:
@@ -2459,6 +2570,7 @@ with tabs[3]:
                     if mkt and r.get("line"):
                         ud_candidates.append((r["player"], mkt, float(r["line"]), None))
                 if ud_candidates:
+                    _inj_map = st.session_state.get("injury_team_map", {})
                     with st.spinner("Pre-warming caches..."):
                         pre_warm_scanner_caches(ud_candidates, n_games)
                     with st.spinner(f"Scanning {len(ud_candidates)} Underdog props..."):
@@ -2468,7 +2580,8 @@ with tabs[3]:
                                                  bankroll=bankroll, frac_kelly=frac_kelly,
                                                  market_prior_weight=market_prior_weight,
                                                  exclude_chaotic=bool(exclude_chaotic),
-                                                 game_date=date.today())
+                                                 game_date=date.today(),
+                                                 injury_team_map=_inj_map)
                                        for pn, mk, ln, mt in ud_candidates]
                             ud_results = []
                             for fut in futs_ud:
@@ -2743,16 +2856,30 @@ with tabs[6]:
     st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
     st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#4A607A;letter-spacing:0.10em;'>INJURY REPORT</div>", unsafe_allow_html=True)
     if st.button("Fetch Today's Injury Report", use_container_width=True):
-        with st.spinner("Fetching..."):
+        fetch_injury_report.clear()   # force fresh data
+        with st.spinner("Fetching from ESPN..."):
             injuries = fetch_injury_report()
         if not injuries:
-            st.info("No injury data available (may require active game day).")
+            st.info("No injury data found — ESPN may not have posted today's report yet.")
         else:
+            # Build and store the map for auto key_teammate_out
+            inj_map = build_injury_team_map(injuries)
+            st.session_state["injury_team_map"] = inj_map
+            out_count = sum(len(v) for v in inj_map.values())
+            st.success(f"Loaded {out_count} OUT/DOUBTFUL player(s) — auto teammate-out active in scanner & model.")
             inj_rows = []
             for team, players in injuries.items():
                 for p in players:
                     inj_rows.append({"team": team, **p})
-            st.dataframe(pd.DataFrame(inj_rows), use_container_width=True)
+            st.dataframe(
+                pd.DataFrame(inj_rows).sort_values(["team","status"]),
+                use_container_width=True,
+            )
+    # Show current injury map status
+    cur_inj = st.session_state.get("injury_team_map", {})
+    if cur_inj:
+        n_out = sum(len(v) for v in cur_inj.values())
+        st.caption(f"Auto-injury active: {n_out} OUT/DOUBTFUL players across {len(cur_inj)} teams")
 
 # ── FOOTER ──────────────────────────────────────────────────
 st.markdown("""
