@@ -252,7 +252,7 @@ def get_season_string(today=None):
 # ──────────────────────────────────────────────
 # GAME LOG FETCHER
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*30, show_spinner=False)
+@st.cache_data(ttl=60*60*6, show_spinner=False)  # 6h — game logs are historical, safe to cache long
 def fetch_player_gamelog(player_id, max_games=15):
     errs = []
     season_str = get_season_string()
@@ -2403,10 +2403,8 @@ with tabs[2]:
             out_rows, dropped = [], []
             if candidates:
                 _inj_map = st.session_state.get("injury_team_map", {})
-                with st.spinner(f"Pre-warming caches for {len(candidates)} candidates..."):
-                    pre_warm_scanner_caches(candidates, n_games)
                 with st.spinner(f"Scanning {len(candidates)} candidates..."):
-                    with ThreadPoolExecutor(max_workers=8) as ex:
+                    with ThreadPoolExecutor(max_workers=16) as ex:
                         futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
                                           n_games=n_games, key_teammate_out=False,
                                           bankroll=bankroll, frac_kelly=frac_kelly,
@@ -2525,10 +2523,8 @@ with tabs[3]:
                         pp_candidates.append((r["player"], mkt, float(r["line"]), None))
                 if pp_candidates:
                     _inj_map = st.session_state.get("injury_team_map", {})
-                    with st.spinner("Pre-warming caches..."):
-                        pre_warm_scanner_caches(pp_candidates, n_games)
                     with st.spinner(f"Scanning {len(pp_candidates)} PrizePicks props..."):
-                        with ThreadPoolExecutor(max_workers=8) as ex:
+                        with ThreadPoolExecutor(max_workers=16) as ex:
                             futs_pp = [ex.submit(compute_leg_projection, pn, mk, ln, mt,
                                                  n_games=n_games, key_teammate_out=False,
                                                  bankroll=bankroll, frac_kelly=frac_kelly,
@@ -2585,10 +2581,8 @@ with tabs[3]:
                         ud_candidates.append((r["player"], mkt, float(r["line"]), None))
                 if ud_candidates:
                     _inj_map = st.session_state.get("injury_team_map", {})
-                    with st.spinner("Pre-warming caches..."):
-                        pre_warm_scanner_caches(ud_candidates, n_games)
                     with st.spinner(f"Scanning {len(ud_candidates)} Underdog props..."):
-                        with ThreadPoolExecutor(max_workers=8) as ex:
+                        with ThreadPoolExecutor(max_workers=16) as ex:
                             futs_ud = [ex.submit(compute_leg_projection, pn, mk, ln, mt,
                                                  n_games=n_games, key_teammate_out=False,
                                                  bankroll=bankroll, frac_kelly=frac_kelly,
