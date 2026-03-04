@@ -6,7 +6,7 @@
 # negative-edge guard, calibrator OOD, alert dedup, PASS logging,
 # export button, persistent scanner, week-ahead, permanent IDs
 # ============================================================
-import os, re, math, time, json, difflib, hashlib
+import os, re, math, time, json, difflib, hashlib, logging, threading
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +14,8 @@ import pandas as pd
 import numpy as np
 import requests
 import streamlit as st
+
+logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
 from nba_api.stats.static import players as nba_players
 from nba_api.stats.static import teams as nba_teams
 from nba_api.stats.endpoints import (
@@ -65,70 +67,99 @@ MIN_MINUTES_THRESHOLD = 10  # [FIX 3] filter DNP/garbage-time
 
 ODDS_MARKETS = {
     # ── Full-game standard ──────────────────────
-    "Points":        "player_points",
-    "Rebounds":      "player_rebounds",
-    "Assists":       "player_assists",
-    "3PM":           "player_threes",
-    "PRA":           "player_points_rebounds_assists",
-    "PR":            "player_points_rebounds",
-    "PA":            "player_points_assists",
-    "RA":            "player_rebounds_assists",
-    "Blocks":        "player_blocks",
-    "Steals":        "player_steals",
-    "Turnovers":     "player_turnovers",
-    "Stocks":        "player_blocks_steals",
+    "Points":          "player_points",
+    "Rebounds":        "player_rebounds",
+    "Assists":         "player_assists",
+    "3PM":             "player_threes",
+    "PRA":             "player_points_rebounds_assists",
+    "PR":              "player_points_rebounds",
+    "PA":              "player_points_assists",
+    "RA":              "player_rebounds_assists",
+    "Blocks":          "player_blocks",
+    "Steals":          "player_steals",
+    "Turnovers":       "player_turnovers",
+    "Stocks":          "player_blocks_steals",
     # ── 1st Half markets ────────────────────────
-    "H1 Points":     "player_points_q1q2",
-    "H1 Rebounds":   "player_rebounds_q1q2",
-    "H1 Assists":    "player_assists_q1q2",
-    "H1 3PM":        "player_threes_q1q2",
-    "H1 PRA":        "player_points_rebounds_assists_q1q2",
+    # Odds API supports both q1q2 and first_half variants; q1q2 is most common
+    "H1 Points":       "player_points_q1q2",
+    "H1 Rebounds":     "player_rebounds_q1q2",
+    "H1 Assists":      "player_assists_q1q2",
+    "H1 3PM":          "player_threes_q1q2",
+    "H1 PRA":          "player_points_rebounds_assists_q1q2",
     # ── 2nd Half markets ────────────────────────
-    "H2 Points":     "player_points_q3q4",
-    "H2 Rebounds":   "player_rebounds_q3q4",
-    "H2 Assists":    "player_assists_q3q4",
+    "H2 Points":       "player_points_q3q4",
+    "H2 Rebounds":     "player_rebounds_q3q4",
+    "H2 Assists":      "player_assists_q3q4",
+    # ── 1st Quarter markets ─────────────────────
+    "Q1 Points":       "player_points_q1",
+    "Q1 Rebounds":     "player_rebounds_q1",
+    "Q1 Assists":      "player_assists_q1",
     # ── Alternate lines ─────────────────────────
-    "Alt Points":    "player_points_alternate",
-    "Alt Rebounds":  "player_rebounds_alternate",
-    "Alt Assists":   "player_assists_alternate",
-    "Alt 3PM":       "player_threes_alternate",
+    "Alt Points":      "player_points_alternate",
+    "Alt Rebounds":    "player_rebounds_alternate",
+    "Alt Assists":     "player_assists_alternate",
+    "Alt 3PM":         "player_threes_alternate",
+    # ── Fantasy score ────────────────────────────
+    "Fantasy Score":   "player_fantasy_points",
     # ── Combo / special ─────────────────────────
-    "Double Double": "player_double_double",
-    "Triple Double": "player_triple_double",
-    "First Basket":  "player_first_basket",
+    "Double Double":   "player_double_double",
+    "Triple Double":   "player_triple_double",
+    "First Basket":    "player_first_basket",
+}
+
+# Markets that require batching separately (not all books offer these)
+SPECIALTY_MARKET_KEYS = {
+    # Half-game markets (only DK/FD/etc offer these)
+    "player_points_q1q2", "player_rebounds_q1q2",
+    "player_assists_q1q2", "player_threes_q1q2",
+    "player_points_rebounds_assists_q1q2",
+    "player_points_q3q4", "player_rebounds_q3q4", "player_assists_q3q4",
+    # 1Q markets
+    "player_points_q1", "player_rebounds_q1", "player_assists_q1",
+    # Alt lines
+    "player_points_alternate", "player_rebounds_alternate",
+    "player_assists_alternate", "player_threes_alternate",
+    # Fantasy
+    "player_fantasy_points",
 }
 
 STAT_FIELDS = {
-    "Points":        "PTS",
-    "Rebounds":      "REB",
-    "Assists":       "AST",
-    "3PM":           "FG3M",
-    "PRA":           ("PTS","REB","AST"),
-    "PR":            ("PTS","REB"),
-    "PA":            ("PTS","AST"),
-    "RA":            ("REB","AST"),
-    "Blocks":        "BLK",
-    "Steals":        "STL",
-    "Turnovers":     "TOV",
-    "Stocks":        ("BLK","STL"),
+    "Points":          "PTS",
+    "Rebounds":        "REB",
+    "Assists":         "AST",
+    "3PM":             "FG3M",
+    "PRA":             ("PTS","REB","AST"),
+    "PR":              ("PTS","REB"),
+    "PA":              ("PTS","AST"),
+    "RA":              ("REB","AST"),
+    "Blocks":          "BLK",
+    "Steals":          "STL",
+    "Turnovers":       "TOV",
+    "Stocks":          ("BLK","STL"),
     # Half markets map to full-game fields (adjusted via HALF_FACTOR)
-    "H1 Points":     "PTS",
-    "H1 Rebounds":   "REB",
-    "H1 Assists":    "AST",
-    "H1 3PM":        "FG3M",
-    "H1 PRA":        ("PTS","REB","AST"),
-    "H2 Points":     "PTS",
-    "H2 Rebounds":   "REB",
-    "H2 Assists":    "AST",
+    "H1 Points":       "PTS",
+    "H1 Rebounds":     "REB",
+    "H1 Assists":      "AST",
+    "H1 3PM":          "FG3M",
+    "H1 PRA":          ("PTS","REB","AST"),
+    "H2 Points":       "PTS",
+    "H2 Rebounds":     "REB",
+    "H2 Assists":      "AST",
+    # 1Q markets map to full-game fields (adjusted via Q1_FACTOR)
+    "Q1 Points":       "PTS",
+    "Q1 Rebounds":     "REB",
+    "Q1 Assists":      "AST",
     # Alt lines use same fields as base
-    "Alt Points":    "PTS",
-    "Alt Rebounds":  "REB",
-    "Alt Assists":   "AST",
-    "Alt 3PM":       "FG3M",
+    "Alt Points":      "PTS",
+    "Alt Rebounds":    "REB",
+    "Alt Assists":     "AST",
+    "Alt 3PM":         "FG3M",
+    # Fantasy score: PTS + 1.2*REB + 1.5*AST + 3*(BLK+STL) - TOV (DK-style)
+    "Fantasy Score":   ("PTS","REB","AST","BLK","STL","TOV"),
     # Combo / special
-    "Double Double": ("PTS","REB","AST","BLK","STL"),
-    "Triple Double": ("PTS","REB","AST","BLK","STL"),
-    "First Basket":  "PTS",
+    "Double Double":   ("PTS","REB","AST","BLK","STL"),
+    "Triple Double":   ("PTS","REB","AST","BLK","STL"),
+    "First Basket":    "PTS",
 }
 
 # Half-game projection scale factors
@@ -136,10 +167,15 @@ HALF_FACTOR = {
     "H1 Points": 0.52, "H1 Rebounds": 0.52, "H1 Assists": 0.52,
     "H1 3PM": 0.52, "H1 PRA": 0.52,
     "H2 Points": 0.48, "H2 Rebounds": 0.48, "H2 Assists": 0.48,
+    # 1Q markets: ~25% of full-game (first quarter only)
+    "Q1 Points": 0.25, "Q1 Rebounds": 0.24, "Q1 Assists": 0.24,
 }
 
 # Alt markets — same engine, different API key
 ALT_MARKETS = {"Alt Points","Alt Rebounds","Alt Assists","Alt 3PM"}
+
+# Fantasy score markets need custom stat computation
+FANTASY_MARKETS = {"Fantasy Score"}
 
 # DD/TD markets — probability from game log, not bootstrap
 DD_TD_MARKETS = {"Double Double","Triple Double"}
@@ -156,16 +192,37 @@ def book_sharpness(k):
 
 POSITIONAL_PRIORS = {
     "Guard": {"Points":16.5,"Rebounds":3.4,"Assists":5.8,"3PM":2.1,
-              "PRA":25.7,"PR":19.9,"PA":22.3,"RA":9.2,"Blocks":0.4,"Steals":1.2,"Turnovers":2.2},
+              "PRA":25.7,"PR":19.9,"PA":22.3,"RA":9.2,"Blocks":0.4,"Steals":1.2,"Turnovers":2.2,
+              "Q1 Points":4.1,"Q1 Rebounds":0.9,"Q1 Assists":1.5,"Fantasy Score":31.2},
     "Wing":  {"Points":14.8,"Rebounds":5.9,"Assists":2.9,"3PM":1.6,
-              "PRA":23.6,"PR":20.7,"PA":17.7,"RA":8.8,"Blocks":0.8,"Steals":1.0,"Turnovers":1.7},
+              "PRA":23.6,"PR":20.7,"PA":17.7,"RA":8.8,"Blocks":0.8,"Steals":1.0,"Turnovers":1.7,
+              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.7,"Fantasy Score":27.4},
     "Big":   {"Points":13.2,"Rebounds":8.8,"Assists":2.1,"3PM":0.5,
-              "PRA":24.1,"PR":22.0,"PA":15.3,"RA":10.9,"Blocks":1.4,"Steals":0.7,"Turnovers":2.0},
+              "PRA":24.1,"PR":22.0,"PA":15.3,"RA":10.9,"Blocks":1.4,"Steals":0.7,"Turnovers":2.0,
+              "Q1 Points":3.3,"Q1 Rebounds":2.2,"Q1 Assists":0.5,"Fantasy Score":30.5},
     "Unknown":{"Points":14.8,"Rebounds":5.5,"Assists":3.5,"3PM":1.4,
-              "PRA":23.8,"PR":20.3,"PA":18.3,"RA":9.0,"Blocks":0.8,"Steals":0.9,"Turnovers":1.9},
+              "PRA":23.8,"PR":20.3,"PA":18.3,"RA":9.0,"Blocks":0.8,"Steals":0.9,"Turnovers":1.9,
+              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.9,"Fantasy Score":29.7},
 }
 
 REST_MULTIPLIERS = {0: 0.93, 1: 0.97, 2: 1.00, 3: 1.01, 4: 1.02}
+
+# Exponential recency decay per stat (assists autocorrelate longer than blocks)
+LAMBDA_DECAY_BY_STAT = {
+    "Points": 0.88, "Rebounds": 0.85, "Assists": 0.88,
+    "3PM": 0.84, "PRA": 0.87, "PR": 0.86, "PA": 0.87, "RA": 0.85,
+    "Blocks": 0.83, "Steals": 0.84, "Turnovers": 0.86, "Stocks": 0.83,
+    "H1 Points": 0.88, "H1 Rebounds": 0.85, "H1 Assists": 0.88,
+    "H2 Points": 0.88, "H2 Rebounds": 0.85, "H2 Assists": 0.88,
+    "Q1 Points": 0.87, "Q1 Rebounds": 0.84, "Q1 Assists": 0.87,
+    "Alt Points": 0.88, "Alt Rebounds": 0.85, "Alt Assists": 0.88, "Alt 3PM": 0.84,
+    "Fantasy Score": 0.88,
+    "default": 0.88,
+}
+
+# Persistent file paths
+OPENING_LINES_PATH = "opening_lines.json"
+WATCHLIST_PATH_TPL  = "watchlist_{uid}.json"
 
 # ──────────────────────────────────────────────
 # PLAYER POSITION CACHE
@@ -384,6 +441,18 @@ def bayesian_shrink(observed_mu, n_obs, market, position_bucket):
 # STAT SERIES COMPUTATION
 # ──────────────────────────────────────────────
 def compute_stat_from_gamelog(df, market):
+    # [UPGRADE] Fantasy Score: weighted DraftKings formula
+    if market == "Fantasy Score":
+        try:
+            pts = pd.to_numeric(df.get("PTS"), errors="coerce").fillna(0)
+            reb = pd.to_numeric(df.get("REB"), errors="coerce").fillna(0)
+            ast = pd.to_numeric(df.get("AST"), errors="coerce").fillna(0)
+            blk = pd.to_numeric(df.get("BLK"), errors="coerce").fillna(0)
+            stl = pd.to_numeric(df.get("STL"), errors="coerce").fillna(0)
+            tov = pd.to_numeric(df.get("TOV"), errors="coerce").fillna(0)
+            return pts + 1.2*reb + 1.5*ast + 3.0*(blk+stl) - tov
+        except Exception:
+            return pd.Series([], dtype=float)
     f = STAT_FIELDS.get(market)
     if f is None:
         return pd.Series([], dtype=float)
@@ -426,6 +495,82 @@ def compute_skewness(series):
     except Exception:
         return None
 
+# ──────────────────────────────────────────────
+# [UPGRADE 3] OPPONENT-SPECIFIC HISTORICAL FACTOR
+# ──────────────────────────────────────────────
+def compute_opp_specific_factor(game_log_df, opp_abbr, market, n_min=3):
+    """Return multiplier based on player's recorded performance vs this specific opponent."""
+    if game_log_df is None or game_log_df.empty or not opp_abbr:
+        return 1.0, 0
+    try:
+        df = game_log_df.copy()
+        opp_upper = str(opp_abbr).upper()
+        mask = df["MATCHUP"].str.upper().str.contains(opp_upper, na=False)
+        opp_df = df[mask]; rest_df = df[~mask]
+        n_opp = len(opp_df)
+        if n_opp < n_min or len(rest_df) < n_min:
+            return 1.0, n_opp
+        stat_col = STAT_FIELDS.get(market)
+        if stat_col is None:
+            return 1.0, n_opp
+        if isinstance(stat_col, tuple):
+            def _sum_cols(d):
+                return sum(pd.to_numeric(d.get(c), errors="coerce").fillna(0) for c in stat_col).mean()
+            opp_avg = _sum_cols(opp_df); rest_avg = _sum_cols(rest_df)
+        else:
+            opp_avg = pd.to_numeric(opp_df.get(stat_col), errors="coerce").mean()
+            rest_avg = pd.to_numeric(rest_df.get(stat_col), errors="coerce").mean()
+        if pd.isna(opp_avg) or pd.isna(rest_avg) or rest_avg == 0:
+            return 1.0, n_opp
+        ratio = opp_avg / rest_avg
+        # 40% weight on opponent-specific (dampen for small sample)
+        weight = min(0.40, n_opp * 0.10)
+        factor = 1.0 + weight * (ratio - 1.0)
+        return float(np.clip(factor, 0.88, 1.12)), n_opp
+    except Exception:
+        return 1.0, 0
+
+# ──────────────────────────────────────────────
+# [UPGRADE 5] PLAYER REGIME — HOT / COLD / AVERAGE
+# ──────────────────────────────────────────────
+def compute_player_regime_hot_cold(stat_series, n_recent=5):
+    """Tag player as Hot / Cold / Average based on last N-game z-score vs season."""
+    try:
+        arr = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
+        if len(arr) < n_recent + 3:
+            return "Average", 0.0
+        season_mu = arr.mean(); season_sigma = arr.std(ddof=1)
+        if season_sigma < 1e-6:
+            return "Average", 0.0
+        recent_mu = arr[:n_recent].mean()  # array is newest-first
+        z = (recent_mu - season_mu) / season_sigma
+        if z > 0.8:  return "Hot",  float(z)
+        if z < -0.8: return "Cold", float(z)
+        return "Average", float(z)
+    except Exception:
+        return "Average", 0.0
+
+# ──────────────────────────────────────────────
+# [UPGRADE 2] PROJECTED MINUTES
+# ──────────────────────────────────────────────
+def compute_projected_minutes(game_log_df, n_games=10):
+    """Return rolling average of minutes played (DNP-aware) and a DNP-risk flag."""
+    if game_log_df is None or game_log_df.empty or "MIN" not in game_log_df.columns:
+        return None, False
+    try:
+        df = game_log_df.head(n_games).copy()
+        mins = df["MIN"].apply(lambda v:
+            float(str(v).split(":")[0]) if isinstance(v, str) and ":" in str(v)
+            else safe_float(v, default=0.0))
+        active = mins[mins >= 5]
+        if active.empty:
+            return None, True
+        avg_min = float(active.mean())
+        dnp_risk = avg_min < 20.0 or (len(active) < len(df) * 0.7)
+        return avg_min, bool(dnp_risk)
+    except Exception:
+        return None, False
+
 def volatility_penalty_factor(cv):
     if cv is None: return 0.0
     v = float(cv)
@@ -462,14 +607,16 @@ def passes_volatility_gate(cv, ev_raw, skew=None, bet_type="Over"):
 # ──────────────────────────────────────────────
 # BOOTSTRAP WITH PER-PLAYER NOISE
 # ──────────────────────────────────────────────
-def bootstrap_prob_over(stat_series, line, n_sims=8000, cv_override=None):
+def bootstrap_prob_over(stat_series, line, n_sims=8000, cv_override=None, market="default"):
     x = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
     if x.size < 4:
         mu = float(np.nanmean(x)) if x.size else None
         sigma = float(np.nanstd(x, ddof=1)) if x.size > 1 else None
         return None, mu, sigma
+    # [UPGRADE 4] Principled exponential decay (stat-specific λ, not arbitrary linear)
     if x.size >= 6:
-        w = np.linspace(1.5, 0.5, x.size)
+        lam = LAMBDA_DECAY_BY_STAT.get(market, LAMBDA_DECAY_BY_STAT["default"])
+        w = np.array([lam ** i for i in range(x.size)], dtype=float)
         w = w / w.sum()
     else:
         w = None
@@ -914,10 +1061,12 @@ def find_player_line_from_events(player_name, market_key, date_iso, book_choice)
     if err: return None, None, err
     if not evs: return None, None, "No events for that date"
     target = normalize_name(player_name)
+    # [FIX H1/H2/ALT] Use broader regions for specialty markets
+    regions = "us,us2,eu,uk" if market_key in SPECIALTY_MARKET_KEYS else REGION_US
     for ev in evs:
         eid = ev.get("id")
         if not eid: continue
-        odds, oerr = odds_get_event_odds(eid, (market_key,))
+        odds, oerr = odds_get_event_odds(eid, (market_key,), regions=regions)
         if oerr or not odds: continue
         rows, _ = _parse_player_prop_outcomes(odds, market_key, book_filter=book_choice)
         for r in rows:
@@ -1163,6 +1312,48 @@ def fetch_injury_report():
 
     return out
 
+# ──────────────────────────────────────────────
+# [UPGRADE 9] ROTOWIRE NEWS SCRAPER
+# ──────────────────────────────────────────────
+@st.cache_data(ttl=60*5, show_spinner=False)
+def fetch_rotowire_news():
+    """Scrape Rotowire NBA injury page. Returns (rows, error)."""
+    try:
+        url = "https://www.rotowire.com/basketball/injury-report.php"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=15)
+        if not r.ok:
+            return [], f"HTTP {r.status_code}"
+        text = r.text
+        rows = []
+        # Each player row contains: player link, team, position, status, return date, injury detail
+        player_blocks = re.findall(
+            r'<td[^>]*class="[^"]*player[^"]*"[^>]*>.*?<a[^>]+>([^<]+)</a>.*?</td>'
+            r'.*?<td[^>]*>([A-Z]{2,4})</td>'      # team abbr
+            r'.*?<td[^>]*>([A-Z]+)</td>'            # position
+            r'.*?<td[^>]*>([^<]{2,30})</td>'        # status
+            r'.*?<td[^>]*>([^<]{0,30})</td>',       # return date
+            text, re.DOTALL
+        )
+        for m in player_blocks:
+            pname = m[0].strip(); team = m[1].strip()
+            pos = m[2].strip(); status = m[3].strip(); ret = m[4].strip()
+            if pname and status:
+                rows.append({"player": pname, "team": team, "pos": pos,
+                             "status": status, "return": ret})
+        # Fallback: simpler pattern if the above misses things
+        if not rows:
+            simple = re.findall(
+                r'href="/basketball/player-profile[^"]*">([^<]+)</a>.*?'
+                r'class="[^"]*status[^"]*"[^>]*>([^<]+)<',
+                text, re.DOTALL
+            )
+            for pname, status in simple[:60]:
+                rows.append({"player": pname.strip(), "status": status.strip(),
+                             "team": "", "pos": "", "return": ""})
+        return rows[:80], None
+    except Exception as ex:
+        return [], f"{type(ex).__name__}: {ex}"
+
 def build_injury_team_map(injury_dict):
     """Build {team_abbr: [player_name_lower]} for OUT/DOUBTFUL players only — used for auto key_teammate_out."""
     result = {}
@@ -1288,31 +1479,43 @@ def _pp_request(per_page=500, cookies_str=""):
 @st.cache_data(ttl=60*10, show_spinner=False)
 def _fetch_prizepicks_lines_cached(cookies_str=""):
     for per_page in (500, 250):
-        r, err = _pp_request(per_page=per_page, cookies_str=cookies_str)
-        if err:
-            return [], err
-        if r is None:
-            return [], "No response from PrizePicks"
-        if r.status_code == 429:
-            return [], "PrizePicks rate-limited (429) — wait 30s and retry"
-        if r.status_code == 403:
-            return [], (
-                "HTTP 403 — PerimeterX block. Fix: paste your PrizePicks browser "
-                "cookies into Settings → PrizePicks Cookies, then retry."
-            )
-        if not r.ok:
-            return [], f"HTTP {r.status_code}: {r.text[:300]}"
-        try:
-            rows = _parse_pp_response(r.json())
-        except Exception as e:
-            return [], f"Parse error: {e}"
-        if rows:
-            return rows, None
+        # Retry up to 3 times on 429 with backoff
+        for attempt in range(3):
+            r, err = _pp_request(per_page=per_page, cookies_str=cookies_str)
+            if err:
+                return [], err
+            if r is None:
+                return [], "No response from PrizePicks"
+            if r.status_code == 429:
+                if attempt < 2:
+                    time.sleep(2 ** (attempt + 1))  # 2s, 4s
+                    continue
+                return [], (
+                    "PrizePicks rate-limited (429) — Streamlit Cloud IP is throttled. "
+                    "Wait 60s and retry, or run the app locally."
+                )
+            if r.status_code == 403:
+                return [], (
+                    "HTTP 403 — PerimeterX block. Fix: paste your PrizePicks browser "
+                    "cookies into Settings → PrizePicks Cookies, then retry."
+                )
+            if not r.ok:
+                return [], f"HTTP {r.status_code}: {r.text[:300]}"
+            try:
+                rows = _parse_pp_response(r.json())
+            except Exception as e:
+                return [], f"Parse error: {e}"
+            if rows:
+                return rows, None
+            break  # non-429, non-error, empty — try next per_page
     return [], "No NBA props found — slate may not be posted yet"
 
 def fetch_prizepicks_lines():
     cookies_str = st.session_state.get("pp_cookies", "")
-    _fetch_prizepicks_lines_cached.clear()
+    # Only clear cache when cookies changed — avoids redundant API hits
+    if st.session_state.get("_pp_last_cookies_used") != cookies_str:
+        _fetch_prizepicks_lines_cached.clear()
+        st.session_state["_pp_last_cookies_used"] = cookies_str
     return _fetch_prizepicks_lines_cached(cookies_str=cookies_str)
 
 # ──────────────────────────────────────────────
@@ -1322,11 +1525,16 @@ def fetch_prizepicks_lines():
 _UNDERDOG_ENDPOINTS = [
     "https://api.underdogfantasy.com/v3/over_under_lines",
     "https://api.underdogfantasy.com/v4/over_under_lines",
+    "https://api.underdogfantasy.com/v2/over_under_lines",
 ]
 _UD_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json",
+    "Referer": "https://underdogfantasy.com/",
+    "Origin": "https://underdogfantasy.com",
 }
+# Basketball sport IDs that Underdog may use (numeric or string)
+_UD_BASKETBALL_SPORT_IDS = {"nba", "basketball", "5", "4", "nba_basketball", "basketball_nba", ""}
 
 @st.cache_data(ttl=60*10, show_spinner=False)
 def _fetch_underdog_lines_cached():
@@ -1347,7 +1555,7 @@ def _fetch_underdog_lines_cached():
                 app_id = str(app_stat.get("appearance_id", ""))
                 app = appearances.get(app_id, {})
                 sport = str(app.get("sport_id", "")).lower()
-                if sport not in ("nba", "basketball", ""):
+                if sport and sport not in _UD_BASKETBALL_SPORT_IDS:
                     continue
                 player_id = str(app.get("player_id", ""))
                 player = players_map.get(player_id, {})
@@ -1434,6 +1642,67 @@ def save_prop_line(player, market, line, price, book, event_id=None):
     except Exception:
         pass
 
+# ──────────────────────────────────────────────
+# [UPGRADE 10] OPENING LINE CAPTURE
+# ──────────────────────────────────────────────
+def save_opening_line(player_norm, market_key, side, line, price):
+    """Persist the first-seen line for a player/market/side as the 'opening' line."""
+    try:
+        data = {}
+        if os.path.exists(OPENING_LINES_PATH):
+            with open(OPENING_LINES_PATH) as f:
+                data = json.load(f)
+        key = f"{player_norm}|{market_key}|{side}"
+        if key not in data:  # Only write once per key (true opening)
+            data[key] = {"line": float(line), "price": price, "ts": _now_iso(), "date": date.today().isoformat()}
+            with open(OPENING_LINES_PATH, "w") as f:
+                json.dump(data, f)
+    except Exception as ex:
+        logging.warning(f"save_opening_line: {ex}")
+
+def get_opening_line(player_norm, market_key, side):
+    """Return (opening_line, opening_price) or (None, None) if not recorded."""
+    try:
+        if not os.path.exists(OPENING_LINES_PATH):
+            return None, None
+        with open(OPENING_LINES_PATH) as f:
+            data = json.load(f)
+        key = f"{player_norm}|{market_key}|{side}"
+        rec = data.get(key)
+        if rec and rec.get("date") == date.today().isoformat():
+            return rec.get("line"), rec.get("price")
+    except Exception as ex:
+        logging.warning(f"get_opening_line: {ex}")
+    return None, None
+
+def clear_opening_lines():
+    try:
+        if os.path.exists(OPENING_LINES_PATH):
+            os.remove(OPENING_LINES_PATH)
+    except Exception:
+        pass
+
+# ──────────────────────────────────────────────
+# WATCHLIST PERSISTENCE
+# ──────────────────────────────────────────────
+def load_watchlist(uid):
+    path = WATCHLIST_PATH_TPL.format(uid=re.sub(r"[^a-zA-Z0-9_-]", "_", uid or "default"))
+    try:
+        if os.path.exists(path):
+            with open(path) as f:
+                return json.load(f) or []
+    except Exception:
+        pass
+    return []
+
+def save_watchlist(uid, players):
+    path = WATCHLIST_PATH_TPL.format(uid=re.sub(r"[^a-zA-Z0-9_-]", "_", uid or "default"))
+    try:
+        with open(path, "w") as f:
+            json.dump(list(players), f)
+    except Exception:
+        pass
+
 def load_prop_line_history(player=None, market=None, limit=500):
     """Load prop line history filtered by player/market."""
     try:
@@ -1494,6 +1763,132 @@ def format_edge_alert(leg):
         f"**{leg.get('player','?')}** — {leg.get('market','?')} O{leg.get('line','?')}\n"
         f"P: {p_cal*100:.1f}% | EV: {ev:.1f}% | {leg.get('edge_cat','')}"
     )
+
+# ──────────────────────────────────────────────
+# [UPGRADE 23] ALERT DIGEST FORMATTER
+# ──────────────────────────────────────────────
+def format_digest_message(edges, as_of=None):
+    """Format a ranked daily digest of top edges for Discord/Telegram."""
+    ts = (as_of or datetime.utcnow()).strftime("%Y-%m-%d %H:%M UTC")
+    lines = [f"**NBA QUANT ENGINE — DAILY DIGEST** ({ts})\n"]
+    for i, leg in enumerate(edges[:15], 1):
+        ev = leg.get("ev_adj_pct") or (float(leg.get("ev_adj", 0) or 0) * 100)
+        p  = float(leg.get("p_cal") or 0) * 100
+        proj = leg.get("proj")
+        proj_str = f"{proj:.1f}" if proj is not None else "--"
+        lines.append(
+            f"{i}. **{leg.get('player','?')}** {leg.get('market','?')} "
+            f"O{leg.get('line','?')} | Proj: {proj_str} | "
+            f"P: {p:.0f}% | EV: {ev:+.1f}% | {leg.get('edge_cat','')}"
+        )
+    return "\n".join(lines)
+
+# ──────────────────────────────────────────────
+# [UPGRADE 31] CLV LEADERBOARD
+# ──────────────────────────────────────────────
+def compute_clv_leaderboard(history_df, top_n=20):
+    """Return top bets ranked by no-vig CLV price improvement."""
+    if history_df is None or history_df.empty:
+        return pd.DataFrame()
+    rows = []
+    for _, r in history_df.iterrows():
+        try:
+            legs = json.loads(r.get("legs", "[]")) if isinstance(r.get("legs"), str) else []
+        except Exception:
+            legs = []
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            clv_p = leg.get("clv_price")
+            clv_l = leg.get("clv_line")
+            if clv_p is None and clv_l is None:
+                continue
+            rows.append({
+                "ts":     r.get("ts", ""),
+                "player": leg.get("player", "?"),
+                "market": leg.get("market", "?"),
+                "line":   leg.get("line"),
+                "side":   leg.get("side", "Over"),
+                "result": r.get("result", "Pending"),
+                "clv_line":  safe_round(clv_l, 2),
+                "clv_price": safe_round(clv_p, 4),
+                "clv_line_fav":  bool(leg.get("clv_line_fav")),
+                "clv_price_fav": bool(leg.get("clv_price_fav")),
+                "novig_open":  safe_round(leg.get("clv_price_novig_open"), 4),
+                "novig_close": safe_round(leg.get("clv_price_novig_close"), 4),
+            })
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df = df.sort_values("clv_price", ascending=False).head(top_n)
+    return df.reset_index(drop=True)
+
+# ──────────────────────────────────────────────
+# [UPGRADE 32] PER-BOOK MARKET EFFICIENCY SCORE
+# ──────────────────────────────────────────────
+def compute_book_efficiency(history_df):
+    """Track per-book win rate and CLV rate to rank market efficiency."""
+    if history_df is None or history_df.empty:
+        return pd.DataFrame()
+    rows = []
+    for _, r in history_df.iterrows():
+        res = r.get("result", "Pending")
+        if res not in ("HIT", "MISS"):
+            continue
+        y = 1 if res == "HIT" else 0
+        try:
+            legs = json.loads(r.get("legs", "[]")) if isinstance(r.get("legs"), str) else []
+        except Exception:
+            legs = []
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            book = leg.get("book") or "unknown"
+            rows.append({
+                "book":    book,
+                "y":       y,
+                "clv_fav": int(bool(leg.get("clv_price_fav"))),
+                "ev_adj":  safe_float(leg.get("ev_adj"), 0.0),
+            })
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    result = df.groupby("book").agg(
+        bets=("y", "size"),
+        hit_rate=("y", "mean"),
+        clv_fav_rate=("clv_fav", "mean"),
+        avg_ev=("ev_adj", "mean"),
+    ).reset_index()
+    result["hit_rate_%"] = (result["hit_rate"] * 100).round(1)
+    result["clv_fav_%"]  = (result["clv_fav_rate"] * 100).round(1)
+    result["avg_ev_%"]   = (result["avg_ev"] * 100).round(2)
+    result = result[result["bets"] >= 3].sort_values("hit_rate_%", ascending=False)
+    return result[["book", "bets", "hit_rate_%", "clv_fav_%", "avg_ev_%"]].reset_index(drop=True)
+
+# ──────────────────────────────────────────────
+# [UPGRADE 34] BAYESIAN PRIOR UPDATE FROM HISTORY
+# ──────────────────────────────────────────────
+def compute_history_based_priors(legs_df, position_bucket):
+    """Blend positional priors with personal hit/miss data by market."""
+    base = dict(POSITIONAL_PRIORS.get(position_bucket, POSITIONAL_PRIORS["Unknown"]))
+    if legs_df is None or legs_df.empty:
+        return base
+    settled = legs_df[legs_df["y"].notna() & legs_df["market"].notna()].copy()
+    if len(settled) < 20:
+        return base
+    mkt_stats = settled.groupby("market").agg(
+        hit_rate=("y", "mean"), n=("y", "size")
+    ).reset_index()
+    for _, row in mkt_stats.iterrows():
+        mkt = row["market"]; n = row["n"]
+        if n < 8 or mkt not in base:
+            continue
+        # Bayesian blend: personal history weight grows with sample size (max 35%)
+        w_personal = min(n / (n + 30), 0.35)
+        # Positive hit rate → market is offering value → effectively lower the prior (easier line)
+        adj = 1.0 + w_personal * (row["hit_rate"] - 0.50) * 0.25
+        base[mkt] = base[mkt] * float(np.clip(adj, 0.88, 1.12))
+    return base
 
 # ──────────────────────────────────────────────
 # KELLY PARLAY OPTIMIZER
@@ -1677,18 +2072,26 @@ def compute_leg_projection(
     half_factor = HALF_FACTOR.get(market_name, 1.0)
     is_half_market = market_name in HALF_FACTOR
     is_dd_td = market_name in DD_TD_MARKETS
-    # For half markets, find effective full-game stat field
+    is_fantasy = market_name in FANTASY_MARKETS
+    # For half/Q1 markets, find effective full-game stat field
     base_market = market_name
     if is_half_market:
-        base_market = market_name.replace("H1 ","").replace("H2 ","")
+        base_market = (market_name.replace("H1 ","").replace("H2 ","").replace("Q1 ",""))
 
     stat_series = compute_stat_from_gamelog(gldf_n, base_market) if not gldf_n.empty else pd.Series([], dtype=float)
     vol_cv, vol_label = compute_volatility(stat_series)
     stat_skew = compute_skewness(stat_series)  # [FIX 5]
     rest_mult, rest_days = compute_rest_factor(gldf, game_date)
 
+    # [UPGRADE 2] Projected minutes + DNP risk
+    proj_minutes, dnp_risk = compute_projected_minutes(gldf_n, n_games=n_games)
+
     # Usage rate signal
     usage_rate = compute_usage_rate(gldf_n, n_games=n_games)
+
+    # [UPGRADE 1] Explicit B2B flag (rest_days computed later but extract early)
+    _rest_calc, _rest_d_early = compute_rest_factor(gldf, game_date)
+    b2b_flag = (_rest_d_early == 0)
 
     # Resolve team/opponent
     team_abbr, opp_abbr, is_home_resolved = None, None, is_home
@@ -1733,7 +2136,15 @@ def compute_leg_projection(
                 break
 
     ha_mult = compute_home_away_factor(gldf_n, base_market, is_home_resolved)
-    ctx_mult = advanced_context_multiplier(player_name, base_market, opp_abbr, key_teammate_out)
+    # [UPGRADE 8] Injury boost scaled by usage capacity
+    _usage_boost = 1.05
+    if key_teammate_out and usage_rate is not None:
+        if usage_rate >= 18:   _usage_boost = 1.04   # already high usage, less room
+        elif usage_rate >= 12: _usage_boost = 1.06   # moderate usage, more upside
+        else:                  _usage_boost = 1.03
+    ctx_mult = advanced_context_multiplier(player_name, base_market, opp_abbr, False)
+    if key_teammate_out:
+        ctx_mult *= _usage_boost
     blowout_prob = estimate_blowout_risk(team_abbr, opp_abbr, spread_abs=None)
 
     pos_str = get_player_position(player_name) or ""
@@ -1744,6 +2155,12 @@ def compute_leg_projection(
 
     # Pace-adjusted stat series
     pace_adj_series = compute_pace_adjusted_series(stat_series, opp_abbr)
+
+    # [UPGRADE 3] Opponent-specific historical factor
+    opp_specific_factor, n_vs_opp = compute_opp_specific_factor(gldf_n, opp_abbr, base_market)
+
+    # [UPGRADE 5] Hot / cold regime (uses full season log for broader z-score)
+    hot_cold_label, hot_cold_z = compute_player_regime_hot_cold(stat_series)
 
     # DD / TD: short-circuit to frequency-based probability
     if is_dd_td:
@@ -1757,15 +2174,19 @@ def compute_leg_projection(
     else:
         # For half markets: convert line to equivalent full-game threshold
         effective_line = float(line) / half_factor if is_half_market and half_factor > 0 else float(line)
-        p_over_raw, mu_raw, sigma = bootstrap_prob_over(pace_adj_series, effective_line, cv_override=vol_cv)
+        # [UPGRADE 4] Pass market for stat-specific λ decay
+        p_over_raw, mu_raw, sigma = bootstrap_prob_over(
+            pace_adj_series, effective_line, cv_override=vol_cv, market=base_market
+        )
         if p_over_raw is None:
             errors.append(f"Insufficient history (need >=4 games, have {len(stat_series.dropna())})")
 
     n_valid = int(stat_series.dropna().count())
     mu_shrunk = bayesian_shrink(mu_raw, n_valid, base_market, pos_bucket) if mu_raw is not None else None
 
-    # Apply half factor and positional D to projection
-    proj_full = mu_shrunk * ctx_mult * rest_mult * ha_mult * pos_def_mult if mu_shrunk is not None else None
+    # Apply half factor and positional D to projection — include opp-specific factor
+    proj_full = (mu_shrunk * ctx_mult * rest_mult * ha_mult * pos_def_mult * opp_specific_factor
+                 if mu_shrunk is not None else None)
     proj = proj_full * half_factor if (proj_full is not None and is_half_market) else proj_full
     regime_label, regime_score = classify_regime(vol_cv, blowout_prob, ctx_mult)
 
@@ -1779,7 +2200,9 @@ def compute_leg_projection(
     # Determine side early for skewness gate
     side_str = (meta.get("side") if meta else "Over") or "Over"
 
-    p_model = p_over_raw
+    # [UPGRADE 6] Over/Under asymmetry: model the correct side independently
+    _is_under = "under" in str(side_str).lower()
+    p_model = (1.0 - p_over_raw if _is_under and p_over_raw is not None else p_over_raw)
     sharp = book_sharpness(meta.get("book") if meta else None)
     w_model = float(market_prior_weight)
     w_eff = float(np.clip(w_model*(1.0-0.60*sharp)+0.15, 0.10, 0.95))
@@ -1871,10 +2294,21 @@ def compute_leg_projection(
         "pos_def_mult":     float(pos_def_mult),
         "half_factor":      float(half_factor),
         "pace_adj":         True if opp_abbr and TEAM_CTX.get(str(opp_abbr).upper()) else False,
-        "auto_inj":         auto_inj_triggered,
-        "auto_inj_player":  auto_inj_player,
-        "key_teammate_out": key_teammate_out,
-        "errors":           errors,
+        "auto_inj":          auto_inj_triggered,
+        "auto_inj_player":   auto_inj_player,
+        "key_teammate_out":  key_teammate_out,
+        # [UPGRADE 1] Explicit B2B flag
+        "b2b":               b2b_flag,
+        # [UPGRADE 2] Projected minutes
+        "proj_minutes":      float(proj_minutes) if proj_minutes is not None else None,
+        "dnp_risk":          bool(dnp_risk),
+        # [UPGRADE 3] Opponent-specific factor
+        "opp_specific_factor": float(opp_specific_factor),
+        "n_vs_opp":          int(n_vs_opp),
+        # [UPGRADE 5] Hot/cold regime
+        "hot_cold":          hot_cold_label,
+        "hot_cold_z":        float(hot_cold_z),
+        "errors":            errors,
     }
 
 # ──────────────────────────────────────────────
@@ -2066,7 +2500,7 @@ h1,h2,h3{font-family:var(--font-head)!important;color:var(--text-hi)!important;l
 st.markdown("""
 <div style="display:flex;align-items:center;gap:1.5rem;padding:0.8rem 0 1.2rem;border-bottom:1px solid #1E2D3D;margin-bottom:1.2rem;">
   <div style="font-family:'Chakra Petch',monospace;font-size:1.7rem;font-weight:700;color:#00FFB2;letter-spacing:0.06em;">
-    NBA QUANT ENGINE <span style="font-size:0.75rem;color:#4A607A;vertical-align:middle;margin-left:0.5rem;">v3.0</span>
+    NBA QUANT ENGINE <span style="font-size:0.75rem;color:#4A607A;vertical-align:middle;margin-left:0.5rem;">v4.0</span>
   </div>
   <div style="flex:1;height:1px;background:linear-gradient(90deg,#00FFB2,transparent);"></div>
   <div style="font-family:'Fira Code',monospace;font-size:0.65rem;color:#4A607A;text-align:right;">
@@ -2096,6 +2530,20 @@ def regime_badge(label):
     colors = {"Stable":"#00FFB2","Mixed":"#FFB800","Chaotic":"#FF3358"}
     c = colors.get(label, "#4A607A")
     return f"<span style='background:{c}18;border:1px solid {c};color:{c};padding:1px 7px;border-radius:1px;font-size:0.60rem;letter-spacing:0.08em;font-family:Chakra Petch,monospace;'>{label.upper()}</span>"
+
+def hot_cold_badge(label):
+    colors = {"Hot": "#FF6B35", "Cold": "#00AAFF", "Average": "#4A607A"}
+    c = colors.get(label, "#4A607A")
+    return f"<span style='background:{c}18;border:1px solid {c};color:{c};padding:1px 7px;border-radius:1px;font-size:0.60rem;letter-spacing:0.08em;font-family:Chakra Petch,monospace;'>{label.upper()}</span>"
+
+def confidence_tier_color(p_cal):
+    """Return border color based on calibrated probability confidence tier."""
+    if p_cal is None: return "#1E2D3D"
+    p = float(p_cal)
+    if p >= 0.65: return "#00FFB2"   # Green — high confidence
+    if p >= 0.58: return "#00AAFF"   # Blue — solid
+    if p >= 0.52: return "#FFB800"   # Amber — moderate
+    return "#FF3358"                  # Red — marginal
 
 def mv_badge(mv):
     if not mv or abs(mv.get("pips",0)) < 0.25: return ""
@@ -2144,9 +2592,47 @@ with st.sidebar:
         scan_book_override = st.text_input("Book override (blank=auto)", value="")
         max_req_day = st.number_input("Max requests/day", 1, 500, int(st.session_state.get("max_req_day",100)), 10)
         st.session_state["max_req_day"] = int(max_req_day)
-    hdr = st.session_state.get("_odds_headers_last",{})
-    if hdr:
-        st.caption(f"API: used {hdr.get('used','?')} | rem {hdr.get('remaining','?')}")
+
+    # [UPGRADE 24] Always-visible quota tracker
+    hdr = st.session_state.get("_odds_headers_last", {})
+    rem  = hdr.get("remaining", "?")
+    used = hdr.get("used", "?")
+    try:
+        rem_int = int(rem)
+        rem_color = "#FF3358" if rem_int < 10 else ("#FFB800" if rem_int < 30 else "#00FFB2")
+        rem_label = f"<span style='color:{rem_color};font-weight:600;'>{rem}</span>"
+    except Exception:
+        rem_label = f"<span style='color:#4A607A;'>{rem}</span>"
+    st.markdown(
+        f"<div style='font-family:Fira Code,monospace;font-size:0.62rem;color:#4A607A;margin-top:0.4rem;'>"
+        f"API QUOTA: used {used} | rem {rem_label}"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    if hdr.get("remaining") == "0":
+        st.error("Odds API quota exhausted — all fetches paused.")
+
+    # [UPGRADE 22] Watchlist quick view
+    st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
+    with st.expander("Watchlist", expanded=False):
+        wl = load_watchlist(st.session_state.get("user_id","trader"))
+        wl_input = st.text_input("Add player", placeholder="LeBron James", key="wl_add")
+        wl_col1, wl_col2 = st.columns(2)
+        if wl_col1.button("Add", key="wl_add_btn"):
+            if wl_input.strip() and wl_input.strip() not in wl:
+                wl.append(wl_input.strip())
+                save_watchlist(st.session_state.get("user_id","trader"), wl)
+                st.rerun()
+        if wl:
+            rm = st.selectbox("Remove", ["--"] + wl, key="wl_rm")
+            if wl_col2.button("Remove", key="wl_rm_btn") and rm != "--":
+                wl = [p for p in wl if p != rm]
+                save_watchlist(st.session_state.get("user_id","trader"), wl)
+                st.rerun()
+            for p in wl:
+                st.markdown(f"<div style='font-size:0.68rem;color:#00AAFF;'>· {p}</div>", unsafe_allow_html=True)
+        else:
+            st.caption("No players on watchlist.")
 
 # ─── SESSION STATE INIT ────────────────────────────────────────
 for k in ["last_results","calibrator_map","scanner_offers","scanner_results"]:
@@ -2172,7 +2658,7 @@ def _check_loss_stops(uid, bankroll):
     return False
 
 # ─── TABS ─────────────────────────────────────────────────────
-tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "ALERTS"])
+tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "INSIGHTS", "ALERTS"])
 
 with tabs[0]:
     _check_loss_stops(user_id, bankroll)
@@ -2318,6 +2804,7 @@ with tabs[1]:
 {prob_bar_html(leg.get("p_implied"), label="IMPLIED")}
 <div style='margin-top:0.6rem;display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center;'>
   {regime_badge(leg.get("regime","?"))}
+  {hot_cold_badge(leg.get("hot_cold","Average"))}
   {mv_html}
 </div>
 {sharp_html}
@@ -2334,7 +2821,42 @@ with tabs[1]:
                     card_html += f"<div style='margin-top:0.6rem;background:#FF335818;border:1px solid #FF335830;border-radius:2px;padding:0.4rem 0.6rem;font-size:0.65rem;color:#FF3358;'>GATED: {leg.get('gate_reason','')}</div>"
                 if leg.get("errors"):
                     card_html += "<div style='margin-top:0.4rem;font-size:0.60rem;color:#FFB800;'>" + "<br>".join(leg["errors"][:2]) + "</div>"
-                st.markdown(make_card(card_html, border_color=ec, glow=(leg.get("edge_cat") in ["Strong Edge","Solid Edge"])), unsafe_allow_html=True)
+                # [UPGRADE 20] Confidence-tier border overrides edge color
+                tier_border = confidence_tier_color(leg.get("p_cal"))
+                st.markdown(make_card(card_html, border_color=tier_border, glow=(leg.get("edge_cat") in ["Strong Edge","Solid Edge"])), unsafe_allow_html=True)
+
+                # [UPGRADE 19] Player card expander with per-game bar chart
+                with st.expander(f"Drill-down: {leg['player']}", expanded=False):
+                    pid = leg.get("player_id")
+                    _mkt_exp = leg.get("market", "Points")
+                    if pid:
+                        gl_exp, _ = fetch_player_gamelog(player_id=pid, max_games=10)
+                        if not gl_exp.empty:
+                            s_exp = compute_stat_from_gamelog(gl_exp, _mkt_exp.replace("H1 ","").replace("H2 ",""))
+                            s_exp = pd.to_numeric(s_exp, errors="coerce").dropna().reset_index(drop=True)
+                            if not s_exp.empty:
+                                chart_df = pd.DataFrame({
+                                    "Game": [f"G-{i+1}" for i in range(len(s_exp))],
+                                    "Actual": s_exp.values,
+                                    "Line":   [float(leg.get("line", 0))] * len(s_exp),
+                                })
+                                chart_df = chart_df.set_index("Game")
+                                st.caption(f"Last {len(s_exp)} games — {_mkt_exp}")
+                                st.bar_chart(chart_df, use_container_width=True, height=180)
+                    d1, d2, d3 = st.columns(3)
+                    d1.metric("Proj Minutes",
+                              f"{leg.get('proj_minutes'):.0f}" if leg.get("proj_minutes") else "--",
+                              delta="DNP risk" if leg.get("dnp_risk") else None,
+                              delta_color="inverse")
+                    d2.metric("vs Opponent", f"{leg.get('opp_specific_factor',1.0):.3f}x",
+                              help=f"Based on {leg.get('n_vs_opp',0)} prior meetings")
+                    d3.metric("Regime", leg.get("hot_cold","Average"),
+                              delta=f"z={leg.get('hot_cold_z',0.0):+.2f}")
+                    sigma = leg.get("sigma")
+                    proj  = leg.get("proj")
+                    if sigma and proj:
+                        st.caption(f"Confidence band: {proj:.1f} ± {sigma:.1f} (μ±σ) — "
+                                   f"{max(0,proj-sigma):.1f} to {proj+sigma:.1f}")
 
         # Multi-leg combo
         if len(res) >= 2:
@@ -2449,26 +2971,47 @@ with tabs[2]:
             elif not evs: st.warning("No events for that date range.")
             else:
                 offers = []
+                # [FIX H1/H2/ALT] Split market keys into standard and specialty batches
+                # Odds API supports max ~6 markets per call reliably; specialty markets
+                # (H1/H2/Q1/Alt/Fantasy) need separate calls as not all books offer them
+                std_keys     = [k for k in selected_keys if k not in SPECIALTY_MARKET_KEYS]
+                spec_keys    = [k for k in selected_keys if k in SPECIALTY_MARKET_KEYS]
+                market_batches = []
+                BATCH_SIZE = 6
+                if std_keys:
+                    for i in range(0, len(std_keys), BATCH_SIZE):
+                        market_batches.append(std_keys[i:i+BATCH_SIZE])
+                # Specialty markets individually (each book may only carry a subset)
+                for sk in spec_keys:
+                    market_batches.append([sk])
+
                 for ev in evs:
                     eid = ev.get("id")
                     if not eid: continue
-                    odds, oerr = odds_get_event_odds(eid, tuple(selected_keys))
-                    if oerr or not odds: continue
-                    for m in markets_sel:
-                        mk = ODDS_MARKETS.get(m)
-                        if not mk: continue
-                        bf = sportsbook2 if sportsbook2 != "all" else None
-                        parsed, _ = _parse_player_prop_outcomes(odds, mk, book_filter=bf)
-                        offers.extend([{**r,"market":m} for r in parsed])
+                    for batch_keys in market_batches:
+                        # For specialty markets try all regions for better coverage
+                        regions = "us,us2,eu,uk" if any(k in SPECIALTY_MARKET_KEYS for k in batch_keys) else REGION_US
+                        odds, oerr = odds_get_event_odds(eid, tuple(batch_keys), regions=regions)
+                        if oerr or not odds: continue
+                        for m in markets_sel:
+                            mk = ODDS_MARKETS.get(m)
+                            if not mk or mk not in batch_keys: continue
+                            bf = sportsbook2 if sportsbook2 != "all" else None
+                            parsed, _ = _parse_player_prop_outcomes(odds, mk, book_filter=bf)
+                            offers.extend([{**r,"market":m} for r in parsed])
                 if offers:
                     # [FIX 13] Store in session state - persists across tab switches
                     st.session_state["scanner_offers"] = pd.DataFrame(offers)
-                    # Auto-save to prop line history DB
+                    # Auto-save to prop line history DB + [UPGRADE 10] opening line capture
                     for r2 in offers:
                         save_prop_line(r2.get("player",""), r2.get("market",""),
                                        r2.get("line"), r2.get("price"), r2.get("book"),
                                        event_id=r2.get("event_id"))
-                    st.success(f"Fetched {len(offers)} raw prop outcomes.")
+                        pn2 = normalize_name(r2.get("player",""))
+                        mk2 = r2.get("market_key", ODDS_MARKETS.get(r2.get("market",""), ""))
+                        side2 = r2.get("side", "Over")
+                        save_opening_line(pn2, mk2, side2, r2.get("line", 0), r2.get("price"))
+                    st.success(f"Fetched {len(offers)} raw prop outcomes — opening lines captured.")
                 else:
                     st.warning("No offers returned.")
 
@@ -2553,7 +3096,10 @@ with tabs[2]:
                                 "advantage":round(adv,3),"ev_adj_pct":round(float(ev)*100,2),
                                 "proj":safe_round(leg.get("proj")),
                                 "edge_cat":leg.get("edge_cat",""),"regime":leg.get("regime",""),
+                                "hot_cold":leg.get("hot_cold","Average"),
                                 "team":leg.get("team",""),"opp":leg.get("opp",""),
+                                "b2b": "B2B" if leg.get("b2b") else "",
+                                "dnp_risk": "DNP?" if leg.get("dnp_risk") else "",
                                 "vol_cv":safe_round(leg.get("volatility_cv")),
                                 "rest_d":leg.get("rest_days",2),
                                 "line_mv":mv.get("direction","--"),
@@ -2562,6 +3108,7 @@ with tabs[2]:
                                 "stake_$":round(leg.get("stake",0),2),
                                 "n_games":leg.get("n_games_used",0),
                                 "inj_boost": inj_flag,
+                                "min_proj": safe_round(leg.get("proj_minutes"),0),
                             })
             out_df = pd.DataFrame(out_rows)
             if not out_df.empty:
@@ -2591,7 +3138,94 @@ with tabs[2]:
     scanner_out = st.session_state.get("scanner_results")
     if scanner_out is not None and not scanner_out.empty:
         st.markdown(f"<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.10em;margin-bottom:0.6rem;'>{len(scanner_out)} EDGES FOUND</div>", unsafe_allow_html=True)
-        st.dataframe(scanner_out, use_container_width=True)
+
+        # [UPGRADE 20] Color-code rows by confidence tier
+        def _style_scanner_row(row):
+            p = float(row.get("p_cal") or 0)
+            if p >= 0.65:   bg = "background-color:#00FFB215;"
+            elif p >= 0.58: bg = "background-color:#00AAFF12;"
+            elif p >= 0.52: bg = "background-color:#FFB80010;"
+            else:           bg = "background-color:#FF335810;"
+            return [bg] * len(row)
+
+        try:
+            styled = scanner_out.style.apply(_style_scanner_row, axis=1)
+            st.dataframe(styled, use_container_width=True)
+        except Exception:
+            st.dataframe(scanner_out, use_container_width=True)
+
+        # [UPGRADE 21] One-click parlay builder from scanner results
+        st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>ONE-CLICK PARLAY BUILDER</div>", unsafe_allow_html=True)
+        player_labels = [f"{r['player']} — {r['market']} O{r['line']} ({r.get('ev_adj_pct',0):+.1f}%)"
+                         for _, r in scanner_out.iterrows()]
+        selected_legs = st.multiselect("Select legs to parlay", options=player_labels, key="parlay_picker")
+        if selected_legs:
+            sel_indices = [player_labels.index(s) for s in selected_legs if s in player_labels]
+            sel_rows = [scanner_out.iloc[i] for i in sel_indices]
+            probs = [float(r.get("p_cal") or 0) for r in sel_rows]
+            naive_joint = float(np.prod(probs)) if probs else 0.0
+            pm = float(st.session_state.get("payout_multi", 3.0))
+            ev_parlay = pm * naive_joint - 1.0
+            pb1, pb2, pb3 = st.columns(3)
+            pb1.metric("Joint Prob (naive)", f"{naive_joint*100:.1f}%")
+            pb2.metric(f"EV @ {pm:.1f}x payout", f"{ev_parlay*100:+.1f}%")
+            rec_stake_parlay = float(st.session_state.get("bankroll", 1000)) * float(st.session_state.get("frac_kelly", 0.25)) * max(0, ev_parlay / (pm - 1)) if pm > 1 else 0
+            pb3.metric("Rec Stake", f"${min(rec_stake_parlay, float(st.session_state.get('bankroll',1000))*0.05):.2f}")
+            if st.button("Log This Parlay to History", use_container_width=True, key="log_parlay_btn"):
+                parlay_legs = []
+                for r in sel_rows:
+                    parlay_legs.append({k: v for k, v in r.items()})
+                append_history(st.session_state.get("user_id","trader"), {
+                    "ts": _now_iso(), "user_id": st.session_state.get("user_id","trader"),
+                    "legs": json.dumps(parlay_legs), "n_legs": len(parlay_legs),
+                    "result": "Pending", "decision": "BET", "notes": "parlay-builder",
+                })
+                st.success(f"Logged {len(parlay_legs)}-leg parlay to history.")
+
+        # [UPGRADE 35] Live Steam Check
+        st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#FFB800;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>STEAM DETECTOR — CHECK LINE MOVES VS OPENING</div>", unsafe_allow_html=True)
+        sc_steam1, sc_steam2 = st.columns([3,1])
+        with sc_steam2:
+            steam_thresh = st.number_input("Move threshold", 0.1, 2.0, 0.5, 0.1, key="steam_thresh")
+        if sc_steam1.button("Run Steam Check (vs Opening Lines)", use_container_width=True, key="steam_check_btn"):
+            steam_alerts = []
+            for _, row in scanner_out.iterrows():
+                pn = normalize_name(str(row.get("player","")))
+                mk = ODDS_MARKETS.get(str(row.get("market","")), "")
+                cur_line = float(row.get("line", 0) or 0)
+                open_line, _ = get_opening_line(pn, mk, "Over")
+                if open_line is not None:
+                    delta = cur_line - float(open_line)
+                    if abs(delta) >= steam_thresh:
+                        direction = "UP" if delta > 0 else "DOWN"
+                        steam_type = "STEAM" if (delta > 0) else "FADE"
+                        steam_alerts.append({
+                            "player": row.get("player"), "market": row.get("market"),
+                            "open": open_line, "current": cur_line,
+                            "move": f"{direction} {abs(delta):.1f}",
+                            "type": steam_type,
+                            "ev_%": row.get("ev_adj_pct"),
+                        })
+            if steam_alerts:
+                st.warning(f"**{len(steam_alerts)} line move(s) detected vs opening:**")
+                st.dataframe(pd.DataFrame(steam_alerts), use_container_width=True)
+                # Auto-alert significant steam
+                _dw2 = st.session_state.get("discord_webhook","")
+                _tt2 = st.session_state.get("tg_token","")
+                _tc2 = st.session_state.get("tg_chat","")
+                for sa in steam_alerts:
+                    msg = (f"**STEAM ALERT** — {sa['player']} {sa['market']}\n"
+                           f"Line moved {sa['move']} ({sa['open']} → {sa['current']}) [{sa['type']}]\n"
+                           f"Current EV: {sa.get('ev_%',0):+.1f}%")
+                    if _dw2: send_discord_alert(_dw2, msg)
+                    if _tt2 and _tc2: send_telegram_alert(_tt2, _tc2, msg)
+                if _dw2 or (_tt2 and _tc2):
+                    st.success(f"Steam alerts fired to Discord/Telegram.")
+            else:
+                st.success("No significant line moves vs opening. Lines are stable.")
+
     scanner_dropped = st.session_state.get("scanner_dropped", [])
     if scanner_dropped:
         with st.expander(f"Excluded ({len(scanner_dropped)})", expanded=False):
@@ -2629,9 +3263,15 @@ with tabs[3]:
                     st.success(f"Fetched {len(pp_df)} PrizePicks props.")
 
         with pp_manual_tab:
-            st.markdown("<div style='font-size:0.68rem;color:#4A607A;margin-bottom:0.5rem;'>Paste JSON from browser DevTools OR upload a CSV with columns: player, stat_type, line</div>", unsafe_allow_html=True)
+            st.markdown("""<div style='font-size:0.68rem;color:#4A607A;margin-bottom:0.5rem;'>
+            <b>How to get the JSON:</b> Open prizepicks.com → DevTools (F12) → Network tab → filter
+            <code>projections</code> → click the largest request (~200-300 kB) →
+            <b>Response</b> tab → right-click body → Copy &rarr; Copy response. Paste below.<br>
+            The JSON starts with <code>{"data":[</code>
+            </div>""", unsafe_allow_html=True)
             pp_upload = st.file_uploader("Upload CSV", type=["csv"], key="pp_csv_upload")
-            pp_paste = st.text_area("Or paste PrizePicks API JSON response", height=120, key="pp_json_paste")
+            pp_paste = st.text_area("Or paste PrizePicks API JSON response", height=120, key="pp_json_paste",
+                                    placeholder='{"data":[{"id":"...","type":"Projection",...}],"included":[...]}')
             if st.button("Load Data", use_container_width=True, key="pp_manual_load"):
                 rows = []
                 err_msg = None
@@ -2658,12 +3298,18 @@ with tabs[3]:
                         err_msg = f"CSV parse error: {e}"
                 elif pp_paste.strip():
                     try:
-                        data = json.loads(pp_paste.strip())
-                        included = {item["id"]: item for item in data.get("included", [])}
+                        raw = pp_paste.strip()
+                        data = json.loads(raw)
+                        if not isinstance(data, dict):
+                            raise ValueError("Expected a JSON object starting with {. Make sure you copied the full Response body, not just part of it.")
+                        if "data" not in data:
+                            raise ValueError('JSON is missing a "data" key. Copy the Response tab (not Preview or Headers).')
+                        included = {item["id"]: item for item in data.get("included", []) if isinstance(item, dict) and "id" in item}
                         for proj in data.get("data", []):
+                            if not isinstance(proj, dict): continue
                             if proj.get("type") != "Projection": continue
-                            attrs = proj.get("attributes", {})
-                            rels = proj.get("relationships", {})
+                            attrs = proj.get("attributes", {}) or {}
+                            rels = proj.get("relationships", {}) or {}
                             pid = (rels.get("new_player",{}).get("data",{}) or {}).get("id")
                             if not pid:
                                 pid = (rels.get("player",{}).get("data",{}) or {}).get("id")
@@ -2672,12 +3318,19 @@ with tabs[3]:
                             stat_type = attrs.get("stat_type","")
                             line_score = attrs.get("line_score")
                             if pname and stat_type and line_score is not None:
-                                rows.append({"player": pname, "stat_type": stat_type,
-                                             "line": float(line_score), "source": "prizepicks"})
+                                try:
+                                    rows.append({"player": pname, "stat_type": stat_type,
+                                                 "line": float(line_score), "source": "prizepicks"})
+                                except (TypeError, ValueError):
+                                    pass
                         if not rows:
-                            err_msg = "No projections found in pasted JSON."
+                            err_msg = "No NBA projections found. The JSON parsed OK but contained no NBA props — check you selected the NBA board before copying."
+                    except json.JSONDecodeError as e:
+                        err_msg = f'Invalid JSON: {e}. Make sure you copied the entire response (it should start with {{"data":[).'
+                    except ValueError as e:
+                        err_msg = str(e)
                     except Exception as e:
-                        err_msg = f"JSON parse error: {e}"
+                        err_msg = f"Parse error: {type(e).__name__}: {e}"
                 else:
                     err_msg = "Upload a CSV or paste JSON."
                 if err_msg:
@@ -2815,27 +3468,34 @@ with tabs[3]:
 
     with plat_tabs[3]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>BEST AVAILABLE LINE SHOPPING</div>", unsafe_allow_html=True)
-        st.caption("Checks all available books for the highest price on any scanner result.")
+        st.caption("Checks all available books for the highest price on any scanner result. Requires a valid Odds API key.")
         scanner_out_shop = st.session_state.get("scanner_results")
         if scanner_out_shop is None or scanner_out_shop.empty:
             st.info("Run the Live Scanner first to populate results.")
         else:
+            has_odds_key = bool(odds_api_key())
+            if not has_odds_key:
+                st.warning("No Odds API key configured — best_price column will be empty. Add ODDS_API_KEY in Settings to enable price lookups.")
             if st.button("Find Best Lines for Scanner Results", use_container_width=True):
                 shop_rows = []
                 for _, r in scanner_out_shop.iterrows():
                     eid = r.get("event_id") if hasattr(r,"get") else None
                     mk = ODDS_MARKETS.get(r.get("market","") if hasattr(r,"get") else "")
                     pn = normalize_name(str(r.get("player","") if hasattr(r,"get") else ""))
-                    if eid and mk and pn:
+                    best_p, best_b = None, None
+                    if eid and mk and pn and has_odds_key:
                         best_p, best_b = get_best_available_price(eid, mk, pn, "Over")
-                        shop_rows.append({
-                            "player": r.get("player",""), "market": r.get("market",""),
-                            "line": r.get("line"), "current_book": r.get("book",""),
-                            "current_ev_%": r.get("ev_adj_pct"),
-                            "best_price": safe_round(best_p), "best_book": best_b,
-                        })
+                    shop_rows.append({
+                        "player": r.get("player",""), "market": r.get("market",""),
+                        "line": r.get("line"), "book": r.get("book",""),
+                        "ev_%": r.get("ev_adj_pct"),
+                        "best_price": safe_round(best_p) if best_p else "—",
+                        "best_book": best_b or ("no key" if not has_odds_key else "not found"),
+                    })
                 if shop_rows:
                     st.dataframe(pd.DataFrame(shop_rows), use_container_width=True)
+                else:
+                    st.info("No scanner results to display.")
 
 # ─── HISTORY TAB [FIX 12: export button] ──────────────────────
 with tabs[4]:
@@ -2997,8 +3657,105 @@ with tabs[5]:
     else:
         st.caption("Need 10+ settled legs for rolling Brier.")
 
-# ─── ALERTS TAB ───────────────────────────────────────────────
+# ─── INSIGHTS TAB (CLV leaderboard, book efficiency, prop breakdown, Bayesian priors) ───
 with tabs[6]:
+    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>INSIGHTS — EDGE ANALYTICS & INTELLIGENCE</div>""", unsafe_allow_html=True)
+    h_ins = load_history(st.session_state.get("user_id","trader"))
+    legs_ins = _expand_history_legs(h_ins)
+
+    ins_tabs = st.tabs(["CLV Leaderboard", "Book Efficiency", "Prop Breakdown", "Bayesian Priors"])
+
+    with ins_tabs[0]:
+        # [UPGRADE 31] CLV Leaderboard
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;'>TOP CLOSING LINE VALUE PLAYS</div>", unsafe_allow_html=True)
+        st.caption("Ranks your best bets by no-vig price CLV. Positive = you beat the closing line. This is the gold-standard long-term edge indicator.")
+        clv_lb = compute_clv_leaderboard(h_ins, top_n=25)
+        if clv_lb.empty:
+            st.info("No CLV data yet. Fetch CLV updates from the History tab after games close.")
+        else:
+            clv_pos = clv_lb[clv_lb["clv_price"].notna() & (clv_lb["clv_price"] > 0)]
+            clv_neg = clv_lb[clv_lb["clv_price"].notna() & (clv_lb["clv_price"] <= 0)]
+            rate = len(clv_pos) / max(len(clv_lb), 1)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Beats Closing Line", f"{rate*100:.0f}%", help="CLV price > 0 = bought above close")
+            c2.metric("Avg CLV (price)", f"{clv_lb['clv_price'].mean():.4f}" if not clv_lb.empty else "--")
+            c3.metric("Avg Line CLV", f"{clv_lb['clv_line'].mean():.2f}" if not clv_lb.empty else "--")
+            st.dataframe(clv_lb, use_container_width=True)
+            if not clv_pos.empty:
+                st.markdown("<div style='font-size:0.65rem;color:#00FFB2;margin-top:0.4rem;'>Positive CLV = model found real edge vs closing price. Keep targeting these players/markets.</div>", unsafe_allow_html=True)
+
+    with ins_tabs[1]:
+        # [UPGRADE 32] Book Efficiency Score
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;'>PER-BOOK MARKET EFFICIENCY</div>", unsafe_allow_html=True)
+        st.caption("Books with higher hit rate = your model has edge there. Books that never move = likely pricing your bets correctly. Focus on soft books with high hit rate.")
+        book_eff = compute_book_efficiency(h_ins)
+        if book_eff.empty:
+            st.info("Need settled bets with CLV data to compute book efficiency.")
+        else:
+            st.dataframe(book_eff, use_container_width=True)
+            best_book = book_eff.iloc[0]["book"] if not book_eff.empty else None
+            if best_book:
+                st.markdown(f"<div style='color:#00FFB2;font-size:0.68rem;margin-top:0.4rem;'>Best book by hit rate: <b>{best_book}</b> — prioritize this book when line shopping.</div>", unsafe_allow_html=True)
+
+    with ins_tabs[2]:
+        # [UPGRADE 33] Prop-type edge breakdown
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;'>EDGE BREAKDOWN BY MARKET TYPE</div>", unsafe_allow_html=True)
+        st.caption("Hit rate and EV by stat type. If rebounds hit at 58% and points at 48%, focus on rebounds.")
+        if legs_ins.empty:
+            st.info("No settled legs yet.")
+        else:
+            settled_ins = legs_ins[legs_ins["y"].notna()].copy()
+            if settled_ins.empty:
+                st.info("No settled legs yet.")
+            else:
+                mkt_breakdown = settled_ins.groupby("market").agg(
+                    bets=("y","size"),
+                    hit_rate=("y","mean"),
+                    avg_ev_adj=("ev_adj","mean"),
+                    avg_cv=("cv","mean"),
+                ).reset_index()
+                mkt_breakdown["hit_%"]  = (mkt_breakdown["hit_rate"] * 100).round(1)
+                mkt_breakdown["ev_%"]   = (mkt_breakdown["avg_ev_adj"] * 100).round(2)
+                mkt_breakdown["avg_cv"] = mkt_breakdown["avg_cv"].round(3)
+                mkt_breakdown = mkt_breakdown.sort_values("hit_%", ascending=False)
+                st.dataframe(mkt_breakdown[["market","bets","hit_%","ev_%","avg_cv"]], use_container_width=True)
+                # Highlight best market
+                best_mkt = mkt_breakdown.iloc[0]["market"] if not mkt_breakdown.empty else None
+                if best_mkt:
+                    st.markdown(f"<div style='color:#00FFB2;font-size:0.68rem;'>Best market: <b>{best_mkt}</b> ({mkt_breakdown.iloc[0]['hit_%']:.1f}% hit rate). Increase allocation here.</div>", unsafe_allow_html=True)
+                # Worst market
+                worst_mkt = mkt_breakdown.iloc[-1]["market"] if len(mkt_breakdown) > 1 else None
+                if worst_mkt and mkt_breakdown.iloc[-1]["hit_%"] < 48:
+                    st.markdown(f"<div style='color:#FF3358;font-size:0.68rem;'>Weakest market: <b>{worst_mkt}</b> ({mkt_breakdown.iloc[-1]['hit_%']:.1f}% hit rate). Consider avoiding.</div>", unsafe_allow_html=True)
+
+    with ins_tabs[3]:
+        # [UPGRADE 34] Bayesian Prior Update from history
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;'>BAYESIAN PRIOR UPDATE FROM YOUR HISTORY</div>", unsafe_allow_html=True)
+        st.caption("Updates positional priors (the baseline expected stat means) using your personal hit/miss record. Markets you consistently beat get slightly higher priors.")
+        pos_for_prior = st.selectbox("Position bucket", ["Guard","Wing","Big","Unknown"], key="prior_pos_sel")
+        if not legs_ins.empty and len(legs_ins[legs_ins["y"].notna()]) >= 20:
+            updated_priors = compute_history_based_priors(legs_ins, pos_for_prior)
+            base_priors    = POSITIONAL_PRIORS.get(pos_for_prior, POSITIONAL_PRIORS["Unknown"])
+            prior_rows = []
+            for mkt in base_priors:
+                orig = base_priors[mkt]
+                upd  = updated_priors.get(mkt, orig)
+                prior_rows.append({
+                    "market": mkt,
+                    "original_prior": round(orig, 2),
+                    "updated_prior":  round(upd, 2),
+                    "delta_%": round((upd/orig - 1)*100, 1) if orig else 0,
+                })
+            prior_df = pd.DataFrame(prior_rows).sort_values("delta_%", ascending=False)
+            st.dataframe(prior_df, use_container_width=True)
+            if st.button("Apply Updated Priors to Session", use_container_width=True, key="apply_priors_btn"):
+                st.session_state["_custom_priors"] = {pos_for_prior: updated_priors}
+                st.success(f"Updated {pos_for_prior} priors applied to this session. Model will use these for the next run.")
+        else:
+            st.info("Need 20+ settled legs to compute personalised prior updates.")
+
+# ─── ALERTS TAB ───────────────────────────────────────────────
+with tabs[7]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>ALERTS — DISCORD / TELEGRAM</div>""", unsafe_allow_html=True)
 
     # ── PrizePicks cookie auth ─────────────────────────────────
@@ -3067,6 +3824,34 @@ with tabs[6]:
             st.success(f"Sent — Discord: {sent_d} | Telegram: {sent_t}")
             for e in (errs_d + errs_t)[:5]:
                 st.warning(e)
+    # [UPGRADE 23] Alert Digest Mode
+    st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+    st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>DAILY DIGEST MODE</div>", unsafe_allow_html=True)
+    scanner_for_digest = st.session_state.get("scanner_results")
+    if scanner_for_digest is None or scanner_for_digest.empty:
+        st.info("Run Live Scanner first to generate digest content.")
+    else:
+        digest_ev_thresh = st.slider("Min EV% for digest", 0.0, 20.0, 3.0, 0.5, key="digest_thresh")
+        digest_legs = [dict(r) for _, r in scanner_for_digest.iterrows()
+                       if float(r.get("ev_adj_pct") or 0) >= digest_ev_thresh]
+        digest_msg  = format_digest_message(digest_legs)
+        st.text_area("Digest Preview", value=digest_msg, height=200, key="digest_preview")
+        dig_c1, dig_c2 = st.columns(2)
+        if dig_c1.button("Send Digest to Discord", use_container_width=True, key="send_digest_discord"):
+            _dw3 = st.session_state.get("discord_webhook","")
+            if _dw3:
+                ok, err = send_discord_alert(_dw3, digest_msg)
+                st.success("Digest sent to Discord.") if ok else st.error(f"Discord error: {err}")
+            else:
+                st.warning("No Discord webhook configured.")
+        if dig_c2.button("Send Digest to Telegram", use_container_width=True, key="send_digest_tg"):
+            _tt3 = st.session_state.get("tg_token",""); _tc3 = st.session_state.get("tg_chat","")
+            if _tt3 and _tc3:
+                ok, err = send_telegram_alert(_tt3, _tc3, digest_msg)
+                st.success("Digest sent to Telegram.") if ok else st.error(f"Telegram error: {err}")
+            else:
+                st.warning("No Telegram bot configured.")
+
     st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
     st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#4A607A;letter-spacing:0.10em;'>INJURY REPORT</div>", unsafe_allow_html=True)
     if st.button("Fetch Today's Injury Report", use_container_width=True):
@@ -3095,13 +3880,46 @@ with tabs[6]:
         n_out = sum(len(v) for v in cur_inj.values())
         st.caption(f"Auto-injury active: {n_out} OUT/DOUBTFUL players across {len(cur_inj)} teams")
 
+    # [UPGRADE 9] Rotowire News Feed
+    st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+    st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#FFB800;letter-spacing:0.10em;text-transform:uppercase;'>ROTOWIRE NBA NEWS — FAST INJURY INTEL</div>", unsafe_allow_html=True)
+    st.caption("Scrapes Rotowire's live NBA injury page for faster intel than ESPN's 15-min cache.")
+    rw_col1, rw_col2 = st.columns([3,1])
+    with rw_col2:
+        rw_filter = st.text_input("Filter player", key="rw_filter_input")
+    if rw_col1.button("Fetch Rotowire News", use_container_width=True, key="rw_fetch_btn"):
+        fetch_rotowire_news.clear()
+        with st.spinner("Scraping Rotowire..."):
+            rw_rows, rw_err = fetch_rotowire_news()
+        if rw_err:
+            st.error(f"Rotowire: {rw_err}")
+        elif not rw_rows:
+            st.warning("No news found — Rotowire page structure may have changed.")
+        else:
+            st.session_state["rw_news"] = rw_rows
+            st.success(f"Fetched {len(rw_rows)} Rotowire reports.")
+    rw_news = st.session_state.get("rw_news", [])
+    if rw_news:
+        rw_df = pd.DataFrame(rw_news)
+        if rw_filter:
+            rw_df = rw_df[rw_df["player"].str.contains(rw_filter, case=False, na=False)]
+        st.dataframe(rw_df, use_container_width=True)
+        # Cross-reference with watchlist
+        wl_cur = load_watchlist(st.session_state.get("user_id","trader"))
+        if wl_cur:
+            wl_norms = [normalize_name(p) for p in wl_cur]
+            rw_wl = rw_df[rw_df["player"].apply(lambda p: normalize_name(p) in wl_norms)]
+            if not rw_wl.empty:
+                st.markdown("<div style='color:#FF3358;font-size:0.68rem;font-weight:600;margin-top:0.4rem;'>WATCHLIST ALERT — these players have Rotowire news:</div>", unsafe_allow_html=True)
+                st.dataframe(rw_wl, use_container_width=True)
+
 # ── FOOTER ──────────────────────────────────────────────────
 st.markdown("""
 <div style='margin-top:2rem;padding-top:0.8rem;border-top:1px solid #1E2D3D;
 font-family:Fira Code,monospace;font-size:0.60rem;color:#2A3A4A;
 display:flex;justify-content:space-between;'>
-  <span>NBA QUANT ENGINE v3.0</span>
-  <span>BOOTSTRAP | BAYESIAN | KELLY PARLAY | PACE-ADJ | POSITIONAL D | MC SIM | PRIZEPICKS | UNDERDOG | DISCORD/TG | ROLLING BRIER</span>
+  <span>NBA QUANT ENGINE v4.0</span>
+  <span>EXP DECAY | OPP SPLITS | HOT/COLD | O/U ASYMMETRY | CLV LEADERBOARD | BOOK EFFICIENCY | STEAM DETECTOR | ROTOWIRE | PARLAY BUILDER | DIGEST ALERTS | Q1/FANTASY MKTS</span>
   <span>Powered by Kamal</span>
 </div>
 """, unsafe_allow_html=True)
