@@ -1508,24 +1508,38 @@ def compute_rolling_brier(legs_df, windows=(25, 50, 100)):
 # ──────────────────────────────────────────────
 def pre_warm_scanner_caches(candidates, n_games):
     """
-    Sequentially pre-fetch player IDs, game logs, and positions for all
-    unique players before threading. After this, every st.cache_data call
-    inside compute_leg_projection returns instantly from cache.
-    Returns the set of successfully resolved player names.
+    Pre-fetch player IDs, game logs, and positions for all unique players in
+    parallel (4 workers) before the main scan threads start.  Uses a session-
+    state set to skip players already warmed this session.
     """
     unique_names = list(dict.fromkeys(pname for pname, *_ in candidates))
-    # 1. Bulk position map (one API call for all players)
+    already_warm = st.session_state.get("_prewarm_done", set())
+    to_warm = [n for n in unique_names if n not in already_warm]
+    if not to_warm:
+        return set(unique_names)   # everything already cached
+
+    # Bulk position map — one API call for all players (fast)
     _ensure_pid_position_map()
-    resolved = set()
-    for name in unique_names:
+
+    def _warm_one(name):
         try:
             pid = lookup_player_id(name)
             if pid:
                 fetch_player_gamelog(player_id=pid, max_games=max(6, n_games + 5))
                 get_player_position(name)
-                resolved.add(name)
+                return name
         except Exception:
             pass
+        return None
+
+    resolved = set()
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for result in ex.map(_warm_one, to_warm):
+            if result:
+                resolved.add(result)
+
+    already_warm.update(resolved)
+    st.session_state["_prewarm_done"] = already_warm
     return resolved
 
 # MAIN PROJECTION ENGINE  [FIX 3: minutes filter]
