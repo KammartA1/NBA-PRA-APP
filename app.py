@@ -3017,7 +3017,6 @@ with tabs[6]:
             height=80,
             placeholder="_pxmvid=...; _px3=...; __cf_bm=...",
             key="pp_cookies_input",
-            type="password" if False else "default",
         )
         if st.button("Save PrizePicks Cookies", use_container_width=True):
             st.session_state["pp_cookies"] = pp_cookies_val.strip()
