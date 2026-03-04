@@ -264,6 +264,7 @@ def _fetch_bulk_gamelogs():
             player_or_team_abbreviation="P",
             season=get_season_string(),
             season_type_all_star="Regular Season",
+            timeout=45,
         ).get_data_frames()[0]
         if df.empty:
             return None
@@ -297,12 +298,12 @@ def fetch_player_gamelog(player_id, max_games=15):
             player_df["GAME_DATE"] = player_df["GAME_DATE"].dt.strftime("%b %d, %Y")
             return player_df, []
 
-    # ── Slow path: individual PlayerGameLog call ────────────────
+    # ── Slow path: individual PlayerGameLog call (10s timeout) ──
     errs = []
     season_str = get_season_string()
     for params in [{"season_nullable": season_str}, {"season": season_str}, {}]:
         try:
-            gl = playergamelog.PlayerGameLog(player_id=player_id, **params)
+            gl = playergamelog.PlayerGameLog(player_id=player_id, timeout=10, **params)
             df = gl.get_data_frames()[0]
             if not df.empty:
                 return df.head(int(max_games)).copy(), errs
@@ -1209,66 +1210,110 @@ def compute_td_prob(game_log_df, n_games=10):
 # PRIZEPICKS INGESTION
 # ──────────────────────────────────────────────
 PRIZEPICKS_API = "https://api.prizepicks.com/projections"
-_PP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/vnd.api+json",
-    "Referer": "https://app.prizepicks.com/",
-    "Origin": "https://app.prizepicks.com",
-}
+
+def _parse_pp_response(data):
+    """Parse PrizePicks JSON response into list of prop dicts."""
+    included = {item["id"]: item for item in data.get("included", [])}
+    rows = []
+    for proj in data.get("data", []):
+        if proj.get("type") != "Projection":
+            continue
+        attrs = proj.get("attributes", {})
+        league = str(attrs.get("league", "") or "").upper()
+        if league and league not in ("NBA",):
+            continue
+        rels = proj.get("relationships", {})
+        player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
+        if not player_id:
+            player_id = (rels.get("player", {}).get("data", {}) or {}).get("id")
+        player_attrs = included.get(player_id, {}).get("attributes", {}) if player_id else {}
+        player_name = player_attrs.get("name", "") or attrs.get("name", "")
+        stat_type = attrs.get("stat_type", "")
+        line_score = attrs.get("line_score")
+        if player_name and stat_type and line_score is not None:
+            rows.append({
+                "player": player_name,
+                "stat_type": stat_type,
+                "line": float(line_score),
+                "start_time": attrs.get("start_time", ""),
+                "source": "prizepicks",
+            })
+    return rows
+
+def _pp_request(per_page=500, cookies_str=""):
+    """Make one PrizePicks API request.
+    Tries curl_cffi (Chrome TLS impersonation) first, then plain requests.
+    Returns (response_object_or_None, error_str_or_None).
+    """
+    url = PRIZEPICKS_API
+    params = {"league_id": "7", "per_page": str(per_page),
+              "single_stat": "true", "in_play": "false"}
+    headers = {
+        "Accept": "application/vnd.api+json",
+        "Referer": "https://app.prizepicks.com/",
+        "Origin": "https://app.prizepicks.com",
+    }
+    # Parse optional cookie string from user settings
+    cookie_dict = {}
+    if cookies_str:
+        for part in cookies_str.split(";"):
+            part = part.strip()
+            if "=" in part:
+                k, v = part.split("=", 1)
+                cookie_dict[k.strip()] = v.strip()
+
+    # ── Attempt 1: curl_cffi Chrome TLS impersonation (bypasses PerimeterX) ──
+    try:
+        from curl_cffi import requests as cffi_requests
+        r = cffi_requests.get(
+            url, params=params, headers=headers,
+            cookies=cookie_dict or None,
+            impersonate="chrome120",
+            timeout=25,
+        )
+        return r, None
+    except ImportError:
+        pass
+    except Exception as e:
+        pass  # fall through to plain requests
+
+    # ── Attempt 2: plain requests (works locally, blocked on cloud IPs) ──
+    try:
+        r = requests.get(url, params=params, headers=headers,
+                         cookies=cookie_dict or None, timeout=20)
+        return r, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
 
 @st.cache_data(ttl=60*10, show_spinner=False)
-def _fetch_prizepicks_lines_cached():
-    """Inner cached fetch — call via fetch_prizepicks_lines() which clears cache first."""
+def _fetch_prizepicks_lines_cached(cookies_str=""):
     for per_page in (500, 250):
-        try:
-            r = requests.get(
-                PRIZEPICKS_API,
-                headers=_PP_HEADERS,
-                params={"league_id": "7", "per_page": str(per_page),
-                        "single_stat": "true", "in_play": "false"},
-                timeout=20,
+        r, err = _pp_request(per_page=per_page, cookies_str=cookies_str)
+        if err:
+            return [], err
+        if r is None:
+            return [], "No response from PrizePicks"
+        if r.status_code == 429:
+            return [], "PrizePicks rate-limited (429) — wait 30s and retry"
+        if r.status_code == 403:
+            return [], (
+                "HTTP 403 — PerimeterX block. Fix: paste your PrizePicks browser "
+                "cookies into Settings → PrizePicks Cookies, then retry."
             )
-            if r.status_code == 429:
-                return [], f"PrizePicks rate-limited (429) — try again in 30s"
-            if not r.ok:
-                return [], f"HTTP {r.status_code}: {r.text[:200]}"
-            data = r.json()
-            included = {item["id"]: item for item in data.get("included", [])}
-            rows = []
-            for proj in data.get("data", []):
-                if proj.get("type") != "Projection":
-                    continue
-                attrs = proj.get("attributes", {})
-                # Skip if not NBA
-                league = str(attrs.get("league", "") or "").upper()
-                if league and league not in ("NBA",):
-                    continue
-                rels = proj.get("relationships", {})
-                player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
-                if not player_id:
-                    player_id = (rels.get("player", {}).get("data", {}) or {}).get("id")
-                player_attrs = included.get(player_id, {}).get("attributes", {}) if player_id else {}
-                player_name = player_attrs.get("name", "") or attrs.get("name","")
-                stat_type = attrs.get("stat_type", "")
-                line_score = attrs.get("line_score")
-                if player_name and stat_type and line_score is not None:
-                    rows.append({
-                        "player": player_name,
-                        "stat_type": stat_type,
-                        "line": float(line_score),
-                        "start_time": attrs.get("start_time", ""),
-                        "source": "prizepicks",
-                    })
-            if rows:
-                return rows, None
+        if not r.ok:
+            return [], f"HTTP {r.status_code}: {r.text[:300]}"
+        try:
+            rows = _parse_pp_response(r.json())
         except Exception as e:
-            return [], f"{type(e).__name__}: {e}"
-    return [], "No props found — PrizePicks may have no NBA slate posted"
+            return [], f"Parse error: {e}"
+        if rows:
+            return rows, None
+    return [], "No NBA props found — slate may not be posted yet"
 
 def fetch_prizepicks_lines():
-    """Clear cache then fetch fresh PrizePicks lines."""
+    cookies_str = st.session_state.get("pp_cookies", "")
     _fetch_prizepicks_lines_cached.clear()
-    return _fetch_prizepicks_lines_cached()
+    return _fetch_prizepicks_lines_cached(cookies_str=cookies_str)
 
 # ──────────────────────────────────────────────
 # UNDERDOG INGESTION
@@ -2459,12 +2504,19 @@ with tabs[2]:
             if candidates:
                 _inj_map = st.session_state.get("injury_team_map", {})
                 # Auto-load bulk game logs if not already cached (one-time, ~15-30s)
-                if _fetch_bulk_gamelogs() is None:
-                    with st.spinner("Loading all NBA game logs (first scan of session)..."):
+                bulk_ready = _fetch_bulk_gamelogs() is not None
+                if not bulk_ready:
+                    with st.spinner("Loading all NBA game logs (one-time ~20s)..."):
                         _fetch_bulk_gamelogs.clear()
-                        _fetch_bulk_gamelogs()
-                with st.spinner(f"Scanning {len(candidates)} candidates..."):
-                    with ThreadPoolExecutor(max_workers=16) as ex:
+                        bulk_ready = _fetch_bulk_gamelogs() is not None
+                _scan_workers = 16 if bulk_ready else 6
+                if not bulk_ready:
+                    st.warning(
+                        f"Bulk game log load failed — scanning with {_scan_workers} workers "
+                        f"(individual NBA API calls). Click **Load All Game Logs** above for faster scans."
+                    )
+                with st.spinner(f"Scanning {len(candidates)} candidates ({_scan_workers} workers)..."):
+                    with ThreadPoolExecutor(max_workers=_scan_workers) as ex:
                         futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
                                           n_games=n_games, key_teammate_out=False,
                                           bankroll=bankroll, frac_kelly=frac_kelly,
@@ -2552,17 +2604,89 @@ with tabs[3]:
 
     with plat_tabs[0]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>PRIZEPICKS NBA LINES</div>", unsafe_allow_html=True)
-        if st.button("Fetch PrizePicks Lines", use_container_width=True):
-            with st.spinner("Fetching PrizePicks..."):
-                pp_lines, pp_err = fetch_prizepicks_lines()
-            if pp_err:
-                st.error(f"PrizePicks: {pp_err}")
-            elif not pp_lines:
-                st.warning("No lines returned.")
-            else:
-                pp_df = pd.DataFrame(pp_lines)
-                st.session_state["pp_lines"] = pp_df
-                st.success(f"Fetched {len(pp_df)} PrizePicks props.")
+
+        pp_load_tab, pp_manual_tab = st.tabs(["Auto Fetch", "Manual Import"])
+
+        with pp_load_tab:
+            if st.button("Fetch PrizePicks Lines", use_container_width=True):
+                with st.spinner("Fetching PrizePicks..."):
+                    pp_lines, pp_err = fetch_prizepicks_lines()
+                if pp_err:
+                    st.error(f"PrizePicks: {pp_err}")
+                    st.info(
+                        "PrizePicks blocks cloud server requests (PerimeterX). "
+                        "Use **Manual Import** instead:\n\n"
+                        "1. Open [PrizePicks](https://app.prizepicks.com) in your browser\n"
+                        "2. Open DevTools → Network tab → filter for `projections`\n"
+                        "3. Copy the **Response** JSON and paste it in Manual Import\n\n"
+                        "Or upload a CSV with columns: `player, stat_type, line`"
+                    )
+                elif not pp_lines:
+                    st.warning("No lines returned.")
+                else:
+                    pp_df = pd.DataFrame(pp_lines)
+                    st.session_state["pp_lines"] = pp_df
+                    st.success(f"Fetched {len(pp_df)} PrizePicks props.")
+
+        with pp_manual_tab:
+            st.markdown("<div style='font-size:0.68rem;color:#4A607A;margin-bottom:0.5rem;'>Paste JSON from browser DevTools OR upload a CSV with columns: player, stat_type, line</div>", unsafe_allow_html=True)
+            pp_upload = st.file_uploader("Upload CSV", type=["csv"], key="pp_csv_upload")
+            pp_paste = st.text_area("Or paste PrizePicks API JSON response", height=120, key="pp_json_paste")
+            if st.button("Load Data", use_container_width=True, key="pp_manual_load"):
+                rows = []
+                err_msg = None
+                if pp_upload is not None:
+                    try:
+                        df_up = pd.read_csv(pp_upload)
+                        df_up.columns = [c.strip().lower() for c in df_up.columns]
+                        col_map = {}
+                        for need, alts in [("player",["player","name","player_name"]),
+                                           ("stat_type",["stat_type","stat","market","type"]),
+                                           ("line",["line","line_score","value","projection"])]:
+                            for a in alts:
+                                if a in df_up.columns:
+                                    col_map[need] = a; break
+                        if all(k in col_map for k in ("player","stat_type","line")):
+                            for _, r in df_up.iterrows():
+                                rows.append({"player": str(r[col_map["player"]]),
+                                             "stat_type": str(r[col_map["stat_type"]]),
+                                             "line": float(r[col_map["line"]]),
+                                             "source": "prizepicks"})
+                        else:
+                            err_msg = f"CSV must have player, stat_type, line columns. Found: {list(df_up.columns)}"
+                    except Exception as e:
+                        err_msg = f"CSV parse error: {e}"
+                elif pp_paste.strip():
+                    try:
+                        data = json.loads(pp_paste.strip())
+                        included = {item["id"]: item for item in data.get("included", [])}
+                        for proj in data.get("data", []):
+                            if proj.get("type") != "Projection": continue
+                            attrs = proj.get("attributes", {})
+                            rels = proj.get("relationships", {})
+                            pid = (rels.get("new_player",{}).get("data",{}) or {}).get("id")
+                            if not pid:
+                                pid = (rels.get("player",{}).get("data",{}) or {}).get("id")
+                            pattrs = included.get(pid,{}).get("attributes",{}) if pid else {}
+                            pname = pattrs.get("name","") or attrs.get("name","")
+                            stat_type = attrs.get("stat_type","")
+                            line_score = attrs.get("line_score")
+                            if pname and stat_type and line_score is not None:
+                                rows.append({"player": pname, "stat_type": stat_type,
+                                             "line": float(line_score), "source": "prizepicks"})
+                        if not rows:
+                            err_msg = "No projections found in pasted JSON."
+                    except Exception as e:
+                        err_msg = f"JSON parse error: {e}"
+                else:
+                    err_msg = "Upload a CSV or paste JSON."
+                if err_msg:
+                    st.error(err_msg)
+                elif rows:
+                    pp_df_manual = pd.DataFrame(rows)
+                    st.session_state["pp_lines"] = pp_df_manual
+                    st.success(f"Loaded {len(pp_df_manual)} PrizePicks props.")
+
         pp_df = st.session_state.get("pp_lines")
         if pp_df is not None and not pp_df.empty:
             # Run model on PrizePicks lines
@@ -2876,6 +3000,29 @@ with tabs[5]:
 # ─── ALERTS TAB ───────────────────────────────────────────────
 with tabs[6]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>ALERTS — DISCORD / TELEGRAM</div>""", unsafe_allow_html=True)
+
+    # ── PrizePicks cookie auth ─────────────────────────────────
+    with st.expander("PrizePicks Cookie Auth (bypasses 403 block)", expanded=False):
+        st.markdown("""<div style='font-size:0.68rem;color:#4A607A;line-height:1.6;'>
+<b>How to get your cookies (one-time setup, lasts days):</b><br>
+1. Open <a href='https://app.prizepicks.com' target='_blank' style='color:#00FFB2;'>app.prizepicks.com</a> in Chrome and log in<br>
+2. Press <b>F12</b> → Network tab → refresh the page<br>
+3. Click any <code>projections</code> request → Headers tab<br>
+4. Find the <b>Cookie:</b> request header → copy the entire value<br>
+5. Paste below and click Save
+</div>""", unsafe_allow_html=True)
+        pp_cookies_val = st.text_area(
+            "PrizePicks Cookie String",
+            value=st.session_state.get("pp_cookies", ""),
+            height=80,
+            placeholder="_pxmvid=...; _px3=...; __cf_bm=...",
+            key="pp_cookies_input",
+            type="password" if False else "default",
+        )
+        if st.button("Save PrizePicks Cookies", use_container_width=True):
+            st.session_state["pp_cookies"] = pp_cookies_val.strip()
+            st.success("Cookies saved — Auto Fetch will now use these for auth.")
+    st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
     al_col1, al_col2 = st.columns(2)
     with al_col1:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>DISCORD WEBHOOK</div>", unsafe_allow_html=True)
