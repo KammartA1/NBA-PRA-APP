@@ -64,32 +64,85 @@ REGION_US       = "us"
 MIN_MINUTES_THRESHOLD = 10  # [FIX 3] filter DNP/garbage-time
 
 ODDS_MARKETS = {
-    "Points":   "player_points",
-    "Rebounds": "player_rebounds",
-    "Assists":  "player_assists",
-    "3PM":      "player_threes",
-    "PRA":      "player_points_rebounds_assists",
-    "PR":       "player_points_rebounds",
-    "PA":       "player_points_assists",
-    "RA":       "player_rebounds_assists",
-    "Blocks":   "player_blocks",
-    "Steals":   "player_steals",
-    "Turnovers":"player_turnovers",
+    # ── Full-game standard ──────────────────────
+    "Points":        "player_points",
+    "Rebounds":      "player_rebounds",
+    "Assists":       "player_assists",
+    "3PM":           "player_threes",
+    "PRA":           "player_points_rebounds_assists",
+    "PR":            "player_points_rebounds",
+    "PA":            "player_points_assists",
+    "RA":            "player_rebounds_assists",
+    "Blocks":        "player_blocks",
+    "Steals":        "player_steals",
+    "Turnovers":     "player_turnovers",
+    "Stocks":        "player_blocks_steals",
+    # ── 1st Half markets ────────────────────────
+    "H1 Points":     "player_points_q1q2",
+    "H1 Rebounds":   "player_rebounds_q1q2",
+    "H1 Assists":    "player_assists_q1q2",
+    "H1 3PM":        "player_threes_q1q2",
+    "H1 PRA":        "player_points_rebounds_assists_q1q2",
+    # ── 2nd Half markets ────────────────────────
+    "H2 Points":     "player_points_q3q4",
+    "H2 Rebounds":   "player_rebounds_q3q4",
+    "H2 Assists":    "player_assists_q3q4",
+    # ── Alternate lines ─────────────────────────
+    "Alt Points":    "player_points_alternate",
+    "Alt Rebounds":  "player_rebounds_alternate",
+    "Alt Assists":   "player_assists_alternate",
+    "Alt 3PM":       "player_threes_alternate",
+    # ── Combo / special ─────────────────────────
+    "Double Double": "player_double_double",
+    "Triple Double": "player_triple_double",
+    "First Basket":  "player_first_basket",
 }
 
 STAT_FIELDS = {
-    "Points":   "PTS",
-    "Rebounds": "REB",
-    "Assists":  "AST",
-    "3PM":      "FG3M",
-    "PRA":      ("PTS","REB","AST"),
-    "PR":       ("PTS","REB"),
-    "PA":       ("PTS","AST"),
-    "RA":       ("REB","AST"),
-    "Blocks":   "BLK",
-    "Steals":   "STL",
-    "Turnovers":"TOV",
+    "Points":        "PTS",
+    "Rebounds":      "REB",
+    "Assists":       "AST",
+    "3PM":           "FG3M",
+    "PRA":           ("PTS","REB","AST"),
+    "PR":            ("PTS","REB"),
+    "PA":            ("PTS","AST"),
+    "RA":            ("REB","AST"),
+    "Blocks":        "BLK",
+    "Steals":        "STL",
+    "Turnovers":     "TOV",
+    "Stocks":        ("BLK","STL"),
+    # Half markets map to full-game fields (adjusted via HALF_FACTOR)
+    "H1 Points":     "PTS",
+    "H1 Rebounds":   "REB",
+    "H1 Assists":    "AST",
+    "H1 3PM":        "FG3M",
+    "H1 PRA":        ("PTS","REB","AST"),
+    "H2 Points":     "PTS",
+    "H2 Rebounds":   "REB",
+    "H2 Assists":    "AST",
+    # Alt lines use same fields as base
+    "Alt Points":    "PTS",
+    "Alt Rebounds":  "REB",
+    "Alt Assists":   "AST",
+    "Alt 3PM":       "FG3M",
+    # Combo / special
+    "Double Double": ("PTS","REB","AST","BLK","STL"),
+    "Triple Double": ("PTS","REB","AST","BLK","STL"),
+    "First Basket":  "PTS",
 }
+
+# Half-game projection scale factors
+HALF_FACTOR = {
+    "H1 Points": 0.52, "H1 Rebounds": 0.52, "H1 Assists": 0.52,
+    "H1 3PM": 0.52, "H1 PRA": 0.52,
+    "H2 Points": 0.48, "H2 Rebounds": 0.48, "H2 Assists": 0.48,
+}
+
+# Alt markets — same engine, different API key
+ALT_MARKETS = {"Alt Points","Alt Rebounds","Alt Assists","Alt 3PM"}
+
+# DD/TD markets — probability from game log, not bootstrap
+DD_TD_MARKETS = {"Double Double","Triple Double"}
 
 BOOK_SHARPNESS = {
     "pinnacle":0.99,"circa":0.95,"bookmaker":0.90,"betcris":0.85,
@@ -893,6 +946,443 @@ def apply_clv_update_to_legs(legs):
     return out, errs
 
 # ──────────────────────────────────────────────
+# USAGE RATE FROM BOX SCORE
+# ──────────────────────────────────────────────
+def compute_usage_rate(game_log_df, n_games=10):
+    """Approximate possession usage: FGA + 0.44*FTA + TOV per game."""
+    if game_log_df is None or game_log_df.empty:
+        return None
+    df = game_log_df.head(n_games).copy()
+    if not all(c in df.columns for c in ["FGA","FTA","TOV"]):
+        return None
+    try:
+        fga = pd.to_numeric(df["FGA"], errors="coerce").fillna(0)
+        fta = pd.to_numeric(df["FTA"], errors="coerce").fillna(0)
+        tov = pd.to_numeric(df["TOV"], errors="coerce").fillna(0)
+        return float((fga + 0.44*fta + tov).mean())
+    except Exception:
+        return None
+
+# ──────────────────────────────────────────────
+# PACE-ADJUSTED STAT SERIES
+# ──────────────────────────────────────────────
+def compute_pace_adjusted_series(stat_series, opp_team):
+    """Scale stat series by opponent-vs-league pace ratio (dampened 50%)."""
+    if stat_series is None or len(stat_series.dropna()) < 4:
+        return stat_series
+    if not LEAGUE_CTX or not TEAM_CTX:
+        return stat_series
+    opp_key = str(opp_team or "").upper()
+    if opp_key not in TEAM_CTX:
+        return stat_series
+    try:
+        opp_pace = TEAM_CTX[opp_key].get("PACE", 100)
+        league_pace = LEAGUE_CTX.get("PACE", 100) or 1.0
+        pace_adj = opp_pace / league_pace
+        adj_factor = float(np.clip(1.0 + 0.5*(pace_adj - 1.0), 0.88, 1.12))
+        return stat_series * adj_factor
+    except Exception:
+        return stat_series
+
+# ──────────────────────────────────────────────
+# PER-POSITION DEFENSIVE GRADES
+# ──────────────────────────────────────────────
+@st.cache_data(ttl=60*60*6, show_spinner=False)
+def get_opp_positional_pts_allowed(opp_abbr, position_bucket):
+    """Pts allowed per game vs position bucket; returns (opp_val, league_avg)."""
+    try:
+        from nba_api.stats.endpoints import LeagueDashPtDefend
+        cat_map = {"Guard": "Guards", "Wing": "Forwards", "Big": "Centers", "Unknown": "Overall"}
+        category = cat_map.get(position_bucket, "Overall")
+        df = LeagueDashPtDefend(
+            league_id="00", per_mode_simple="PerGame",
+            defense_category=category, season=get_season_string(),
+        ).get_data_frames()[0]
+        if df.empty:
+            return None, None
+        league_avg = float(df["PTS_ALLOWED"].mean())
+        opp = str(opp_abbr or "").upper()
+        row = df[df["TEAM_ABBREVIATION"].str.upper() == opp]
+        if row.empty:
+            return None, league_avg
+        return float(row.iloc[0]["PTS_ALLOWED"]), league_avg
+    except Exception:
+        return None, None
+
+def positional_def_multiplier(opp_abbr, position_bucket, market):
+    """Return a multiplier based on opponent's positional defensive strength."""
+    if market not in ("Points","PRA","PR","PA","H1 Points","H2 Points","Alt Points"):
+        return 1.0
+    try:
+        opp_pts, league_avg = get_opp_positional_pts_allowed(opp_abbr, position_bucket)
+        if opp_pts is None or league_avg is None or league_avg == 0:
+            return 1.0
+        ratio = opp_pts / league_avg
+        return float(np.clip(ratio, 0.82, 1.18))
+    except Exception:
+        return 1.0
+
+# ──────────────────────────────────────────────
+# INJURY REPORT
+# ──────────────────────────────────────────────
+@st.cache_data(ttl=60*15, show_spinner=False)
+def fetch_injury_report():
+    """Fetch today's NBA injury report from the NBA API."""
+    try:
+        from nba_api.stats.endpoints import InjuryReport
+        df = InjuryReport(game_date=date.today().strftime("%m/%d/%Y")).get_data_frames()[0]
+        if df.empty:
+            return {}
+        out = {}
+        for _, r in df.iterrows():
+            team = str(r.get("TEAM_TRICODE","")).upper()
+            status = str(r.get("PLAYER_STATUS","")).upper()
+            if status in ("OUT","DOUBTFUL","QUESTIONABLE"):
+                out.setdefault(team, []).append({
+                    "player": r.get("PLAYER_NAME",""),
+                    "status": status,
+                    "reason": r.get("RETURN_FROM_INJURY",""),
+                })
+        return out
+    except Exception:
+        return {}
+
+# ──────────────────────────────────────────────
+# DD / TD PROBABILITY
+# ──────────────────────────────────────────────
+def compute_dd_prob(game_log_df, n_games=10):
+    """Historical frequency of double-doubles from game log."""
+    if game_log_df is None or game_log_df.empty:
+        return None
+    df = game_log_df.head(n_games).copy()
+    try:
+        dd = sum(
+            1 for _, row in df.iterrows()
+            if sum(1 for c in ["PTS","REB","AST","BLK","STL"]
+                   if safe_float(row.get(c)) >= 10) >= 2
+        )
+        return float(dd / len(df)) if len(df) > 0 else None
+    except Exception:
+        return None
+
+def compute_td_prob(game_log_df, n_games=10):
+    """Historical frequency of triple-doubles from game log."""
+    if game_log_df is None or game_log_df.empty:
+        return None
+    df = game_log_df.head(n_games).copy()
+    try:
+        td = sum(
+            1 for _, row in df.iterrows()
+            if sum(1 for c in ["PTS","REB","AST","BLK","STL"]
+                   if safe_float(row.get(c)) >= 10) >= 3
+        )
+        return float(td / len(df)) if len(df) > 0 else None
+    except Exception:
+        return None
+
+# ──────────────────────────────────────────────
+# PRIZEPICKS INGESTION
+# ──────────────────────────────────────────────
+PRIZEPICKS_API = "https://api.prizepicks.com/projections"
+
+@st.cache_data(ttl=60*10, show_spinner=False)
+def fetch_prizepicks_lines():
+    """Fetch current NBA player props from PrizePicks public API."""
+    try:
+        r = requests.get(
+            PRIZEPICKS_API,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            params={"league_id": "7", "per_page": "250", "single_stat": "true", "in_play": "false"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+        included = {item["id"]: item for item in data.get("included", [])}
+        rows = []
+        for proj in data.get("data", []):
+            if proj.get("type") != "Projection":
+                continue
+            attrs = proj.get("attributes", {})
+            rels = proj.get("relationships", {})
+            player_id = rels.get("new_player", {}).get("data", {}).get("id")
+            player_attrs = included.get(player_id, {}).get("attributes", {})
+            player_name = player_attrs.get("name", "")
+            stat_type = attrs.get("stat_type", "")
+            line_score = attrs.get("line_score")
+            if player_name and stat_type and line_score is not None:
+                rows.append({
+                    "player": player_name,
+                    "stat_type": stat_type,
+                    "line": float(line_score),
+                    "start_time": attrs.get("start_time", ""),
+                    "source": "prizepicks",
+                })
+        return rows, None
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+
+# ──────────────────────────────────────────────
+# UNDERDOG INGESTION
+# ──────────────────────────────────────────────
+UNDERDOG_API = "https://api.underdogfantasy.com/v3/over_under_lines"
+
+@st.cache_data(ttl=60*10, show_spinner=False)
+def fetch_underdog_lines():
+    """Fetch current NBA player props from Underdog Fantasy public API."""
+    try:
+        r = requests.get(
+            UNDERDOG_API,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+        appearances = {a["id"]: a for a in data.get("appearances", [])}
+        players_map = {p["id"]: p for p in data.get("players", [])}
+        rows = []
+        for line in data.get("over_under_lines", []):
+            app_stat = line.get("over_under", {}).get("appearance_stat", {})
+            app_id = str(app_stat.get("appearance_id", ""))
+            app = appearances.get(app_id, {})
+            sport = app.get("sport_id", "")
+            if str(sport).lower() not in ("nba", "basketball"):
+                continue
+            player_id = str(app.get("player_id", ""))
+            player = players_map.get(player_id, {})
+            player_name = f"{player.get('first_name','')} {player.get('last_name','')}".strip()
+            stat_type = app_stat.get("display_stat", "")
+            stat_value = line.get("stat_value")
+            if player_name and stat_type and stat_value is not None:
+                rows.append({
+                    "player": player_name,
+                    "stat_type": stat_type,
+                    "line": float(stat_value),
+                    "source": "underdog",
+                })
+        return rows, None
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+
+def map_platform_stat_to_market(stat_type):
+    """Map PrizePicks/Underdog stat label to internal market name."""
+    mapping = {
+        "Points": "Points", "Pts": "Points",
+        "Rebounds": "Rebounds", "Reb": "Rebounds",
+        "Assists": "Assists", "Ast": "Assists",
+        "3-Pointers Made": "3PM", "3 Pointers Made": "3PM", "3PM": "3PM",
+        "Pts+Reb+Ast": "PRA", "Pts+Reb": "PR", "Pts+Ast": "PA", "Reb+Ast": "RA",
+        "Blocked Shots": "Blocks", "Blocks": "Blocks", "Blk": "Blocks",
+        "Steals": "Steals", "Stl": "Steals",
+        "Turnovers": "Turnovers", "Tov": "Turnovers",
+        "Blks+Stls": "Stocks", "Stocks": "Stocks",
+    }
+    for k, v in mapping.items():
+        if k.lower() == str(stat_type).strip().lower():
+            return v
+    return None
+
+# ──────────────────────────────────────────────
+# LINE SHOPPING — BEST AVAILABLE PRICE
+# ──────────────────────────────────────────────
+def get_best_available_price(event_id, market_key, player_norm, side):
+    """Return (best_price, best_book) across all books for a given player/market/side."""
+    try:
+        odds, err = odds_get_event_odds(str(event_id), (str(market_key),))
+        if err or not odds:
+            return None, None
+        best_price, best_book = None, None
+        for b in odds.get("bookmakers", []) or []:
+            bkey = b.get("key", "")
+            for mk in b.get("markets", []) or []:
+                if mk.get("key") != market_key:
+                    continue
+                for out in mk.get("outcomes", []) or []:
+                    pn = normalize_name(out.get("description") or out.get("name") or "")
+                    if pn == player_norm and (out.get("name") or "").lower() == str(side).lower():
+                        p = safe_float(out.get("price"))
+                        if p > 1.0 and (best_price is None or p > best_price):
+                            best_price = p
+                            best_book = bkey
+        return best_price, best_book
+    except Exception:
+        return None, None
+
+# ──────────────────────────────────────────────
+# PROP LINE HISTORY DATABASE
+# ──────────────────────────────────────────────
+PROP_HISTORY_PATH = "prop_line_history.jsonl"
+
+def save_prop_line(player, market, line, price, book, event_id=None):
+    """Append a prop line snapshot to JSONL history file."""
+    try:
+        with open(PROP_HISTORY_PATH, "a") as f:
+            f.write(json.dumps({
+                "ts": _now_iso(), "player": player, "market": market,
+                "line": float(line) if line is not None else None,
+                "price": float(price) if price is not None else None,
+                "book": book, "event_id": event_id,
+            }) + "\n")
+    except Exception:
+        pass
+
+def load_prop_line_history(player=None, market=None, limit=500):
+    """Load prop line history filtered by player/market."""
+    try:
+        if not os.path.exists(PROP_HISTORY_PATH):
+            return pd.DataFrame()
+        rows = []
+        with open(PROP_HISTORY_PATH) as f:
+            for raw in f:
+                try:
+                    r = json.loads(raw.strip())
+                    if player and normalize_name(r.get("player","")) != normalize_name(player):
+                        continue
+                    if market and r.get("market","").lower() != market.lower():
+                        continue
+                    rows.append(r)
+                except Exception:
+                    continue
+        return pd.DataFrame(rows[-limit:]) if rows else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+# ──────────────────────────────────────────────
+# DISCORD / TELEGRAM ALERTS
+# ──────────────────────────────────────────────
+def send_discord_alert(webhook_url, message):
+    if not webhook_url:
+        return False, "No webhook URL"
+    try:
+        r = requests.post(webhook_url, json={"content": message, "username": "NBA Quant Engine"}, timeout=10)
+        r.raise_for_status()
+        return True, None
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+def send_telegram_alert(bot_token, chat_id, message):
+    if not bot_token or not chat_id:
+        return False, "Token/chat_id missing"
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return True, None
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+def format_edge_alert(leg):
+    p_cal = leg.get("p_cal") or 0
+    ev = (leg.get("ev_adj_pct") or (leg.get("ev_adj", 0) * 100 if leg.get("ev_adj") else 0))
+    proj = leg.get("proj")
+    return (
+        f"**{leg.get('player','?')}** — {leg.get('market','?')} O{leg.get('line','?')}\n"
+        f"Proj: {proj:.1f} | P: {p_cal*100:.1f}% | EV: {ev:.1f}%\n"
+        f"Book: {leg.get('book','?')} | {leg.get('edge_cat','')}"
+    ) if proj else (
+        f"**{leg.get('player','?')}** — {leg.get('market','?')} O{leg.get('line','?')}\n"
+        f"P: {p_cal*100:.1f}% | EV: {ev:.1f}% | {leg.get('edge_cat','')}"
+    )
+
+# ──────────────────────────────────────────────
+# KELLY PARLAY OPTIMIZER
+# ──────────────────────────────────────────────
+def kelly_parlay_optimizer(legs, payout_mult, max_legs=4, bankroll=1000.0, frac_kelly=0.25):
+    """Find best 2-N leg combos by correlation-adjusted EV."""
+    from itertools import combinations
+    valid = [l for l in legs if l.get("gate_ok") and float(l.get("p_cal") or 0) > 0.50]
+    if len(valid) < 2:
+        return []
+    results = []
+    for n in range(2, min(max_legs + 1, len(valid) + 1)):
+        for combo in combinations(range(len(valid)), n):
+            combo_legs = [valid[i] for i in combo]
+            probs = [float(l["p_cal"]) for l in combo_legs]
+            # Correlation adjustment
+            corr_adj = 1.0
+            for i in range(n):
+                for j in range(i+1, n):
+                    c = estimate_player_correlation(combo_legs[i], combo_legs[j])
+                    corr_adj *= max(0.5, 1.0 - abs(float(c or 0)) * 0.3)
+            naive_joint = float(np.prod(probs))
+            joint = float(np.clip(naive_joint * corr_adj, 1e-6, 1.0))
+            ev = payout_mult * joint - 1.0
+            kelly_f = max(0.0, ev / (payout_mult - 1.0)) if payout_mult > 1 else 0.0
+            stake = min(bankroll * frac_kelly * kelly_f, bankroll * 0.05)
+            results.append({
+                "combo": " + ".join(f"{l['player']} {l['market']}" for l in combo_legs),
+                "n_legs": n,
+                "joint_prob_%": round(joint * 100, 1),
+                "naive_prob_%": round(naive_joint * 100, 1),
+                "ev_%": round(ev * 100, 1),
+                "payout_x": payout_mult,
+                "kelly_stake_$": round(stake, 2),
+            })
+    return sorted(results, key=lambda x: x["ev_%"], reverse=True)[:25]
+
+# ──────────────────────────────────────────────
+# MONTE CARLO GAME SIMULATION
+# ──────────────────────────────────────────────
+def monte_carlo_game_sim(legs, n_sims=20000, payout_mult=3.0):
+    """Correlated MC simulation across all legs."""
+    try:
+        import scipy.stats as _sc
+        valid = [l for l in legs if l.get("p_cal")]
+        if not valid:
+            return None
+        n = len(valid)
+        probs = np.array([float(l["p_cal"]) for l in valid])
+        corr_mat = np.eye(n)
+        for i in range(n):
+            for j in range(i+1, n):
+                c = estimate_player_correlation(valid[i], valid[j])
+                corr_mat[i,j] = corr_mat[j,i] = float(c or 0.0)
+        evals, evecs = np.linalg.eigh(corr_mat)
+        evals = np.clip(evals, 1e-6, None)
+        corr_psd = evecs @ np.diag(evals) @ evecs.T
+        rng = np.random.default_rng(42)
+        z = rng.multivariate_normal(np.zeros(n), corr_psd, n_sims)
+        u = _sc.norm.cdf(z)
+        hits = u < probs
+        joint_hits = hits.all(axis=1)
+        joint_prob = float(joint_hits.mean())
+        ev = payout_mult * joint_prob - 1.0
+        return {
+            "joint_prob_%": round(joint_prob * 100, 2),
+            "naive_joint_%": round(float(np.prod(probs)) * 100, 2),
+            "ev_%": round(ev * 100, 2),
+            "per_leg_sim_%": [round(float(hits[:,i].mean()) * 100, 1) for i in range(n)],
+            "n_sims": n_sims,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+# ──────────────────────────────────────────────
+# ROLLING BRIER SCORE
+# ──────────────────────────────────────────────
+def compute_rolling_brier(legs_df, windows=(25, 50, 100)):
+    """Compute Brier scores over trailing windows and a rolling series."""
+    if legs_df is None or legs_df.empty:
+        return {}
+    d = legs_df[legs_df["y"].notna()].copy().reset_index(drop=True)
+    if len(d) < 10:
+        return {}
+    result = {}
+    for w in windows:
+        if len(d) >= w:
+            tail = d.tail(w)
+            result[f"last_{w}"] = float(np.mean((tail["p_raw"].values.astype(float) - tail["y"].values.astype(float))**2))
+    if len(d) >= 10:
+        series = []
+        for i in range(9, len(d)):
+            window_d = d.iloc[max(0, i-24):i+1]
+            series.append(float(np.mean((window_d["p_raw"].values.astype(float) - window_d["y"].values.astype(float))**2)))
+        result["rolling_series"] = series
+    return result
+
+# ──────────────────────────────────────────────
 # MAIN PROJECTION ENGINE  [FIX 3: minutes filter]
 # ──────────────────────────────────────────────
 def compute_leg_projection(
@@ -933,10 +1423,22 @@ def compute_leg_projection(
         except Exception:
             pass
 
-    stat_series = compute_stat_from_gamelog(gldf_n, market_name) if not gldf_n.empty else pd.Series([], dtype=float)
+    # ── Detect special market types ──────────────────────────────
+    half_factor = HALF_FACTOR.get(market_name, 1.0)
+    is_half_market = market_name in HALF_FACTOR
+    is_dd_td = market_name in DD_TD_MARKETS
+    # For half markets, find effective full-game stat field
+    base_market = market_name
+    if is_half_market:
+        base_market = market_name.replace("H1 ","").replace("H2 ","")
+
+    stat_series = compute_stat_from_gamelog(gldf_n, base_market) if not gldf_n.empty else pd.Series([], dtype=float)
     vol_cv, vol_label = compute_volatility(stat_series)
     stat_skew = compute_skewness(stat_series)  # [FIX 5]
     rest_mult, rest_days = compute_rest_factor(gldf, game_date)
+
+    # Usage rate signal
+    usage_rate = compute_usage_rate(gldf_n, n_games=n_games)
 
     # Resolve team/opponent
     team_abbr, opp_abbr, is_home_resolved = None, None, is_home
@@ -965,20 +1467,41 @@ def compute_leg_projection(
                 elif team_abbr == away_abbr: opp_abbr, is_home_resolved = home_abbr, False
         except Exception: pass
 
-    ha_mult = compute_home_away_factor(gldf_n, market_name, is_home_resolved)
-    ctx_mult = advanced_context_multiplier(player_name, market_name, opp_abbr, key_teammate_out)
+    ha_mult = compute_home_away_factor(gldf_n, base_market, is_home_resolved)
+    ctx_mult = advanced_context_multiplier(player_name, base_market, opp_abbr, key_teammate_out)
     blowout_prob = estimate_blowout_risk(team_abbr, opp_abbr, spread_abs=None)
-
-    p_over_raw, mu_raw, sigma = bootstrap_prob_over(stat_series, float(line), cv_override=vol_cv)
-    if p_over_raw is None:
-        errors.append(f"Insufficient history (need >=4 games, have {len(stat_series.dropna())})")
 
     pos_str = get_player_position(player_name) or ""
     pos_bucket = get_position_bucket(pos_str)
-    n_valid = int(stat_series.dropna().count())
-    mu_shrunk = bayesian_shrink(mu_raw, n_valid, market_name, pos_bucket) if mu_raw is not None else None
 
-    proj = mu_shrunk * ctx_mult * rest_mult * ha_mult if mu_shrunk is not None else None
+    # Positional defensive grade multiplier
+    pos_def_mult = positional_def_multiplier(opp_abbr, pos_bucket, base_market)
+
+    # Pace-adjusted stat series
+    pace_adj_series = compute_pace_adjusted_series(stat_series, opp_abbr)
+
+    # DD / TD: short-circuit to frequency-based probability
+    if is_dd_td:
+        prob_fn = compute_dd_prob if market_name == "Double Double" else compute_td_prob
+        dd_prob = prob_fn(gldf_n, n_games=n_games)
+        p_over_raw = dd_prob
+        mu_raw = dd_prob
+        sigma = None
+        if p_over_raw is None:
+            errors.append("Insufficient history for DD/TD probability.")
+    else:
+        # For half markets: convert line to equivalent full-game threshold
+        effective_line = float(line) / half_factor if is_half_market and half_factor > 0 else float(line)
+        p_over_raw, mu_raw, sigma = bootstrap_prob_over(pace_adj_series, effective_line, cv_override=vol_cv)
+        if p_over_raw is None:
+            errors.append(f"Insufficient history (need >=4 games, have {len(stat_series.dropna())})")
+
+    n_valid = int(stat_series.dropna().count())
+    mu_shrunk = bayesian_shrink(mu_raw, n_valid, base_market, pos_bucket) if mu_raw is not None else None
+
+    # Apply half factor and positional D to projection
+    proj_full = mu_shrunk * ctx_mult * rest_mult * ha_mult * pos_def_mult if mu_shrunk is not None else None
+    proj = proj_full * half_factor if (proj_full is not None and is_half_market) else proj_full
     regime_label, regime_score = classify_regime(vol_cv, blowout_prob, ctx_mult)
 
     price_decimal = None
@@ -1079,6 +1602,10 @@ def compute_leg_projection(
         "sigma":            float(sigma) if sigma is not None else None,
         "line_movement":    mv_signal,
         "sharp_div":        sharp_div,
+        "usage_rate":       float(usage_rate) if usage_rate is not None else None,
+        "pos_def_mult":     float(pos_def_mult),
+        "half_factor":      float(half_factor),
+        "pace_adj":         True if opp_abbr and TEAM_CTX.get(str(opp_abbr).upper()) else False,
         "errors":           errors,
     }
 
@@ -1271,7 +1798,7 @@ h1,h2,h3{font-family:var(--font-head)!important;color:var(--text-hi)!important;l
 st.markdown("""
 <div style="display:flex;align-items:center;gap:1.5rem;padding:0.8rem 0 1.2rem;border-bottom:1px solid #1E2D3D;margin-bottom:1.2rem;">
   <div style="font-family:'Chakra Petch',monospace;font-size:1.7rem;font-weight:700;color:#00FFB2;letter-spacing:0.06em;">
-    NBA QUANT ENGINE <span style="font-size:0.75rem;color:#4A607A;vertical-align:middle;margin-left:0.5rem;">v2.1</span>
+    NBA QUANT ENGINE <span style="font-size:0.75rem;color:#4A607A;vertical-align:middle;margin-left:0.5rem;">v3.0</span>
   </div>
   <div style="flex:1;height:1px;background:linear-gradient(90deg,#00FFB2,transparent);"></div>
   <div style="font-family:'Fira Code',monospace;font-size:0.65rem;color:#4A607A;text-align:right;">
@@ -1377,7 +1904,7 @@ def _check_loss_stops(uid, bankroll):
     return False
 
 # ─── TABS ─────────────────────────────────────────────────────
-tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "HISTORY", "CALIBRATION"])
+tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "ALERTS"])
 
 with tabs[0]:
     _check_loss_stops(user_id, bankroll)
@@ -1433,7 +1960,14 @@ with tabs[0]:
                                       exclude_chaotic=bool(exclude_chaotic),
                                       game_date=scan_date)
                             for (tag, pname, mkt, line, meta, to) in tasks]
-                    results = [f.result() for f in futs]
+                    results = []
+                    for f in futs:
+                        try:
+                            results.append(f.result())
+                        except Exception as _te:
+                            results.append({"player": "Error", "market": "?", "line": 0.0,
+                                            "errors": [f"thread error: {type(_te).__name__}: {_te}"],
+                                            "gate_ok": False, "gate_reason": "thread error"})
             calib = st.session_state.get("calibrator_map")
             results = [recompute_pricing_fields(dict(leg), calib) for leg in results]
             st.session_state["last_results"] = results
@@ -1570,9 +2104,42 @@ with tabs[1]:
         with st.expander("Raw Data Table", expanded=False):
             display_cols = ["player","market","line","proj","p_cal","p_implied","advantage",
                             "ev_pct","edge_cat","gate_ok","stake","volatility_label","volatility_cv",
-                            "regime","rest_days","position_bucket","context_mult","n_games_used"]
+                            "regime","rest_days","position_bucket","context_mult","n_games_used",
+                            "usage_rate","pos_def_mult","half_factor","pace_adj"]
             disp_df = pd.DataFrame([{k:l.get(k) for k in display_cols} for l in res])
             st.dataframe(disp_df, use_container_width=True)
+
+        # ── Parlay Optimizer ──────────────────────────────────
+        st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>PARLAY OPTIMIZER</div>", unsafe_allow_html=True)
+        po_col1, po_col2 = st.columns(2)
+        with po_col1:
+            po_max_legs = st.slider("Max combo legs", 2, 4, 3, key="po_max_legs")
+        with po_col2:
+            po_payout = st.number_input("Payout multiplier (x)", 1.5, 20.0, float(st.session_state.get("payout_multi",3.0)), 0.5, key="po_payout")
+        if st.button("Optimize Parlay Combos", use_container_width=True):
+            combos = kelly_parlay_optimizer(res, po_payout, max_legs=po_max_legs, bankroll=bankroll, frac_kelly=frac_kelly)
+            if combos:
+                st.dataframe(pd.DataFrame(combos), use_container_width=True)
+            else:
+                st.warning("Need 2+ gated legs with P > 50% to generate combos.")
+
+        # ── Monte Carlo Simulation ────────────────────────────
+        st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>MONTE CARLO GAME SIMULATION</div>", unsafe_allow_html=True)
+        if st.button("Run MC Simulation (all legs)", use_container_width=True):
+            mc = monte_carlo_game_sim(res, n_sims=20000, payout_mult=float(po_payout))
+            if mc and "error" not in mc:
+                mc_c1, mc_c2, mc_c3 = st.columns(3)
+                mc_c1.metric("Joint Hit Prob (MC)", f"{mc['joint_prob_%']:.2f}%")
+                mc_c2.metric("Naive (uncorr)", f"{mc['naive_joint_%']:.2f}%")
+                mc_c3.metric(f"Combo EV (x{po_payout:.1f})", f"{mc['ev_%']:+.2f}%")
+                if mc.get("per_leg_sim_%"):
+                    st.caption("Per-leg simulated hit rates: " + " | ".join(
+                        f"{res[i].get('player','?')} {p}%" for i, p in enumerate(mc["per_leg_sim_%"]) if i < len(res)
+                    ))
+            elif mc and "error" in mc:
+                st.warning(f"MC error: {mc['error']}")
 
 # ─── LIVE SCANNER TAB [FIX 13: persistent] [FIX 14: week-ahead] ───
 with tabs[2]:
@@ -1625,6 +2192,11 @@ with tabs[2]:
                 if offers:
                     # [FIX 13] Store in session state - persists across tab switches
                     st.session_state["scanner_offers"] = pd.DataFrame(offers)
+                    # Auto-save to prop line history DB
+                    for r2 in offers:
+                        save_prop_line(r2.get("player",""), r2.get("market",""),
+                                       r2.get("line"), r2.get("price"), r2.get("book"),
+                                       event_id=r2.get("event_id"))
                     st.success(f"Fetched {len(offers)} raw prop outcomes.")
                 else:
                     st.warning("No offers returned.")
@@ -1648,7 +2220,7 @@ with tabs[2]:
             out_rows, dropped = [], []
             if candidates:
                 with st.spinner(f"Scanning {len(candidates)} candidates..."):
-                    with ThreadPoolExecutor(max_workers=8) as ex:
+                    with ThreadPoolExecutor(max_workers=4) as ex:
                         futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
                                           n_games=n_games, key_teammate_out=False,
                                           bankroll=bankroll, frac_kelly=frac_kelly,
@@ -1658,7 +2230,11 @@ with tabs[2]:
                                           game_date=scan_start)
                                 for pname, mkt, line, meta in candidates]
                         for (pname, mkt, line, meta), fut in zip(candidates, futs):
-                            leg = fut.result()
+                            try:
+                                leg = fut.result()
+                            except Exception as _te:
+                                dropped.append({"player": pname, "market": mkt, "reason": f"thread error: {type(_te).__name__}: {_te}"})
+                                continue
                             leg = recompute_pricing_fields(leg, st.session_state.get("calibrator_map"))
                             if not leg.get("gate_ok"):
                                 dropped.append({"player":pname,"market":mkt,"reason":leg.get("gate_reason","gated")}); continue
@@ -1693,6 +2269,19 @@ with tabs[2]:
                 # [FIX 13] Persist scanner results in session state
                 st.session_state["scanner_results"] = out_df
                 st.session_state["scanner_dropped"] = dropped
+                # Auto-send Discord/Telegram alerts for strong edges
+                _dw = st.session_state.get("discord_webhook","")
+                _tt = st.session_state.get("tg_token","")
+                _tc = st.session_state.get("tg_chat","")
+                _et = float(st.session_state.get("discord_ev_thresh", 5.0))
+                if (_dw or (_tt and _tc)):
+                    strong = [r for _, r in out_df.iterrows() if float(r.get("ev_adj_pct") or 0) >= _et]
+                    for r in strong:
+                        _msg = format_edge_alert(dict(r))
+                        if _dw: send_discord_alert(_dw, _msg)
+                        if _tt and _tc: send_telegram_alert(_tt, _tc, _msg)
+                    if strong:
+                        st.success(f"Auto-sent {len(strong)} alerts.")
             else:
                 st.session_state["scanner_results"] = pd.DataFrame()
                 st.session_state["scanner_dropped"] = dropped
@@ -1708,8 +2297,172 @@ with tabs[2]:
         with st.expander(f"Excluded ({len(scanner_dropped)})", expanded=False):
             st.dataframe(pd.DataFrame(scanner_dropped).head(200), use_container_width=True)
 
-# ─── HISTORY TAB [FIX 12: export button] ──────────────────────
+# ─── PLATFORMS TAB ─────────────────────────────────────────────
 with tabs[3]:
+    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>PLATFORMS — PRIZEPICKS / UNDERDOG / LINE SHOPPING</div>""", unsafe_allow_html=True)
+    plat_tabs = st.tabs(["PrizePicks", "Underdog", "Line History", "Best Available"])
+
+    with plat_tabs[0]:
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>PRIZEPICKS NBA LINES</div>", unsafe_allow_html=True)
+        if st.button("Fetch PrizePicks Lines", use_container_width=True):
+            with st.spinner("Fetching PrizePicks..."):
+                pp_lines, pp_err = fetch_prizepicks_lines()
+            if pp_err:
+                st.error(f"PrizePicks: {pp_err}")
+            elif not pp_lines:
+                st.warning("No lines returned.")
+            else:
+                pp_df = pd.DataFrame(pp_lines)
+                st.session_state["pp_lines"] = pp_df
+                st.success(f"Fetched {len(pp_df)} PrizePicks props.")
+        pp_df = st.session_state.get("pp_lines")
+        if pp_df is not None and not pp_df.empty:
+            # Run model on PrizePicks lines
+            pp_col1, pp_col2 = st.columns([3,1])
+            with pp_col1:
+                pp_filter = st.text_input("Filter player", key="pp_filter")
+            with pp_col2:
+                pp_min_ev = st.number_input("Min EV%", -5.0, 30.0, 2.0, 0.5, key="pp_min_ev")
+            display_df = pp_df
+            if pp_filter:
+                display_df = pp_df[pp_df["player"].str.contains(pp_filter, case=False, na=False)]
+            st.dataframe(display_df, use_container_width=True)
+            if st.button("Scan PrizePicks vs Model", use_container_width=True):
+                pp_candidates = []
+                for _, r in display_df.iterrows():
+                    mkt = map_platform_stat_to_market(r.get("stat_type",""))
+                    if mkt and r.get("line"):
+                        pp_candidates.append((r["player"], mkt, float(r["line"]), None))
+                if pp_candidates:
+                    with st.spinner(f"Scanning {len(pp_candidates)} PrizePicks props..."):
+                        with ThreadPoolExecutor(max_workers=4) as ex:
+                            futs_pp = [ex.submit(compute_leg_projection, pn, mk, ln, mt,
+                                                 n_games=n_games, key_teammate_out=False,
+                                                 bankroll=bankroll, frac_kelly=frac_kelly,
+                                                 market_prior_weight=market_prior_weight,
+                                                 exclude_chaotic=bool(exclude_chaotic),
+                                                 game_date=date.today())
+                                       for pn, mk, ln, mt in pp_candidates]
+                            pp_results = []
+                            for fut in futs_pp:
+                                try:
+                                    pp_results.append(fut.result())
+                                except Exception as _e:
+                                    pass
+                    calib = st.session_state.get("calibrator_map")
+                    pp_results = [recompute_pricing_fields(dict(l), calib) for l in pp_results]
+                    pp_edges = [l for l in pp_results if l.get("gate_ok") and float(l.get("ev_adj",0) or 0)*100 >= pp_min_ev]
+                    if pp_edges:
+                        st.success(f"{len(pp_edges)} edges vs PrizePicks lines")
+                        pp_out = pd.DataFrame([{
+                            "player": l["player"], "market": l["market"], "line": l["line"],
+                            "proj": safe_round(l.get("proj")), "p_cal": safe_round(l.get("p_cal"),3),
+                            "ev_%": safe_round(l.get("ev_adj",0)*100,1), "edge_cat": l.get("edge_cat",""),
+                        } for l in pp_edges])
+                        st.dataframe(pp_out.sort_values("ev_%", ascending=False), use_container_width=True)
+                    else:
+                        st.warning("No edges found vs PrizePicks lines.")
+
+    with plat_tabs[1]:
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>UNDERDOG FANTASY NBA LINES</div>", unsafe_allow_html=True)
+        if st.button("Fetch Underdog Lines", use_container_width=True):
+            with st.spinner("Fetching Underdog..."):
+                ud_lines, ud_err = fetch_underdog_lines()
+            if ud_err:
+                st.error(f"Underdog: {ud_err}")
+            elif not ud_lines:
+                st.warning("No lines returned.")
+            else:
+                ud_df = pd.DataFrame(ud_lines)
+                st.session_state["ud_lines"] = ud_df
+                st.success(f"Fetched {len(ud_df)} Underdog props.")
+        ud_df = st.session_state.get("ud_lines")
+        if ud_df is not None and not ud_df.empty:
+            ud_filter = st.text_input("Filter player", key="ud_filter")
+            display_ud = ud_df
+            if ud_filter:
+                display_ud = ud_df[ud_df["player"].str.contains(ud_filter, case=False, na=False)]
+            st.dataframe(display_ud, use_container_width=True)
+            if st.button("Scan Underdog vs Model", use_container_width=True):
+                ud_candidates = []
+                for _, r in display_ud.iterrows():
+                    mkt = map_platform_stat_to_market(r.get("stat_type",""))
+                    if mkt and r.get("line"):
+                        ud_candidates.append((r["player"], mkt, float(r["line"]), None))
+                if ud_candidates:
+                    with st.spinner(f"Scanning {len(ud_candidates)} Underdog props..."):
+                        with ThreadPoolExecutor(max_workers=4) as ex:
+                            futs_ud = [ex.submit(compute_leg_projection, pn, mk, ln, mt,
+                                                 n_games=n_games, key_teammate_out=False,
+                                                 bankroll=bankroll, frac_kelly=frac_kelly,
+                                                 market_prior_weight=market_prior_weight,
+                                                 exclude_chaotic=bool(exclude_chaotic),
+                                                 game_date=date.today())
+                                       for pn, mk, ln, mt in ud_candidates]
+                            ud_results = []
+                            for fut in futs_ud:
+                                try:
+                                    ud_results.append(fut.result())
+                                except Exception:
+                                    pass
+                    calib = st.session_state.get("calibrator_map")
+                    ud_results = [recompute_pricing_fields(dict(l), calib) for l in ud_results]
+                    ud_edges = [l for l in ud_results if l.get("gate_ok") and float(l.get("ev_adj",0) or 0) > 0]
+                    if ud_edges:
+                        st.success(f"{len(ud_edges)} edges vs Underdog lines")
+                        ud_out = pd.DataFrame([{
+                            "player": l["player"], "market": l["market"], "line": l["line"],
+                            "proj": safe_round(l.get("proj")), "p_cal": safe_round(l.get("p_cal"),3),
+                            "ev_%": safe_round(l.get("ev_adj",0)*100,1),
+                        } for l in ud_edges])
+                        st.dataframe(ud_out.sort_values("ev_%", ascending=False), use_container_width=True)
+                    else:
+                        st.warning("No edges found vs Underdog lines.")
+
+    with plat_tabs[2]:
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>PROP LINE HISTORY</div>", unsafe_allow_html=True)
+        ph_col1, ph_col2 = st.columns(2)
+        with ph_col1:
+            ph_player = st.text_input("Player name", key="ph_player")
+        with ph_col2:
+            ph_market = st.selectbox("Market", [""] + list(ODDS_MARKETS.keys()), key="ph_market")
+        ph_df = load_prop_line_history(
+            player=ph_player if ph_player else None,
+            market=ph_market if ph_market else None,
+        )
+        if ph_df.empty:
+            st.info("No prop line history yet. Lines are auto-saved when you run the Live Scanner.")
+        else:
+            st.dataframe(ph_df, use_container_width=True)
+            ph_csv = ph_df.to_csv(index=False)
+            st.download_button("Export Line History CSV", ph_csv, "prop_line_history.csv", "text/csv")
+
+    with plat_tabs[3]:
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>BEST AVAILABLE LINE SHOPPING</div>", unsafe_allow_html=True)
+        st.caption("Checks all available books for the highest price on any scanner result.")
+        scanner_out_shop = st.session_state.get("scanner_results")
+        if scanner_out_shop is None or scanner_out_shop.empty:
+            st.info("Run the Live Scanner first to populate results.")
+        else:
+            if st.button("Find Best Lines for Scanner Results", use_container_width=True):
+                shop_rows = []
+                for _, r in scanner_out_shop.iterrows():
+                    eid = r.get("event_id") if hasattr(r,"get") else None
+                    mk = ODDS_MARKETS.get(r.get("market","") if hasattr(r,"get") else "")
+                    pn = normalize_name(str(r.get("player","") if hasattr(r,"get") else ""))
+                    if eid and mk and pn:
+                        best_p, best_b = get_best_available_price(eid, mk, pn, "Over")
+                        shop_rows.append({
+                            "player": r.get("player",""), "market": r.get("market",""),
+                            "line": r.get("line"), "current_book": r.get("book",""),
+                            "current_ev_%": r.get("ev_adj_pct"),
+                            "best_price": safe_round(best_p), "best_book": best_b,
+                        })
+                if shop_rows:
+                    st.dataframe(pd.DataFrame(shop_rows), use_container_width=True)
+
+# ─── HISTORY TAB [FIX 12: export button] ──────────────────────
+with tabs[4]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>BET HISTORY & CLV TRACKER</div>""", unsafe_allow_html=True)
     h = load_history(user_id)
     if h.empty:
@@ -1763,7 +2516,7 @@ with tabs[3]:
                     st.error(f"CLV update failed: {e}")
 
 # ─── CALIBRATION TAB ─────────────────────────────────────────
-with tabs[4]:
+with tabs[5]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>CALIBRATION ENGINE</div>""", unsafe_allow_html=True)
     h = load_history(user_id)
     legs_df = _expand_history_legs(h)
@@ -1850,13 +2603,93 @@ with tabs[4]:
             if brier_cal > brier:
                 st.warning("Calibrator is WORSENING Brier score - needs more data. Reset to identity.")
 
+    # ── Rolling Brier Score ────────────────────────────────────
+    st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+    st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>ROLLING BRIER SCORE (TRAILING WINDOWS)</div>", unsafe_allow_html=True)
+    rb = compute_rolling_brier(settled_df if not settled_df.empty else pd.DataFrame())
+    if rb:
+        rb_cols = st.columns(3)
+        for i, w in enumerate([25, 50, 100]):
+            key = f"last_{w}"
+            if key in rb:
+                rb_cols[i].metric(f"Last {w} Legs", f"{rb[key]:.4f}", help="Brier score: lower = better calibrated")
+        if "rolling_series" in rb and len(rb["rolling_series"]) > 5:
+            st.caption("Trailing 25-leg rolling Brier (lower = better):")
+            import pandas as _pd_rb
+            series_df = _pd_rb.DataFrame({"Brier": rb["rolling_series"]})
+            st.line_chart(series_df, use_container_width=True, height=150)
+    else:
+        st.caption("Need 10+ settled legs for rolling Brier.")
+
+# ─── ALERTS TAB ───────────────────────────────────────────────
+with tabs[6]:
+    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>ALERTS — DISCORD / TELEGRAM</div>""", unsafe_allow_html=True)
+    al_col1, al_col2 = st.columns(2)
+    with al_col1:
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>DISCORD WEBHOOK</div>", unsafe_allow_html=True)
+        discord_webhook = st.text_input("Webhook URL", value=st.session_state.get("discord_webhook",""), type="password", key="discord_wh_input")
+        st.session_state["discord_webhook"] = discord_webhook
+        if st.button("Test Discord", use_container_width=True):
+            ok, err = send_discord_alert(discord_webhook, "NBA Quant Engine — Discord alert test ✅")
+            st.success("Discord OK") if ok else st.error(f"Discord failed: {err}")
+        st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
+        st.caption("Auto-alert on strong edges (EV > threshold):")
+        discord_ev_thresh = st.slider("Min EV% for auto-alert", 0.0, 25.0, float(st.session_state.get("discord_ev_thresh",5.0)), 0.5, key="d_ev_thresh")
+        st.session_state["discord_ev_thresh"] = float(discord_ev_thresh)
+    with al_col2:
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>TELEGRAM BOT</div>", unsafe_allow_html=True)
+        tg_token = st.text_input("Bot Token", value=st.session_state.get("tg_token",""), type="password", key="tg_token_input")
+        st.session_state["tg_token"] = tg_token
+        tg_chat = st.text_input("Chat ID", value=st.session_state.get("tg_chat",""), key="tg_chat_input")
+        st.session_state["tg_chat"] = tg_chat
+        if st.button("Test Telegram", use_container_width=True):
+            ok, err = send_telegram_alert(tg_token, tg_chat, "NBA Quant Engine — Telegram alert test ✅")
+            st.success("Telegram OK") if ok else st.error(f"Telegram failed: {err}")
+    st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+    st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>SEND SCANNER EDGES AS ALERTS</div>", unsafe_allow_html=True)
+    scanner_for_alerts = st.session_state.get("scanner_results")
+    if scanner_for_alerts is None or scanner_for_alerts.empty:
+        st.info("Run Live Scanner first.")
+    else:
+        alert_thresh = st.slider("Min EV% to include", 0.0, 20.0, 3.0, 0.5, key="alert_thresh_send")
+        alerted = [r for _, r in scanner_for_alerts.iterrows() if float(r.get("ev_adj_pct") or 0) >= alert_thresh]
+        st.write(f"{len(alerted)} edges above {alert_thresh:.1f}% EV threshold")
+        if st.button(f"Send {len(alerted)} alerts to Discord + Telegram", use_container_width=True):
+            sent_d, sent_t, errs_d, errs_t = 0, 0, [], []
+            for r in alerted:
+                msg = format_edge_alert(dict(r))
+                if discord_webhook:
+                    ok, e = send_discord_alert(discord_webhook, msg)
+                    if ok: sent_d += 1
+                    elif e: errs_d.append(e)
+                if tg_token and tg_chat:
+                    ok, e = send_telegram_alert(tg_token, tg_chat, msg)
+                    if ok: sent_t += 1
+                    elif e: errs_t.append(e)
+            st.success(f"Sent — Discord: {sent_d} | Telegram: {sent_t}")
+            for e in (errs_d + errs_t)[:5]:
+                st.warning(e)
+    st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+    st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#4A607A;letter-spacing:0.10em;'>INJURY REPORT</div>", unsafe_allow_html=True)
+    if st.button("Fetch Today's Injury Report", use_container_width=True):
+        with st.spinner("Fetching..."):
+            injuries = fetch_injury_report()
+        if not injuries:
+            st.info("No injury data available (may require active game day).")
+        else:
+            inj_rows = []
+            for team, players in injuries.items():
+                for p in players:
+                    inj_rows.append({"team": team, **p})
+            st.dataframe(pd.DataFrame(inj_rows), use_container_width=True)
+
 # ── FOOTER ──────────────────────────────────────────────────
 st.markdown("""
 <div style='margin-top:2rem;padding-top:0.8rem;border-top:1px solid #1E2D3D;
 font-family:Fira Code,monospace;font-size:0.60rem;color:#2A3A4A;
 display:flex;justify-content:space-between;'>
-  <span>NBA QUANT ENGINE v2.1</span>
-  <span>BOOTSTRAP | BAYESIAN SHRINKAGE | ISOTONIC CALIBRATION | SPEARMAN CORRELATION | LINE MOVEMENT | REGIME FILTER</span>
+  <span>NBA QUANT ENGINE v3.0</span>
+  <span>BOOTSTRAP | BAYESIAN | KELLY PARLAY | PACE-ADJ | POSITIONAL D | MC SIM | PRIZEPICKS | UNDERDOG | DISCORD/TG | ROLLING BRIER</span>
   <span>Powered by Kamal</span>
 </div>
 """, unsafe_allow_html=True)
