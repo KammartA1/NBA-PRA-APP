@@ -1334,11 +1334,16 @@ def fetch_prizepicks_lines():
 _UNDERDOG_ENDPOINTS = [
     "https://api.underdogfantasy.com/v3/over_under_lines",
     "https://api.underdogfantasy.com/v4/over_under_lines",
+    "https://api.underdogfantasy.com/v2/over_under_lines",
 ]
 _UD_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json",
+    "Referer": "https://underdogfantasy.com/",
+    "Origin": "https://underdogfantasy.com",
 }
+# Basketball sport IDs that Underdog may use (numeric or string)
+_UD_BASKETBALL_SPORT_IDS = {"nba", "basketball", "5", "4", "nba_basketball", "basketball_nba", ""}
 
 @st.cache_data(ttl=60*10, show_spinner=False)
 def _fetch_underdog_lines_cached():
@@ -1359,7 +1364,7 @@ def _fetch_underdog_lines_cached():
                 app_id = str(app_stat.get("appearance_id", ""))
                 app = appearances.get(app_id, {})
                 sport = str(app.get("sport_id", "")).lower()
-                if sport not in ("nba", "basketball", ""):
+                if sport and sport not in _UD_BASKETBALL_SPORT_IDS:
                     continue
                 player_id = str(app.get("player_id", ""))
                 player = players_map.get(player_id, {})
@@ -2641,9 +2646,15 @@ with tabs[3]:
                     st.success(f"Fetched {len(pp_df)} PrizePicks props.")
 
         with pp_manual_tab:
-            st.markdown("<div style='font-size:0.68rem;color:#4A607A;margin-bottom:0.5rem;'>Paste JSON from browser DevTools OR upload a CSV with columns: player, stat_type, line</div>", unsafe_allow_html=True)
+            st.markdown("""<div style='font-size:0.68rem;color:#4A607A;margin-bottom:0.5rem;'>
+            <b>How to get the JSON:</b> Open prizepicks.com → DevTools (F12) → Network tab → filter
+            <code>projections</code> → click the largest request (~200-300 kB) →
+            <b>Response</b> tab → right-click body → Copy &rarr; Copy response. Paste below.<br>
+            The JSON starts with <code>{"data":[</code>
+            </div>""", unsafe_allow_html=True)
             pp_upload = st.file_uploader("Upload CSV", type=["csv"], key="pp_csv_upload")
-            pp_paste = st.text_area("Or paste PrizePicks API JSON response", height=120, key="pp_json_paste")
+            pp_paste = st.text_area("Or paste PrizePicks API JSON response", height=120, key="pp_json_paste",
+                                    placeholder='{"data":[{"id":"...","type":"Projection",...}],"included":[...]}')
             if st.button("Load Data", use_container_width=True, key="pp_manual_load"):
                 rows = []
                 err_msg = None
@@ -2670,12 +2681,18 @@ with tabs[3]:
                         err_msg = f"CSV parse error: {e}"
                 elif pp_paste.strip():
                     try:
-                        data = json.loads(pp_paste.strip())
-                        included = {item["id"]: item for item in data.get("included", [])}
+                        raw = pp_paste.strip()
+                        data = json.loads(raw)
+                        if not isinstance(data, dict):
+                            raise ValueError("Expected a JSON object starting with {. Make sure you copied the full Response body, not just part of it.")
+                        if "data" not in data:
+                            raise ValueError('JSON is missing a "data" key. Copy the Response tab (not Preview or Headers).')
+                        included = {item["id"]: item for item in data.get("included", []) if isinstance(item, dict) and "id" in item}
                         for proj in data.get("data", []):
+                            if not isinstance(proj, dict): continue
                             if proj.get("type") != "Projection": continue
-                            attrs = proj.get("attributes", {})
-                            rels = proj.get("relationships", {})
+                            attrs = proj.get("attributes", {}) or {}
+                            rels = proj.get("relationships", {}) or {}
                             pid = (rels.get("new_player",{}).get("data",{}) or {}).get("id")
                             if not pid:
                                 pid = (rels.get("player",{}).get("data",{}) or {}).get("id")
@@ -2684,12 +2701,19 @@ with tabs[3]:
                             stat_type = attrs.get("stat_type","")
                             line_score = attrs.get("line_score")
                             if pname and stat_type and line_score is not None:
-                                rows.append({"player": pname, "stat_type": stat_type,
-                                             "line": float(line_score), "source": "prizepicks"})
+                                try:
+                                    rows.append({"player": pname, "stat_type": stat_type,
+                                                 "line": float(line_score), "source": "prizepicks"})
+                                except (TypeError, ValueError):
+                                    pass
                         if not rows:
-                            err_msg = "No projections found in pasted JSON."
+                            err_msg = "No NBA projections found. The JSON parsed OK but contained no NBA props — check you selected the NBA board before copying."
+                    except json.JSONDecodeError as e:
+                        err_msg = f'Invalid JSON: {e}. Make sure you copied the entire response (it should start with {{"data":[).'
+                    except ValueError as e:
+                        err_msg = str(e)
                     except Exception as e:
-                        err_msg = f"JSON parse error: {e}"
+                        err_msg = f"Parse error: {type(e).__name__}: {e}"
                 else:
                     err_msg = "Upload a CSV or paste JSON."
                 if err_msg:
@@ -2827,27 +2851,34 @@ with tabs[3]:
 
     with plat_tabs[3]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>BEST AVAILABLE LINE SHOPPING</div>", unsafe_allow_html=True)
-        st.caption("Checks all available books for the highest price on any scanner result.")
+        st.caption("Checks all available books for the highest price on any scanner result. Requires a valid Odds API key.")
         scanner_out_shop = st.session_state.get("scanner_results")
         if scanner_out_shop is None or scanner_out_shop.empty:
             st.info("Run the Live Scanner first to populate results.")
         else:
+            has_odds_key = bool(odds_api_key())
+            if not has_odds_key:
+                st.warning("No Odds API key configured — best_price column will be empty. Add ODDS_API_KEY in Settings to enable price lookups.")
             if st.button("Find Best Lines for Scanner Results", use_container_width=True):
                 shop_rows = []
                 for _, r in scanner_out_shop.iterrows():
                     eid = r.get("event_id") if hasattr(r,"get") else None
                     mk = ODDS_MARKETS.get(r.get("market","") if hasattr(r,"get") else "")
                     pn = normalize_name(str(r.get("player","") if hasattr(r,"get") else ""))
-                    if eid and mk and pn:
+                    best_p, best_b = None, None
+                    if eid and mk and pn and has_odds_key:
                         best_p, best_b = get_best_available_price(eid, mk, pn, "Over")
-                        shop_rows.append({
-                            "player": r.get("player",""), "market": r.get("market",""),
-                            "line": r.get("line"), "current_book": r.get("book",""),
-                            "current_ev_%": r.get("ev_adj_pct"),
-                            "best_price": safe_round(best_p), "best_book": best_b,
-                        })
+                    shop_rows.append({
+                        "player": r.get("player",""), "market": r.get("market",""),
+                        "line": r.get("line"), "book": r.get("book",""),
+                        "ev_%": r.get("ev_adj_pct"),
+                        "best_price": safe_round(best_p) if best_p else "—",
+                        "best_book": best_b or ("no key" if not has_odds_key else "not found"),
+                    })
                 if shop_rows:
                     st.dataframe(pd.DataFrame(shop_rows), use_container_width=True)
+                else:
+                    st.info("No scanner results to display.")
 
 # ─── HISTORY TAB [FIX 12: export button] ──────────────────────
 with tabs[4]:
