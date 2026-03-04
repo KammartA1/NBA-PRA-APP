@@ -170,7 +170,35 @@ REST_MULTIPLIERS = {0: 0.93, 1: 0.97, 2: 1.00, 3: 1.01, 4: 1.02}
 # ──────────────────────────────────────────────
 # PLAYER POSITION CACHE
 # ──────────────────────────────────────────────
-_POSITION_CACHE = {}
+_POSITION_CACHE = {}  # {name_lower: pos_str}
+_PID_POSITION_MAP = {}  # {player_id: pos_str} — populated by bulk fetch
+
+@st.cache_data(ttl=60*60*6, show_spinner=False)
+def _bulk_player_position_map():
+    """Fetch ALL active player positions in one LeagueDashPlayerStats call.
+    Returns {player_id: position_string}.  Falls back to {} on error.
+    """
+    try:
+        from nba_api.stats.endpoints import LeagueDashPlayerStats
+        df = LeagueDashPlayerStats(
+            season=get_season_string(),
+            per_mode_simple="PerGame",
+            measure_type_detailed_defense="Base",
+        ).get_data_frames()[0]
+        if df.empty or "PLAYER_ID" not in df.columns:
+            return {}
+        # PLAYER_POSITION column if present
+        pos_col = next((c for c in df.columns if "POSITION" in c.upper()), None)
+        if pos_col:
+            return {int(r["PLAYER_ID"]): str(r[pos_col]) for _, r in df.iterrows()}
+        return {}
+    except Exception:
+        return {}
+
+def _ensure_pid_position_map():
+    global _PID_POSITION_MAP
+    if not _PID_POSITION_MAP:
+        _PID_POSITION_MAP = _bulk_player_position_map()
 
 def get_player_position(name):
     key = (name or "").strip().lower()
@@ -178,6 +206,7 @@ def get_player_position(name):
         return ""
     if key in _POSITION_CACHE:
         return _POSITION_CACHE[key]
+    # Try bulk map first (fast — no extra API call)
     try:
         matches = nba_players.find_players_by_full_name(name)
     except Exception:
@@ -186,12 +215,17 @@ def get_player_position(name):
     if matches:
         pid = matches[0].get("id")
         if pid:
-            try:
-                info = CommonPlayerInfo(player_id=pid).get_data_frames()[0]
-                raw = str(info.get("POSITION", "") or info.get("POSITION_SHORT","") or "")
-                pos = raw or ""
-            except Exception:
-                pos = ""
+            _ensure_pid_position_map()
+            if int(pid) in _PID_POSITION_MAP:
+                pos = _PID_POSITION_MAP[int(pid)]
+            else:
+                # Fallback: single CommonPlayerInfo call (slow, only if not in bulk map)
+                try:
+                    info = CommonPlayerInfo(player_id=pid).get_data_frames()[0]
+                    raw = str(info.get("POSITION", "") or info.get("POSITION_SHORT","") or "")
+                    pos = raw or ""
+                except Exception:
+                    pos = ""
     _POSITION_CACHE[key] = pos
     return pos
 
@@ -985,11 +1019,11 @@ def compute_pace_adjusted_series(stat_series, opp_team):
         return stat_series
 
 # ──────────────────────────────────────────────
-# PER-POSITION DEFENSIVE GRADES
+# PER-POSITION DEFENSIVE GRADES  (one call, all teams)
 # ──────────────────────────────────────────────
 @st.cache_data(ttl=60*60*6, show_spinner=False)
-def get_opp_positional_pts_allowed(opp_abbr, position_bucket):
-    """Pts allowed per game vs position bucket; returns (opp_val, league_avg)."""
+def _fetch_positional_def_full(position_bucket):
+    """One LeagueDashPtDefend call → {TEAM_ABBR: pts_allowed} + league_avg."""
     try:
         from nba_api.stats.endpoints import LeagueDashPtDefend
         cat_map = {"Guard": "Guards", "Wing": "Forwards", "Big": "Centers", "Unknown": "Overall"}
@@ -999,15 +1033,19 @@ def get_opp_positional_pts_allowed(opp_abbr, position_bucket):
             defense_category=category, season=get_season_string(),
         ).get_data_frames()[0]
         if df.empty:
-            return None, None
+            return {}, None
         league_avg = float(df["PTS_ALLOWED"].mean())
-        opp = str(opp_abbr or "").upper()
-        row = df[df["TEAM_ABBREVIATION"].str.upper() == opp]
-        if row.empty:
-            return None, league_avg
-        return float(row.iloc[0]["PTS_ALLOWED"]), league_avg
+        team_map = {str(r["TEAM_ABBREVIATION"]).upper(): float(r["PTS_ALLOWED"])
+                    for _, r in df.iterrows()}
+        return team_map, league_avg
     except Exception:
-        return None, None
+        return {}, None
+
+def get_opp_positional_pts_allowed(opp_abbr, position_bucket):
+    """Returns (opp_pts_allowed, league_avg) using cached bulk table."""
+    team_map, league_avg = _fetch_positional_def_full(position_bucket)
+    opp = str(opp_abbr or "").upper()
+    return team_map.get(opp), league_avg
 
 def positional_def_multiplier(opp_abbr, position_bucket, market):
     """Return a multiplier based on opponent's positional defensive strength."""
@@ -1383,6 +1421,31 @@ def compute_rolling_brier(legs_df, windows=(25, 50, 100)):
     return result
 
 # ──────────────────────────────────────────────
+# ──────────────────────────────────────────────
+# CACHE PRE-WARMER  (eliminates NBA API I/O from threads)
+# ──────────────────────────────────────────────
+def pre_warm_scanner_caches(candidates, n_games):
+    """
+    Sequentially pre-fetch player IDs, game logs, and positions for all
+    unique players before threading. After this, every st.cache_data call
+    inside compute_leg_projection returns instantly from cache.
+    Returns the set of successfully resolved player names.
+    """
+    unique_names = list(dict.fromkeys(pname for pname, *_ in candidates))
+    # 1. Bulk position map (one API call for all players)
+    _ensure_pid_position_map()
+    resolved = set()
+    for name in unique_names:
+        try:
+            pid = lookup_player_id(name)
+            if pid:
+                fetch_player_gamelog(player_id=pid, max_games=max(6, n_games + 5))
+                get_player_position(name)
+                resolved.add(name)
+        except Exception:
+            pass
+    return resolved
+
 # MAIN PROJECTION ENGINE  [FIX 3: minutes filter]
 # ──────────────────────────────────────────────
 def compute_leg_projection(
@@ -1950,8 +2013,10 @@ with tabs[0]:
                 warnings.append(f"{tag}: invalid line"); continue
             tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out)))
         if tasks:
+            model_candidates = [(pname, mkt, line, meta) for (_, pname, mkt, line, meta, _to) in tasks]
+            pre_warm_scanner_caches(model_candidates, n_games)
             with st.spinner("Computing projections..."):
-                with ThreadPoolExecutor(max_workers=min(8,len(tasks))) as ex:
+                with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as ex:
                     futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
                                       n_games=n_games, key_teammate_out=to,
                                       bankroll=bankroll, frac_kelly=frac_kelly,
@@ -2219,8 +2284,10 @@ with tabs[2]:
                 candidates.append((pname, mkt, float(line), meta))
             out_rows, dropped = [], []
             if candidates:
+                with st.spinner(f"Pre-warming caches for {len(candidates)} candidates..."):
+                    pre_warm_scanner_caches(candidates, n_games)
                 with st.spinner(f"Scanning {len(candidates)} candidates..."):
-                    with ThreadPoolExecutor(max_workers=4) as ex:
+                    with ThreadPoolExecutor(max_workers=8) as ex:
                         futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
                                           n_games=n_games, key_teammate_out=False,
                                           bankroll=bankroll, frac_kelly=frac_kelly,
@@ -2334,8 +2401,10 @@ with tabs[3]:
                     if mkt and r.get("line"):
                         pp_candidates.append((r["player"], mkt, float(r["line"]), None))
                 if pp_candidates:
+                    with st.spinner("Pre-warming caches..."):
+                        pre_warm_scanner_caches(pp_candidates, n_games)
                     with st.spinner(f"Scanning {len(pp_candidates)} PrizePicks props..."):
-                        with ThreadPoolExecutor(max_workers=4) as ex:
+                        with ThreadPoolExecutor(max_workers=8) as ex:
                             futs_pp = [ex.submit(compute_leg_projection, pn, mk, ln, mt,
                                                  n_games=n_games, key_teammate_out=False,
                                                  bankroll=bankroll, frac_kelly=frac_kelly,
@@ -2390,8 +2459,10 @@ with tabs[3]:
                     if mkt and r.get("line"):
                         ud_candidates.append((r["player"], mkt, float(r["line"]), None))
                 if ud_candidates:
+                    with st.spinner("Pre-warming caches..."):
+                        pre_warm_scanner_caches(ud_candidates, n_games)
                     with st.spinner(f"Scanning {len(ud_candidates)} Underdog props..."):
-                        with ThreadPoolExecutor(max_workers=4) as ex:
+                        with ThreadPoolExecutor(max_workers=8) as ex:
                             futs_ud = [ex.submit(compute_leg_projection, pn, mk, ln, mt,
                                                  n_games=n_games, key_teammate_out=False,
                                                  bankroll=bankroll, frac_kelly=frac_kelly,
