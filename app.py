@@ -250,10 +250,54 @@ def get_season_string(today=None):
     return f"{start}-{(start+1)%100:02d}"
 
 # ──────────────────────────────────────────────
+# BULK GAME LOG — one API call for ALL players
+# ──────────────────────────────────────────────
+@st.cache_data(ttl=60*60*6, show_spinner=False)
+def _fetch_bulk_gamelogs():
+    """LeagueGameLog: ONE call returns every player's game log for the season.
+    Replaces ~200 individual PlayerGameLog calls for a full-slate scan.
+    Returns a DataFrame sorted newest-first per player, or None on failure.
+    """
+    try:
+        from nba_api.stats.endpoints import LeagueGameLog
+        df = LeagueGameLog(
+            player_or_team_abbreviation="P",
+            season=get_season_string(),
+            season_type_all_star="Regular Season",
+        ).get_data_frames()[0]
+        if df.empty:
+            return None
+        # Normalize player ID column (LeagueGameLog uses PLAYER_ID)
+        if "PLAYER_ID" not in df.columns and "Player_ID" in df.columns:
+            df = df.rename(columns={"Player_ID": "PLAYER_ID"})
+        df["PLAYER_ID"] = pd.to_numeric(df["PLAYER_ID"], errors="coerce")
+        df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], errors="coerce")
+        # Sort newest → oldest within each player
+        df = df.sort_values(["PLAYER_ID", "GAME_DATE"], ascending=[True, False])
+        # LeagueGameLog returns MIN as float; convert to match PlayerGameLog "MM:SS" format
+        if "MIN" in df.columns:
+            df["MIN"] = pd.to_numeric(df["MIN"], errors="coerce")
+        return df
+    except Exception:
+        return None
+
+# ──────────────────────────────────────────────
 # GAME LOG FETCHER
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*60*6, show_spinner=False)  # 6h — game logs are historical, safe to cache long
+@st.cache_data(ttl=60*60*6, show_spinner=False)
 def fetch_player_gamelog(player_id, max_games=15):
+    """Per-player game log. Tries the bulk cache first (instant), falls back to individual API call."""
+    # ── Fast path: bulk dataframe already in cache ──────────────
+    bulk = _fetch_bulk_gamelogs()
+    if bulk is not None:
+        pid = int(player_id)
+        player_df = bulk[bulk["PLAYER_ID"] == pid].head(int(max_games)).copy()
+        if not player_df.empty:
+            # Convert GAME_DATE back to string so downstream code (pd.to_datetime) still works
+            player_df["GAME_DATE"] = player_df["GAME_DATE"].dt.strftime("%b %d, %Y")
+            return player_df, []
+
+    # ── Slow path: individual PlayerGameLog call ────────────────
     errs = []
     season_str = get_season_string()
     for params in [{"season_nullable": season_str}, {"season": season_str}, {}]:
@@ -1518,7 +1562,8 @@ def pre_warm_scanner_caches(candidates, n_games):
     if not to_warm:
         return set(unique_names)   # everything already cached
 
-    # Bulk position map — one API call for all players (fast)
+    # Bulk game logs + bulk position map (each = ONE API call for all players)
+    _fetch_bulk_gamelogs()
     _ensure_pid_position_map()
 
     def _warm_one(name):
@@ -2383,6 +2428,18 @@ with tabs[2]:
                     st.success(f"Fetched {len(offers)} raw prop outcomes.")
                 else:
                     st.warning("No offers returned.")
+
+    # ── Bulk game log loader (recommended before large scans) ──────
+    bulk_loaded = _fetch_bulk_gamelogs() is not None
+    _bulk_label = "✓ All Game Logs Loaded" if bulk_loaded else "Load All Game Logs (Recommended)"
+    if scan_col.button(_bulk_label, use_container_width=True, disabled=bulk_loaded):
+        with st.spinner("Loading all NBA player game logs (one-time, cached 6h)..."):
+            _fetch_bulk_gamelogs.clear()
+            result = _fetch_bulk_gamelogs()
+        if result is not None:
+            st.success(f"Loaded {len(result):,} game log rows — scans are now near-instant.")
+        else:
+            st.warning("Bulk load failed — scanner will fall back to per-player fetches.")
 
     if scan_col.button("Run Scan", use_container_width=True):
         df = st.session_state.get("scanner_offers")
