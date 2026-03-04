@@ -1433,7 +1433,14 @@ with tabs[0]:
                                       exclude_chaotic=bool(exclude_chaotic),
                                       game_date=scan_date)
                             for (tag, pname, mkt, line, meta, to) in tasks]
-                    results = [f.result() for f in futs]
+                    results = []
+                    for f in futs:
+                        try:
+                            results.append(f.result())
+                        except Exception as _te:
+                            results.append({"player": "Error", "market": "?", "line": 0.0,
+                                            "errors": [f"thread error: {type(_te).__name__}: {_te}"],
+                                            "gate_ok": False, "gate_reason": "thread error"})
             calib = st.session_state.get("calibrator_map")
             results = [recompute_pricing_fields(dict(leg), calib) for leg in results]
             st.session_state["last_results"] = results
@@ -1648,7 +1655,7 @@ with tabs[2]:
             out_rows, dropped = [], []
             if candidates:
                 with st.spinner(f"Scanning {len(candidates)} candidates..."):
-                    with ThreadPoolExecutor(max_workers=8) as ex:
+                    with ThreadPoolExecutor(max_workers=4) as ex:
                         futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
                                           n_games=n_games, key_teammate_out=False,
                                           bankroll=bankroll, frac_kelly=frac_kelly,
@@ -1658,7 +1665,11 @@ with tabs[2]:
                                           game_date=scan_start)
                                 for pname, mkt, line, meta in candidates]
                         for (pname, mkt, line, meta), fut in zip(candidates, futs):
-                            leg = fut.result()
+                            try:
+                                leg = fut.result()
+                            except Exception as _te:
+                                dropped.append({"player": pname, "market": mkt, "reason": f"thread error: {type(_te).__name__}: {_te}"})
+                                continue
                             leg = recompute_pricing_fields(leg, st.session_state.get("calibrator_map"))
                             if not leg.get("gate_ok"):
                                 dropped.append({"player":pname,"market":mkt,"reason":leg.get("gate_reason","gated")}); continue
