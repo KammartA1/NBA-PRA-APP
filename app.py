@@ -2174,8 +2174,6 @@ with tabs[0]:
             tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out)))
         if tasks:
             _inj_map = st.session_state.get("injury_team_map", {})
-            model_candidates = [(pname, mkt, line, meta) for (_, pname, mkt, line, meta, _to) in tasks]
-            pre_warm_scanner_caches(model_candidates, n_games)
             with st.spinner("Computing projections..."):
                 with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as ex:
                     futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
@@ -2460,6 +2458,11 @@ with tabs[2]:
             out_rows, dropped = [], []
             if candidates:
                 _inj_map = st.session_state.get("injury_team_map", {})
+                # Auto-load bulk game logs if not already cached (one-time, ~15-30s)
+                if _fetch_bulk_gamelogs() is None:
+                    with st.spinner("Loading all NBA game logs (first scan of session)..."):
+                        _fetch_bulk_gamelogs.clear()
+                        _fetch_bulk_gamelogs()
                 with st.spinner(f"Scanning {len(candidates)} candidates..."):
                     with ThreadPoolExecutor(max_workers=16) as ex:
                         futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
