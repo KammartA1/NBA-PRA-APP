@@ -248,6 +248,7 @@ LAMBDA_DECAY_BY_STAT = {
 OPENING_LINES_PATH   = "opening_lines.json"
 WATCHLIST_PATH_TPL   = "watchlist_{uid}.json"
 SCANNER_CACHE_PATH   = "scanner_results_cache.pkl"
+ALERT_HASHES_PATH    = "alert_hashes_cache.json"
 
 
 def _save_scanner_cache():
@@ -273,6 +274,23 @@ def _load_scanner_cache() -> dict:
             return pickle.load(_f)
     except Exception:
         return {}
+
+
+def _save_alert_hashes(hashes: set):
+    """Persist sent-alert hashes to disk so dedup survives session resets."""
+    try:
+        with open(ALERT_HASHES_PATH, "w") as _f:
+            json.dump(list(hashes), _f)
+    except Exception:
+        pass
+
+
+def _load_alert_hashes() -> set:
+    try:
+        with open(ALERT_HASHES_PATH) as _f:
+            return set(json.load(_f))
+    except Exception:
+        return set()
 
 # ──────────────────────────────────────────────
 # PLAYER POSITION CACHE
@@ -359,7 +377,7 @@ def get_season_string(today=None):
 # ──────────────────────────────────────────────
 # BULK GAME LOG — one API call for ALL players
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*10, show_spinner=False)  # [AUDIT FIX] 10min (was 30min) — mid-season trades need freshness
+@st.cache_data(ttl=60*30, show_spinner=False)  # 30min — balances freshness vs API quota
 def _fetch_bulk_gamelogs():
     """LeagueGameLog: ONE call returns every player's game log for the season.
     Replaces ~200 individual PlayerGameLog calls for a full-slate scan.
@@ -433,7 +451,7 @@ def fetch_player_gamelog(player_id, max_games=15):
 # start_period/end_period parameters give cumulative splits
 # (H1=1-2, H2=3-4, Q1=1-1) without extra joins.
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*60*12, show_spinner=False)
+@st.cache_data(ttl=60*60*3, show_spinner=False)  # 3h — games finish in ~3h; 12h was serving stale period stats
 def _fetch_boxscore_halfgame(game_id, player_id_int, start_period, end_period):
     """Return {PTS, REB, AST, ...} for a player over a specific period range, or None."""
     try:
@@ -585,7 +603,8 @@ def bayesian_shrink(observed_mu, n_obs, market, position_bucket):
     k = max(2.0, 8.0 / (1.0 + math.log1p(max(n_obs, 1) / 5.0)))
     w_prior = k / (k + max(n_obs, 1))
     w_obs   = 1.0 - w_prior
-    return float(w_prior * prior + w_obs * observed_mu)
+    # Clip to >= 0: stat means can't be negative
+    return max(0.0, float(w_prior * prior + w_obs * observed_mu))
 
 # ──────────────────────────────────────────────
 # STAT SERIES COMPUTATION
@@ -2489,11 +2508,16 @@ def compute_leg_projection(
     if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj >= 0.02:
         stake_dollars, stake_frac, stake_reason = recommended_stake(
             bankroll, float(p_cal), float(price_decimal), frac_kelly, max_risk_frac)
-        # [AUDIT FIX] DNP risk halves stake — player may not dress, don't fully commit
+        # [AUDIT FIX] DNP risk: halve stake normally; zero out when avg minutes < 5 (extreme risk)
         if dnp_risk and stake_dollars > 0:
-            stake_dollars *= 0.50
-            stake_frac   *= 0.50
-            stake_reason  = "dnp_risk_half"
+            if proj_minutes is not None and float(proj_minutes) < 5.0:
+                stake_dollars = 0.0
+                stake_frac   = 0.0
+                stake_reason  = "dnp_risk_zero"
+            else:
+                stake_dollars *= 0.50
+                stake_frac   *= 0.50
+                stake_reason  = "dnp_risk_half"
 
     mk_key = meta.get("market_key") if meta else ODDS_MARKETS.get(market_name,"")
     player_norm = normalize_name(player_name)
@@ -2932,6 +2956,10 @@ if st.session_state.get("scanner_results") is None:
         for _ck, _cv in _disk_cache.items():
             st.session_state[_ck] = _cv
 
+# Restore alert dedup hashes from disk so re-alerts don't fire after session reset
+if "_scanner_alert_hashes" not in st.session_state:
+    st.session_state["_scanner_alert_hashes"] = _load_alert_hashes()
+
 MARKET_OPTIONS = list(ODDS_MARKETS.keys())
 
 def _daily_pnl(uid):
@@ -2976,6 +3004,8 @@ with tabs[0]:
                 pname = st.text_input(f"Player", key=f"pname_{leg_n}", placeholder="e.g. LeBron James")
                 mkt = st.selectbox(f"Market", options=MARKET_OPTIONS, key=f"mkt_{leg_n}")
                 manual = st.checkbox(f"Manual line", key=f"manual_{leg_n}")
+                if manual:
+                    st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#FFB800;letter-spacing:0.10em;margin:-4px 0 2px 0;'>⚠ MANUAL — not from Odds API</div>", unsafe_allow_html=True)
                 mline = st.number_input(f"Line", min_value=0.0, value=float(st.session_state.get(f"line_{leg_n}",22.5)), step=0.5, key=f"mline_{leg_n}")
                 out_cb = st.checkbox(f"Key teammate OUT?", key=f"out_{leg_n}")
                 leg_configs.append((tag, pname, mkt, manual, mline, out_cb))
@@ -3504,6 +3534,7 @@ with tabs[2]:
                                         _sent_hashes.add(_uhash)
                                         _sent_count += 1
                     st.session_state["_scanner_alert_hashes"] = _sent_hashes
+                    _save_alert_hashes(_sent_hashes)  # persist to disk — survives session resets
                     if _sent_count > 0:
                         st.success(f"Auto-sent {_sent_count} new alerts.")
             else:
@@ -3873,7 +3904,7 @@ with tabs[3]:
                 pp_min_ev = st.number_input("Min EV%", -5.0, 30.0, 2.0, 0.5, key="pp_min_ev")
             display_df = pp_df
             if pp_filter:
-                display_df = pp_df[pp_df["player"].str.contains(pp_filter, case=False, na=False)]
+                display_df = pp_df[pp_df["player"].str.strip().str.contains(pp_filter.strip(), case=False, na=False)]
             st.dataframe(display_df, use_container_width=True)
             if st.button("Scan PrizePicks vs Model", use_container_width=True):
                 pp_candidates = []
@@ -3931,7 +3962,7 @@ with tabs[3]:
             ud_filter = st.text_input("Filter player", key="ud_filter")
             display_ud = ud_df
             if ud_filter:
-                display_ud = ud_df[ud_df["player"].str.contains(ud_filter, case=False, na=False)]
+                display_ud = ud_df[ud_df["player"].str.strip().str.contains(ud_filter.strip(), case=False, na=False)]
             st.dataframe(display_ud, use_container_width=True)
             if st.button("Scan Underdog vs Model", use_container_width=True):
                 ud_candidates = []
@@ -4027,7 +4058,7 @@ with tabs[4]:
     if h.empty:
         st.markdown(make_card("<span style='color:#4A607A;'>No bets logged yet. Log from the Model tab.</span>"), unsafe_allow_html=True)
     else:
-        settled = h[h["result"].isin(["HIT","MISS","PUSH"])].copy() if not h.empty else pd.DataFrame()
+        settled = h[h["result"] != "Pending"].copy() if not h.empty else pd.DataFrame()
         n_hit = (settled["result"]=="HIT").sum() if not settled.empty else 0
         n_miss = (settled["result"]=="MISS").sum() if not settled.empty else 0
         n_pend = (h["result"]=="Pending").sum() if not h.empty else 0
@@ -4252,11 +4283,14 @@ with tabs[6]:
         else:
             clv_pos = clv_lb[clv_lb["clv_price"].notna() & (clv_lb["clv_price"] > 0)]
             clv_neg = clv_lb[clv_lb["clv_price"].notna() & (clv_lb["clv_price"] <= 0)]
-            rate = len(clv_pos) / max(len(clv_lb), 1)
+            n_clv = len(clv_lb)
+            rate = len(clv_pos) / max(n_clv, 1)
             c1, c2, c3 = st.columns(3)
             c1.metric("Beats Closing Line", f"{rate*100:.0f}%", help="CLV price > 0 = bought above close")
             c2.metric("Avg CLV (price)", f"{clv_lb['clv_price'].mean():.4f}" if not clv_lb.empty else "--")
             c3.metric("Avg Line CLV", f"{clv_lb['clv_line'].mean():.2f}" if not clv_lb.empty else "--")
+            if n_clv < 10:
+                st.warning(f"Only {n_clv} CLV data point{'s' if n_clv != 1 else ''} — rate is not yet statistically meaningful. Keep logging bets and fetching CLV updates.")
             st.dataframe(clv_lb, use_container_width=True)
             if not clv_pos.empty:
                 st.markdown("<div style='font-size:0.65rem;color:#00FFB2;margin-top:0.4rem;'>Positive CLV = model found real edge vs closing price. Keep targeting these players/markets.</div>", unsafe_allow_html=True)
@@ -4479,7 +4513,7 @@ with tabs[7]:
     if rw_news:
         rw_df = pd.DataFrame(rw_news)
         if rw_filter:
-            rw_df = rw_df[rw_df["player"].str.contains(rw_filter, case=False, na=False)]
+            rw_df = rw_df[rw_df["player"].str.strip().str.contains(rw_filter.strip(), case=False, na=False)]
         st.dataframe(rw_df, use_container_width=True)
         # Cross-reference with watchlist
         wl_cur = load_watchlist(st.session_state.get("user_id","trader"))
