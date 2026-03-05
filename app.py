@@ -380,9 +380,15 @@ def fetch_player_gamelog(player_id, max_games=15):
             return player_df, []
 
     # ── Slow path: individual PlayerGameLog call (10s timeout) ──
+    # [AUDIT FIX] Explicitly filter to Regular Season to exclude preseason/playoff contamination
     errs = []
     season_str = get_season_string()
-    for params in [{"season_nullable": season_str}, {"season": season_str}, {}]:
+    for params in [
+        {"season_nullable": season_str, "season_type_all_star": "Regular Season"},
+        {"season_nullable": season_str},
+        {"season": season_str},
+        {},
+    ]:
         try:
             gl = playergamelog.PlayerGameLog(player_id=player_id, timeout=10, **params)
             df = gl.get_data_frames()[0]
@@ -497,16 +503,20 @@ def compute_rest_factor(game_log_df, game_date):
         rest = (game_date - last_game).days - 1
         rest = max(0, min(rest, 4))
         base_mult = REST_MULTIPLIERS.get(rest, 1.02)
-        # [FIX 4] Season-phase fatigue: B2B hits harder late in season
+        # [AUDIT FIX] Piecewise season-phase multiplier replaces linear fatigue:
+        # Early season (Oct-Nov): players fresh but inconsistent → slight penalty
+        # Mid season (Dec-Jan): peak form, stable → neutral
+        # Trade deadline zone (Feb): disruption, new teammates → slight penalty
+        # Playoff push (Mar-Apr): elevated effort on B2B, fatigue peaks → bigger penalty
         try:
-            season_year = int(get_season_string()[:4])
-            season_start = date(season_year, 10, 1)
-            days_in = max(0, (game_date - season_start).days)
-            games_approx = min(82, days_in // 2)
-            # Coefficient 0.015: late-season B2B should dent output ~1-2%
-            # (0.0008 was negligible at ~0.08%; 0.015 gives realistic 1.5% max)
-            fatigue = 1.0 - 0.015 * (games_approx / 82.0) * max(0, 2 - rest)
-            base_mult *= fatigue
+            _m = game_date.month
+            if _m in (10, 11):    phase_mult = 0.985   # early: inconsistency penalty
+            elif _m in (12, 1):   phase_mult = 1.000   # mid: peak form
+            elif _m == 2:         phase_mult = 0.990   # trade deadline disruption
+            else:                 phase_mult = 0.978   # Mar-Apr: playoff grind fatigue
+            # Extra penalty on B2B only
+            if rest == 0:
+                base_mult *= phase_mult
         except Exception:
             pass
         return float(base_mult), int(rest)
@@ -598,7 +608,8 @@ def compute_volatility(series):
 def compute_skewness(series):
     try:
         arr = pd.to_numeric(series, errors="coerce").dropna().values.astype(float)
-        if arr.size < 4:
+        # [AUDIT FIX] n<4 gives wildly unstable skewness; require >=6 for reliability
+        if arr.size < 6:
             return None
         n = len(arr)
         m = arr.mean()
@@ -738,7 +749,10 @@ def bootstrap_prob_over(stat_series, line, n_sims=8000, cv_override=None, market
         w = w / w.sum()
     else:
         w = None
-    rng = np.random.default_rng(42)
+    # [AUDIT FIX] Per-call unique seed: fixed seed 42 gave identical noise patterns
+    # across all players. Use data-derived seed so each player's bootstrap is independent.
+    _seed = int(abs(hash(tuple(x.round(3).tolist()))) % (2**31))
+    rng = np.random.default_rng(_seed)
     sims = rng.choice(x, size=int(n_sims), replace=True, p=w)
     cv = cv_override or (float(x.std(ddof=1) / x.mean()) if x.mean() != 0 else 0.20)
     noise_scale = max(0.05, min(cv * 0.40, 0.25))
@@ -761,8 +775,13 @@ def empirical_leg_correlation(pid1, pid2, mkt1, mkt2, n_games=20):
             return None
         s1 = compute_stat_from_gamelog(gl1, mkt1).rename("s1")
         s2 = compute_stat_from_gamelog(gl2, mkt2).rename("s2")
-        df1 = pd.concat([gl1["GAME_DATE"].reset_index(drop=True), s1.reset_index(drop=True)], axis=1)
-        df2 = pd.concat([gl2["GAME_DATE"].reset_index(drop=True), s2.reset_index(drop=True)], axis=1)
+        # [AUDIT FIX] Normalize GAME_DATE to ISO date before merge — NBA API returns
+        # dates in varying formats ("Mar 05, 2025" vs "2025-03-05") depending on
+        # bulk-cache vs per-player path; mismatches silently produce empty merges.
+        _d1 = pd.to_datetime(gl1["GAME_DATE"], errors="coerce").dt.date.reset_index(drop=True).rename("GAME_DATE")
+        _d2 = pd.to_datetime(gl2["GAME_DATE"], errors="coerce").dt.date.reset_index(drop=True).rename("GAME_DATE")
+        df1 = pd.concat([_d1, s1.reset_index(drop=True)], axis=1)
+        df2 = pd.concat([_d2, s2.reset_index(drop=True)], axis=1)
         merged = df1.merge(df2, on="GAME_DATE", how="inner")
         if len(merged) < 6:
             return None
@@ -785,10 +804,25 @@ def estimate_player_correlation(leg1, leg2):
         if emp is not None:
             return float(emp)
     corr = 0.0
-    if leg1.get("team") and leg2.get("team") and leg1["team"] == leg2["team"]:
-        corr += 0.15
     m1, m2 = leg1.get("market"), leg2.get("market")
-    if m1 == m2: corr += 0.10
+    same_team = bool(leg1.get("team") and leg2.get("team") and leg1["team"] == leg2["team"])
+    if same_team:
+        # [AUDIT FIX] Market-specific same-team correlation — flat +0.15 was too coarse:
+        # Same stat category on same team shares pace/game-script strongly
+        # Cross-category (Points vs Rebounds) shares less — driven by minutes, not plays
+        if m1 == m2:
+            corr += 0.20   # same market + same team: share touches and game script directly
+        else:
+            _pts_grp = {"Points", "PRA", "PA", "Alt Points"}
+            _reb_grp = {"Rebounds", "PR", "RA"}
+            _ast_grp = {"Assists", "PA", "RA"}
+            _same_grp = (
+                (m1 in _pts_grp and m2 in _pts_grp) or
+                (m1 in _reb_grp and m2 in _reb_grp) or
+                (m1 in _ast_grp and m2 in _ast_grp)
+            )
+            corr += 0.12 if _same_grp else 0.06  # cross-category: weaker same-team link
+    if m1 == m2 and not same_team: corr += 0.10
     if set([m1,m2]) == {"Points","PRA"}: corr += 0.14
     if m1 in ["Rebounds","RA"] and m2 in ["Rebounds","RA"]: corr += 0.06
     if m1 in ["Assists","RA"] and m2 in ["Assists","RA"]: corr += 0.05
@@ -802,11 +836,13 @@ def estimate_player_correlation(leg1, leg2):
 # LINE MOVEMENT ALERT  [FIX 10: dedup]
 # ──────────────────────────────────────────────
 def get_line_movement_signal(player_norm, market_key, current_line, side="Over"):
-    store_key = f"open_line_{player_norm}_{market_key}_{side}"
-    opening = st.session_state.get(store_key)
-    if opening is None:
-        st.session_state[store_key] = float(current_line)
-        return {"direction": "-", "pips": 0.0, "steam": False, "fade": False, "msg": "Opening line recorded"}
+    # [AUDIT FIX] Use file-based immutable opening line (survives page refreshes)
+    # Session state resets on refresh, allowing false "opening" re-records mid-day
+    _file_open, _ = get_opening_line(player_norm, str(market_key), side)
+    if _file_open is None:
+        save_opening_line(player_norm, str(market_key), side, current_line, None)
+        _file_open = float(current_line)
+    opening = _file_open
     delta = float(current_line) - float(opening)
     is_over = "over" in str(side).lower()
     steam = (delta > 0.5 and is_over) or (delta < -0.5 and not is_over)
@@ -875,7 +911,8 @@ def remove_vig(price_over, price_under):
         ip_o = 1.0 / max(float(price_over), 1.0001)
         ip_u = 1.0 / max(float(price_under), 1.0001)
         overround = ip_o + ip_u
-        if overround <= 0:
+        # [AUDIT FIX] Reject corrupted markets: overround should be 1.02-1.10 for typical juice
+        if overround <= 0.99 or overround > 1.15:
             return float(price_over), float(price_under)
         return float(1.0 / (ip_o / overround)), float(1.0 / (ip_u / overround))
     except Exception:
@@ -2300,14 +2337,18 @@ def compute_leg_projection(
                 break
 
     ha_mult = compute_home_away_factor(gldf_n, base_market, is_home_resolved)
-    # [UPGRADE 8] Injury boost scaled by usage capacity
-    # Low-usage players absorb the most opportunity when a teammate goes out;
-    # high-usage players already near their ceiling, so smaller boost.
+    # [UPGRADE 8 + AUDIT FIX] Injury boost is market-specific:
+    # Assists DROP when a primary playmaker (PG/initiator) goes out — fewer plays run through
+    # the offense, fewer assist opportunities. Points/Rebounds absorb usage and go UP.
     _usage_boost = 1.05
     if key_teammate_out and usage_rate is not None:
-        if usage_rate >= 18:   _usage_boost = 1.03   # near ceiling, small room to expand
-        elif usage_rate >= 12: _usage_boost = 1.05   # moderate usage, moderate upside
-        else:                  _usage_boost = 1.08   # low baseline usage, highest opportunity gain
+        if usage_rate >= 18:   _usage_boost = 1.03
+        elif usage_rate >= 12: _usage_boost = 1.05
+        else:                  _usage_boost = 1.08
+    # Market-specific direction: Assists/PA/RA penalized when playmaker is out
+    _assist_heavy = base_market in ("Assists", "PA", "RA", "PRA")
+    if key_teammate_out and _assist_heavy:
+        _usage_boost = min(_usage_boost, 0.97)  # assists down, not up
     ctx_mult = advanced_context_multiplier(player_name, base_market, opp_abbr, False)
     if key_teammate_out:
         ctx_mult *= _usage_boost
@@ -2418,9 +2459,15 @@ def compute_leg_projection(
     if not gate_ok: ev_adj = None
 
     stake_dollars, stake_frac, stake_reason = 0.0, 0.0, "gated"
-    if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj > 0:
+    # [AUDIT FIX] Minimum EV threshold: noise below 2% is not worth staking
+    if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj >= 0.02:
         stake_dollars, stake_frac, stake_reason = recommended_stake(
             bankroll, float(p_cal), float(price_decimal), frac_kelly, max_risk_frac)
+        # [AUDIT FIX] DNP risk halves stake — player may not dress, don't fully commit
+        if dnp_risk and stake_dollars > 0:
+            stake_dollars *= 0.50
+            stake_frac   *= 0.50
+            stake_reason  = "dnp_risk_half"
 
     mk_key = meta.get("market_key") if meta else ODDS_MARKETS.get(market_name,"")
     player_norm = normalize_name(player_name)
@@ -2589,14 +2636,12 @@ def apply_calibrator(p_raw, calib):
     xs = calib.get("x") or []; ys = calib.get("y") or []
     if len(xs)<2 or len(xs)!=len(ys): return float(np.clip(p, 0.0, 1.0))
     try:
-        result = float(np.clip(np.interp(p, xs, ys), 0.0, 1.0))
-        # [FIX 9] Flag OOD but still return interpolated value
         t_min = calib.get("training_min", 0.0)
         t_max = calib.get("training_max", 1.0)
+        # [AUDIT FIX] OOD: return raw p (no extrapolation) instead of silently extrapolating
         if p < t_min * 0.85 or p > t_max * 1.15:
-            # OOD: extrapolation warning (surfaced in UI)
-            pass
-        return result
+            return float(np.clip(p, 0.0, 1.0))
+        return float(np.clip(np.interp(p, xs, ys), 0.0, 1.0))
     except: return float(np.clip(p, 0.0, 1.0))
 
 def recompute_pricing_fields(leg, calib):
