@@ -105,6 +105,12 @@ ODDS_MARKETS = {
     "Double Double":   "player_double_double",
     "Triple Double":   "player_triple_double",
     "First Basket":    "player_first_basket",
+    # ── Shooting volume (high-probability) ──────
+    "FGM":             "player_field_goals_made",
+    "FGA":             "player_field_goals_attempted",
+    "3PA":             "player_three_point_field_goals_attempted",
+    "FTM":             "player_free_throws_made",
+    "FTA":             "player_free_throws_attempted",
 }
 
 # Markets that require batching separately (not all books offer these)
@@ -121,6 +127,10 @@ SPECIALTY_MARKET_KEYS = {
     "player_assists_alternate", "player_threes_alternate",
     # Fantasy
     "player_fantasy_points",
+    # Shooting volume
+    "player_field_goals_made", "player_field_goals_attempted",
+    "player_three_point_field_goals_attempted",
+    "player_free_throws_made", "player_free_throws_attempted",
 }
 
 STAT_FIELDS = {
@@ -160,6 +170,12 @@ STAT_FIELDS = {
     "Double Double":   ("PTS","REB","AST","BLK","STL"),
     "Triple Double":   ("PTS","REB","AST","BLK","STL"),
     "First Basket":    "PTS",
+    # Shooting volume
+    "FGM":             "FGM",
+    "FGA":             "FGA",
+    "3PA":             "FG3A",
+    "FTM":             "FTM",
+    "FTA":             "FTA",
 }
 
 # Half-game projection scale factors
@@ -193,16 +209,20 @@ def book_sharpness(k):
 POSITIONAL_PRIORS = {
     "Guard": {"Points":16.5,"Rebounds":3.4,"Assists":5.8,"3PM":2.1,
               "PRA":25.7,"PR":19.9,"PA":22.3,"RA":9.2,"Blocks":0.4,"Steals":1.2,"Turnovers":2.2,
-              "Q1 Points":4.1,"Q1 Rebounds":0.9,"Q1 Assists":1.5,"Fantasy Score":31.2},
+              "Q1 Points":4.1,"Q1 Rebounds":0.9,"Q1 Assists":1.5,"Fantasy Score":31.2,
+              "FGM":5.8,"FGA":13.5,"3PA":6.2,"FTM":3.2,"FTA":3.8},
     "Wing":  {"Points":14.8,"Rebounds":5.9,"Assists":2.9,"3PM":1.6,
               "PRA":23.6,"PR":20.7,"PA":17.7,"RA":8.8,"Blocks":0.8,"Steals":1.0,"Turnovers":1.7,
-              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.7,"Fantasy Score":27.4},
+              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.7,"Fantasy Score":27.4,
+              "FGM":5.4,"FGA":12.0,"3PA":4.5,"FTM":2.6,"FTA":3.2},
     "Big":   {"Points":13.2,"Rebounds":8.8,"Assists":2.1,"3PM":0.5,
               "PRA":24.1,"PR":22.0,"PA":15.3,"RA":10.9,"Blocks":1.4,"Steals":0.7,"Turnovers":2.0,
-              "Q1 Points":3.3,"Q1 Rebounds":2.2,"Q1 Assists":0.5,"Fantasy Score":30.5},
+              "Q1 Points":3.3,"Q1 Rebounds":2.2,"Q1 Assists":0.5,"Fantasy Score":30.5,
+              "FGM":5.0,"FGA":10.5,"3PA":1.4,"FTM":3.0,"FTA":4.0},
     "Unknown":{"Points":14.8,"Rebounds":5.5,"Assists":3.5,"3PM":1.4,
               "PRA":23.8,"PR":20.3,"PA":18.3,"RA":9.0,"Blocks":0.8,"Steals":0.9,"Turnovers":1.9,
-              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.9,"Fantasy Score":29.7},
+              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.9,"Fantasy Score":29.7,
+              "FGM":5.4,"FGA":12.0,"3PA":4.0,"FTM":2.9,"FTA":3.6},
 }
 
 REST_MULTIPLIERS = {0: 0.93, 1: 0.97, 2: 1.00, 3: 1.01, 4: 1.02}
@@ -2318,29 +2338,48 @@ def _expand_history_legs(history_df):
     if history_df is None or history_df.empty: return pd.DataFrame()
     rows = []
     for _, r in history_df.iterrows():
-        res = str(r.get("result","Pending"))
+        bet_res = str(r.get("result","Pending"))
         # [FIX 11] Include PASS decisions for calibration analysis (no outcome)
-        if res not in ("HIT","MISS","PUSH","SKIP"): continue
+        if bet_res not in ("HIT","MISS","PUSH","SKIP"): continue
         try:
             legs = json.loads(r.get("legs","[]")) if isinstance(r.get("legs"),str) else (r.get("legs") or [])
         except: legs = []
-        for leg in legs:
+        # Per-leg results: if stored use them; otherwise fall back to parent result only for single-leg bets
+        try:
+            leg_results_list = json.loads(r.get("leg_results","[]")) if isinstance(r.get("leg_results"),str) else []
+            if not isinstance(leg_results_list, list): leg_results_list = []
+        except: leg_results_list = []
+        n_legs = len(legs)
+        for i, leg in enumerate(legs):
             if not isinstance(leg,dict): continue
+            # Determine this leg's individual result
+            if i < len(leg_results_list) and leg_results_list[i] in ("HIT","MISS","PUSH"):
+                leg_res = leg_results_list[i]
+            elif n_legs == 1 and bet_res in ("HIT","MISS","PUSH"):
+                # Single-leg bet: parent result is the leg result
+                leg_res = bet_res
+            else:
+                # Multi-leg without individual results logged — skip for calibration
+                # to avoid incorrectly assigning the parlay outcome to all legs
+                leg_res = "UNKNOWN"
             row = {
                 "ts":r.get("ts"),"market":leg.get("market"),"player":leg.get("player"),
                 "p_raw":safe_float(leg.get("p_raw") or leg.get("p_over"), default=np.nan),
                 "price_decimal":safe_float(leg.get("price_decimal"), default=np.nan),
                 "cv":safe_float(leg.get("volatility_cv"), default=np.nan),
                 "ev_adj":safe_float(leg.get("ev_adj"), default=np.nan),
-                "result":res,
+                "result":leg_res,
+                "bet_result":bet_res,
                 "decision":str(r.get("decision","BET")),
                 "clv_line_fav":leg.get("clv_line_fav"),
                 "clv_price_fav":leg.get("clv_price_fav"),
             }
-            if res in ("HIT","MISS","PUSH"):
-                row["y"] = 1 if res=="HIT" else 0
+            if leg_res in ("HIT","MISS","PUSH"):
+                row["y"] = 1.0 if leg_res=="HIT" else 0.0
+            elif bet_res == "SKIP":
+                row["y"] = np.nan  # PASS has no outcome
             else:
-                row["y"] = np.nan  # SKIP/PASS has no outcome
+                row["y"] = np.nan  # multi-leg leg with no individual result
             rows.append(row)
     df = pd.DataFrame(rows)
     return df[pd.to_numeric(df["p_raw"],errors="coerce").notna()].copy() if not df.empty else df
@@ -2746,6 +2785,7 @@ with tabs[0]:
                 append_history(user_id, {
                     "ts":_now_iso(),"user_id":user_id,
                     "legs":json.dumps(res),"n_legs":len(res),
+                    "leg_results":json.dumps(["Pending"]*len(res)),
                     "result":result_val,"decision":decision,"notes":""
                 })
                 st.success(f"Logged ({decision})")
@@ -3508,13 +3548,28 @@ with tabs[4]:
         n_hit = (settled["result"]=="HIT").sum() if not settled.empty else 0
         n_miss = (settled["result"]=="MISS").sum() if not settled.empty else 0
         n_pend = (h["result"]=="Pending").sum() if not h.empty else 0
-        n_pass = (h.get("decision","")=="PASS").sum() if "decision" in h.columns else 0
         hit_rate = n_hit/(n_hit+n_miss) if (n_hit+n_miss)>0 else None
         hc1,hc2,hc3,hc4 = st.columns(4)
-        hc1.metric("Hit Rate",  f"{hit_rate*100:.1f}%" if hit_rate else "--")
-        hc2.metric("Wins", n_hit)
-        hc3.metric("Losses", n_miss)
+        hc1.metric("Parlay Hit Rate", f"{hit_rate*100:.1f}%" if hit_rate else "--")
+        hc2.metric("Parlay Wins", n_hit)
+        hc3.metric("Parlay Losses", n_miss)
         hc4.metric("Pending", n_pend)
+
+        # Per-leg accuracy (only legs with individual results logged)
+        h_legs_df = _expand_history_legs(h)
+        settled_legs_df = h_legs_df[h_legs_df["y"].notna()].copy() if not h_legs_df.empty else pd.DataFrame()
+        if not settled_legs_df.empty:
+            n_leg_hit = int((settled_legs_df["y"]==1).sum())
+            n_leg_miss = int((settled_legs_df["y"]==0).sum())
+            leg_hr = n_leg_hit/(n_leg_hit+n_leg_miss) if (n_leg_hit+n_leg_miss)>0 else None
+            lc1,lc2,lc3 = st.columns(3)
+            lc1.metric("Per-Leg Hit Rate", f"{leg_hr*100:.1f}%" if leg_hr else "--",
+                       help="Individual leg accuracy — requires per-leg results to be marked below")
+            lc2.metric("Leg Hits", n_leg_hit)
+            lc3.metric("Leg Misses", n_leg_miss)
+        else:
+            st.caption("Per-leg accuracy will appear once you mark individual leg results below.")
+
         st.dataframe(h, use_container_width=True)
 
         # [FIX 12] Export button
@@ -3524,9 +3579,48 @@ with tabs[4]:
                            use_container_width=True)
 
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+
+        # ── Per-leg result update (fixes calibration skew for multi-leg bets) ──
+        st.markdown("<span style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.10em;'>UPDATE PER-LEG RESULTS</span>", unsafe_allow_html=True)
+        st.caption("For multi-leg bets, mark each leg individually so calibration uses accurate per-leg outcomes.")
+        leg_row_idx = st.number_input("Bet row to update legs", 0, max(0, len(h)-1), 0, 1, key="leg_row_idx")
+        try:
+            _legs_to_show = json.loads(h.loc[int(leg_row_idx), "legs"]) if isinstance(h.loc[int(leg_row_idx), "legs"], str) else []
+            _leg_res_stored = json.loads(h.loc[int(leg_row_idx), "leg_results"]) if "leg_results" in h.columns and isinstance(h.loc[int(leg_row_idx), "leg_results"], str) else ["Pending"]*len(_legs_to_show)
+            if len(_leg_res_stored) < len(_legs_to_show):
+                _leg_res_stored = _leg_res_stored + ["Pending"]*(len(_legs_to_show)-len(_leg_res_stored))
+        except Exception:
+            _legs_to_show = []
+            _leg_res_stored = []
+        if _legs_to_show:
+            new_leg_results = []
+            for _li, _lleg in enumerate(_legs_to_show):
+                _default = _leg_res_stored[_li] if _li < len(_leg_res_stored) else "Pending"
+                _opts = ["Pending","HIT","MISS","PUSH"]
+                _di = _opts.index(_default) if _default in _opts else 0
+                _lcols = st.columns([3,2])
+                _lcols[0].markdown(f"<span style='font-size:0.75rem;color:#A0B8C8;'>{_lleg.get('player','?')} — {_lleg.get('market','?')} {_lleg.get('line','')}</span>", unsafe_allow_html=True)
+                _sel = _lcols[1].selectbox("", _opts, index=_di, key=f"legres_{leg_row_idx}_{_li}", label_visibility="collapsed")
+                new_leg_results.append(_sel)
+            if st.button("Save Leg Results", key="save_leg_results"):
+                h2 = h.copy()
+                h2.loc[int(leg_row_idx), "leg_results"] = json.dumps(new_leg_results)
+                # Auto-derive parlay result: HIT only if all legs HIT, MISS if any MISS, else Pending
+                if all(r=="HIT" for r in new_leg_results):
+                    h2.loc[int(leg_row_idx), "result"] = "HIT"
+                elif any(r=="MISS" for r in new_leg_results):
+                    h2.loc[int(leg_row_idx), "result"] = "MISS"
+                elif all(r in ("HIT","PUSH") for r in new_leg_results):
+                    h2.loc[int(leg_row_idx), "result"] = "PUSH"
+                h2.to_csv(history_path(user_id), index=False)
+                st.success("Leg results saved — calibration will now use individual leg outcomes.")
+        else:
+            st.caption("No legs found for this row.")
+
+        st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
         uc1, uc2 = st.columns(2)
         with uc1:
-            st.markdown("<span style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#4A607A;letter-spacing:0.10em;'>UPDATE RESULT</span>", unsafe_allow_html=True)
+            st.markdown("<span style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#4A607A;letter-spacing:0.10em;'>UPDATE PARLAY RESULT</span>", unsafe_allow_html=True)
             idx = st.number_input("Row index", 0, max(0,len(h)-1), 0, 1)
             new_res = st.selectbox("Result", ["Pending","HIT","MISS","PUSH"])
             if st.button("Update Result"):
