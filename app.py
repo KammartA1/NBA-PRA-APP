@@ -181,10 +181,14 @@ STAT_FIELDS = {
 # Half-game projection scale factors
 HALF_FACTOR = {
     "H1 Points": 0.52, "H1 Rebounds": 0.52, "H1 Assists": 0.52,
-    "H1 3PM": 0.52, "H1 PRA": 0.52,
+    "H1 3PM": 0.52, "H1 PRA": 0.52, "H1 PR": 0.52, "H1 PA": 0.52,
+    "H1 FTM": 0.52, "H1 FTA": 0.52, "H1 FGM": 0.52, "H1 FGA": 0.52,
     "H2 Points": 0.48, "H2 Rebounds": 0.48, "H2 Assists": 0.48,
+    "H2 3PM": 0.48, "H2 PRA": 0.48, "H2 PR": 0.48, "H2 PA": 0.48,
+    "H2 FTM": 0.48, "H2 FTA": 0.48, "H2 FGM": 0.48, "H2 FGA": 0.48,
     # 1Q markets: ~25% of full-game (first quarter only)
     "Q1 Points": 0.25, "Q1 Rebounds": 0.24, "Q1 Assists": 0.24,
+    "Q1 3PM": 0.24, "Q1 PRA": 0.25, "Q1 FTM": 0.23, "Q1 FGA": 0.25,
 }
 
 # Alt markets — same engine, different API key
@@ -329,7 +333,7 @@ def get_season_string(today=None):
 # ──────────────────────────────────────────────
 # BULK GAME LOG — one API call for ALL players
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*60*6, show_spinner=False)
+@st.cache_data(ttl=60*30, show_spinner=False)
 def _fetch_bulk_gamelogs():
     """LeagueGameLog: ONE call returns every player's game log for the season.
     Replaces ~200 individual PlayerGameLog calls for a full-slate scan.
@@ -362,7 +366,7 @@ def _fetch_bulk_gamelogs():
 # ──────────────────────────────────────────────
 # GAME LOG FETCHER
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*60*6, show_spinner=False)
+@st.cache_data(ttl=60*30, show_spinner=False)
 def fetch_player_gamelog(player_id, max_games=15):
     """Per-player game log. Tries the bulk cache first (instant), falls back to individual API call."""
     # ── Fast path: bulk dataframe already in cache ──────────────
@@ -392,6 +396,94 @@ def fetch_player_gamelog(player_id, max_games=15):
     return pd.DataFrame(), errs
 
 # ──────────────────────────────────────────────
+# REAL HALF-GAME BOXSCORE FETCHER
+# Per-period stats via BoxScoreTraditionalV2.
+# start_period/end_period parameters give cumulative splits
+# (H1=1-2, H2=3-4, Q1=1-1) without extra joins.
+# ──────────────────────────────────────────────
+@st.cache_data(ttl=60*60*12, show_spinner=False)
+def _fetch_boxscore_halfgame(game_id, player_id_int, start_period, end_period):
+    """Return {PTS, REB, AST, ...} for a player over a specific period range, or None."""
+    try:
+        from nba_api.stats.endpoints import BoxScoreTraditionalV2
+        bx = BoxScoreTraditionalV2(
+            game_id=str(game_id),
+            start_period=int(start_period),
+            end_period=int(end_period),
+            timeout=20,
+        )
+        pstats = bx.get_data_frames()[0]
+        if pstats.empty:
+            return None
+        pid_col = next((c for c in ["PLAYER_ID", "Player_ID"] if c in pstats.columns), None)
+        if not pid_col:
+            return None
+        row = pstats[pstats[pid_col] == int(player_id_int)]
+        if row.empty:
+            return None
+        row = row.iloc[0]
+        result = {}
+        for col in ["PTS","REB","AST","FG3M","FGM","FGA","FG3A","FTM","FTA","BLK","STL","TOV","OREB","DREB"]:
+            if col in row.index:
+                result[col] = safe_float(row[col], default=0.0)
+        return result if result else None
+    except Exception:
+        return None
+
+def fetch_player_halfgame_log(player_id, game_log_df, market_name, n_games=10):
+    """
+    Build a real H1/H2/Q1 stat series from per-period boxscores.
+    Returns pd.Series (newest-first) if >=3 games fetched, else None (falls back to scaled full-game).
+    """
+    if game_log_df is None or game_log_df.empty or not player_id:
+        return None
+    # Period boundaries
+    if market_name.startswith("H1"):
+        start_p, end_p = 1, 2
+    elif market_name.startswith("H2"):
+        start_p, end_p = 3, 4
+    elif market_name.startswith("Q1"):
+        start_p, end_p = 1, 1
+    else:
+        return None
+    # Get game IDs from log
+    game_id_col = next((c for c in ["GAME_ID", "Game_ID"] if c in game_log_df.columns), None)
+    if not game_id_col:
+        return None
+    game_ids = game_log_df.head(n_games)[game_id_col].dropna().astype(str).tolist()
+    if not game_ids:
+        return None
+    # Fetch in parallel (3 workers to stay under rate limits)
+    stats_list = []
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        futures = [ex.submit(_fetch_boxscore_halfgame, gid, int(player_id), start_p, end_p)
+                   for gid in game_ids]
+        for fut in futures:
+            try:
+                result = fut.result(timeout=25)
+                if result:
+                    stats_list.append(result)
+            except Exception:
+                pass
+    if len(stats_list) < 3:
+        return None   # Not enough half-game data; caller falls back to scaled full-game
+    stats_df = pd.DataFrame(stats_list)
+    # Resolve base market (strip H1/H2/Q1 prefix)
+    base_mkt = market_name.replace("H1 ","").replace("H2 ","").replace("Q1 ","")
+    stat_field = STAT_FIELDS.get(base_mkt)
+    if stat_field is None:
+        return None
+    if isinstance(stat_field, tuple):
+        s = pd.Series(0.0, index=range(len(stats_df)))
+        for col in stat_field:
+            if col in stats_df.columns:
+                s = s + pd.to_numeric(stats_df[col], errors="coerce").fillna(0)
+        return s.reset_index(drop=True)
+    if stat_field in stats_df.columns:
+        return pd.to_numeric(stats_df[stat_field], errors="coerce").reset_index(drop=True)
+    return None
+
+# ──────────────────────────────────────────────
 # REST / B2B FACTOR  [FIX 4: season-phase scaling]
 # ──────────────────────────────────────────────
 def compute_rest_factor(game_log_df, game_date):
@@ -411,7 +503,9 @@ def compute_rest_factor(game_log_df, game_date):
             season_start = date(season_year, 10, 1)
             days_in = max(0, (game_date - season_start).days)
             games_approx = min(82, days_in // 2)
-            fatigue = 1.0 - 0.0008 * (games_approx / 82.0) * max(0, 2 - rest)
+            # Coefficient 0.015: late-season B2B should dent output ~1-2%
+            # (0.0008 was negligible at ~0.08%; 0.015 gives realistic 1.5% max)
+            fatigue = 1.0 - 0.015 * (games_approx / 82.0) * max(0, 2 - rest)
             base_mult *= fatigue
         except Exception:
             pass
@@ -586,7 +680,11 @@ def compute_projected_minutes(game_log_df, n_games=10):
         if active.empty:
             return None, True
         avg_min = float(active.mean())
-        dnp_risk = avg_min < 20.0 or (len(active) < len(df) * 0.7)
+        # DNP risk: player was actually held out (0-4 min) in 50%+ of recent games,
+        # or averaged <8 min active (deep rotation / G-League shuttle).
+        # 19 min/game is NOT dnp risk — that's a normal rotation player.
+        true_dnps = (mins <= 4).sum()
+        dnp_risk = avg_min < 8.0 or (true_dnps >= len(df) * 0.50)
         return avg_min, bool(dnp_risk)
     except Exception:
         return None, False
@@ -677,6 +775,9 @@ def empirical_leg_correlation(pid1, pid2, mkt1, mkt2, n_games=20):
 def estimate_player_correlation(leg1, leg2):
     pid1 = leg1.get("player_id")
     pid2 = leg2.get("player_id")
+    # Same player + same market = identical bet (perfect correlation)
+    if pid1 and pid2 and int(pid1) == int(pid2) and leg1.get("market") == leg2.get("market"):
+        return 1.0
     if pid1 and pid2:
         emp = empirical_leg_correlation(
             int(pid1), int(pid2), leg1.get("market","Points"), leg2.get("market","Points")
@@ -1672,9 +1773,11 @@ def save_opening_line(player_norm, market_key, side, line, price):
         if os.path.exists(OPENING_LINES_PATH):
             with open(OPENING_LINES_PATH) as f:
                 data = json.load(f)
-        key = f"{player_norm}|{market_key}|{side}"
+        # Include date in key so each day gets its own independent opening line
+        today = date.today().isoformat()
+        key = f"{player_norm}|{market_key}|{side}|{today}"
         if key not in data:  # Only write once per key (true opening)
-            data[key] = {"line": float(line), "price": price, "ts": _now_iso(), "date": date.today().isoformat()}
+            data[key] = {"line": float(line), "price": price, "ts": _now_iso(), "date": today}
             with open(OPENING_LINES_PATH, "w") as f:
                 json.dump(data, f)
     except Exception as ex:
@@ -1687,9 +1790,10 @@ def get_opening_line(player_norm, market_key, side):
             return None, None
         with open(OPENING_LINES_PATH) as f:
             data = json.load(f)
-        key = f"{player_norm}|{market_key}|{side}"
+        today = date.today().isoformat()
+        key = f"{player_norm}|{market_key}|{side}|{today}"
         rec = data.get(key)
-        if rec and rec.get("date") == date.today().isoformat():
+        if rec:
             return rec.get("line"), rec.get("price")
     except Exception as ex:
         logging.warning(f"get_opening_line: {ex}")
@@ -1914,24 +2018,46 @@ def compute_history_based_priors(legs_df, position_bucket):
 # KELLY PARLAY OPTIMIZER
 # ──────────────────────────────────────────────
 def kelly_parlay_optimizer(legs, payout_mult, max_legs=4, bankroll=1000.0, frac_kelly=0.25):
-    """Find best 2-N leg combos by correlation-adjusted EV."""
+    """Find best 2-N leg combos using PSD covariance matrix + Gaussian copula MC simulation."""
     from itertools import combinations
+    import scipy.stats as _sc
+
+    N_SIMS_PARLAY = 3000
+
     valid = [l for l in legs if l.get("gate_ok") and float(l.get("p_cal") or 0) > 0.50]
     if len(valid) < 2:
         return []
+
+    # Pre-build full N×N correlation matrix once (avoid redundant pairwise calls in inner loop)
+    nv = len(valid)
+    full_corr = np.eye(nv)
+    for _i in range(nv):
+        for _j in range(_i + 1, nv):
+            c = float(estimate_player_correlation(valid[_i], valid[_j]) or 0.0)
+            full_corr[_i, _j] = full_corr[_j, _i] = c
+
+    rng = np.random.default_rng(42)
     results = []
-    for n in range(2, min(max_legs + 1, len(valid) + 1)):
-        for combo in combinations(range(len(valid)), n):
+
+    for n in range(2, min(max_legs + 1, nv + 1)):
+        for combo in combinations(range(nv), n):
             combo_legs = [valid[i] for i in combo]
-            probs = [float(l["p_cal"]) for l in combo_legs]
-            # Correlation adjustment
-            corr_adj = 1.0
-            for i in range(n):
-                for j in range(i+1, n):
-                    c = estimate_player_correlation(combo_legs[i], combo_legs[j])
-                    corr_adj *= max(0.5, 1.0 - abs(float(c or 0)) * 0.3)
+            probs = np.array([float(l["p_cal"]) for l in combo_legs])
             naive_joint = float(np.prod(probs))
-            joint = float(np.clip(naive_joint * corr_adj, 1e-6, 1.0))
+
+            # Extract n×n sub-matrix and make PSD via eigenvalue clipping
+            sub_corr = full_corr[np.ix_(list(combo), list(combo))]
+            evals, evecs = np.linalg.eigh(sub_corr)
+            evals = np.clip(evals, 1e-6, None)
+            corr_psd = evecs @ np.diag(evals) @ evecs.T
+
+            # Gaussian copula MC
+            z = rng.multivariate_normal(np.zeros(n), corr_psd, N_SIMS_PARLAY)
+            u = _sc.norm.cdf(z)
+            hits = u < probs  # shape (N_SIMS_PARLAY, n)
+            joint = float(hits.all(axis=1).mean())
+            joint = float(np.clip(joint, 1e-6, 1.0))
+
             ev = payout_mult * joint - 1.0
             kelly_f = max(0.0, ev / (payout_mult - 1.0)) if payout_mult > 1 else 0.0
             stake = min(bankroll * frac_kelly * kelly_f, bankroll * 0.05)
@@ -2099,8 +2225,26 @@ def compute_leg_projection(
         base_market = (market_name.replace("H1 ","").replace("H2 ","").replace("Q1 ",""))
 
     stat_series = compute_stat_from_gamelog(gldf_n, base_market) if not gldf_n.empty else pd.Series([], dtype=float)
+
+    # [AUDIT FIX] For half/Q1 markets: try real per-period boxscore data.
+    # If successful, stat_series is replaced with actual H1/H2/Q1 values so
+    # CV, skewness, and bootstrap all operate on real half-game distributions.
+    _orig_half_factor = half_factor   # save for Bayesian prior scaling below
+    if is_half_market and player_id:
+        _hg_series = fetch_player_halfgame_log(player_id, gldf_n, market_name, n_games=n_games)
+        if _hg_series is not None and len(_hg_series.dropna()) >= 3:
+            stat_series = _hg_series
+            half_factor = 1.0   # Real half-game data; no scaling needed anywhere
+            errors.append(f"Real {market_name} split: {len(_hg_series.dropna())} games from boxscores")
+
     vol_cv, vol_label = compute_volatility(stat_series)
-    stat_skew = compute_skewness(stat_series)  # [FIX 5]
+    stat_skew = compute_skewness(stat_series)
+    # [AUDIT FIX] Skewness heuristic when n<4: market-type prior so gate isn't fully bypassed
+    if stat_skew is None and not stat_series.dropna().empty:
+        if base_market in ("3PM", "Blocks", "Steals", "Stocks", "FTM", "FTA"):
+            stat_skew = 0.70   # Count/rate stats dominated by zeros: strong right skew
+        elif base_market in ("Rebounds", "RA", "PR"):
+            stat_skew = 0.25   # Mildly right-skewed (occasional bigs blowups)
     rest_mult, rest_days = compute_rest_factor(gldf, game_date)
 
     # [UPGRADE 2] Projected minutes + DNP risk
@@ -2157,15 +2301,23 @@ def compute_leg_projection(
 
     ha_mult = compute_home_away_factor(gldf_n, base_market, is_home_resolved)
     # [UPGRADE 8] Injury boost scaled by usage capacity
+    # Low-usage players absorb the most opportunity when a teammate goes out;
+    # high-usage players already near their ceiling, so smaller boost.
     _usage_boost = 1.05
     if key_teammate_out and usage_rate is not None:
-        if usage_rate >= 18:   _usage_boost = 1.04   # already high usage, less room
-        elif usage_rate >= 12: _usage_boost = 1.06   # moderate usage, more upside
-        else:                  _usage_boost = 1.03
+        if usage_rate >= 18:   _usage_boost = 1.03   # near ceiling, small room to expand
+        elif usage_rate >= 12: _usage_boost = 1.05   # moderate usage, moderate upside
+        else:                  _usage_boost = 1.08   # low baseline usage, highest opportunity gain
     ctx_mult = advanced_context_multiplier(player_name, base_market, opp_abbr, False)
     if key_teammate_out:
         ctx_mult *= _usage_boost
     blowout_prob = estimate_blowout_risk(team_abbr, opp_abbr, spread_abs=None)
+
+    # Blowout risk trims expected minutes: high-blowout games see starters sit early.
+    # Cap at 12% reduction (blowout_prob=0.80 → ×0.88) to avoid over-penalizing.
+    if proj_minutes is not None and blowout_prob is not None and blowout_prob > 0.20:
+        blowout_min_adj = 1.0 - min(0.12, (float(blowout_prob) - 0.20) * 0.20)
+        proj_minutes = proj_minutes * blowout_min_adj
 
     pos_str = get_player_position(player_name) or ""
     pos_bucket = get_position_bucket(pos_str)
@@ -2202,7 +2354,18 @@ def compute_leg_projection(
             errors.append(f"Insufficient history (need >=4 games, have {len(stat_series.dropna())})")
 
     n_valid = int(stat_series.dropna().count())
-    mu_shrunk = bayesian_shrink(mu_raw, n_valid, base_market, pos_bucket) if mu_raw is not None else None
+    # [AUDIT FIX] Half-market with real boxscore data: scale positional prior by _orig_half_factor
+    # so shrinkage operates in half-game units (not full-game units)
+    if is_half_market and _orig_half_factor != half_factor and mu_raw is not None:
+        orig_prior_val = POSITIONAL_PRIORS.get(pos_bucket, POSITIONAL_PRIORS["Unknown"]).get(base_market)
+        if orig_prior_val is not None:
+            k = max(2.0, 8.0 / (1.0 + math.log1p(max(n_valid, 1) / 5.0)))
+            w_p = k / (k + max(n_valid, 1))
+            mu_shrunk = float(w_p * orig_prior_val * _orig_half_factor + (1.0 - w_p) * mu_raw)
+        else:
+            mu_shrunk = mu_raw  # No prior for this market: use observed directly
+    else:
+        mu_shrunk = bayesian_shrink(mu_raw, n_valid, base_market, pos_bucket) if mu_raw is not None else None
 
     # Apply half factor and positional D to projection — include opp-specific factor
     proj_full = (mu_shrunk * ctx_mult * rest_mult * ha_mult * pos_def_mult * opp_specific_factor
@@ -2235,6 +2398,18 @@ def compute_leg_projection(
 
     ev_raw = ev_per_dollar(p_cal, price_decimal) if (p_cal is not None and price_decimal is not None) else None
     pen = volatility_penalty_factor(vol_cv)
+    # [AUDIT FIX] Asymmetric vol penalty: adjust based on skew-side alignment
+    # When skew favors our bet direction (tail points our way), volatility is less harmful → soften penalty.
+    # When skew opposes us (tail points against us), volatility is more harmful → tighten penalty.
+    if stat_skew is not None and vol_cv is not None and float(vol_cv) > 0.20:
+        _sk = float(stat_skew)
+        _is_under_pen = "under" in str(side_str).lower()
+        _skew_helps = (_sk < -0.4 and _is_under_pen) or (_sk > 0.4 and not _is_under_pen)
+        _skew_hurts = (_sk < -0.4 and not _is_under_pen) or (_sk > 0.4 and _is_under_pen)
+        if _skew_helps:
+            pen = min(1.0, pen * 1.12)   # Skew aligned with our side: soften penalty by up to 12%
+        elif _skew_hurts:
+            pen = pen * 0.88             # Skew opposed to our side: tighten penalty by 12%
     ev_adj = float(ev_raw * pen) if ev_raw is not None else None
     # [FIX 5] Pass skewness to volatility gate
     gate_ok, gate_reason = passes_volatility_gate(vol_cv, ev_raw, skew=stat_skew, bet_type=side_str)
@@ -2623,6 +2798,8 @@ with st.sidebar:
     st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
     exclude_chaotic = st.checkbox("Block Chaotic Regime", value=bool(st.session_state.get("exclude_chaotic",True)), help="Filters high-CV / blowout-risk environments")
     st.session_state["exclude_chaotic"] = bool(exclude_chaotic)
+    show_unders = st.checkbox("Show Under opportunities", value=bool(st.session_state.get("show_unders", False)), key="show_unders_cb", help="Surface high-probability Unders alongside each leg (zero extra API calls — reuses cached projections)")
+    st.session_state["show_unders"] = bool(show_unders)
     max_daily_loss = st.slider("Daily Loss Stop (%)", 0, 50, int(st.session_state.get("max_daily_loss",15)))
     max_weekly_loss = st.slider("Weekly Loss Stop (%)", 0, 50, int(st.session_state.get("max_weekly_loss",25)))
     st.session_state["max_daily_loss"] = max_daily_loss
@@ -2898,6 +3075,40 @@ with tabs[1]:
                         st.caption(f"Confidence band: {proj:.1f} ± {sigma:.1f} (μ±σ) — "
                                    f"{max(0,proj-sigma):.1f} to {proj+sigma:.1f}")
 
+                # [FEATURE] Under flip card — zero extra API calls, reuses p_cal from above
+                if bool(st.session_state.get("show_unders", False)):
+                    _p_cal_u = leg.get("p_cal")
+                    _p_imp_u_base = leg.get("p_implied")
+                    if _p_cal_u is not None and _p_imp_u_base is not None:
+                        _p_under = 1.0 - float(_p_cal_u)
+                        _p_imp_u = 1.0 - float(_p_imp_u_base)
+                        _vol_cv_u = leg.get("volatility_cv")
+                        _skew_u = leg.get("stat_skewness")
+                        _ev_u = (_p_under / _p_imp_u - 1.0) if _p_imp_u > 0 else None
+                        _gate_u, _reason_u = passes_volatility_gate(_vol_cv_u, _ev_u, skew=_skew_u, bet_type="Under")
+                        if _gate_u and not leg.get("dnp_risk") and _p_under >= 0.52:
+                            _ev_u_str = f"{_ev_u*100:+.1f}%" if _ev_u is not None else "--"
+                            _ec_u = color_for_edge(classify_edge(_ev_u))
+                            _adv_u = round(_p_under - _p_imp_u, 3)
+                            # Fractional Kelly stake for Under
+                            _pd_u = leg.get("price_decimal")
+                            _stake_u = 0.0
+                            if _ev_u and _ev_u > 0 and _pd_u and float(_pd_u) > 1:
+                                _kf_u = _ev_u / (float(_pd_u) - 1.0)
+                                _stake_u = min(bankroll * frac_kelly * _kf_u, bankroll * 0.05)
+                            _under_html = f"""<div style='background:#FF335808;border:1px solid #FF335830;border-radius:3px;padding:0.5rem 0.6rem;margin-top:0.3rem;'>
+<div style='font-family:Chakra Petch,monospace;font-size:0.58rem;color:#FF8080;letter-spacing:0.12em;margin-bottom:0.3rem;'>↓ UNDER FLIP</div>
+<div style='font-size:0.68rem;color:#EEF4FF;font-weight:600;'>{leg["player"]} U{leg["line"]:.1f}</div>
+{prob_bar_html(_p_under, label="P(UNDER)")}
+{prob_bar_html(_p_imp_u, label="IMPLIED")}
+<div style='display:flex;justify-content:space-between;margin-top:0.35rem;font-size:0.64rem;'>
+  <span style='color:#4A607A;'>EDGE</span><span style='color:{_ec_u};font-family:Fira Code,monospace;font-weight:600;'>{_ev_u_str}</span>
+  <span style='color:#4A607A;'>ADV</span><span style='color:#EEF4FF;font-family:Fira Code,monospace;'>{_adv_u:+.3f}</span>
+</div>
+{f"<div style='margin-top:0.35rem;background:#00FFB218;border:1px solid #00FFB230;border-radius:2px;padding:0.25rem 0.5rem;font-size:0.63rem;color:#00FFB2;font-family:Fira Code,monospace;'>REC STAKE: ${_stake_u:.2f}</div>" if _stake_u > 0 else ""}
+</div>"""
+                            st.markdown(_under_html, unsafe_allow_html=True)
+
         # Multi-leg combo
         if len(res) >= 2:
             st.markdown("<hr style='border-color:#1E2D3D;margin:1rem 0;'>", unsafe_allow_html=True)
@@ -3084,6 +3295,7 @@ with tabs[2]:
                         "market_key":ODDS_MARKETS.get(mkt),"side":r.get("side","Over")}
                 candidates.append((pname, mkt, float(line), meta))
             out_rows, dropped = [], []
+            all_computed_legs = []  # [FEATURE] Stores all computed legs for Under scan
             if candidates:
                 _inj_map = st.session_state.get("injury_team_map", {})
                 # Auto-load bulk game logs if not already cached (one-time, ~15-30s)
@@ -3116,6 +3328,8 @@ with tabs[2]:
                                 dropped.append({"player": pname, "market": mkt, "reason": f"thread error: {type(_te).__name__}: {_te}"})
                                 continue
                             leg = recompute_pricing_fields(leg, st.session_state.get("calibrator_map"))
+                            # [FEATURE] Capture every computed leg for Under scan (before gate filter)
+                            all_computed_legs.append((pname, mkt, float(line), meta, leg))
                             if not leg.get("gate_ok"):
                                 dropped.append({"player":pname,"market":mkt,"reason":leg.get("gate_reason","gated")}); continue
                             pc = float(leg.get("p_cal") or leg.get("p_over") or 0)
@@ -3174,6 +3388,55 @@ with tabs[2]:
                 st.session_state["scanner_dropped"] = dropped
                 st.warning("No legs met threshold criteria.")
 
+            # [FEATURE] Under scan: derive Under edges from cached computed legs (zero extra API calls)
+            if bool(st.session_state.get("show_unders", False)) and all_computed_legs:
+                under_rows = []
+                for _pn, _mk, _ln, _mt, _leg in all_computed_legs:
+                    _pc = float(_leg.get("p_cal") or _leg.get("p_over") or 0)
+                    _pi = _leg.get("p_implied")
+                    if _pi is None:
+                        continue
+                    _p_under = 1.0 - _pc
+                    _p_imp_u = 1.0 - float(_pi)
+                    if _p_imp_u <= 0 or _p_imp_u >= 1:
+                        continue
+                    _ev_u = (_p_under / _p_imp_u - 1.0)
+                    _gate_u, _ = passes_volatility_gate(
+                        _leg.get("volatility_cv"), _ev_u,
+                        skew=_leg.get("stat_skewness"), bet_type="Under"
+                    )
+                    if not _gate_u or _leg.get("dnp_risk"):
+                        continue
+                    if _p_under < min_prob:
+                        continue
+                    _adv_u = _p_under - _p_imp_u
+                    if _adv_u < min_adv or _ev_u < min_ev:
+                        continue
+                    under_rows.append({
+                        "side": "Under",
+                        "player": _pn, "market": _mk, "line": _ln,
+                        "p_cal": round(_p_under, 3),
+                        "p_implied": round(_p_imp_u, 3),
+                        "advantage": round(_adv_u, 3),
+                        "ev_adj_pct": round(_ev_u * 100, 2),
+                        "proj": safe_round(_leg.get("proj")),
+                        "edge_cat": classify_edge(_ev_u),
+                        "regime": _leg.get("regime", ""),
+                        "hot_cold": _leg.get("hot_cold", "Average"),
+                        "team": _leg.get("team", ""),
+                        "opp": _leg.get("opp", ""),
+                        "b2b": "B2B" if _leg.get("b2b") else "",
+                        "vol_cv": safe_round(_leg.get("volatility_cv")),
+                        "rest_d": _leg.get("rest_days", 2),
+                        "n_games": _leg.get("n_games_used", 0),
+                        "min_proj": safe_round(_leg.get("proj_minutes"), 0),
+                    })
+                if under_rows:
+                    under_df = pd.DataFrame(under_rows).sort_values("ev_adj_pct", ascending=False)
+                    st.session_state["scanner_under_results"] = under_df
+                else:
+                    st.session_state["scanner_under_results"] = pd.DataFrame()
+
     # [FIX 13] Always show last scanner results (persists across tab switches)
     scanner_out = st.session_state.get("scanner_results")
     if scanner_out is not None and not scanner_out.empty:
@@ -3193,6 +3456,28 @@ with tabs[2]:
             st.dataframe(styled, use_container_width=True)
         except Exception:
             st.dataframe(scanner_out, use_container_width=True)
+
+        # [FEATURE] Under opportunities panel (shown when toggle is on)
+        if bool(st.session_state.get("show_unders", False)):
+            under_out = st.session_state.get("scanner_under_results")
+            if under_out is not None and not under_out.empty:
+                st.markdown(
+                    f"<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;"
+                    f"color:#FF8080;letter-spacing:0.10em;margin:0.8rem 0 0.4rem;'>"
+                    f"↓ {len(under_out)} UNDER OPPORTUNITIES (from cached projections — 0 extra API calls)</div>",
+                    unsafe_allow_html=True
+                )
+                try:
+                    def _style_under_row(row):
+                        p = float(row.get("p_cal") or 0)
+                        if p >= 0.65:   return ["background-color:#FF335815;"] * len(row)
+                        elif p >= 0.58: return ["background-color:#FF335810;"] * len(row)
+                        else:           return ["background-color:#FF33580A;"] * len(row)
+                    st.dataframe(under_out.style.apply(_style_under_row, axis=1), use_container_width=True)
+                except Exception:
+                    st.dataframe(under_out, use_container_width=True)
+            elif under_out is not None:
+                st.caption("↓ No Under edges found meeting threshold criteria.")
 
         # [UPGRADE 21] One-click parlay builder from scanner results
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
