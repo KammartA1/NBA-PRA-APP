@@ -1,10 +1,7 @@
 # ============================================================
-# NBA PROP QUANT ENGINE v2.1 — Audit-Hardened + Enhanced
-# Premium Quant Terminal UI + Hardened Model
-# All audit fixes applied: Spearman, adaptive k, minutes filter,
-# season-phase rest, skewness gate, no-vig CLV, retry backoff,
-# negative-edge guard, calibrator OOD, alert dedup, PASS logging,
-# export button, persistent scanner, week-ahead, permanent IDs
+# NBA PROP QUANT ENGINE v2.2 — AI-Powered + Audit-Hardened
+# Claude AI integration: edge explainer, slate briefing,
+# parlay optimizer — plus all v2.1 fixes
 # ============================================================
 import os, re, math, time, json, difflib, hashlib, logging, threading
 from dataclasses import dataclass
@@ -16,6 +13,130 @@ import requests
 import streamlit as st
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
+
+# ──────────────────────────────────────────────
+# CLAUDE AI INTEGRATION
+# ──────────────────────────────────────────────
+def _get_anthropic_key():
+    """Get Anthropic API key from Streamlit secrets or environment."""
+    try:
+        return st.secrets.get("ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+    except Exception:
+        return os.environ.get("ANTHROPIC_API_KEY", "")
+
+def _anthropic_client():
+    """Return an Anthropic client or None if no key configured."""
+    key = _get_anthropic_key()
+    if not key:
+        return None
+    try:
+        import anthropic
+        return anthropic.Anthropic(api_key=key)
+    except ImportError:
+        return None
+
+@st.cache_data(ttl=60*60*4, show_spinner=False)
+def ai_explain_edge(player, market, line, side, proj, p_cal, ev_pct,
+                    edge_cat, hot_cold, rest_days, dnp_risk, b2b,
+                    opp, vol_cv, n_games, errors_str):
+    """Use Claude Haiku to generate a plain-English edge explanation for one leg."""
+    client = _anthropic_client()
+    if not client:
+        return None
+    try:
+        import anthropic
+        prob_pct = round((p_cal or 0) * 100, 1)
+        direction = "OVER" if side.lower() != "under" else "UNDER"
+        prompt = f"""You are an elite NBA prop betting analyst. Explain this prop bet projection concisely in 3-4 sentences for a sophisticated quantitative bettor.
+
+Player: {player}
+Prop: {market} {direction} {line}
+Model projection: {proj} {market} (vs line of {line})
+Calibrated win probability: {prob_pct}%
+Expected value: {ev_pct:+.1f}%
+Edge category: {edge_cat}
+Recent form: {hot_cold}
+Rest days: {rest_days} | Back-to-back: {b2b} | DNP risk: {dnp_risk}
+Opponent: {opp}
+Stat volatility (CV): {vol_cv}
+Sample size: {n_games} games
+Model flags: {errors_str or 'None'}
+
+Write a 3-4 sentence analysis covering: (1) why the model projects this outcome, (2) key risk factors, (3) one-line bet verdict. Be specific, confident, and quantitative. No bullet points."""
+
+        with client.messages.stream(
+            model="claude-haiku-4-5",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}]
+        ) as stream:
+            return stream.get_final_message().content[0].text.strip()
+    except Exception as e:
+        return f"AI analysis unavailable: {e}"
+
+@st.cache_data(ttl=60*60*2, show_spinner=False)
+def ai_slate_briefing(slate_json):
+    """Use Claude Sonnet to generate a comprehensive slate analysis."""
+    client = _anthropic_client()
+    if not client:
+        return None
+    try:
+        import anthropic
+        prompt = f"""You are a world-class NBA prop betting quant analyst writing a pre-game slate briefing. Based on the model's edge scan results below, provide a sharp, actionable slate analysis.
+
+SCANNER RESULTS (top edges found):
+{slate_json}
+
+Write a structured briefing covering:
+1. **Top 3 Plays** — The strongest model edges with specific reasoning
+2. **Injury/Context Alerts** — Players with DNP risk, B2B fatigue, or key teammate out
+3. **Parlay Opportunity** — 1-2 correlated legs worth combining (same team or game-script)
+4. **Fade Candidates** — Overvalued plays the market has wrong
+5. **One-Liner Summary** — Today's overall slate quality (1-2 sentences)
+
+Be specific with player names, lines, and percentages. Write like a quant fund's morning brief. Max 350 words."""
+
+        with client.messages.stream(
+            model="claude-sonnet-4-6",
+            max_tokens=500,
+            thinking={"type": "adaptive"},
+            messages=[{"role": "user", "content": prompt}]
+        ) as stream:
+            msg = stream.get_final_message()
+            return next((b.text for b in msg.content if b.type == "text"), "").strip()
+    except Exception as e:
+        return f"AI briefing unavailable: {e}"
+
+@st.cache_data(ttl=60*60*2, show_spinner=False)
+def ai_parlay_optimizer(legs_json):
+    """Use Claude Sonnet to recommend optimal parlay combinations."""
+    client = _anthropic_client()
+    if not client:
+        return None
+    try:
+        import anthropic
+        prompt = f"""You are a professional NBA prop parlay optimizer. Given these model-validated legs, recommend the optimal 2-4 leg parlay combinations considering correlation, EV, and risk.
+
+AVAILABLE LEGS (with model data):
+{legs_json}
+
+For each recommended parlay:
+- List the legs (player + market + line + side)
+- Explain WHY these legs correlate well (or are independent)
+- Give a combined probability estimate
+- Note any correlation risk (same team = shared risk)
+- Rate: ⭐⭐⭐ (Best), ⭐⭐ (Good), ⭐ (Speculative)
+
+Suggest 2-3 parlay combinations. Be concise and quantitative. Max 300 words."""
+
+        with client.messages.stream(
+            model="claude-sonnet-4-6",
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}]
+        ) as stream:
+            return stream.get_final_message().content[0].text.strip()
+    except Exception as e:
+        return f"AI parlay optimizer unavailable: {e}"
+
 from nba_api.stats.static import players as nba_players
 from nba_api.stats.static import teams as nba_teams
 from nba_api.stats.endpoints import (
@@ -2978,6 +3099,29 @@ with st.sidebar:
         else:
             st.caption("No players on watchlist.")
 
+    st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
+    with st.expander("🤖 AI Settings", expanded=False):
+        _ai_key_stored = st.session_state.get("_anthropic_key_override", "")
+        _ai_key_input = st.text_input(
+            "Anthropic API Key",
+            value=_ai_key_stored,
+            type="password",
+            help="Enter your Anthropic API key to enable Claude AI edge explanations, slate briefings & parlay optimizer.",
+            key="ai_key_sidebar_input"
+        )
+        if _ai_key_input != _ai_key_stored:
+            st.session_state["_anthropic_key_override"] = _ai_key_input
+            if _ai_key_input:
+                os.environ["ANTHROPIC_API_KEY"] = _ai_key_input
+        elif _ai_key_input and not os.environ.get("ANTHROPIC_API_KEY"):
+            os.environ["ANTHROPIC_API_KEY"] = _ai_key_input
+        _ai_active = _get_anthropic_key()
+        if _ai_active:
+            st.markdown("<div style='font-size:0.62rem;color:#00FFB2;margin-top:4px;'>✓ Claude AI Ready</div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='font-size:0.62rem;color:#4A607A;margin-top:4px;'>⚠ No key — AI features disabled</div>", unsafe_allow_html=True)
+        st.caption("Key used only for on-device API calls. Never stored on disk.")
+
 # ─── SESSION STATE INIT ────────────────────────────────────────
 for k in ["last_results","calibrator_map","scanner_offers","scanner_results"]:
     if k not in st.session_state: st.session_state[k] = None if k != "last_results" else []
@@ -3233,6 +3377,42 @@ with tabs[1]:
                         st.caption(f"Confidence band: {proj:.1f} ± {sigma:.1f} (μ±σ) — "
                                    f"{max(0,proj-sigma):.1f} to {proj+sigma:.1f}")
 
+                # 🤖 AI per-leg edge explanation
+                if _get_anthropic_key():
+                    _ai_leg_key = f"_ai_edge_{i}_{leg.get('player','x').replace(' ','_')[:20]}"
+                    if st.button("🤖 AI Edge Analysis", key=f"ai_edge_btn_{i}", use_container_width=True):
+                        with st.spinner("Claude analyzing edge…"):
+                            _ai_txt = ai_explain_edge(
+                                player=str(leg.get("player","?")),
+                                market=str(leg.get("market","?")),
+                                line=float(leg.get("line") or 0),
+                                side="Over",
+                                proj=float(leg.get("proj") or 0),
+                                p_cal=float(leg.get("p_cal") or 0),
+                                ev_pct=float(leg.get("ev_pct") or 0),
+                                edge_cat=str(leg.get("edge_cat","?")),
+                                hot_cold=str(leg.get("hot_cold","Average")),
+                                rest_days=int(leg.get("rest_days") or 2),
+                                dnp_risk=bool(leg.get("dnp_risk",False)),
+                                b2b=bool((leg.get("rest_days") or 2) == 0),
+                                opp=str(leg.get("opp","?")),
+                                vol_cv=float(leg.get("volatility_cv") or 0),
+                                n_games=int(leg.get("n_games_used") or 0),
+                                errors_str=", ".join((leg.get("errors") or [])[:3]),
+                            )
+                        st.session_state[_ai_leg_key] = _ai_txt
+                    _ai_leg_txt = st.session_state.get(_ai_leg_key)
+                    if _ai_leg_txt:
+                        st.markdown(
+                            f"<div style='background:#00AAFF0D;border:1px solid #00AAFF2A;"
+                            f"border-radius:3px;padding:0.55rem 0.75rem;margin-top:0.3rem;"
+                            f"font-size:0.65rem;color:#B8D0EC;line-height:1.55;'>"
+                            f"<span style='font-family:Chakra Petch,monospace;font-size:0.52rem;"
+                            f"color:#00AAFF;letter-spacing:0.10em;display:block;margin-bottom:0.3rem;'>"
+                            f"🤖 CLAUDE AI · EDGE ANALYSIS</span>{_ai_leg_txt}</div>",
+                            unsafe_allow_html=True,
+                        )
+
                 # [FEATURE] Under flip card — zero extra API calls, reuses p_cal from above
                 if bool(st.session_state.get("show_unders", False)):
                     _p_cal_u = leg.get("p_cal")
@@ -3325,6 +3505,39 @@ with tabs[1]:
                 st.dataframe(pd.DataFrame(combos), use_container_width=True)
             else:
                 st.warning("Need 2+ gated legs with P > 50% to generate combos.")
+
+        # 🎯 AI Parlay Optimizer
+        if _get_anthropic_key() and len(res) >= 2:
+            st.markdown("<hr style='border-color:#1E2D3D;margin:0.5rem 0;'>", unsafe_allow_html=True)
+            st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>🎯 AI PARLAY OPTIMIZER</div>", unsafe_allow_html=True)
+            if st.button("Generate AI Parlay Recommendations", use_container_width=True, key="ai_parlay_btn"):
+                with st.spinner("Claude optimizing parlay combinations…"):
+                    _legs_data = [
+                        {
+                            "player": l.get("player"), "market": l.get("market"),
+                            "line": l.get("line"), "side": "Over",
+                            "p_cal_%": round(float(l.get("p_cal") or 0) * 100, 1),
+                            "ev_%": round(float(l.get("ev_pct") or 0), 1),
+                            "edge_cat": l.get("edge_cat"), "team": l.get("team"),
+                            "opp": l.get("opp"), "hot_cold": l.get("hot_cold"),
+                            "gate_ok": l.get("gate_ok"),
+                        }
+                        for l in res
+                    ]
+                    _parlay_ai = ai_parlay_optimizer(json.dumps(_legs_data, indent=2))
+                st.session_state["_ai_parlay_result"] = _parlay_ai
+            _parlay_ai_txt = st.session_state.get("_ai_parlay_result")
+            if _parlay_ai_txt:
+                _parlay_html = _parlay_ai_txt.replace("\n", "<br>")
+                st.markdown(
+                    f"<div style='background:#00FFB20A;border:1px solid #00FFB228;"
+                    f"border-radius:4px;padding:0.8rem 1rem;margin-top:0.5rem;"
+                    f"font-size:0.68rem;color:#B0E8D0;line-height:1.6;'>"
+                    f"<span style='font-family:Chakra Petch,monospace;font-size:0.55rem;"
+                    f"color:#00FFB2;letter-spacing:0.1em;display:block;margin-bottom:0.5rem;'>"
+                    f"🎯 CLAUDE AI · PARLAY OPTIMIZER</span>{_parlay_html}</div>",
+                    unsafe_allow_html=True,
+                )
 
         # ── Monte Carlo Simulation ────────────────────────────
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
@@ -3668,6 +3881,38 @@ with tabs[2]:
             st.dataframe(styled, use_container_width=True)
         except Exception:
             st.dataframe(scanner_out, use_container_width=True)
+
+        # 📊 AI Slate Briefing
+        if _get_anthropic_key():
+            _sl_btn_col, _sl_clear_col = st.columns([3, 1])
+            with _sl_btn_col:
+                if st.button("📊 AI Slate Briefing", use_container_width=True, key="ai_slate_btn",
+                             help="Claude Sonnet analyzes today's top edges and writes an institutional-grade slate brief"):
+                    with st.spinner("Claude analyzing slate…"):
+                        _top_edges = scanner_out.head(15).to_dict(orient="records")
+                        _slate_payload = json.dumps([
+                            {k: v for k, v in r.items()
+                             if k in ["player","market","line","side","p_cal","ev_adj_pct",
+                                      "edge_cat","hot_cold","dnp?","opp","source"]}
+                            for r in _top_edges
+                        ], indent=2)
+                        _slate_ai = ai_slate_briefing(_slate_payload)
+                    st.session_state["_ai_slate_result"] = _slate_ai
+            with _sl_clear_col:
+                if st.button("Clear", key="ai_slate_clear_btn"):
+                    st.session_state.pop("_ai_slate_result", None)
+            _slate_ai_txt = st.session_state.get("_ai_slate_result")
+            if _slate_ai_txt:
+                _slate_html = _slate_ai_txt.replace("\n", "<br>")
+                st.markdown(
+                    f"<div style='background:#00AAFF0A;border:1px solid #00AAFF25;"
+                    f"border-radius:4px;padding:0.85rem 1.1rem;margin:0.5rem 0;"
+                    f"font-size:0.68rem;color:#B0C8E8;line-height:1.65;'>"
+                    f"<span style='font-family:Chakra Petch,monospace;font-size:0.58rem;"
+                    f"color:#00AAFF;letter-spacing:0.1em;display:block;margin-bottom:0.5rem;'>"
+                    f"📊 CLAUDE AI · SLATE BRIEFING</span>{_slate_html}</div>",
+                    unsafe_allow_html=True,
+                )
 
         # [FEATURE] Under opportunities panel (shown when toggle is on)
         if bool(st.session_state.get("show_unders", False)):
