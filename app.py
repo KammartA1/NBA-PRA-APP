@@ -181,10 +181,14 @@ STAT_FIELDS = {
 # Half-game projection scale factors
 HALF_FACTOR = {
     "H1 Points": 0.52, "H1 Rebounds": 0.52, "H1 Assists": 0.52,
-    "H1 3PM": 0.52, "H1 PRA": 0.52,
+    "H1 3PM": 0.52, "H1 PRA": 0.52, "H1 PR": 0.52, "H1 PA": 0.52,
+    "H1 FTM": 0.52, "H1 FTA": 0.52, "H1 FGM": 0.52, "H1 FGA": 0.52,
     "H2 Points": 0.48, "H2 Rebounds": 0.48, "H2 Assists": 0.48,
+    "H2 3PM": 0.48, "H2 PRA": 0.48, "H2 PR": 0.48, "H2 PA": 0.48,
+    "H2 FTM": 0.48, "H2 FTA": 0.48, "H2 FGM": 0.48, "H2 FGA": 0.48,
     # 1Q markets: ~25% of full-game (first quarter only)
     "Q1 Points": 0.25, "Q1 Rebounds": 0.24, "Q1 Assists": 0.24,
+    "Q1 3PM": 0.24, "Q1 PRA": 0.25, "Q1 FTM": 0.23, "Q1 FGA": 0.25,
 }
 
 # Alt markets — same engine, different API key
@@ -411,7 +415,9 @@ def compute_rest_factor(game_log_df, game_date):
             season_start = date(season_year, 10, 1)
             days_in = max(0, (game_date - season_start).days)
             games_approx = min(82, days_in // 2)
-            fatigue = 1.0 - 0.0008 * (games_approx / 82.0) * max(0, 2 - rest)
+            # Coefficient 0.015: late-season B2B should dent output ~1-2%
+            # (0.0008 was negligible at ~0.08%; 0.015 gives realistic 1.5% max)
+            fatigue = 1.0 - 0.015 * (games_approx / 82.0) * max(0, 2 - rest)
             base_mult *= fatigue
         except Exception:
             pass
@@ -586,7 +592,11 @@ def compute_projected_minutes(game_log_df, n_games=10):
         if active.empty:
             return None, True
         avg_min = float(active.mean())
-        dnp_risk = avg_min < 20.0 or (len(active) < len(df) * 0.7)
+        # DNP risk: player was actually held out (0-4 min) in 50%+ of recent games,
+        # or averaged <8 min active (deep rotation / G-League shuttle).
+        # 19 min/game is NOT dnp risk — that's a normal rotation player.
+        true_dnps = (mins <= 4).sum()
+        dnp_risk = avg_min < 8.0 or (true_dnps >= len(df) * 0.50)
         return avg_min, bool(dnp_risk)
     except Exception:
         return None, False
@@ -677,6 +687,9 @@ def empirical_leg_correlation(pid1, pid2, mkt1, mkt2, n_games=20):
 def estimate_player_correlation(leg1, leg2):
     pid1 = leg1.get("player_id")
     pid2 = leg2.get("player_id")
+    # Same player + same market = identical bet (perfect correlation)
+    if pid1 and pid2 and int(pid1) == int(pid2) and leg1.get("market") == leg2.get("market"):
+        return 1.0
     if pid1 and pid2:
         emp = empirical_leg_correlation(
             int(pid1), int(pid2), leg1.get("market","Points"), leg2.get("market","Points")
@@ -1672,9 +1685,11 @@ def save_opening_line(player_norm, market_key, side, line, price):
         if os.path.exists(OPENING_LINES_PATH):
             with open(OPENING_LINES_PATH) as f:
                 data = json.load(f)
-        key = f"{player_norm}|{market_key}|{side}"
+        # Include date in key so each day gets its own independent opening line
+        today = date.today().isoformat()
+        key = f"{player_norm}|{market_key}|{side}|{today}"
         if key not in data:  # Only write once per key (true opening)
-            data[key] = {"line": float(line), "price": price, "ts": _now_iso(), "date": date.today().isoformat()}
+            data[key] = {"line": float(line), "price": price, "ts": _now_iso(), "date": today}
             with open(OPENING_LINES_PATH, "w") as f:
                 json.dump(data, f)
     except Exception as ex:
@@ -1687,9 +1702,10 @@ def get_opening_line(player_norm, market_key, side):
             return None, None
         with open(OPENING_LINES_PATH) as f:
             data = json.load(f)
-        key = f"{player_norm}|{market_key}|{side}"
+        today = date.today().isoformat()
+        key = f"{player_norm}|{market_key}|{side}|{today}"
         rec = data.get(key)
-        if rec and rec.get("date") == date.today().isoformat():
+        if rec:
             return rec.get("line"), rec.get("price")
     except Exception as ex:
         logging.warning(f"get_opening_line: {ex}")
@@ -2157,15 +2173,23 @@ def compute_leg_projection(
 
     ha_mult = compute_home_away_factor(gldf_n, base_market, is_home_resolved)
     # [UPGRADE 8] Injury boost scaled by usage capacity
+    # Low-usage players absorb the most opportunity when a teammate goes out;
+    # high-usage players already near their ceiling, so smaller boost.
     _usage_boost = 1.05
     if key_teammate_out and usage_rate is not None:
-        if usage_rate >= 18:   _usage_boost = 1.04   # already high usage, less room
-        elif usage_rate >= 12: _usage_boost = 1.06   # moderate usage, more upside
-        else:                  _usage_boost = 1.03
+        if usage_rate >= 18:   _usage_boost = 1.03   # near ceiling, small room to expand
+        elif usage_rate >= 12: _usage_boost = 1.05   # moderate usage, moderate upside
+        else:                  _usage_boost = 1.08   # low baseline usage, highest opportunity gain
     ctx_mult = advanced_context_multiplier(player_name, base_market, opp_abbr, False)
     if key_teammate_out:
         ctx_mult *= _usage_boost
     blowout_prob = estimate_blowout_risk(team_abbr, opp_abbr, spread_abs=None)
+
+    # Blowout risk trims expected minutes: high-blowout games see starters sit early.
+    # Cap at 12% reduction (blowout_prob=0.80 → ×0.88) to avoid over-penalizing.
+    if proj_minutes is not None and blowout_prob is not None and blowout_prob > 0.20:
+        blowout_min_adj = 1.0 - min(0.12, (float(blowout_prob) - 0.20) * 0.20)
+        proj_minutes = proj_minutes * blowout_min_adj
 
     pos_str = get_player_position(player_name) or ""
     pos_bucket = get_position_bucket(pos_str)
