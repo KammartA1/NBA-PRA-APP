@@ -1,10 +1,7 @@
 # ============================================================
-# NBA PROP QUANT ENGINE v2.1 — Audit-Hardened + Enhanced
-# Premium Quant Terminal UI + Hardened Model
-# All audit fixes applied: Spearman, adaptive k, minutes filter,
-# season-phase rest, skewness gate, no-vig CLV, retry backoff,
-# negative-edge guard, calibrator OOD, alert dedup, PASS logging,
-# export button, persistent scanner, week-ahead, permanent IDs
+# NBA PROP QUANT ENGINE v2.2 — AI-Powered + Audit-Hardened
+# Claude AI integration: edge explainer, slate briefing,
+# parlay optimizer — plus all v2.1 fixes
 # ============================================================
 import os, re, math, time, json, difflib, hashlib, logging, threading
 from dataclasses import dataclass
@@ -16,6 +13,130 @@ import requests
 import streamlit as st
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
+
+# ──────────────────────────────────────────────
+# CLAUDE AI INTEGRATION
+# ──────────────────────────────────────────────
+def _get_anthropic_key():
+    """Get Anthropic API key from Streamlit secrets or environment."""
+    try:
+        return st.secrets.get("ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+    except Exception:
+        return os.environ.get("ANTHROPIC_API_KEY", "")
+
+def _anthropic_client():
+    """Return an Anthropic client or None if no key configured."""
+    key = _get_anthropic_key()
+    if not key:
+        return None
+    try:
+        import anthropic
+        return anthropic.Anthropic(api_key=key)
+    except ImportError:
+        return None
+
+@st.cache_data(ttl=60*60*4, show_spinner=False)
+def ai_explain_edge(player, market, line, side, proj, p_cal, ev_pct,
+                    edge_cat, hot_cold, rest_days, dnp_risk, b2b,
+                    opp, vol_cv, n_games, errors_str):
+    """Use Claude Haiku to generate a plain-English edge explanation for one leg."""
+    client = _anthropic_client()
+    if not client:
+        return None
+    try:
+        import anthropic
+        prob_pct = round((p_cal or 0) * 100, 1)
+        direction = "OVER" if side.lower() != "under" else "UNDER"
+        prompt = f"""You are an elite NBA prop betting analyst. Explain this prop bet projection concisely in 3-4 sentences for a sophisticated quantitative bettor.
+
+Player: {player}
+Prop: {market} {direction} {line}
+Model projection: {proj} {market} (vs line of {line})
+Calibrated win probability: {prob_pct}%
+Expected value: {ev_pct:+.1f}%
+Edge category: {edge_cat}
+Recent form: {hot_cold}
+Rest days: {rest_days} | Back-to-back: {b2b} | DNP risk: {dnp_risk}
+Opponent: {opp}
+Stat volatility (CV): {vol_cv}
+Sample size: {n_games} games
+Model flags: {errors_str or 'None'}
+
+Write a 3-4 sentence analysis covering: (1) why the model projects this outcome, (2) key risk factors, (3) one-line bet verdict. Be specific, confident, and quantitative. No bullet points."""
+
+        with client.messages.stream(
+            model="claude-haiku-4-5",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}]
+        ) as stream:
+            return stream.get_final_message().content[0].text.strip()
+    except Exception as e:
+        return f"AI analysis unavailable: {e}"
+
+@st.cache_data(ttl=60*60*2, show_spinner=False)
+def ai_slate_briefing(slate_json):
+    """Use Claude Sonnet to generate a comprehensive slate analysis."""
+    client = _anthropic_client()
+    if not client:
+        return None
+    try:
+        import anthropic
+        prompt = f"""You are a world-class NBA prop betting quant analyst writing a pre-game slate briefing. Based on the model's edge scan results below, provide a sharp, actionable slate analysis.
+
+SCANNER RESULTS (top edges found):
+{slate_json}
+
+Write a structured briefing covering:
+1. **Top 3 Plays** — The strongest model edges with specific reasoning
+2. **Injury/Context Alerts** — Players with DNP risk, B2B fatigue, or key teammate out
+3. **Parlay Opportunity** — 1-2 correlated legs worth combining (same team or game-script)
+4. **Fade Candidates** — Overvalued plays the market has wrong
+5. **One-Liner Summary** — Today's overall slate quality (1-2 sentences)
+
+Be specific with player names, lines, and percentages. Write like a quant fund's morning brief. Max 350 words."""
+
+        with client.messages.stream(
+            model="claude-sonnet-4-6",
+            max_tokens=500,
+            thinking={"type": "adaptive"},
+            messages=[{"role": "user", "content": prompt}]
+        ) as stream:
+            msg = stream.get_final_message()
+            return next((b.text for b in msg.content if b.type == "text"), "").strip()
+    except Exception as e:
+        return f"AI briefing unavailable: {e}"
+
+@st.cache_data(ttl=60*60*2, show_spinner=False)
+def ai_parlay_optimizer(legs_json):
+    """Use Claude Sonnet to recommend optimal parlay combinations."""
+    client = _anthropic_client()
+    if not client:
+        return None
+    try:
+        import anthropic
+        prompt = f"""You are a professional NBA prop parlay optimizer. Given these model-validated legs, recommend the optimal 2-4 leg parlay combinations considering correlation, EV, and risk.
+
+AVAILABLE LEGS (with model data):
+{legs_json}
+
+For each recommended parlay:
+- List the legs (player + market + line + side)
+- Explain WHY these legs correlate well (or are independent)
+- Give a combined probability estimate
+- Note any correlation risk (same team = shared risk)
+- Rate: ⭐⭐⭐ (Best), ⭐⭐ (Good), ⭐ (Speculative)
+
+Suggest 2-3 parlay combinations. Be concise and quantitative. Max 300 words."""
+
+        with client.messages.stream(
+            model="claude-sonnet-4-6",
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}]
+        ) as stream:
+            return stream.get_final_message().content[0].text.strip()
+    except Exception as e:
+        return f"AI parlay optimizer unavailable: {e}"
+
 from nba_api.stats.static import players as nba_players
 from nba_api.stats.static import teams as nba_teams
 from nba_api.stats.endpoints import (
@@ -245,8 +366,52 @@ LAMBDA_DECAY_BY_STAT = {
 }
 
 # Persistent file paths
-OPENING_LINES_PATH = "opening_lines.json"
-WATCHLIST_PATH_TPL  = "watchlist_{uid}.json"
+OPENING_LINES_PATH   = "opening_lines.json"
+WATCHLIST_PATH_TPL   = "watchlist_{uid}.json"
+SCANNER_CACHE_PATH   = "scanner_results_cache.pkl"
+ALERT_HASHES_PATH    = "alert_hashes_cache.json"
+
+
+def _save_scanner_cache():
+    """Persist scanner results to disk so they survive server restarts / WebSocket drops."""
+    import pickle
+    try:
+        _cache = {
+            "scanner_results":       st.session_state.get("scanner_results"),
+            "scanner_dropped":       st.session_state.get("scanner_dropped"),
+            "scanner_scan_id":       st.session_state.get("scanner_scan_id"),
+            "scanner_under_results": st.session_state.get("scanner_under_results"),
+        }
+        with open(SCANNER_CACHE_PATH, "wb") as _f:
+            pickle.dump(_cache, _f)
+    except Exception:
+        pass
+
+
+def _load_scanner_cache() -> dict:
+    import pickle
+    try:
+        with open(SCANNER_CACHE_PATH, "rb") as _f:
+            return pickle.load(_f)
+    except Exception:
+        return {}
+
+
+def _save_alert_hashes(hashes: set):
+    """Persist sent-alert hashes to disk so dedup survives session resets."""
+    try:
+        with open(ALERT_HASHES_PATH, "w") as _f:
+            json.dump(list(hashes), _f)
+    except Exception:
+        pass
+
+
+def _load_alert_hashes() -> set:
+    try:
+        with open(ALERT_HASHES_PATH) as _f:
+            return set(json.load(_f))
+    except Exception:
+        return set()
 
 # ──────────────────────────────────────────────
 # PLAYER POSITION CACHE
@@ -333,7 +498,7 @@ def get_season_string(today=None):
 # ──────────────────────────────────────────────
 # BULK GAME LOG — one API call for ALL players
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*10, show_spinner=False)  # [AUDIT FIX] 10min (was 30min) — mid-season trades need freshness
+@st.cache_data(ttl=60*30, show_spinner=False)  # 30min — balances freshness vs API quota
 def _fetch_bulk_gamelogs():
     """LeagueGameLog: ONE call returns every player's game log for the season.
     Replaces ~200 individual PlayerGameLog calls for a full-slate scan.
@@ -407,7 +572,7 @@ def fetch_player_gamelog(player_id, max_games=15):
 # start_period/end_period parameters give cumulative splits
 # (H1=1-2, H2=3-4, Q1=1-1) without extra joins.
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*60*12, show_spinner=False)
+@st.cache_data(ttl=60*60*3, show_spinner=False)  # 3h — games finish in ~3h; 12h was serving stale period stats
 def _fetch_boxscore_halfgame(game_id, player_id_int, start_period, end_period):
     """Return {PTS, REB, AST, ...} for a player over a specific period range, or None."""
     try:
@@ -559,7 +724,8 @@ def bayesian_shrink(observed_mu, n_obs, market, position_bucket):
     k = max(2.0, 8.0 / (1.0 + math.log1p(max(n_obs, 1) / 5.0)))
     w_prior = k / (k + max(n_obs, 1))
     w_obs   = 1.0 - w_prior
-    return float(w_prior * prior + w_obs * observed_mu)
+    # Clip to >= 0: stat means can't be negative
+    return max(0.0, float(w_prior * prior + w_obs * observed_mu))
 
 # ──────────────────────────────────────────────
 # STAT SERIES COMPUTATION
@@ -1591,16 +1757,28 @@ def _parse_pp_response(data):
 
 def _pp_request(per_page=500, cookies_str=""):
     """Make one PrizePicks API request.
-    Tries curl_cffi (Chrome TLS impersonation) first, then plain requests.
+    Tries curl_cffi (Chrome TLS impersonation) → cloudscraper → plain requests.
     Returns (response_object_or_None, error_str_or_None).
     """
     url = PRIZEPICKS_API
     params = {"league_id": "7", "per_page": str(per_page),
               "single_stat": "true", "in_play": "false"}
+    # Full Chrome 120 headers — reduces bot-detection fingerprint
     headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/vnd.api+json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
         "Referer": "https://app.prizepicks.com/",
         "Origin": "https://app.prizepicks.com",
+        "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+        "Connection": "keep-alive",
+        "DNT": "1",
     }
     # Parse optional cookie string from user settings
     cookie_dict = {}
@@ -1620,13 +1798,29 @@ def _pp_request(per_page=500, cookies_str=""):
             impersonate="chrome120",
             timeout=25,
         )
-        return r, None
+        if r.status_code not in (403, 429):
+            return r, None
     except ImportError:
         pass
-    except Exception as e:
-        pass  # fall through to plain requests
+    except Exception:
+        pass
 
-    # ── Attempt 2: plain requests (works locally, blocked on cloud IPs) ──
+    # ── Attempt 2: cloudscraper (handles Cloudflare JS challenges) ──
+    try:
+        import cloudscraper
+        scraper = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "mobile": False}
+        )
+        r = scraper.get(url, params=params, headers=headers,
+                        cookies=cookie_dict or None, timeout=25)
+        if r.status_code not in (403, 429):
+            return r, None
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # ── Attempt 3: plain requests (works locally, often blocked on cloud IPs) ──
     try:
         r = requests.get(url, params=params, headers=headers,
                          cookies=cookie_dict or None, timeout=20)
@@ -1697,41 +1891,66 @@ _UD_BASKETBALL_SPORT_IDS = {"nba", "basketball", "5", "4", "nba_basketball", "ba
 @st.cache_data(ttl=60*10, show_spinner=False)
 def _fetch_underdog_lines_cached():
     """Inner cached fetch — call via fetch_underdog_lines() which clears cache first."""
+    last_err = "No Underdog props found — slate may not be posted yet"
     for url in _UNDERDOG_ENDPOINTS:
         try:
-            r = requests.get(url, headers=_UD_HEADERS, timeout=20)
+            # Try curl_cffi first (Chrome impersonation bypasses some bot blocks)
+            try:
+                from curl_cffi import requests as cffi_requests
+                r = cffi_requests.get(url, headers=_UD_HEADERS, impersonate="chrome120", timeout=20)
+            except ImportError:
+                r = requests.get(url, headers=_UD_HEADERS, timeout=20)
             if r.status_code == 429:
                 return [], "Underdog rate-limited (429) — try again in 30s"
+            if r.status_code == 403:
+                last_err = "Underdog HTTP 403 — API blocked on this server. Use Manual Import to paste JSON."
+                continue
             if not r.ok:
+                last_err = f"Underdog HTTP {r.status_code} from {url}"
                 continue
             data = r.json()
-            appearances = {a["id"]: a for a in data.get("appearances", [])}
-            players_map = {p["id"]: p for p in data.get("players", [])}
+            # Build lookup maps — handle both v3 and v4 response shapes
+            appearances = {}
+            for a in data.get("appearances", []):
+                appearances[str(a.get("id", ""))] = a
+            players_map = {}
+            for p in data.get("players", []):
+                players_map[str(p.get("id", ""))] = p
             rows = []
-            for line in data.get("over_under_lines", []):
-                app_stat = line.get("over_under", {}).get("appearance_stat", {})
-                app_id = str(app_stat.get("appearance_id", ""))
-                app = appearances.get(app_id, {})
-                sport = str(app.get("sport_id", "")).lower()
-                if sport and sport not in _UD_BASKETBALL_SPORT_IDS:
+            # v3/v4: over_under_lines list
+            lines_list = data.get("over_under_lines", data.get("lines", []))
+            for line in lines_list:
+                try:
+                    ou = line.get("over_under", line)  # v3 nests under "over_under"
+                    app_stat = ou.get("appearance_stat", {})
+                    app_id = str(app_stat.get("appearance_id", ""))
+                    app = appearances.get(app_id, {})
+                    # Sport filter: allow NBA/basketball, or empty/unknown (pass-through)
+                    sport = str(app.get("sport_id", app.get("sport", ""))).lower().strip()
+                    if sport and sport not in _UD_BASKETBALL_SPORT_IDS:
+                        continue
+                    player_id = str(app.get("player_id", ""))
+                    player = players_map.get(player_id, {})
+                    player_name = (
+                        f"{player.get('first_name','')} {player.get('last_name','')}".strip()
+                        or player.get("name", "")
+                    )
+                    stat_type = app_stat.get("display_stat", app_stat.get("stat", ""))
+                    stat_value = line.get("stat_value", ou.get("stat_value"))
+                    if player_name and stat_type and stat_value is not None:
+                        rows.append({
+                            "player": player_name,
+                            "stat_type": stat_type,
+                            "line": float(stat_value),
+                            "source": "underdog",
+                        })
+                except Exception:
                     continue
-                player_id = str(app.get("player_id", ""))
-                player = players_map.get(player_id, {})
-                player_name = f"{player.get('first_name','')} {player.get('last_name','')}".strip()
-                stat_type = app_stat.get("display_stat", "")
-                stat_value = line.get("stat_value")
-                if player_name and stat_type and stat_value is not None:
-                    rows.append({
-                        "player": player_name,
-                        "stat_type": stat_type,
-                        "line": float(stat_value),
-                        "source": "underdog",
-                    })
             if rows:
                 return rows, None
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
-    return [], locals().get("last_err", "No Underdog props found — slate may not be posted yet")
+    return [], last_err
 
 def fetch_underdog_lines():
     """Clear cache then fetch fresh Underdog lines."""
@@ -2463,11 +2682,16 @@ def compute_leg_projection(
     if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj >= 0.02:
         stake_dollars, stake_frac, stake_reason = recommended_stake(
             bankroll, float(p_cal), float(price_decimal), frac_kelly, max_risk_frac)
-        # [AUDIT FIX] DNP risk halves stake — player may not dress, don't fully commit
+        # [AUDIT FIX] DNP risk: halve stake normally; zero out when avg minutes < 5 (extreme risk)
         if dnp_risk and stake_dollars > 0:
-            stake_dollars *= 0.50
-            stake_frac   *= 0.50
-            stake_reason  = "dnp_risk_half"
+            if proj_minutes is not None and float(proj_minutes) < 5.0:
+                stake_dollars = 0.0
+                stake_frac   = 0.0
+                stake_reason  = "dnp_risk_zero"
+            else:
+                stake_dollars *= 0.50
+                stake_frac   *= 0.50
+                stake_reason  = "dnp_risk_half"
 
     mk_key = meta.get("market_key") if meta else ODDS_MARKETS.get(market_name,"")
     player_norm = normalize_name(player_name)
@@ -2823,6 +3047,14 @@ with st.sidebar:
         state = load_user_state(user_id)
         st.session_state["bankroll"] = safe_float(state.get("bankroll"), default=st.session_state.get("bankroll",1000.0))
         st.session_state["_active_user_id"] = user_id
+        # Clear previous user's data so it doesn't leak into new user session
+        for _ck in ["last_results","scanner_results","scanner_under_results",
+                    "pp_lines","ud_lines","scanner_offers","calibrator_map",
+                    "injury_team_map","scanner_dropped","scanner_scan_id"]:
+            st.session_state.pop(_ck, None)
+        for _si in range(1, 5):
+            for _pfx in ("pname_","mkt_","mline_","manual_","out_","line_"):
+                st.session_state.pop(f"{_pfx}{_si}", None)
     bankroll = st.number_input("Bankroll ($)", min_value=0.0, value=float(st.session_state.get("bankroll",1000.0)), step=50.0)
     st.session_state["bankroll"] = float(bankroll)
     _lb = st.session_state.get("_last_saved_bankroll")
@@ -2895,9 +3127,44 @@ with st.sidebar:
         else:
             st.caption("No players on watchlist.")
 
+    st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
+    with st.expander("🤖 AI Settings", expanded=False):
+        _ai_key_stored = st.session_state.get("_anthropic_key_override", "")
+        _ai_key_input = st.text_input(
+            "Anthropic API Key",
+            value=_ai_key_stored,
+            type="password",
+            help="Enter your Anthropic API key to enable Claude AI edge explanations, slate briefings & parlay optimizer.",
+            key="ai_key_sidebar_input"
+        )
+        if _ai_key_input != _ai_key_stored:
+            st.session_state["_anthropic_key_override"] = _ai_key_input
+            if _ai_key_input:
+                os.environ["ANTHROPIC_API_KEY"] = _ai_key_input
+        elif _ai_key_input and not os.environ.get("ANTHROPIC_API_KEY"):
+            os.environ["ANTHROPIC_API_KEY"] = _ai_key_input
+        _ai_active = _get_anthropic_key()
+        if _ai_active:
+            st.markdown("<div style='font-size:0.62rem;color:#00FFB2;margin-top:4px;'>✓ Claude AI Ready</div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='font-size:0.62rem;color:#4A607A;margin-top:4px;'>⚠ No key — AI features disabled</div>", unsafe_allow_html=True)
+        st.caption("Key used only for on-device API calls. Never stored on disk.")
+
 # ─── SESSION STATE INIT ────────────────────────────────────────
 for k in ["last_results","calibrator_map","scanner_offers","scanner_results"]:
     if k not in st.session_state: st.session_state[k] = None if k != "last_results" else []
+
+# Restore scanner results from disk if session state was just reset (server restart / WS drop)
+if st.session_state.get("scanner_results") is None:
+    _disk_cache = _load_scanner_cache()
+    if _disk_cache.get("scanner_results") is not None:
+        for _ck, _cv in _disk_cache.items():
+            st.session_state[_ck] = _cv
+
+# Restore alert dedup hashes from disk so re-alerts don't fire after session reset
+if "_scanner_alert_hashes" not in st.session_state:
+    st.session_state["_scanner_alert_hashes"] = _load_alert_hashes()
+
 MARKET_OPTIONS = list(ODDS_MARKETS.keys())
 
 def _daily_pnl(uid):
@@ -2921,8 +3188,21 @@ def _check_loss_stops(uid, bankroll):
 # ─── TABS ─────────────────────────────────────────────────────
 tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "INSIGHTS", "ALERTS"])
 
+# Consume staged scanner→model inputs before any widgets render (prevents StreamlitAPIException)
+for _si in range(1, 5):
+    if f"_staged_pname_{_si}" in st.session_state:
+        st.session_state[f"pname_{_si}"]  = st.session_state.pop(f"_staged_pname_{_si}")
+    if f"_staged_mkt_{_si}" in st.session_state:
+        st.session_state[f"mkt_{_si}"]    = st.session_state.pop(f"_staged_mkt_{_si}")
+    if f"_staged_mline_{_si}" in st.session_state:
+        st.session_state[f"mline_{_si}"]  = st.session_state.pop(f"_staged_mline_{_si}")
+    if f"_staged_manual_{_si}" in st.session_state:
+        st.session_state[f"manual_{_si}"] = st.session_state.pop(f"_staged_manual_{_si}")
+    if f"_staged_out_{_si}" in st.session_state:
+        st.session_state[f"out_{_si}"]    = st.session_state.pop(f"_staged_out_{_si}")
+
 with tabs[0]:
-    _check_loss_stops(user_id, bankroll)
+    _loss_stop_hit = _check_loss_stops(user_id, bankroll)
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>CONFIGURE UP TO 4 LEGS</div>""", unsafe_allow_html=True)
     date_col, book_col = st.columns([2,2])
     with date_col:
@@ -2942,13 +3222,16 @@ with tabs[0]:
                 pname = st.text_input(f"Player", key=f"pname_{leg_n}", placeholder="e.g. LeBron James")
                 mkt = st.selectbox(f"Market", options=MARKET_OPTIONS, key=f"mkt_{leg_n}")
                 manual = st.checkbox(f"Manual line", key=f"manual_{leg_n}")
+                if manual:
+                    st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#FFB800;letter-spacing:0.10em;margin:-4px 0 2px 0;'>⚠ MANUAL — not from Odds API</div>", unsafe_allow_html=True)
                 mline = st.number_input(f"Line", min_value=0.0, value=float(st.session_state.get(f"line_{leg_n}",22.5)), step=0.5, key=f"mline_{leg_n}")
                 out_cb = st.checkbox(f"Key teammate OUT?", key=f"out_{leg_n}")
                 leg_configs.append((tag, pname, mkt, manual, mline, out_cb))
     if st.session_state.get("_auto_run_model"):
         st.info("⚡ Legs loaded from Live Scanner — running model automatically...")
-    run_btn = st.button("RUN MODEL", use_container_width=True) or bool(st.session_state.pop("_auto_run_model", False))
-    if run_btn:
+    run_btn = (st.button("RUN MODEL", use_container_width=True, disabled=_loss_stop_hit)
+               or bool(st.session_state.pop("_auto_run_model", False)))
+    if run_btn and not _loss_stop_hit:
         results = []; warnings = []; tasks = []
         for (tag, pname, mkt, manual, mline, teammate_out) in leg_configs:
             pname = (pname or "").strip()
@@ -3122,6 +3405,42 @@ with tabs[1]:
                         st.caption(f"Confidence band: {proj:.1f} ± {sigma:.1f} (μ±σ) — "
                                    f"{max(0,proj-sigma):.1f} to {proj+sigma:.1f}")
 
+                # 🤖 AI per-leg edge explanation
+                if _get_anthropic_key():
+                    _ai_leg_key = f"_ai_edge_{i}_{leg.get('player','x').replace(' ','_')[:20]}"
+                    if st.button("🤖 AI Edge Analysis", key=f"ai_edge_btn_{i}", use_container_width=True):
+                        with st.spinner("Claude analyzing edge…"):
+                            _ai_txt = ai_explain_edge(
+                                player=str(leg.get("player","?")),
+                                market=str(leg.get("market","?")),
+                                line=float(leg.get("line") or 0),
+                                side="Over",
+                                proj=float(leg.get("proj") or 0),
+                                p_cal=float(leg.get("p_cal") or 0),
+                                ev_pct=float(leg.get("ev_pct") or 0),
+                                edge_cat=str(leg.get("edge_cat","?")),
+                                hot_cold=str(leg.get("hot_cold","Average")),
+                                rest_days=int(leg.get("rest_days") or 2),
+                                dnp_risk=bool(leg.get("dnp_risk",False)),
+                                b2b=bool((leg.get("rest_days") or 2) == 0),
+                                opp=str(leg.get("opp","?")),
+                                vol_cv=float(leg.get("volatility_cv") or 0),
+                                n_games=int(leg.get("n_games_used") or 0),
+                                errors_str=", ".join((leg.get("errors") or [])[:3]),
+                            )
+                        st.session_state[_ai_leg_key] = _ai_txt
+                    _ai_leg_txt = st.session_state.get(_ai_leg_key)
+                    if _ai_leg_txt:
+                        st.markdown(
+                            f"<div style='background:#00AAFF0D;border:1px solid #00AAFF2A;"
+                            f"border-radius:3px;padding:0.55rem 0.75rem;margin-top:0.3rem;"
+                            f"font-size:0.65rem;color:#B8D0EC;line-height:1.55;'>"
+                            f"<span style='font-family:Chakra Petch,monospace;font-size:0.52rem;"
+                            f"color:#00AAFF;letter-spacing:0.10em;display:block;margin-bottom:0.3rem;'>"
+                            f"🤖 CLAUDE AI · EDGE ANALYSIS</span>{_ai_leg_txt}</div>",
+                            unsafe_allow_html=True,
+                        )
+
                 # [FEATURE] Under flip card — zero extra API calls, reuses p_cal from above
                 if bool(st.session_state.get("show_unders", False)):
                     _p_cal_u = leg.get("p_cal")
@@ -3215,6 +3534,39 @@ with tabs[1]:
             else:
                 st.warning("Need 2+ gated legs with P > 50% to generate combos.")
 
+        # 🎯 AI Parlay Optimizer
+        if _get_anthropic_key() and len(res) >= 2:
+            st.markdown("<hr style='border-color:#1E2D3D;margin:0.5rem 0;'>", unsafe_allow_html=True)
+            st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>🎯 AI PARLAY OPTIMIZER</div>", unsafe_allow_html=True)
+            if st.button("Generate AI Parlay Recommendations", use_container_width=True, key="ai_parlay_btn"):
+                with st.spinner("Claude optimizing parlay combinations…"):
+                    _legs_data = [
+                        {
+                            "player": l.get("player"), "market": l.get("market"),
+                            "line": l.get("line"), "side": "Over",
+                            "p_cal_%": round(float(l.get("p_cal") or 0) * 100, 1),
+                            "ev_%": round(float(l.get("ev_pct") or 0), 1),
+                            "edge_cat": l.get("edge_cat"), "team": l.get("team"),
+                            "opp": l.get("opp"), "hot_cold": l.get("hot_cold"),
+                            "gate_ok": l.get("gate_ok"),
+                        }
+                        for l in res
+                    ]
+                    _parlay_ai = ai_parlay_optimizer(json.dumps(_legs_data, indent=2))
+                st.session_state["_ai_parlay_result"] = _parlay_ai
+            _parlay_ai_txt = st.session_state.get("_ai_parlay_result")
+            if _parlay_ai_txt:
+                _parlay_html = _parlay_ai_txt.replace("\n", "<br>")
+                st.markdown(
+                    f"<div style='background:#00FFB20A;border:1px solid #00FFB228;"
+                    f"border-radius:4px;padding:0.8rem 1rem;margin-top:0.5rem;"
+                    f"font-size:0.68rem;color:#B0E8D0;line-height:1.6;'>"
+                    f"<span style='font-family:Chakra Petch,monospace;font-size:0.55rem;"
+                    f"color:#00FFB2;letter-spacing:0.1em;display:block;margin-bottom:0.5rem;'>"
+                    f"🎯 CLAUDE AI · PARLAY OPTIMIZER</span>{_parlay_html}</div>",
+                    unsafe_allow_html=True,
+                )
+
         # ── Monte Carlo Simulation ────────────────────────────
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>MONTE CARLO GAME SIMULATION</div>", unsafe_allow_html=True)
@@ -3254,8 +3606,64 @@ with tabs[2]:
     with sf3: min_ev   = st.slider("Min EV (adj)", -0.05, 0.25, 0.01, 0.005)
     max_rows = st.slider("Max Results", 10, 200, 60, 10)
 
+    # ── Platform Lines (PP / UD) inline in scanner ──────────────────────
+    with st.expander("📱 Platform Lines — PrizePicks & Underdog (scan against platform lines)", expanded=False):
+        _plat_c1, _plat_c2, _plat_c3 = st.columns(3)
+        with _plat_c1:
+            st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;'>PRIZEPICKS</div>", unsafe_allow_html=True)
+            _pp_ck = st.session_state.get("pp_cookies","")
+            if _pp_ck:
+                st.caption(f"Cookie auth active ({len(_pp_ck)} chars)")
+            else:
+                _pp_ck_new = st.text_input("PP Cookies (optional)", value="", type="password", key="scanner_pp_cookies", help="Paste your PrizePicks browser cookies to bypass Cloudflare blocks")
+                if _pp_ck_new:
+                    st.session_state["pp_cookies"] = _pp_ck_new
+            if st.button("Fetch PP Lines", key="scanner_fetch_pp_btn", use_container_width=True):
+                with st.spinner("Fetching PrizePicks…"):
+                    _pp_rows, _pp_err = fetch_prizepicks_lines()
+                if _pp_err:
+                    st.error(f"PP error: {_pp_err}")
+                elif _pp_rows:
+                    _pp_df = pd.DataFrame(_pp_rows)
+                    st.session_state["pp_lines"] = _pp_df
+                    st.success(f"✓ {len(_pp_rows)} PP props loaded")
+                else:
+                    st.warning("PP returned 0 props — slate may not be posted yet")
+            _pp_loaded = st.session_state.get("pp_lines")
+            if _pp_loaded is not None and not _pp_loaded.empty:
+                st.markdown(f"<div style='font-size:0.60rem;color:#00FFB2;'>✓ {len(_pp_loaded)} PP lines ready</div>", unsafe_allow_html=True)
+
+        with _plat_c2:
+            st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#FFB800;'>UNDERDOG</div>", unsafe_allow_html=True)
+            if st.button("Fetch Underdog Lines", key="scanner_fetch_ud_btn", use_container_width=True):
+                with st.spinner("Fetching Underdog…"):
+                    _ud_rows, _ud_err = fetch_underdog_lines()
+                if _ud_err:
+                    st.error(f"UD error: {_ud_err}")
+                elif _ud_rows:
+                    _ud_df = pd.DataFrame(_ud_rows)
+                    st.session_state["ud_lines"] = _ud_df
+                    st.success(f"✓ {len(_ud_rows)} UD props loaded")
+                else:
+                    st.warning("UD returned 0 props")
+            _ud_loaded = st.session_state.get("ud_lines")
+            if _ud_loaded is not None and not _ud_loaded.empty:
+                st.markdown(f"<div style='font-size:0.60rem;color:#FFB800;'>✓ {len(_ud_loaded)} UD lines ready</div>", unsafe_allow_html=True)
+
+        with _plat_c3:
+            st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#4A607A;'>SCAN SOURCE</div>", unsafe_allow_html=True)
+            _scan_source = st.radio(
+                "Lines to scan",
+                ["Odds API only", "PP + UD only", "All sources"],
+                index=int(st.session_state.get("scan_source_idx", 0)),
+                key="scan_source_radio",
+                label_visibility="collapsed",
+            )
+            st.session_state["scan_source_idx"] = ["Odds API only","PP + UD only","All sources"].index(_scan_source)
+            st.caption("PP/UD implied prob: 0.50 (no vig)  Odds API: from market price")
+
     fetch_col, scan_col = st.columns(2)
-    if fetch_col.button("Fetch Live Lines", use_container_width=True):
+    if fetch_col.button("Fetch Live Lines (Odds API)", use_container_width=True):
         selected_keys = list(dict.fromkeys(ODDS_MARKETS.get(m) for m in markets_sel if ODDS_MARKETS.get(m)))
         if not selected_keys:
             st.warning("Select at least one market.")
@@ -3326,28 +3734,62 @@ with tabs[2]:
             st.warning("Bulk load failed — scanner will fall back to per-player fetches.")
 
     if scan_col.button("Run Scan", use_container_width=True):
+        _scan_source = st.session_state.get("scan_source_radio", "Odds API only")
         df = st.session_state.get("scanner_offers")
-        if df is None or (hasattr(df, 'empty') and df.empty):
-            st.warning("Fetch lines first.")
+        _use_odds_api = _scan_source in ("Odds API only", "All sources")
+        _use_platforms = _scan_source in ("PP + UD only", "All sources")
+
+        # Validate we have something to scan
+        _odds_has_data = df is not None and not (hasattr(df, 'empty') and df.empty)
+        _pp_has_data   = bool(st.session_state.get("pp_lines") is not None and not st.session_state["pp_lines"].empty)
+        _ud_has_data   = bool(st.session_state.get("ud_lines") is not None and not st.session_state["ud_lines"].empty)
+        if _use_odds_api and not _odds_has_data and not _use_platforms:
+            st.warning("Fetch Odds API lines first, or switch to PP + UD source.")
+        elif _use_platforms and not _pp_has_data and not _ud_has_data and not _use_odds_api:
+            st.warning("Load PrizePicks or Underdog lines first (expand 'Platform Lines' above).")
         else:
-            df2 = df[df["side"].str.lower().isin(["over","o"])].copy()
-            # [AUDIT FIX] Old fallback silently scanned Under legs when no Overs existed —
-            # violates scan intent. Warn instead and scan nothing.
-            if df2.empty:
-                st.warning("No OVER props found in fetched offers. Fetch lines again or check the sportsbook/market filter.")
-                df2 = pd.DataFrame()
             candidates = []
-            for _, r in df2.iterrows():
-                # [AUDIT FIX] Strip whitespace — " " is truthy but invalid
-                pname = (r.get("player") or "").strip()
-                mkt   = (r.get("market") or "").strip()
-                line  = r.get("line")
-                if not pname or pd.isna(line) or not mkt: continue
-                meta = {"event_id":r.get("event_id"),"home_team":r.get("home_team"),
-                        "away_team":r.get("away_team"),"commence_time":r.get("commence_time"),
-                        "price":r.get("price"),"book":r.get("book"),
-                        "market_key":ODDS_MARKETS.get(mkt),"side":r.get("side","Over")}
-                candidates.append((pname, mkt, float(line), meta))
+
+            # ── Odds API candidates ────────────────────────────────────────
+            if _use_odds_api and _odds_has_data:
+                df2 = df[df["side"].str.lower().isin(["over","o"])].copy()
+                if df2.empty:
+                    st.warning("No OVER props found in Odds API offers. Fetch lines again.")
+                for _, r in df2.iterrows():
+                    pname = (r.get("player") or "").strip()
+                    mkt   = (r.get("market") or "").strip()
+                    line  = r.get("line")
+                    if not pname or pd.isna(line) or not mkt: continue
+                    meta = {"event_id":r.get("event_id"),"home_team":r.get("home_team"),
+                            "away_team":r.get("away_team"),"commence_time":r.get("commence_time"),
+                            "price":r.get("price"),"book":r.get("book"),
+                            "market_key":ODDS_MARKETS.get(mkt),"side":r.get("side","Over")}
+                    candidates.append((pname, mkt, float(line), meta))
+
+            # ── Platform candidates (PP + UD) ──────────────────────────────
+            if _use_platforms:
+                for _plat_store, _plat_label in [("pp_lines","prizepicks"), ("ud_lines","underdog")]:
+                    _plat_df = st.session_state.get(_plat_store)
+                    if _plat_df is None or _plat_df.empty:
+                        continue
+                    for _, r in _plat_df.iterrows():
+                        pname = (r.get("player") or "").strip()
+                        stat_t = r.get("stat_type","")
+                        mkt = map_platform_stat_to_market(stat_t)
+                        if not mkt or mkt not in markets_sel:
+                            continue
+                        line = r.get("line")
+                        if not pname or line is None or pd.isna(line):
+                            continue
+                        # Platforms use ~50% implied prob (no traditional vig)
+                        # Use 1.909 decimal (~-110 equivalent) as conservative baseline
+                        meta = {
+                            "event_id": None, "home_team": "", "away_team": "",
+                            "commence_time": "", "price": 1.909,
+                            "book": _plat_label,
+                            "market_key": ODDS_MARKETS.get(mkt), "side": "Over",
+                        }
+                        candidates.append((pname, mkt, float(line), meta))
             out_rows, dropped = [], []
             all_computed_legs = []  # [FEATURE] Stores all computed legs for Under scan
             if candidates:
@@ -3407,8 +3849,12 @@ with tabs[2]:
                             mv = leg.get("line_movement") or {}
                             inj_flag = ("🏥 " + (leg.get("auto_inj_player") or "").title()
                                         if leg.get("auto_inj") else "")
+                            _src_badge = {"prizepicks": "PP", "underdog": "UD"}.get(
+                                str(meta.get("book","")).lower(), meta.get("book","") or "odds"
+                            )
                             out_rows.append({
                                 "side": "Over",           # [AUDIT FIX] explicit side for schema parity with Under rows
+                                "src": _src_badge,        # PP / UD / book name
                                 "player":pname,"market":mkt,"line":line,
                                 "p_cal":round(pc,3),"p_implied":round(float(pi),3),
                                 "advantage":round(adv,3),"ev_adj_pct":round(float(ev)*100,2),
@@ -3437,6 +3883,7 @@ with tabs[2]:
                 st.session_state["scanner_results"] = out_df
                 st.session_state["scanner_dropped"] = dropped
                 st.session_state["scanner_scan_id"] = _scan_id
+                _save_scanner_cache()  # persist to disk — survives server restarts / WS drops
                 # Auto-send Discord/Telegram alerts for strong edges
                 _dw = st.session_state.get("discord_webhook","")
                 _tt = st.session_state.get("tg_token","")
@@ -3469,6 +3916,7 @@ with tabs[2]:
                                         _sent_hashes.add(_uhash)
                                         _sent_count += 1
                     st.session_state["_scanner_alert_hashes"] = _sent_hashes
+                    _save_alert_hashes(_sent_hashes)  # persist to disk — survives session resets
                     if _sent_count > 0:
                         st.success(f"Auto-sent {_sent_count} new alerts.")
             else:
@@ -3532,11 +3980,14 @@ with tabs[2]:
                     st.session_state["scanner_under_results"] = under_df
                 else:
                     st.session_state["scanner_under_results"] = pd.DataFrame()
+                _save_scanner_cache()  # re-save with under results included
 
-    # [FIX 13] Always show last scanner results (persists across tab switches)
+    # [FIX 13] Always show last scanner results (persists across tab switches + server restarts)
     scanner_out = st.session_state.get("scanner_results")
     if scanner_out is not None and not scanner_out.empty:
-        st.markdown(f"<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.10em;margin-bottom:0.6rem;'>{len(scanner_out)} EDGES FOUND</div>", unsafe_allow_html=True)
+        _scan_ts = st.session_state.get("scanner_scan_id", "")
+        _ts_label = f" · scanned {_scan_ts}" if _scan_ts else ""
+        st.markdown(f"<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.10em;margin-bottom:0.6rem;'>{len(scanner_out)} EDGES FOUND{_ts_label}</div>", unsafe_allow_html=True)
 
         # [UPGRADE 20] Color-code rows by confidence tier
         def _style_scanner_row(row):
@@ -3552,6 +4003,38 @@ with tabs[2]:
             st.dataframe(styled, use_container_width=True)
         except Exception:
             st.dataframe(scanner_out, use_container_width=True)
+
+        # 📊 AI Slate Briefing
+        if _get_anthropic_key():
+            _sl_btn_col, _sl_clear_col = st.columns([3, 1])
+            with _sl_btn_col:
+                if st.button("📊 AI Slate Briefing", use_container_width=True, key="ai_slate_btn",
+                             help="Claude Sonnet analyzes today's top edges and writes an institutional-grade slate brief"):
+                    with st.spinner("Claude analyzing slate…"):
+                        _top_edges = scanner_out.head(15).to_dict(orient="records")
+                        _slate_payload = json.dumps([
+                            {k: v for k, v in r.items()
+                             if k in ["player","market","line","side","p_cal","ev_adj_pct",
+                                      "edge_cat","hot_cold","dnp?","opp","source"]}
+                            for r in _top_edges
+                        ], indent=2)
+                        _slate_ai = ai_slate_briefing(_slate_payload)
+                    st.session_state["_ai_slate_result"] = _slate_ai
+            with _sl_clear_col:
+                if st.button("Clear", key="ai_slate_clear_btn"):
+                    st.session_state.pop("_ai_slate_result", None)
+            _slate_ai_txt = st.session_state.get("_ai_slate_result")
+            if _slate_ai_txt:
+                _slate_html = _slate_ai_txt.replace("\n", "<br>")
+                st.markdown(
+                    f"<div style='background:#00AAFF0A;border:1px solid #00AAFF25;"
+                    f"border-radius:4px;padding:0.85rem 1.1rem;margin:0.5rem 0;"
+                    f"font-size:0.68rem;color:#B0C8E8;line-height:1.65;'>"
+                    f"<span style='font-family:Chakra Petch,monospace;font-size:0.58rem;"
+                    f"color:#00AAFF;letter-spacing:0.1em;display:block;margin-bottom:0.5rem;'>"
+                    f"📊 CLAUDE AI · SLATE BRIEFING</span>{_slate_html}</div>",
+                    unsafe_allow_html=True,
+                )
 
         # [FEATURE] Under opportunities panel (shown when toggle is on)
         if bool(st.session_state.get("show_unders", False)):
@@ -3611,16 +4094,19 @@ with tabs[2]:
                 r = _row_by_label.get(lbl)
                 if r is None:
                     continue
-                st.session_state[f"pname_{i}"] = str(r.get("player", ""))
+                # Use staging keys — widget-owned keys (pname_{i} etc.) cannot be set
+                # after the Model tab widgets have already rendered this cycle.
+                # Staged values are consumed before widgets render on the next rerun.
+                st.session_state[f"_staged_pname_{i}"]  = str(r.get("player", ""))
                 _mkt_v = str(r.get("market", "Points"))
                 if _mkt_v in MARKET_OPTIONS:
-                    st.session_state[f"mkt_{i}"]  = _mkt_v
-                st.session_state[f"mline_{i}"] = float(r.get("line", 22.5))
-                st.session_state[f"manual_{i}"] = True   # Use pre-scanned line
-                st.session_state[f"out_{i}"]   = False
-            # Clear any unused legs beyond selection count
+                    st.session_state[f"_staged_mkt_{i}"] = _mkt_v
+                st.session_state[f"_staged_mline_{i}"]  = float(r.get("line", 22.5))
+                st.session_state[f"_staged_manual_{i}"] = True   # Use pre-scanned line
+                st.session_state[f"_staged_out_{i}"]    = False
+            # Clear unused legs beyond selection count
             for i in range(len(_legs_for_model) + 1, 5):
-                st.session_state[f"pname_{i}"] = ""
+                st.session_state[f"_staged_pname_{i}"] = ""
             st.session_state["_auto_run_model"] = True   # MODEL tab will detect and auto-run
             st.rerun()
 
@@ -3723,6 +4209,20 @@ with tabs[3]:
 
     with plat_tabs[0]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>PRIZEPICKS NBA LINES</div>", unsafe_allow_html=True)
+        # Show cookie status inline — saves user a trip to Alerts tab
+        _pp_ck = st.session_state.get("pp_cookies", "")
+        if _pp_ck:
+            st.markdown(f"<div style='font-size:0.60rem;color:#00FFB2;margin-bottom:4px;'>🔑 Cookie auth active ({len(_pp_ck)} chars) — auto-fetch will use your cookies.</div>", unsafe_allow_html=True)
+        else:
+            with st.expander("🔑 Set PrizePicks Cookies (needed for auto-fetch on cloud)", expanded=False):
+                st.caption("PrizePicks blocks Streamlit Cloud IPs. Paste your browser cookies here to bypass — or use Manual Import below.")
+                _new_ck = st.text_area("Cookie string", value="", height=60, placeholder="_pxmvid=...; __cf_bm=...", key="pp_ck_platforms")
+                if st.button("Save Cookies", key="pp_ck_save_plat"):
+                    st.session_state["pp_cookies"] = _new_ck.strip()
+                    _fetch_prizepicks_lines_cached.clear()
+                    st.session_state["_pp_last_cookies_used"] = ""
+                    st.success("Cookies saved.")
+                    st.rerun()
 
         pp_load_tab, pp_manual_tab = st.tabs(["Auto Fetch", "Manual Import"])
 
@@ -3763,14 +4263,18 @@ with tabs[3]:
                 if pp_upload is not None:
                     try:
                         df_up = pd.read_csv(pp_upload)
-                        df_up.columns = [c.strip().lower() for c in df_up.columns]
+                        df_up.columns = [c.strip().lower().replace(" ","_") for c in df_up.columns]
                         col_map = {}
-                        for need, alts in [("player",["player","name","player_name"]),
-                                           ("stat_type",["stat_type","stat","market","type"]),
-                                           ("line",["line","line_score","value","projection"])]:
+                        for need, alts in [("player",["player","name","player_name","athlete"]),
+                                           ("stat_type",["stat_type","stat","market","type","display_stat","category"]),
+                                           ("line",["line","line_score","value","projection","o_u","ou","over_under"])]:
+                            # Exact match first, then fuzzy match via difflib
                             for a in alts:
                                 if a in df_up.columns:
                                     col_map[need] = a; break
+                            if need not in col_map:
+                                best = difflib.get_close_matches(alts[0], df_up.columns, n=1, cutoff=0.75)
+                                if best: col_map[need] = best[0]
                         if all(k in col_map for k in ("player","stat_type","line")):
                             for _, r in df_up.iterrows():
                                 rows.append({"player": str(r[col_map["player"]]),
@@ -3835,7 +4339,7 @@ with tabs[3]:
                 pp_min_ev = st.number_input("Min EV%", -5.0, 30.0, 2.0, 0.5, key="pp_min_ev")
             display_df = pp_df
             if pp_filter:
-                display_df = pp_df[pp_df["player"].str.contains(pp_filter, case=False, na=False)]
+                display_df = pp_df[pp_df["player"].str.strip().str.contains(pp_filter.strip(), case=False, na=False)]
             st.dataframe(display_df, use_container_width=True)
             if st.button("Scan PrizePicks vs Model", use_container_width=True):
                 pp_candidates = []
@@ -3870,6 +4374,8 @@ with tabs[3]:
                             "player": l["player"], "market": l["market"], "line": l["line"],
                             "proj": safe_round(l.get("proj")), "p_cal": safe_round(l.get("p_cal"),3),
                             "ev_%": safe_round(l.get("ev_adj",0)*100,1), "edge_cat": l.get("edge_cat",""),
+                            "hot_cold": l.get("hot_cold",""), "dnp?": "⚠" if l.get("dnp_risk") else "",
+                            "source": "prizepicks",
                         } for l in pp_edges])
                         st.dataframe(pp_out.sort_values("ev_%", ascending=False), use_container_width=True)
                     else:
@@ -3877,23 +4383,91 @@ with tabs[3]:
 
     with plat_tabs[1]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>UNDERDOG FANTASY NBA LINES</div>", unsafe_allow_html=True)
-        if st.button("Fetch Underdog Lines", use_container_width=True):
-            with st.spinner("Fetching Underdog..."):
-                ud_lines, ud_err = fetch_underdog_lines()
-            if ud_err:
-                st.error(f"Underdog: {ud_err}")
-            elif not ud_lines:
-                st.warning("No lines returned.")
-            else:
-                ud_df = pd.DataFrame(ud_lines)
-                st.session_state["ud_lines"] = ud_df
-                st.success(f"Fetched {len(ud_df)} Underdog props.")
+        ud_auto_tab, ud_manual_tab = st.tabs(["Auto Fetch", "Manual Import"])
+        with ud_auto_tab:
+            if st.button("Fetch Underdog Lines", use_container_width=True):
+                with st.spinner("Fetching Underdog..."):
+                    ud_lines, ud_err = fetch_underdog_lines()
+                if ud_err:
+                    st.error(f"Underdog: {ud_err}")
+                    st.info(
+                        "If blocked, use **Manual Import**:\n\n"
+                        "1. Open [underdogfantasy.com](https://underdogfantasy.com) → NBA board\n"
+                        "2. DevTools → Network → filter `over_under_lines`\n"
+                        "3. Copy Response JSON → paste in Manual Import"
+                    )
+                elif not ud_lines:
+                    st.warning("No lines returned. The NBA slate may not be posted yet.")
+                else:
+                    ud_df = pd.DataFrame(ud_lines)
+                    st.session_state["ud_lines"] = ud_df
+                    st.success(f"Fetched {len(ud_df)} Underdog props.")
+        with ud_manual_tab:
+            st.caption("Paste the raw JSON from Underdog's over_under_lines API response, or upload a CSV with columns: player, stat_type, line")
+            ud_upload = st.file_uploader("Upload CSV", type=["csv"], key="ud_csv_upload")
+            ud_paste = st.text_area("Or paste Underdog API JSON", height=100, key="ud_json_paste",
+                                    placeholder='{"over_under_lines":[...],"appearances":[...],"players":[...]}')
+            if st.button("Load Underdog Data", use_container_width=True, key="ud_manual_load"):
+                ud_rows = []; ud_err_msg = None
+                if ud_upload is not None:
+                    try:
+                        df_ud = pd.read_csv(ud_upload)
+                        df_ud.columns = [c.strip().lower() for c in df_ud.columns]
+                        col_map = {}
+                        for need, alts in [("player",["player","name","player_name"]),
+                                           ("stat_type",["stat_type","stat","market","type","display_stat"]),
+                                           ("line",["line","stat_value","value","projection"])]:
+                            for a in alts:
+                                if a in df_ud.columns: col_map[need] = a; break
+                        if all(k in col_map for k in ("player","stat_type","line")):
+                            for _, r in df_ud.iterrows():
+                                ud_rows.append({"player": str(r[col_map["player"]]),
+                                                "stat_type": str(r[col_map["stat_type"]]),
+                                                "line": float(r[col_map["line"]]), "source": "underdog"})
+                        else:
+                            ud_err_msg = f"CSV missing required columns. Found: {list(df_ud.columns)}"
+                    except Exception as e:
+                        ud_err_msg = f"CSV error: {e}"
+                elif ud_paste.strip():
+                    try:
+                        data = json.loads(ud_paste.strip())
+                        appearances = {str(a.get("id","")): a for a in data.get("appearances",[])}
+                        players_map = {str(p.get("id","")): p for p in data.get("players",[])}
+                        for line in data.get("over_under_lines", data.get("lines", [])):
+                            try:
+                                ou = line.get("over_under", line)
+                                app_stat = ou.get("appearance_stat", {})
+                                app = appearances.get(str(app_stat.get("appearance_id","")), {})
+                                # Sport filter: only NBA/basketball
+                                sport = str(app.get("sport_id", app.get("sport",""))).lower().strip()
+                                if sport and sport not in _UD_BASKETBALL_SPORT_IDS:
+                                    continue
+                                player = players_map.get(str(app.get("player_id","")), {})
+                                pname = f"{player.get('first_name','')} {player.get('last_name','')}".strip()
+                                stat = app_stat.get("display_stat", app_stat.get("stat",""))
+                                val = line.get("stat_value", ou.get("stat_value"))
+                                if pname and stat and val is not None:
+                                    ud_rows.append({"player": pname, "stat_type": stat,
+                                                    "line": float(val), "source": "underdog"})
+                            except Exception: continue
+                        if not ud_rows:
+                            ud_err_msg = "No lines found in JSON. Check structure — needs over_under_lines, appearances, players."
+                    except Exception as e:
+                        ud_err_msg = f"JSON parse error: {e}"
+                else:
+                    ud_err_msg = "Upload a CSV or paste JSON."
+                if ud_err_msg:
+                    st.error(ud_err_msg)
+                elif ud_rows:
+                    st.session_state["ud_lines"] = pd.DataFrame(ud_rows)
+                    st.success(f"Loaded {len(ud_rows)} Underdog props.")
+                    st.rerun()
         ud_df = st.session_state.get("ud_lines")
         if ud_df is not None and not ud_df.empty:
             ud_filter = st.text_input("Filter player", key="ud_filter")
             display_ud = ud_df
             if ud_filter:
-                display_ud = ud_df[ud_df["player"].str.contains(ud_filter, case=False, na=False)]
+                display_ud = ud_df[ud_df["player"].str.strip().str.contains(ud_filter.strip(), case=False, na=False)]
             st.dataframe(display_ud, use_container_width=True)
             if st.button("Scan Underdog vs Model", use_container_width=True):
                 ud_candidates = []
@@ -3927,7 +4501,9 @@ with tabs[3]:
                         ud_out = pd.DataFrame([{
                             "player": l["player"], "market": l["market"], "line": l["line"],
                             "proj": safe_round(l.get("proj")), "p_cal": safe_round(l.get("p_cal"),3),
-                            "ev_%": safe_round(l.get("ev_adj",0)*100,1),
+                            "ev_%": safe_round(l.get("ev_adj",0)*100,1), "edge_cat": l.get("edge_cat",""),
+                            "hot_cold": l.get("hot_cold",""), "dnp?": "⚠" if l.get("dnp_risk") else "",
+                            "source": "underdog",
                         } for l in ud_edges])
                         st.dataframe(ud_out.sort_values("ev_%", ascending=False), use_container_width=True)
                     else:
@@ -3989,7 +4565,7 @@ with tabs[4]:
     if h.empty:
         st.markdown(make_card("<span style='color:#4A607A;'>No bets logged yet. Log from the Model tab.</span>"), unsafe_allow_html=True)
     else:
-        settled = h[h["result"].isin(["HIT","MISS","PUSH"])].copy() if not h.empty else pd.DataFrame()
+        settled = h[h["result"] != "Pending"].copy() if not h.empty else pd.DataFrame()
         n_hit = (settled["result"]=="HIT").sum() if not settled.empty else 0
         n_miss = (settled["result"]=="MISS").sum() if not settled.empty else 0
         n_pend = (h["result"]=="Pending").sum() if not h.empty else 0
@@ -4019,9 +4595,48 @@ with tabs[4]:
 
         # [FIX 12] Export button
         csv_data = h.to_csv(index=False)
-        st.download_button("Export History CSV", data=csv_data,
+        _exp_col, _del_col = st.columns([2, 1])
+        _exp_col.download_button("Export History CSV", data=csv_data,
                            file_name=f"history_{user_id}.csv", mime="text/csv",
                            use_container_width=True)
+
+        # Delete individual bets or clear all
+        with st.expander("🗑 Delete / Remove Entries", expanded=False):
+            st.caption("Row numbers shown in the table above (0-indexed). Deletion is permanent.")
+            _d_col1, _d_col2 = st.columns([2, 1])
+            with _d_col1:
+                _del_idx = st.number_input("Row to delete", 0, max(0, len(h)-1), 0, 1, key="del_row_idx")
+            with _d_col2:
+                st.markdown("<div style='height:1.6rem;'></div>", unsafe_allow_html=True)
+                if st.button("Delete Row", key="del_row_btn", type="primary"):
+                    try:
+                        h2 = h.drop(index=int(_del_idx)).reset_index(drop=True)
+                        h2.to_csv(history_path(user_id), index=False)
+                        st.success(f"Row {int(_del_idx)} deleted.")
+                        st.rerun()
+                    except Exception as _de:
+                        st.error(f"Delete failed: {_de}")
+            st.markdown("<hr style='border-color:#1E2D3D;margin:0.5rem 0;'>", unsafe_allow_html=True)
+            if "confirm_clear_all" not in st.session_state:
+                st.session_state["confirm_clear_all"] = False
+            if not st.session_state["confirm_clear_all"]:
+                if st.button("Clear ALL History", key="clear_all_btn"):
+                    st.session_state["confirm_clear_all"] = True
+                    st.rerun()
+            else:
+                st.warning("Are you sure? This will permanently delete all bet history.")
+                _ca1, _ca2 = st.columns(2)
+                if _ca1.button("Yes — delete everything", key="confirm_clear_yes", type="primary"):
+                    try:
+                        pd.DataFrame().to_csv(history_path(user_id), index=False)
+                        st.session_state["confirm_clear_all"] = False
+                        st.success("All history cleared.")
+                        st.rerun()
+                    except Exception as _ce:
+                        st.error(f"Clear failed: {_ce}")
+                if _ca2.button("Cancel", key="confirm_clear_no"):
+                    st.session_state["confirm_clear_all"] = False
+                    st.rerun()
 
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
 
@@ -4214,11 +4829,14 @@ with tabs[6]:
         else:
             clv_pos = clv_lb[clv_lb["clv_price"].notna() & (clv_lb["clv_price"] > 0)]
             clv_neg = clv_lb[clv_lb["clv_price"].notna() & (clv_lb["clv_price"] <= 0)]
-            rate = len(clv_pos) / max(len(clv_lb), 1)
+            n_clv = len(clv_lb)
+            rate = len(clv_pos) / max(n_clv, 1)
             c1, c2, c3 = st.columns(3)
             c1.metric("Beats Closing Line", f"{rate*100:.0f}%", help="CLV price > 0 = bought above close")
             c2.metric("Avg CLV (price)", f"{clv_lb['clv_price'].mean():.4f}" if not clv_lb.empty else "--")
             c3.metric("Avg Line CLV", f"{clv_lb['clv_line'].mean():.2f}" if not clv_lb.empty else "--")
+            if n_clv < 10:
+                st.warning(f"Only {n_clv} CLV data point{'s' if n_clv != 1 else ''} — rate is not yet statistically meaningful. Keep logging bets and fetching CLV updates.")
             st.dataframe(clv_lb, use_container_width=True)
             if not clv_pos.empty:
                 st.markdown("<div style='font-size:0.65rem;color:#00FFB2;margin-top:0.4rem;'>Positive CLV = model found real edge vs closing price. Keep targeting these players/markets.</div>", unsafe_allow_html=True)
@@ -4441,7 +5059,7 @@ with tabs[7]:
     if rw_news:
         rw_df = pd.DataFrame(rw_news)
         if rw_filter:
-            rw_df = rw_df[rw_df["player"].str.contains(rw_filter, case=False, na=False)]
+            rw_df = rw_df[rw_df["player"].str.strip().str.contains(rw_filter.strip(), case=False, na=False)]
         st.dataframe(rw_df, use_container_width=True)
         # Cross-reference with watchlist
         wl_cur = load_watchlist(st.session_state.get("user_id","trader"))
