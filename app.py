@@ -2798,6 +2798,8 @@ with st.sidebar:
     st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
     exclude_chaotic = st.checkbox("Block Chaotic Regime", value=bool(st.session_state.get("exclude_chaotic",True)), help="Filters high-CV / blowout-risk environments")
     st.session_state["exclude_chaotic"] = bool(exclude_chaotic)
+    show_unders = st.checkbox("Show Under opportunities", value=bool(st.session_state.get("show_unders", False)), key="show_unders_cb", help="Surface high-probability Unders alongside each leg (zero extra API calls — reuses cached projections)")
+    st.session_state["show_unders"] = bool(show_unders)
     max_daily_loss = st.slider("Daily Loss Stop (%)", 0, 50, int(st.session_state.get("max_daily_loss",15)))
     max_weekly_loss = st.slider("Weekly Loss Stop (%)", 0, 50, int(st.session_state.get("max_weekly_loss",25)))
     st.session_state["max_daily_loss"] = max_daily_loss
@@ -3073,6 +3075,40 @@ with tabs[1]:
                         st.caption(f"Confidence band: {proj:.1f} ± {sigma:.1f} (μ±σ) — "
                                    f"{max(0,proj-sigma):.1f} to {proj+sigma:.1f}")
 
+                # [FEATURE] Under flip card — zero extra API calls, reuses p_cal from above
+                if bool(st.session_state.get("show_unders", False)):
+                    _p_cal_u = leg.get("p_cal")
+                    _p_imp_u_base = leg.get("p_implied")
+                    if _p_cal_u is not None and _p_imp_u_base is not None:
+                        _p_under = 1.0 - float(_p_cal_u)
+                        _p_imp_u = 1.0 - float(_p_imp_u_base)
+                        _vol_cv_u = leg.get("volatility_cv")
+                        _skew_u = leg.get("stat_skewness")
+                        _ev_u = (_p_under / _p_imp_u - 1.0) if _p_imp_u > 0 else None
+                        _gate_u, _reason_u = passes_volatility_gate(_vol_cv_u, _ev_u, skew=_skew_u, bet_type="Under")
+                        if _gate_u and not leg.get("dnp_risk") and _p_under >= 0.52:
+                            _ev_u_str = f"{_ev_u*100:+.1f}%" if _ev_u is not None else "--"
+                            _ec_u = color_for_edge(classify_edge(_ev_u))
+                            _adv_u = round(_p_under - _p_imp_u, 3)
+                            # Fractional Kelly stake for Under
+                            _pd_u = leg.get("price_decimal")
+                            _stake_u = 0.0
+                            if _ev_u and _ev_u > 0 and _pd_u and float(_pd_u) > 1:
+                                _kf_u = _ev_u / (float(_pd_u) - 1.0)
+                                _stake_u = min(bankroll * frac_kelly * _kf_u, bankroll * 0.05)
+                            _under_html = f"""<div style='background:#FF335808;border:1px solid #FF335830;border-radius:3px;padding:0.5rem 0.6rem;margin-top:0.3rem;'>
+<div style='font-family:Chakra Petch,monospace;font-size:0.58rem;color:#FF8080;letter-spacing:0.12em;margin-bottom:0.3rem;'>↓ UNDER FLIP</div>
+<div style='font-size:0.68rem;color:#EEF4FF;font-weight:600;'>{leg["player"]} U{leg["line"]:.1f}</div>
+{prob_bar_html(_p_under, label="P(UNDER)")}
+{prob_bar_html(_p_imp_u, label="IMPLIED")}
+<div style='display:flex;justify-content:space-between;margin-top:0.35rem;font-size:0.64rem;'>
+  <span style='color:#4A607A;'>EDGE</span><span style='color:{_ec_u};font-family:Fira Code,monospace;font-weight:600;'>{_ev_u_str}</span>
+  <span style='color:#4A607A;'>ADV</span><span style='color:#EEF4FF;font-family:Fira Code,monospace;'>{_adv_u:+.3f}</span>
+</div>
+{f"<div style='margin-top:0.35rem;background:#00FFB218;border:1px solid #00FFB230;border-radius:2px;padding:0.25rem 0.5rem;font-size:0.63rem;color:#00FFB2;font-family:Fira Code,monospace;'>REC STAKE: ${_stake_u:.2f}</div>" if _stake_u > 0 else ""}
+</div>"""
+                            st.markdown(_under_html, unsafe_allow_html=True)
+
         # Multi-leg combo
         if len(res) >= 2:
             st.markdown("<hr style='border-color:#1E2D3D;margin:1rem 0;'>", unsafe_allow_html=True)
@@ -3259,6 +3295,7 @@ with tabs[2]:
                         "market_key":ODDS_MARKETS.get(mkt),"side":r.get("side","Over")}
                 candidates.append((pname, mkt, float(line), meta))
             out_rows, dropped = [], []
+            all_computed_legs = []  # [FEATURE] Stores all computed legs for Under scan
             if candidates:
                 _inj_map = st.session_state.get("injury_team_map", {})
                 # Auto-load bulk game logs if not already cached (one-time, ~15-30s)
@@ -3291,6 +3328,8 @@ with tabs[2]:
                                 dropped.append({"player": pname, "market": mkt, "reason": f"thread error: {type(_te).__name__}: {_te}"})
                                 continue
                             leg = recompute_pricing_fields(leg, st.session_state.get("calibrator_map"))
+                            # [FEATURE] Capture every computed leg for Under scan (before gate filter)
+                            all_computed_legs.append((pname, mkt, float(line), meta, leg))
                             if not leg.get("gate_ok"):
                                 dropped.append({"player":pname,"market":mkt,"reason":leg.get("gate_reason","gated")}); continue
                             pc = float(leg.get("p_cal") or leg.get("p_over") or 0)
@@ -3349,6 +3388,55 @@ with tabs[2]:
                 st.session_state["scanner_dropped"] = dropped
                 st.warning("No legs met threshold criteria.")
 
+            # [FEATURE] Under scan: derive Under edges from cached computed legs (zero extra API calls)
+            if bool(st.session_state.get("show_unders", False)) and all_computed_legs:
+                under_rows = []
+                for _pn, _mk, _ln, _mt, _leg in all_computed_legs:
+                    _pc = float(_leg.get("p_cal") or _leg.get("p_over") or 0)
+                    _pi = _leg.get("p_implied")
+                    if _pi is None:
+                        continue
+                    _p_under = 1.0 - _pc
+                    _p_imp_u = 1.0 - float(_pi)
+                    if _p_imp_u <= 0 or _p_imp_u >= 1:
+                        continue
+                    _ev_u = (_p_under / _p_imp_u - 1.0)
+                    _gate_u, _ = passes_volatility_gate(
+                        _leg.get("volatility_cv"), _ev_u,
+                        skew=_leg.get("stat_skewness"), bet_type="Under"
+                    )
+                    if not _gate_u or _leg.get("dnp_risk"):
+                        continue
+                    if _p_under < min_prob:
+                        continue
+                    _adv_u = _p_under - _p_imp_u
+                    if _adv_u < min_adv or _ev_u < min_ev:
+                        continue
+                    under_rows.append({
+                        "side": "Under",
+                        "player": _pn, "market": _mk, "line": _ln,
+                        "p_cal": round(_p_under, 3),
+                        "p_implied": round(_p_imp_u, 3),
+                        "advantage": round(_adv_u, 3),
+                        "ev_adj_pct": round(_ev_u * 100, 2),
+                        "proj": safe_round(_leg.get("proj")),
+                        "edge_cat": classify_edge(_ev_u),
+                        "regime": _leg.get("regime", ""),
+                        "hot_cold": _leg.get("hot_cold", "Average"),
+                        "team": _leg.get("team", ""),
+                        "opp": _leg.get("opp", ""),
+                        "b2b": "B2B" if _leg.get("b2b") else "",
+                        "vol_cv": safe_round(_leg.get("volatility_cv")),
+                        "rest_d": _leg.get("rest_days", 2),
+                        "n_games": _leg.get("n_games_used", 0),
+                        "min_proj": safe_round(_leg.get("proj_minutes"), 0),
+                    })
+                if under_rows:
+                    under_df = pd.DataFrame(under_rows).sort_values("ev_adj_pct", ascending=False)
+                    st.session_state["scanner_under_results"] = under_df
+                else:
+                    st.session_state["scanner_under_results"] = pd.DataFrame()
+
     # [FIX 13] Always show last scanner results (persists across tab switches)
     scanner_out = st.session_state.get("scanner_results")
     if scanner_out is not None and not scanner_out.empty:
@@ -3368,6 +3456,28 @@ with tabs[2]:
             st.dataframe(styled, use_container_width=True)
         except Exception:
             st.dataframe(scanner_out, use_container_width=True)
+
+        # [FEATURE] Under opportunities panel (shown when toggle is on)
+        if bool(st.session_state.get("show_unders", False)):
+            under_out = st.session_state.get("scanner_under_results")
+            if under_out is not None and not under_out.empty:
+                st.markdown(
+                    f"<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;"
+                    f"color:#FF8080;letter-spacing:0.10em;margin:0.8rem 0 0.4rem;'>"
+                    f"↓ {len(under_out)} UNDER OPPORTUNITIES (from cached projections — 0 extra API calls)</div>",
+                    unsafe_allow_html=True
+                )
+                try:
+                    def _style_under_row(row):
+                        p = float(row.get("p_cal") or 0)
+                        if p >= 0.65:   return ["background-color:#FF335815;"] * len(row)
+                        elif p >= 0.58: return ["background-color:#FF335810;"] * len(row)
+                        else:           return ["background-color:#FF33580A;"] * len(row)
+                    st.dataframe(under_out.style.apply(_style_under_row, axis=1), use_container_width=True)
+                except Exception:
+                    st.dataframe(under_out, use_container_width=True)
+            elif under_out is not None:
+                st.caption("↓ No Under edges found meeting threshold criteria.")
 
         # [UPGRADE 21] One-click parlay builder from scanner results
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
