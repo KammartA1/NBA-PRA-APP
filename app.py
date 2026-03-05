@@ -245,8 +245,34 @@ LAMBDA_DECAY_BY_STAT = {
 }
 
 # Persistent file paths
-OPENING_LINES_PATH = "opening_lines.json"
-WATCHLIST_PATH_TPL  = "watchlist_{uid}.json"
+OPENING_LINES_PATH   = "opening_lines.json"
+WATCHLIST_PATH_TPL   = "watchlist_{uid}.json"
+SCANNER_CACHE_PATH   = "scanner_results_cache.pkl"
+
+
+def _save_scanner_cache():
+    """Persist scanner results to disk so they survive server restarts / WebSocket drops."""
+    import pickle
+    try:
+        _cache = {
+            "scanner_results":       st.session_state.get("scanner_results"),
+            "scanner_dropped":       st.session_state.get("scanner_dropped"),
+            "scanner_scan_id":       st.session_state.get("scanner_scan_id"),
+            "scanner_under_results": st.session_state.get("scanner_under_results"),
+        }
+        with open(SCANNER_CACHE_PATH, "wb") as _f:
+            pickle.dump(_cache, _f)
+    except Exception:
+        pass
+
+
+def _load_scanner_cache() -> dict:
+    import pickle
+    try:
+        with open(SCANNER_CACHE_PATH, "rb") as _f:
+            return pickle.load(_f)
+    except Exception:
+        return {}
 
 # ──────────────────────────────────────────────
 # PLAYER POSITION CACHE
@@ -2898,6 +2924,14 @@ with st.sidebar:
 # ─── SESSION STATE INIT ────────────────────────────────────────
 for k in ["last_results","calibrator_map","scanner_offers","scanner_results"]:
     if k not in st.session_state: st.session_state[k] = None if k != "last_results" else []
+
+# Restore scanner results from disk if session state was just reset (server restart / WS drop)
+if st.session_state.get("scanner_results") is None:
+    _disk_cache = _load_scanner_cache()
+    if _disk_cache.get("scanner_results") is not None:
+        for _ck, _cv in _disk_cache.items():
+            st.session_state[_ck] = _cv
+
 MARKET_OPTIONS = list(ODDS_MARKETS.keys())
 
 def _daily_pnl(uid):
@@ -3437,6 +3471,7 @@ with tabs[2]:
                 st.session_state["scanner_results"] = out_df
                 st.session_state["scanner_dropped"] = dropped
                 st.session_state["scanner_scan_id"] = _scan_id
+                _save_scanner_cache()  # persist to disk — survives server restarts / WS drops
                 # Auto-send Discord/Telegram alerts for strong edges
                 _dw = st.session_state.get("discord_webhook","")
                 _tt = st.session_state.get("tg_token","")
@@ -3532,11 +3567,14 @@ with tabs[2]:
                     st.session_state["scanner_under_results"] = under_df
                 else:
                     st.session_state["scanner_under_results"] = pd.DataFrame()
+                _save_scanner_cache()  # re-save with under results included
 
-    # [FIX 13] Always show last scanner results (persists across tab switches)
+    # [FIX 13] Always show last scanner results (persists across tab switches + server restarts)
     scanner_out = st.session_state.get("scanner_results")
     if scanner_out is not None and not scanner_out.empty:
-        st.markdown(f"<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.10em;margin-bottom:0.6rem;'>{len(scanner_out)} EDGES FOUND</div>", unsafe_allow_html=True)
+        _scan_ts = st.session_state.get("scanner_scan_id", "")
+        _ts_label = f" · scanned {_scan_ts}" if _scan_ts else ""
+        st.markdown(f"<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.10em;margin-bottom:0.6rem;'>{len(scanner_out)} EDGES FOUND{_ts_label}</div>", unsafe_allow_html=True)
 
         # [UPGRADE 20] Color-code rows by confidence tier
         def _style_scanner_row(row):
