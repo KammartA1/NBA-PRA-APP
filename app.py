@@ -1742,41 +1742,66 @@ _UD_BASKETBALL_SPORT_IDS = {"nba", "basketball", "5", "4", "nba_basketball", "ba
 @st.cache_data(ttl=60*10, show_spinner=False)
 def _fetch_underdog_lines_cached():
     """Inner cached fetch — call via fetch_underdog_lines() which clears cache first."""
+    last_err = "No Underdog props found — slate may not be posted yet"
     for url in _UNDERDOG_ENDPOINTS:
         try:
-            r = requests.get(url, headers=_UD_HEADERS, timeout=20)
+            # Try curl_cffi first (Chrome impersonation bypasses some bot blocks)
+            try:
+                from curl_cffi import requests as cffi_requests
+                r = cffi_requests.get(url, headers=_UD_HEADERS, impersonate="chrome120", timeout=20)
+            except ImportError:
+                r = requests.get(url, headers=_UD_HEADERS, timeout=20)
             if r.status_code == 429:
                 return [], "Underdog rate-limited (429) — try again in 30s"
+            if r.status_code == 403:
+                last_err = "Underdog HTTP 403 — API blocked on this server. Use Manual Import to paste JSON."
+                continue
             if not r.ok:
+                last_err = f"Underdog HTTP {r.status_code} from {url}"
                 continue
             data = r.json()
-            appearances = {a["id"]: a for a in data.get("appearances", [])}
-            players_map = {p["id"]: p for p in data.get("players", [])}
+            # Build lookup maps — handle both v3 and v4 response shapes
+            appearances = {}
+            for a in data.get("appearances", []):
+                appearances[str(a.get("id", ""))] = a
+            players_map = {}
+            for p in data.get("players", []):
+                players_map[str(p.get("id", ""))] = p
             rows = []
-            for line in data.get("over_under_lines", []):
-                app_stat = line.get("over_under", {}).get("appearance_stat", {})
-                app_id = str(app_stat.get("appearance_id", ""))
-                app = appearances.get(app_id, {})
-                sport = str(app.get("sport_id", "")).lower()
-                if sport and sport not in _UD_BASKETBALL_SPORT_IDS:
+            # v3/v4: over_under_lines list
+            lines_list = data.get("over_under_lines", data.get("lines", []))
+            for line in lines_list:
+                try:
+                    ou = line.get("over_under", line)  # v3 nests under "over_under"
+                    app_stat = ou.get("appearance_stat", {})
+                    app_id = str(app_stat.get("appearance_id", ""))
+                    app = appearances.get(app_id, {})
+                    # Sport filter: allow NBA/basketball, or empty/unknown (pass-through)
+                    sport = str(app.get("sport_id", app.get("sport", ""))).lower().strip()
+                    if sport and sport not in _UD_BASKETBALL_SPORT_IDS:
+                        continue
+                    player_id = str(app.get("player_id", ""))
+                    player = players_map.get(player_id, {})
+                    player_name = (
+                        f"{player.get('first_name','')} {player.get('last_name','')}".strip()
+                        or player.get("name", "")
+                    )
+                    stat_type = app_stat.get("display_stat", app_stat.get("stat", ""))
+                    stat_value = line.get("stat_value", ou.get("stat_value"))
+                    if player_name and stat_type and stat_value is not None:
+                        rows.append({
+                            "player": player_name,
+                            "stat_type": stat_type,
+                            "line": float(stat_value),
+                            "source": "underdog",
+                        })
+                except Exception:
                     continue
-                player_id = str(app.get("player_id", ""))
-                player = players_map.get(player_id, {})
-                player_name = f"{player.get('first_name','')} {player.get('last_name','')}".strip()
-                stat_type = app_stat.get("display_stat", "")
-                stat_value = line.get("stat_value")
-                if player_name and stat_type and stat_value is not None:
-                    rows.append({
-                        "player": player_name,
-                        "stat_type": stat_type,
-                        "line": float(stat_value),
-                        "source": "underdog",
-                    })
             if rows:
                 return rows, None
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
-    return [], locals().get("last_err", "No Underdog props found — slate may not be posted yet")
+    return [], last_err
 
 def fetch_underdog_lines():
     """Clear cache then fetch fresh Underdog lines."""
@@ -2873,6 +2898,14 @@ with st.sidebar:
         state = load_user_state(user_id)
         st.session_state["bankroll"] = safe_float(state.get("bankroll"), default=st.session_state.get("bankroll",1000.0))
         st.session_state["_active_user_id"] = user_id
+        # Clear previous user's data so it doesn't leak into new user session
+        for _ck in ["last_results","scanner_results","scanner_under_results",
+                    "pp_lines","ud_lines","scanner_offers","calibrator_map",
+                    "injury_team_map","scanner_dropped","scanner_scan_id"]:
+            st.session_state.pop(_ck, None)
+        for _si in range(1, 5):
+            for _pfx in ("pname_","mkt_","mline_","manual_","out_","line_"):
+                st.session_state.pop(f"{_pfx}{_si}", None)
     bankroll = st.number_input("Bankroll ($)", min_value=0.0, value=float(st.session_state.get("bankroll",1000.0)), step=50.0)
     st.session_state["bankroll"] = float(bankroll)
     _lb = st.session_state.get("_last_saved_bankroll")
@@ -2983,8 +3016,21 @@ def _check_loss_stops(uid, bankroll):
 # ─── TABS ─────────────────────────────────────────────────────
 tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "INSIGHTS", "ALERTS"])
 
+# Consume staged scanner→model inputs before any widgets render (prevents StreamlitAPIException)
+for _si in range(1, 5):
+    if f"_staged_pname_{_si}" in st.session_state:
+        st.session_state[f"pname_{_si}"]  = st.session_state.pop(f"_staged_pname_{_si}")
+    if f"_staged_mkt_{_si}" in st.session_state:
+        st.session_state[f"mkt_{_si}"]    = st.session_state.pop(f"_staged_mkt_{_si}")
+    if f"_staged_mline_{_si}" in st.session_state:
+        st.session_state[f"mline_{_si}"]  = st.session_state.pop(f"_staged_mline_{_si}")
+    if f"_staged_manual_{_si}" in st.session_state:
+        st.session_state[f"manual_{_si}"] = st.session_state.pop(f"_staged_manual_{_si}")
+    if f"_staged_out_{_si}" in st.session_state:
+        st.session_state[f"out_{_si}"]    = st.session_state.pop(f"_staged_out_{_si}")
+
 with tabs[0]:
-    _check_loss_stops(user_id, bankroll)
+    _loss_stop_hit = _check_loss_stops(user_id, bankroll)
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>CONFIGURE UP TO 4 LEGS</div>""", unsafe_allow_html=True)
     date_col, book_col = st.columns([2,2])
     with date_col:
@@ -3011,8 +3057,9 @@ with tabs[0]:
                 leg_configs.append((tag, pname, mkt, manual, mline, out_cb))
     if st.session_state.get("_auto_run_model"):
         st.info("⚡ Legs loaded from Live Scanner — running model automatically...")
-    run_btn = st.button("RUN MODEL", use_container_width=True) or bool(st.session_state.pop("_auto_run_model", False))
-    if run_btn:
+    run_btn = (st.button("RUN MODEL", use_container_width=True, disabled=_loss_stop_hit)
+               or bool(st.session_state.pop("_auto_run_model", False)))
+    if run_btn and not _loss_stop_hit:
         results = []; warnings = []; tasks = []
         for (tag, pname, mkt, manual, mline, teammate_out) in leg_configs:
             pname = (pname or "").strip()
@@ -3680,16 +3727,19 @@ with tabs[2]:
                 r = _row_by_label.get(lbl)
                 if r is None:
                     continue
-                st.session_state[f"pname_{i}"] = str(r.get("player", ""))
+                # Use staging keys — widget-owned keys (pname_{i} etc.) cannot be set
+                # after the Model tab widgets have already rendered this cycle.
+                # Staged values are consumed before widgets render on the next rerun.
+                st.session_state[f"_staged_pname_{i}"]  = str(r.get("player", ""))
                 _mkt_v = str(r.get("market", "Points"))
                 if _mkt_v in MARKET_OPTIONS:
-                    st.session_state[f"mkt_{i}"]  = _mkt_v
-                st.session_state[f"mline_{i}"] = float(r.get("line", 22.5))
-                st.session_state[f"manual_{i}"] = True   # Use pre-scanned line
-                st.session_state[f"out_{i}"]   = False
-            # Clear any unused legs beyond selection count
+                    st.session_state[f"_staged_mkt_{i}"] = _mkt_v
+                st.session_state[f"_staged_mline_{i}"]  = float(r.get("line", 22.5))
+                st.session_state[f"_staged_manual_{i}"] = True   # Use pre-scanned line
+                st.session_state[f"_staged_out_{i}"]    = False
+            # Clear unused legs beyond selection count
             for i in range(len(_legs_for_model) + 1, 5):
-                st.session_state[f"pname_{i}"] = ""
+                st.session_state[f"_staged_pname_{i}"] = ""
             st.session_state["_auto_run_model"] = True   # MODEL tab will detect and auto-run
             st.rerun()
 
@@ -3792,6 +3842,20 @@ with tabs[3]:
 
     with plat_tabs[0]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>PRIZEPICKS NBA LINES</div>", unsafe_allow_html=True)
+        # Show cookie status inline — saves user a trip to Alerts tab
+        _pp_ck = st.session_state.get("pp_cookies", "")
+        if _pp_ck:
+            st.markdown(f"<div style='font-size:0.60rem;color:#00FFB2;margin-bottom:4px;'>🔑 Cookie auth active ({len(_pp_ck)} chars) — auto-fetch will use your cookies.</div>", unsafe_allow_html=True)
+        else:
+            with st.expander("🔑 Set PrizePicks Cookies (needed for auto-fetch on cloud)", expanded=False):
+                st.caption("PrizePicks blocks Streamlit Cloud IPs. Paste your browser cookies here to bypass — or use Manual Import below.")
+                _new_ck = st.text_area("Cookie string", value="", height=60, placeholder="_pxmvid=...; __cf_bm=...", key="pp_ck_platforms")
+                if st.button("Save Cookies", key="pp_ck_save_plat"):
+                    st.session_state["pp_cookies"] = _new_ck.strip()
+                    _fetch_prizepicks_lines_cached.clear()
+                    st.session_state["_pp_last_cookies_used"] = ""
+                    st.success("Cookies saved.")
+                    st.rerun()
 
         pp_load_tab, pp_manual_tab = st.tabs(["Auto Fetch", "Manual Import"])
 
@@ -3832,14 +3896,18 @@ with tabs[3]:
                 if pp_upload is not None:
                     try:
                         df_up = pd.read_csv(pp_upload)
-                        df_up.columns = [c.strip().lower() for c in df_up.columns]
+                        df_up.columns = [c.strip().lower().replace(" ","_") for c in df_up.columns]
                         col_map = {}
-                        for need, alts in [("player",["player","name","player_name"]),
-                                           ("stat_type",["stat_type","stat","market","type"]),
-                                           ("line",["line","line_score","value","projection"])]:
+                        for need, alts in [("player",["player","name","player_name","athlete"]),
+                                           ("stat_type",["stat_type","stat","market","type","display_stat","category"]),
+                                           ("line",["line","line_score","value","projection","o_u","ou","over_under"])]:
+                            # Exact match first, then fuzzy match via difflib
                             for a in alts:
                                 if a in df_up.columns:
                                     col_map[need] = a; break
+                            if need not in col_map:
+                                best = difflib.get_close_matches(alts[0], df_up.columns, n=1, cutoff=0.75)
+                                if best: col_map[need] = best[0]
                         if all(k in col_map for k in ("player","stat_type","line")):
                             for _, r in df_up.iterrows():
                                 rows.append({"player": str(r[col_map["player"]]),
@@ -3939,6 +4007,8 @@ with tabs[3]:
                             "player": l["player"], "market": l["market"], "line": l["line"],
                             "proj": safe_round(l.get("proj")), "p_cal": safe_round(l.get("p_cal"),3),
                             "ev_%": safe_round(l.get("ev_adj",0)*100,1), "edge_cat": l.get("edge_cat",""),
+                            "hot_cold": l.get("hot_cold",""), "dnp?": "⚠" if l.get("dnp_risk") else "",
+                            "source": "prizepicks",
                         } for l in pp_edges])
                         st.dataframe(pp_out.sort_values("ev_%", ascending=False), use_container_width=True)
                     else:
@@ -3946,17 +4016,85 @@ with tabs[3]:
 
     with plat_tabs[1]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>UNDERDOG FANTASY NBA LINES</div>", unsafe_allow_html=True)
-        if st.button("Fetch Underdog Lines", use_container_width=True):
-            with st.spinner("Fetching Underdog..."):
-                ud_lines, ud_err = fetch_underdog_lines()
-            if ud_err:
-                st.error(f"Underdog: {ud_err}")
-            elif not ud_lines:
-                st.warning("No lines returned.")
-            else:
-                ud_df = pd.DataFrame(ud_lines)
-                st.session_state["ud_lines"] = ud_df
-                st.success(f"Fetched {len(ud_df)} Underdog props.")
+        ud_auto_tab, ud_manual_tab = st.tabs(["Auto Fetch", "Manual Import"])
+        with ud_auto_tab:
+            if st.button("Fetch Underdog Lines", use_container_width=True):
+                with st.spinner("Fetching Underdog..."):
+                    ud_lines, ud_err = fetch_underdog_lines()
+                if ud_err:
+                    st.error(f"Underdog: {ud_err}")
+                    st.info(
+                        "If blocked, use **Manual Import**:\n\n"
+                        "1. Open [underdogfantasy.com](https://underdogfantasy.com) → NBA board\n"
+                        "2. DevTools → Network → filter `over_under_lines`\n"
+                        "3. Copy Response JSON → paste in Manual Import"
+                    )
+                elif not ud_lines:
+                    st.warning("No lines returned. The NBA slate may not be posted yet.")
+                else:
+                    ud_df = pd.DataFrame(ud_lines)
+                    st.session_state["ud_lines"] = ud_df
+                    st.success(f"Fetched {len(ud_df)} Underdog props.")
+        with ud_manual_tab:
+            st.caption("Paste the raw JSON from Underdog's over_under_lines API response, or upload a CSV with columns: player, stat_type, line")
+            ud_upload = st.file_uploader("Upload CSV", type=["csv"], key="ud_csv_upload")
+            ud_paste = st.text_area("Or paste Underdog API JSON", height=100, key="ud_json_paste",
+                                    placeholder='{"over_under_lines":[...],"appearances":[...],"players":[...]}')
+            if st.button("Load Underdog Data", use_container_width=True, key="ud_manual_load"):
+                ud_rows = []; ud_err_msg = None
+                if ud_upload is not None:
+                    try:
+                        df_ud = pd.read_csv(ud_upload)
+                        df_ud.columns = [c.strip().lower() for c in df_ud.columns]
+                        col_map = {}
+                        for need, alts in [("player",["player","name","player_name"]),
+                                           ("stat_type",["stat_type","stat","market","type","display_stat"]),
+                                           ("line",["line","stat_value","value","projection"])]:
+                            for a in alts:
+                                if a in df_ud.columns: col_map[need] = a; break
+                        if all(k in col_map for k in ("player","stat_type","line")):
+                            for _, r in df_ud.iterrows():
+                                ud_rows.append({"player": str(r[col_map["player"]]),
+                                                "stat_type": str(r[col_map["stat_type"]]),
+                                                "line": float(r[col_map["line"]]), "source": "underdog"})
+                        else:
+                            ud_err_msg = f"CSV missing required columns. Found: {list(df_ud.columns)}"
+                    except Exception as e:
+                        ud_err_msg = f"CSV error: {e}"
+                elif ud_paste.strip():
+                    try:
+                        data = json.loads(ud_paste.strip())
+                        appearances = {str(a.get("id","")): a for a in data.get("appearances",[])}
+                        players_map = {str(p.get("id","")): p for p in data.get("players",[])}
+                        for line in data.get("over_under_lines", data.get("lines", [])):
+                            try:
+                                ou = line.get("over_under", line)
+                                app_stat = ou.get("appearance_stat", {})
+                                app = appearances.get(str(app_stat.get("appearance_id","")), {})
+                                # Sport filter: only NBA/basketball
+                                sport = str(app.get("sport_id", app.get("sport",""))).lower().strip()
+                                if sport and sport not in _UD_BASKETBALL_SPORT_IDS:
+                                    continue
+                                player = players_map.get(str(app.get("player_id","")), {})
+                                pname = f"{player.get('first_name','')} {player.get('last_name','')}".strip()
+                                stat = app_stat.get("display_stat", app_stat.get("stat",""))
+                                val = line.get("stat_value", ou.get("stat_value"))
+                                if pname and stat and val is not None:
+                                    ud_rows.append({"player": pname, "stat_type": stat,
+                                                    "line": float(val), "source": "underdog"})
+                            except Exception: continue
+                        if not ud_rows:
+                            ud_err_msg = "No lines found in JSON. Check structure — needs over_under_lines, appearances, players."
+                    except Exception as e:
+                        ud_err_msg = f"JSON parse error: {e}"
+                else:
+                    ud_err_msg = "Upload a CSV or paste JSON."
+                if ud_err_msg:
+                    st.error(ud_err_msg)
+                elif ud_rows:
+                    st.session_state["ud_lines"] = pd.DataFrame(ud_rows)
+                    st.success(f"Loaded {len(ud_rows)} Underdog props.")
+                    st.rerun()
         ud_df = st.session_state.get("ud_lines")
         if ud_df is not None and not ud_df.empty:
             ud_filter = st.text_input("Filter player", key="ud_filter")
@@ -3996,7 +4134,9 @@ with tabs[3]:
                         ud_out = pd.DataFrame([{
                             "player": l["player"], "market": l["market"], "line": l["line"],
                             "proj": safe_round(l.get("proj")), "p_cal": safe_round(l.get("p_cal"),3),
-                            "ev_%": safe_round(l.get("ev_adj",0)*100,1),
+                            "ev_%": safe_round(l.get("ev_adj",0)*100,1), "edge_cat": l.get("edge_cat",""),
+                            "hot_cold": l.get("hot_cold",""), "dnp?": "⚠" if l.get("dnp_risk") else "",
+                            "source": "underdog",
                         } for l in ud_edges])
                         st.dataframe(ud_out.sort_values("ev_%", ascending=False), use_container_width=True)
                     else:
@@ -4088,9 +4228,48 @@ with tabs[4]:
 
         # [FIX 12] Export button
         csv_data = h.to_csv(index=False)
-        st.download_button("Export History CSV", data=csv_data,
+        _exp_col, _del_col = st.columns([2, 1])
+        _exp_col.download_button("Export History CSV", data=csv_data,
                            file_name=f"history_{user_id}.csv", mime="text/csv",
                            use_container_width=True)
+
+        # Delete individual bets or clear all
+        with st.expander("🗑 Delete / Remove Entries", expanded=False):
+            st.caption("Row numbers shown in the table above (0-indexed). Deletion is permanent.")
+            _d_col1, _d_col2 = st.columns([2, 1])
+            with _d_col1:
+                _del_idx = st.number_input("Row to delete", 0, max(0, len(h)-1), 0, 1, key="del_row_idx")
+            with _d_col2:
+                st.markdown("<div style='height:1.6rem;'></div>", unsafe_allow_html=True)
+                if st.button("Delete Row", key="del_row_btn", type="primary"):
+                    try:
+                        h2 = h.drop(index=int(_del_idx)).reset_index(drop=True)
+                        h2.to_csv(history_path(user_id), index=False)
+                        st.success(f"Row {int(_del_idx)} deleted.")
+                        st.rerun()
+                    except Exception as _de:
+                        st.error(f"Delete failed: {_de}")
+            st.markdown("<hr style='border-color:#1E2D3D;margin:0.5rem 0;'>", unsafe_allow_html=True)
+            if "confirm_clear_all" not in st.session_state:
+                st.session_state["confirm_clear_all"] = False
+            if not st.session_state["confirm_clear_all"]:
+                if st.button("Clear ALL History", key="clear_all_btn"):
+                    st.session_state["confirm_clear_all"] = True
+                    st.rerun()
+            else:
+                st.warning("Are you sure? This will permanently delete all bet history.")
+                _ca1, _ca2 = st.columns(2)
+                if _ca1.button("Yes — delete everything", key="confirm_clear_yes", type="primary"):
+                    try:
+                        pd.DataFrame().to_csv(history_path(user_id), index=False)
+                        st.session_state["confirm_clear_all"] = False
+                        st.success("All history cleared.")
+                        st.rerun()
+                    except Exception as _ce:
+                        st.error(f"Clear failed: {_ce}")
+                if _ca2.button("Cancel", key="confirm_clear_no"):
+                    st.session_state["confirm_clear_all"] = False
+                    st.rerun()
 
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
 
