@@ -333,7 +333,7 @@ def get_season_string(today=None):
 # ──────────────────────────────────────────────
 # BULK GAME LOG — one API call for ALL players
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*60*6, show_spinner=False)
+@st.cache_data(ttl=60*30, show_spinner=False)
 def _fetch_bulk_gamelogs():
     """LeagueGameLog: ONE call returns every player's game log for the season.
     Replaces ~200 individual PlayerGameLog calls for a full-slate scan.
@@ -366,7 +366,7 @@ def _fetch_bulk_gamelogs():
 # ──────────────────────────────────────────────
 # GAME LOG FETCHER
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*60*6, show_spinner=False)
+@st.cache_data(ttl=60*30, show_spinner=False)
 def fetch_player_gamelog(player_id, max_games=15):
     """Per-player game log. Tries the bulk cache first (instant), falls back to individual API call."""
     # ── Fast path: bulk dataframe already in cache ──────────────
@@ -394,6 +394,94 @@ def fetch_player_gamelog(player_id, max_games=15):
         except Exception as e:
             errs.append(f"{type(e).__name__}: {e}")
     return pd.DataFrame(), errs
+
+# ──────────────────────────────────────────────
+# REAL HALF-GAME BOXSCORE FETCHER
+# Per-period stats via BoxScoreTraditionalV2.
+# start_period/end_period parameters give cumulative splits
+# (H1=1-2, H2=3-4, Q1=1-1) without extra joins.
+# ──────────────────────────────────────────────
+@st.cache_data(ttl=60*60*12, show_spinner=False)
+def _fetch_boxscore_halfgame(game_id, player_id_int, start_period, end_period):
+    """Return {PTS, REB, AST, ...} for a player over a specific period range, or None."""
+    try:
+        from nba_api.stats.endpoints import BoxScoreTraditionalV2
+        bx = BoxScoreTraditionalV2(
+            game_id=str(game_id),
+            start_period=int(start_period),
+            end_period=int(end_period),
+            timeout=20,
+        )
+        pstats = bx.get_data_frames()[0]
+        if pstats.empty:
+            return None
+        pid_col = next((c for c in ["PLAYER_ID", "Player_ID"] if c in pstats.columns), None)
+        if not pid_col:
+            return None
+        row = pstats[pstats[pid_col] == int(player_id_int)]
+        if row.empty:
+            return None
+        row = row.iloc[0]
+        result = {}
+        for col in ["PTS","REB","AST","FG3M","FGM","FGA","FG3A","FTM","FTA","BLK","STL","TOV","OREB","DREB"]:
+            if col in row.index:
+                result[col] = safe_float(row[col], default=0.0)
+        return result if result else None
+    except Exception:
+        return None
+
+def fetch_player_halfgame_log(player_id, game_log_df, market_name, n_games=10):
+    """
+    Build a real H1/H2/Q1 stat series from per-period boxscores.
+    Returns pd.Series (newest-first) if >=3 games fetched, else None (falls back to scaled full-game).
+    """
+    if game_log_df is None or game_log_df.empty or not player_id:
+        return None
+    # Period boundaries
+    if market_name.startswith("H1"):
+        start_p, end_p = 1, 2
+    elif market_name.startswith("H2"):
+        start_p, end_p = 3, 4
+    elif market_name.startswith("Q1"):
+        start_p, end_p = 1, 1
+    else:
+        return None
+    # Get game IDs from log
+    game_id_col = next((c for c in ["GAME_ID", "Game_ID"] if c in game_log_df.columns), None)
+    if not game_id_col:
+        return None
+    game_ids = game_log_df.head(n_games)[game_id_col].dropna().astype(str).tolist()
+    if not game_ids:
+        return None
+    # Fetch in parallel (3 workers to stay under rate limits)
+    stats_list = []
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        futures = [ex.submit(_fetch_boxscore_halfgame, gid, int(player_id), start_p, end_p)
+                   for gid in game_ids]
+        for fut in futures:
+            try:
+                result = fut.result(timeout=25)
+                if result:
+                    stats_list.append(result)
+            except Exception:
+                pass
+    if len(stats_list) < 3:
+        return None   # Not enough half-game data; caller falls back to scaled full-game
+    stats_df = pd.DataFrame(stats_list)
+    # Resolve base market (strip H1/H2/Q1 prefix)
+    base_mkt = market_name.replace("H1 ","").replace("H2 ","").replace("Q1 ","")
+    stat_field = STAT_FIELDS.get(base_mkt)
+    if stat_field is None:
+        return None
+    if isinstance(stat_field, tuple):
+        s = pd.Series(0.0, index=range(len(stats_df)))
+        for col in stat_field:
+            if col in stats_df.columns:
+                s = s + pd.to_numeric(stats_df[col], errors="coerce").fillna(0)
+        return s.reset_index(drop=True)
+    if stat_field in stats_df.columns:
+        return pd.to_numeric(stats_df[stat_field], errors="coerce").reset_index(drop=True)
+    return None
 
 # ──────────────────────────────────────────────
 # REST / B2B FACTOR  [FIX 4: season-phase scaling]
@@ -1930,24 +2018,46 @@ def compute_history_based_priors(legs_df, position_bucket):
 # KELLY PARLAY OPTIMIZER
 # ──────────────────────────────────────────────
 def kelly_parlay_optimizer(legs, payout_mult, max_legs=4, bankroll=1000.0, frac_kelly=0.25):
-    """Find best 2-N leg combos by correlation-adjusted EV."""
+    """Find best 2-N leg combos using PSD covariance matrix + Gaussian copula MC simulation."""
     from itertools import combinations
+    import scipy.stats as _sc
+
+    N_SIMS_PARLAY = 3000
+
     valid = [l for l in legs if l.get("gate_ok") and float(l.get("p_cal") or 0) > 0.50]
     if len(valid) < 2:
         return []
+
+    # Pre-build full N×N correlation matrix once (avoid redundant pairwise calls in inner loop)
+    nv = len(valid)
+    full_corr = np.eye(nv)
+    for _i in range(nv):
+        for _j in range(_i + 1, nv):
+            c = float(estimate_player_correlation(valid[_i], valid[_j]) or 0.0)
+            full_corr[_i, _j] = full_corr[_j, _i] = c
+
+    rng = np.random.default_rng(42)
     results = []
-    for n in range(2, min(max_legs + 1, len(valid) + 1)):
-        for combo in combinations(range(len(valid)), n):
+
+    for n in range(2, min(max_legs + 1, nv + 1)):
+        for combo in combinations(range(nv), n):
             combo_legs = [valid[i] for i in combo]
-            probs = [float(l["p_cal"]) for l in combo_legs]
-            # Correlation adjustment
-            corr_adj = 1.0
-            for i in range(n):
-                for j in range(i+1, n):
-                    c = estimate_player_correlation(combo_legs[i], combo_legs[j])
-                    corr_adj *= max(0.5, 1.0 - abs(float(c or 0)) * 0.3)
+            probs = np.array([float(l["p_cal"]) for l in combo_legs])
             naive_joint = float(np.prod(probs))
-            joint = float(np.clip(naive_joint * corr_adj, 1e-6, 1.0))
+
+            # Extract n×n sub-matrix and make PSD via eigenvalue clipping
+            sub_corr = full_corr[np.ix_(list(combo), list(combo))]
+            evals, evecs = np.linalg.eigh(sub_corr)
+            evals = np.clip(evals, 1e-6, None)
+            corr_psd = evecs @ np.diag(evals) @ evecs.T
+
+            # Gaussian copula MC
+            z = rng.multivariate_normal(np.zeros(n), corr_psd, N_SIMS_PARLAY)
+            u = _sc.norm.cdf(z)
+            hits = u < probs  # shape (N_SIMS_PARLAY, n)
+            joint = float(hits.all(axis=1).mean())
+            joint = float(np.clip(joint, 1e-6, 1.0))
+
             ev = payout_mult * joint - 1.0
             kelly_f = max(0.0, ev / (payout_mult - 1.0)) if payout_mult > 1 else 0.0
             stake = min(bankroll * frac_kelly * kelly_f, bankroll * 0.05)
@@ -2115,8 +2225,26 @@ def compute_leg_projection(
         base_market = (market_name.replace("H1 ","").replace("H2 ","").replace("Q1 ",""))
 
     stat_series = compute_stat_from_gamelog(gldf_n, base_market) if not gldf_n.empty else pd.Series([], dtype=float)
+
+    # [AUDIT FIX] For half/Q1 markets: try real per-period boxscore data.
+    # If successful, stat_series is replaced with actual H1/H2/Q1 values so
+    # CV, skewness, and bootstrap all operate on real half-game distributions.
+    _orig_half_factor = half_factor   # save for Bayesian prior scaling below
+    if is_half_market and player_id:
+        _hg_series = fetch_player_halfgame_log(player_id, gldf_n, market_name, n_games=n_games)
+        if _hg_series is not None and len(_hg_series.dropna()) >= 3:
+            stat_series = _hg_series
+            half_factor = 1.0   # Real half-game data; no scaling needed anywhere
+            errors.append(f"Real {market_name} split: {len(_hg_series.dropna())} games from boxscores")
+
     vol_cv, vol_label = compute_volatility(stat_series)
-    stat_skew = compute_skewness(stat_series)  # [FIX 5]
+    stat_skew = compute_skewness(stat_series)
+    # [AUDIT FIX] Skewness heuristic when n<4: market-type prior so gate isn't fully bypassed
+    if stat_skew is None and not stat_series.dropna().empty:
+        if base_market in ("3PM", "Blocks", "Steals", "Stocks", "FTM", "FTA"):
+            stat_skew = 0.70   # Count/rate stats dominated by zeros: strong right skew
+        elif base_market in ("Rebounds", "RA", "PR"):
+            stat_skew = 0.25   # Mildly right-skewed (occasional bigs blowups)
     rest_mult, rest_days = compute_rest_factor(gldf, game_date)
 
     # [UPGRADE 2] Projected minutes + DNP risk
@@ -2226,7 +2354,18 @@ def compute_leg_projection(
             errors.append(f"Insufficient history (need >=4 games, have {len(stat_series.dropna())})")
 
     n_valid = int(stat_series.dropna().count())
-    mu_shrunk = bayesian_shrink(mu_raw, n_valid, base_market, pos_bucket) if mu_raw is not None else None
+    # [AUDIT FIX] Half-market with real boxscore data: scale positional prior by _orig_half_factor
+    # so shrinkage operates in half-game units (not full-game units)
+    if is_half_market and _orig_half_factor != half_factor and mu_raw is not None:
+        orig_prior_val = POSITIONAL_PRIORS.get(pos_bucket, POSITIONAL_PRIORS["Unknown"]).get(base_market)
+        if orig_prior_val is not None:
+            k = max(2.0, 8.0 / (1.0 + math.log1p(max(n_valid, 1) / 5.0)))
+            w_p = k / (k + max(n_valid, 1))
+            mu_shrunk = float(w_p * orig_prior_val * _orig_half_factor + (1.0 - w_p) * mu_raw)
+        else:
+            mu_shrunk = mu_raw  # No prior for this market: use observed directly
+    else:
+        mu_shrunk = bayesian_shrink(mu_raw, n_valid, base_market, pos_bucket) if mu_raw is not None else None
 
     # Apply half factor and positional D to projection — include opp-specific factor
     proj_full = (mu_shrunk * ctx_mult * rest_mult * ha_mult * pos_def_mult * opp_specific_factor
@@ -2259,6 +2398,18 @@ def compute_leg_projection(
 
     ev_raw = ev_per_dollar(p_cal, price_decimal) if (p_cal is not None and price_decimal is not None) else None
     pen = volatility_penalty_factor(vol_cv)
+    # [AUDIT FIX] Asymmetric vol penalty: adjust based on skew-side alignment
+    # When skew favors our bet direction (tail points our way), volatility is less harmful → soften penalty.
+    # When skew opposes us (tail points against us), volatility is more harmful → tighten penalty.
+    if stat_skew is not None and vol_cv is not None and float(vol_cv) > 0.20:
+        _sk = float(stat_skew)
+        _is_under_pen = "under" in str(side_str).lower()
+        _skew_helps = (_sk < -0.4 and _is_under_pen) or (_sk > 0.4 and not _is_under_pen)
+        _skew_hurts = (_sk < -0.4 and not _is_under_pen) or (_sk > 0.4 and _is_under_pen)
+        if _skew_helps:
+            pen = min(1.0, pen * 1.12)   # Skew aligned with our side: soften penalty by up to 12%
+        elif _skew_hurts:
+            pen = pen * 0.88             # Skew opposed to our side: tighten penalty by 12%
     ev_adj = float(ev_raw * pen) if ev_raw is not None else None
     # [FIX 5] Pass skewness to volatility gate
     gate_ok, gate_reason = passes_volatility_gate(vol_cv, ev_raw, skew=stat_skew, bet_type=side_str)
