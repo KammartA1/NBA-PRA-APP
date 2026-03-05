@@ -234,6 +234,147 @@ ODDS_MARKETS = {
     "FTA":             "player_free_throws_attempted",
 }
 
+# ──────────────────────────────────────────────
+# DFS PLATFORM PAYOUT STRUCTURES
+# PrizePicks / Underdog / Sleeper use identical or similar payout tables.
+# Individual legs are flat 50% breakeven — the EV lives in the multi-leg structure.
+# ──────────────────────────────────────────────
+DFS_PP_PAYOUTS = {        # Power Play — must hit ALL legs
+    2: 3.0,
+    3: 5.0,
+    4: 10.0,
+    5: 20.0,
+    6: 40.0,
+}
+DFS_UD_PAYOUTS = {        # Underdog Pick'em — similar tiers
+    2: 3.0,
+    3: 6.0,
+    4: 10.0,
+    5: 20.0,
+}
+DFS_SLEEPER_PAYOUTS = {   # Sleeper default
+    2: 3.0,
+    3: 5.0,
+    4: 10.0,
+    5: 20.0,
+}
+DFS_PP_FLEX_PAYOUTS = {   # Flex — hit k-of-n for tiered payout
+    3: {2: 1.25, 3: 2.25},
+    4: {3: 1.5,  4: 5.0},
+    5: {4: 2.0,  5: 10.0},
+    6: {4: 0.4,  5: 2.0,  6: 25.0},
+}
+
+def dfs_power_play_ev(joint_prob: float, n_legs: int, platform: str = "prizepicks") -> float | None:
+    """EV of a DFS power play entry (must hit all legs)."""
+    tbl = {"prizepicks": DFS_PP_PAYOUTS, "underdog": DFS_UD_PAYOUTS, "sleeper": DFS_SLEEPER_PAYOUTS}
+    payouts = tbl.get(platform.lower(), DFS_PP_PAYOUTS)
+    mult = payouts.get(n_legs)
+    return (mult * joint_prob - 1.0) if mult else None
+
+def dfs_flex_ev(hit_dist: dict, n_legs: int) -> float | None:
+    """EV of a DFS flex entry. hit_dist = {k: P(exactly k legs hit)}."""
+    tier = DFS_PP_FLEX_PAYOUTS.get(n_legs, {})
+    if not tier:
+        return None
+    ev = -1.0
+    for k_correct, payout_mult in tier.items():
+        ev += payout_mult * hit_dist.get(int(k_correct), 0.0)
+    return ev
+
+def dfs_entry_optimizer(legs: list, platform: str = "prizepicks",
+                        max_legs: int = 4, n_sims: int = 4000,
+                        bankroll: float = 1000.0, frac_kelly: float = 0.25) -> list:
+    """
+    Find optimal DFS power-play + flex combos using Gaussian copula Monte Carlo.
+    Returns list of dicts sorted by best EV (Power Play or Flex, whichever is higher).
+    """
+    from itertools import combinations
+    import scipy.stats as _sc
+
+    valid = [l for l in legs if float(l.get("p_cal") or 0) > 0.50]
+    if len(valid) < 2:
+        return []
+
+    nv = len(valid)
+    full_corr = np.eye(nv)
+    for _i in range(nv):
+        for _j in range(_i + 1, nv):
+            c = float(estimate_player_correlation(valid[_i], valid[_j]) or 0.0)
+            full_corr[_i, _j] = full_corr[_j, _i] = c
+
+    rng = np.random.default_rng(7)
+    results = []
+
+    tbl = {"prizepicks": DFS_PP_PAYOUTS, "underdog": DFS_UD_PAYOUTS, "sleeper": DFS_SLEEPER_PAYOUTS}
+    payouts_tbl = tbl.get(platform.lower(), DFS_PP_PAYOUTS)
+
+    for n in range(2, min(max_legs + 1, nv + 1)):
+        if n not in payouts_tbl:
+            continue
+        for combo in combinations(range(nv), n):
+            combo_legs = [valid[i] for i in combo]
+            probs = np.array([float(l["p_cal"]) for l in combo_legs])
+
+            # Build PSD correlation sub-matrix
+            sub = full_corr[np.ix_(list(combo), list(combo))]
+            evals, evecs = np.linalg.eigh(sub)
+            evals = np.clip(evals, 1e-6, None)
+            corr_psd = evecs @ np.diag(evals) @ evecs.T
+
+            # Gaussian copula MC
+            z = rng.multivariate_normal(np.zeros(n), corr_psd, n_sims)
+            u = _sc.norm.cdf(z)
+            hits = (u < probs).astype(int)          # shape (n_sims, n)
+            per_sim_k = hits.sum(axis=1)             # how many legs hit per sim
+
+            joint_prob = float((per_sim_k == n).mean())
+            naive_joint = float(np.prod(probs))
+
+            # Hit distribution P(exactly k hit)
+            hit_dist = {k: float((per_sim_k == k).mean()) for k in range(n + 1)}
+
+            # Power play EV
+            pp_ev = dfs_power_play_ev(joint_prob, n, platform)
+
+            # Flex EV (if available for this n)
+            flex_ev = dfs_flex_ev(hit_dist, n)
+
+            # Per-leg DFS edge (average probability above 50% floor)
+            avg_edge = float(np.mean(probs) - 0.5)
+
+            best_ev = max(
+                pp_ev if pp_ev is not None else -99,
+                flex_ev if flex_ev is not None else -99,
+            )
+            rec_mode = "PowerPlay" if (pp_ev or -99) >= (flex_ev or -99) else "Flex"
+
+            # Kelly stake using best_ev / (payout - 1)
+            payout_used = payouts_tbl.get(n, 3.0) if rec_mode == "PowerPlay" else (
+                DFS_PP_FLEX_PAYOUTS.get(n, {}).get(n, 3.0)
+            )
+            kelly_f = max(0.0, best_ev / (payout_used - 1.0)) if payout_used > 1 else 0.0
+            stake = min(bankroll * frac_kelly * kelly_f, bankroll * 0.05)
+
+            results.append({
+                "combo": " + ".join(
+                    f"{l['player']} {l['market']} O{l.get('line','?')}" for l in combo_legs
+                ),
+                "n_legs": n,
+                "platform": platform,
+                "joint_prob_%": round(joint_prob * 100, 1),
+                "naive_prob_%": round(naive_joint * 100, 1),
+                "pp_payout_x": payouts_tbl.get(n, "—"),
+                "pp_ev_%": round(pp_ev * 100, 1) if pp_ev is not None else "—",
+                "flex_ev_%": round(flex_ev * 100, 1) if flex_ev is not None else "—",
+                "rec_mode": rec_mode,
+                "best_ev_%": round(best_ev * 100, 1) if best_ev > -99 else "—",
+                "avg_leg_edge_%": round(avg_edge * 100, 1),
+                "rec_stake_$": round(stake, 2),
+            })
+
+    return sorted(results, key=lambda x: x["best_ev_%"] if isinstance(x["best_ev_%"], (int, float)) else -99, reverse=True)[:30]
+
 # Markets that require batching separately (not all books offer these)
 SPECIALTY_MARKET_KEYS = {
     # Half-game markets (only DK/FD/etc offer these)
@@ -3534,6 +3675,93 @@ with tabs[1]:
             else:
                 st.warning("Need 2+ gated legs with P > 50% to generate combos.")
 
+        # ── 🎰 DFS Entry Builder ─────────────────────────────────
+        st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.72rem;color:#FFB800;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>🎰 DFS ENTRY BUILDER — PRIZEPICKS / UNDERDOG / SLEEPER</div>", unsafe_allow_html=True)
+        dfs_c1, dfs_c2, dfs_c3 = st.columns(3)
+        with dfs_c1:
+            dfs_platform = st.selectbox("Platform", ["prizepicks","underdog","sleeper"], key="dfs_platform_sel")
+        with dfs_c2:
+            dfs_max_legs = st.slider("Max legs per entry", 2, 6,
+                                     min(4, max(2, len([l for l in res if float(l.get("p_cal") or 0) > 0.50]))),
+                                     key="dfs_max_legs")
+        with dfs_c3:
+            dfs_entry_type = st.radio("Entry type", ["Power Play", "Flex", "Best of both"],
+                                      key="dfs_entry_type_radio", horizontal=True)
+
+        # Show the platform's payout table inline
+        _tbl = {"prizepicks": DFS_PP_PAYOUTS, "underdog": DFS_UD_PAYOUTS, "sleeper": DFS_SLEEPER_PAYOUTS}
+        _pt = _tbl.get(dfs_platform, DFS_PP_PAYOUTS)
+        _payout_cols = st.columns(len(_pt))
+        for _pi, (_n, _x) in enumerate(_pt.items()):
+            _payout_cols[_pi].metric(f"{_n}-leg PP", f"{_x}x",
+                                     help=f"Must hit all {_n} legs to win {_x}x your entry")
+
+        if st.button("🎰 Find Best DFS Entries", use_container_width=True, key="dfs_optimizer_btn"):
+            _gated = [l for l in res if float(l.get("p_cal") or 0) > 0.50]
+            if len(_gated) < 2:
+                st.warning("Need 2+ legs with P(Over) > 50% to build entries.")
+            else:
+                with st.spinner(f"Optimizing {dfs_platform.title()} entries with MC simulation…"):
+                    dfs_results = dfs_entry_optimizer(
+                        _gated, platform=dfs_platform, max_legs=dfs_max_legs,
+                        n_sims=5000, bankroll=bankroll, frac_kelly=frac_kelly,
+                    )
+                st.session_state["_dfs_entry_results"] = dfs_results
+
+        _dfs_res = st.session_state.get("_dfs_entry_results")
+        if _dfs_res:
+            # Filter by entry type selection
+            if dfs_entry_type == "Power Play":
+                _dfs_show = [r for r in _dfs_res if r.get("rec_mode") == "PowerPlay"]
+            elif dfs_entry_type == "Flex":
+                _dfs_show = [r for r in _dfs_res if r.get("rec_mode") == "Flex"]
+            else:
+                _dfs_show = _dfs_res
+
+            if not _dfs_show:
+                st.caption("No entries matched that filter — try 'Best of both'.")
+            else:
+                dfs_df = pd.DataFrame(_dfs_show)[
+                    ["n_legs","combo","rec_mode","joint_prob_%","pp_payout_x",
+                     "pp_ev_%","flex_ev_%","best_ev_%","avg_leg_edge_%","rec_stake_$"]
+                ].rename(columns={
+                    "n_legs": "Legs", "combo": "Entry", "rec_mode": "Mode",
+                    "joint_prob_%": "Joint%", "pp_payout_x": "PP Payout",
+                    "pp_ev_%": "PP EV%", "flex_ev_%": "Flex EV%",
+                    "best_ev_%": "Best EV%", "avg_leg_edge_%": "Avg Edge%",
+                    "rec_stake_$": "Rec Stake $"
+                })
+                st.dataframe(dfs_df, use_container_width=True, hide_index=True)
+
+                # Visual breakdown of top entry
+                _best = _dfs_show[0]
+                _pp_ev_val = _best.get("pp_ev_%")
+                _fl_ev_val = _best.get("flex_ev_%")
+                _pp_ev_num = _pp_ev_val if isinstance(_pp_ev_val, (int, float)) else 0
+                _fl_ev_num = _fl_ev_val if isinstance(_fl_ev_val, (int, float)) else 0
+
+                st.markdown(f"""
+<div style='background:linear-gradient(135deg,#FFB80018,#0D1B2A);border:1px solid #FFB80050;
+border-radius:6px;padding:0.9rem 1.1rem;margin-top:0.5rem;'>
+<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#FFB800;
+letter-spacing:0.12em;margin-bottom:0.5rem;'>🎰 TOP {dfs_platform.upper()} ENTRY</div>
+<div style='font-size:0.78rem;color:#EEF4FF;font-weight:600;margin-bottom:0.4rem;'>
+{_best.get("combo","")}</div>
+<div style='display:flex;gap:1.2rem;font-size:0.65rem;flex-wrap:wrap;'>
+  <span style='color:#4A607A;'>Legs: <span style='color:#EEF4FF;'>{_best.get("n_legs")}</span></span>
+  <span style='color:#4A607A;'>Mode: <span style='color:#FFB800;'>{_best.get("rec_mode")}</span></span>
+  <span style='color:#4A607A;'>Joint Prob: <span style='color:#00AAFF;font-family:Fira Code,monospace;'>{_best.get("joint_prob_%")}%</span></span>
+  <span style='color:#4A607A;'>PP Payout: <span style='color:#EEF4FF;font-family:Fira Code,monospace;'>{_best.get("pp_payout_x")}x</span></span>
+  <span style='color:#4A607A;'>PP EV: <span style='color:{"#00FFB2" if _pp_ev_num > 0 else "#FF3358"};font-family:Fira Code,monospace;'>{_pp_ev_val}%</span></span>
+  <span style='color:#4A607A;'>Flex EV: <span style='color:{"#00FFB2" if _fl_ev_num > 0 else "#FF3358"};font-family:Fira Code,monospace;'>{_fl_ev_val}%</span></span>
+  <span style='color:#4A607A;'>Rec Stake: <span style='color:#00FFB2;font-family:Fira Code,monospace;'>${_best.get("rec_stake_$")}</span></span>
+</div>
+<div style='margin-top:0.5rem;font-size:0.60rem;color:#4A607A;'>
+Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model probability above the 50% floor.
+</div>
+</div>""", unsafe_allow_html=True)
+
         # 🎯 AI Parlay Optimizer
         if _get_anthropic_key() and len(res) >= 2:
             st.markdown("<hr style='border-color:#1E2D3D;margin:0.5rem 0;'>", unsafe_allow_html=True)
@@ -3607,50 +3835,57 @@ with tabs[2]:
     max_rows = st.slider("Max Results", 10, 200, 60, 10)
 
     # ── Platform Lines (PP / UD) inline in scanner ──────────────────────
-    with st.expander("📱 Platform Lines — PrizePicks & Underdog (scan against platform lines)", expanded=False):
-        _plat_c1, _plat_c2, _plat_c3 = st.columns(3)
+    with st.expander("📱 Platform Lines — PrizePicks / Underdog / Sleeper (scan against platform lines)", expanded=False):
+        _plat_c1, _plat_c2, _plat_c3, _plat_c4 = st.columns(4)
         with _plat_c1:
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;'>PRIZEPICKS</div>", unsafe_allow_html=True)
             _pp_ck = st.session_state.get("pp_cookies","")
             if _pp_ck:
-                st.caption(f"Cookie auth active ({len(_pp_ck)} chars)")
+                st.caption(f"🔑 Cookie active ({len(_pp_ck)} chars)")
             else:
-                _pp_ck_new = st.text_input("PP Cookies (optional)", value="", type="password", key="scanner_pp_cookies", help="Paste your PrizePicks browser cookies to bypass Cloudflare blocks")
+                _pp_ck_new = st.text_input("PP Cookies", value="", type="password", key="scanner_pp_cookies",
+                                            help="Paste PrizePicks browser cookies to bypass Cloudflare")
                 if _pp_ck_new:
                     st.session_state["pp_cookies"] = _pp_ck_new
             if st.button("Fetch PP Lines", key="scanner_fetch_pp_btn", use_container_width=True):
                 with st.spinner("Fetching PrizePicks…"):
                     _pp_rows, _pp_err = fetch_prizepicks_lines()
                 if _pp_err:
-                    st.error(f"PP error: {_pp_err}")
+                    st.error(f"PP: {_pp_err}")
                 elif _pp_rows:
-                    _pp_df = pd.DataFrame(_pp_rows)
-                    st.session_state["pp_lines"] = _pp_df
-                    st.success(f"✓ {len(_pp_rows)} PP props loaded")
+                    st.session_state["pp_lines"] = pd.DataFrame(_pp_rows)
+                    st.success(f"✓ {len(_pp_rows)} PP props")
                 else:
-                    st.warning("PP returned 0 props — slate may not be posted yet")
+                    st.warning("PP: 0 props found")
             _pp_loaded = st.session_state.get("pp_lines")
             if _pp_loaded is not None and not _pp_loaded.empty:
-                st.markdown(f"<div style='font-size:0.60rem;color:#00FFB2;'>✓ {len(_pp_loaded)} PP lines ready</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='font-size:0.58rem;color:#00FFB2;'>✓ {len(_pp_loaded)} ready</div>", unsafe_allow_html=True)
 
         with _plat_c2:
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#FFB800;'>UNDERDOG</div>", unsafe_allow_html=True)
-            if st.button("Fetch Underdog Lines", key="scanner_fetch_ud_btn", use_container_width=True):
+            if st.button("Fetch UD Lines", key="scanner_fetch_ud_btn", use_container_width=True):
                 with st.spinner("Fetching Underdog…"):
                     _ud_rows, _ud_err = fetch_underdog_lines()
                 if _ud_err:
-                    st.error(f"UD error: {_ud_err}")
+                    st.error(f"UD: {_ud_err}")
                 elif _ud_rows:
-                    _ud_df = pd.DataFrame(_ud_rows)
-                    st.session_state["ud_lines"] = _ud_df
-                    st.success(f"✓ {len(_ud_rows)} UD props loaded")
+                    st.session_state["ud_lines"] = pd.DataFrame(_ud_rows)
+                    st.success(f"✓ {len(_ud_rows)} UD props")
                 else:
-                    st.warning("UD returned 0 props")
+                    st.warning("UD: 0 props found")
             _ud_loaded = st.session_state.get("ud_lines")
             if _ud_loaded is not None and not _ud_loaded.empty:
-                st.markdown(f"<div style='font-size:0.60rem;color:#FFB800;'>✓ {len(_ud_loaded)} UD lines ready</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='font-size:0.58rem;color:#FFB800;'>✓ {len(_ud_loaded)} ready</div>", unsafe_allow_html=True)
 
         with _plat_c3:
+            st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#9B59F5;'>SLEEPER</div>", unsafe_allow_html=True)
+            _sl_loaded_sc = st.session_state.get("sl_lines")
+            if _sl_loaded_sc is not None and not _sl_loaded_sc.empty:
+                st.markdown(f"<div style='font-size:0.58rem;color:#9B59F5;'>✓ {len(_sl_loaded_sc)} ready</div>", unsafe_allow_html=True)
+            else:
+                st.caption("Import via Platforms → Sleeper tab")
+
+        with _plat_c4:
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#4A607A;'>SCAN SOURCE</div>", unsafe_allow_html=True)
             _scan_source = st.radio(
                 "Lines to scan",
@@ -3660,7 +3895,7 @@ with tabs[2]:
                 label_visibility="collapsed",
             )
             st.session_state["scan_source_idx"] = ["Odds API only","PP + UD only","All sources"].index(_scan_source)
-            st.caption("PP/UD implied prob: 0.50 (no vig)  Odds API: from market price")
+            st.caption("PP/UD/Sleeper: 50% implied (no vig)  Odds API: from market price")
 
     fetch_col, scan_col = st.columns(2)
     if fetch_col.button("Fetch Live Lines (Odds API)", use_container_width=True):
@@ -3766,9 +4001,9 @@ with tabs[2]:
                             "market_key":ODDS_MARKETS.get(mkt),"side":r.get("side","Over")}
                     candidates.append((pname, mkt, float(line), meta))
 
-            # ── Platform candidates (PP + UD) ──────────────────────────────
+            # ── Platform candidates (PP + UD + Sleeper) ────────────────────
             if _use_platforms:
-                for _plat_store, _plat_label in [("pp_lines","prizepicks"), ("ud_lines","underdog")]:
+                for _plat_store, _plat_label in [("pp_lines","prizepicks"), ("ud_lines","underdog"), ("sl_lines","sleeper")]:
                     _plat_df = st.session_state.get(_plat_store)
                     if _plat_df is None or _plat_df.empty:
                         continue
@@ -3873,6 +4108,9 @@ with tabs[2]:
                                 "n_games":int(leg.get("n_games_used",0)),   # [AUDIT FIX] explicit int
                                 "inj_boost": inj_flag,
                                 "min_proj": safe_round(leg.get("proj_minutes"),0),
+                                # DFS columns — edge above the 50% flat floor
+                                "pp_edge_%": round((pc - 0.50) * 100, 1),
+                                "pp_2leg_ev_%": round((DFS_PP_PAYOUTS[2] * pc**2 - 1.0) * 100, 1),
                             })
             out_df = pd.DataFrame(out_rows)
             if not out_df.empty:
@@ -4205,7 +4443,7 @@ with tabs[2]:
 # ─── PLATFORMS TAB ─────────────────────────────────────────────
 with tabs[3]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>PLATFORMS — PRIZEPICKS / UNDERDOG / LINE SHOPPING</div>""", unsafe_allow_html=True)
-    plat_tabs = st.tabs(["PrizePicks", "Underdog", "Line History", "Best Available"])
+    plat_tabs = st.tabs(["PrizePicks", "Underdog", "Sleeper", "Line History", "Best Available"])
 
     with plat_tabs[0]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>PRIZEPICKS NBA LINES</div>", unsafe_allow_html=True)
@@ -4510,6 +4748,115 @@ with tabs[3]:
                         st.warning("No edges found vs Underdog lines.")
 
     with plat_tabs[2]:
+        # ── SLEEPER FANTASY ─────────────────────────────────────
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#9B59F5;letter-spacing:0.12em;'>SLEEPER FANTASY NBA LINES</div>", unsafe_allow_html=True)
+        st.caption("Sleeper Picks lines — paste your JSON export or upload CSV to sync with the scanner.")
+
+        sl_auto_tab, sl_manual_tab = st.tabs(["Auto Fetch", "Manual Import"])
+
+        with sl_auto_tab:
+            st.info("Sleeper's picks API is not publicly documented. Use **Manual Import** to paste your lines, or export from the Sleeper app.")
+            if st.button("Attempt Sleeper Fetch", key="sl_auto_fetch_btn"):
+                # Try known Sleeper endpoints (unofficial)
+                _sl_urls = [
+                    "https://api.sleeper.app/v1/stats/nba/projections/regular/2025/1",
+                    "https://api.sleeper.app/projections/nba",
+                    "https://api.sleeper.com/picks/nba",
+                ]
+                _sl_found = False
+                for _sl_url in _sl_urls:
+                    try:
+                        from curl_cffi import requests as cffi_requests
+                        _sl_r = cffi_requests.get(_sl_url, impersonate="chrome120",
+                                                   headers={"Accept": "application/json"}, timeout=10)
+                    except ImportError:
+                        _sl_r = requests.get(_sl_url, timeout=10)
+                    except Exception:
+                        continue
+                    if _sl_r.ok:
+                        try:
+                            _sl_data = _sl_r.json()
+                            st.json(_sl_data if isinstance(_sl_data, dict) else {"items": len(_sl_data)})
+                            st.success(f"Got response from {_sl_url} — paste in Manual Import to process.")
+                            _sl_found = True
+                            break
+                        except Exception:
+                            pass
+                if not _sl_found:
+                    st.error("Could not reach Sleeper API. Use Manual Import below.")
+
+        with sl_manual_tab:
+            sl_import_mode = st.radio("Import format", ["JSON paste", "CSV upload"], horizontal=True, key="sl_import_mode")
+            if sl_import_mode == "JSON paste":
+                sl_json_raw = st.text_area("Paste Sleeper JSON", height=200, key="sl_json_raw",
+                                           placeholder='[{"player_name":"LeBron James","stat_type":"Points","line":24.5}, ...]')
+                if st.button("Parse Sleeper JSON", key="sl_parse_json_btn"):
+                    try:
+                        _sl_parsed = json.loads(sl_json_raw.strip())
+                        if isinstance(_sl_parsed, dict):
+                            _sl_parsed = _sl_parsed.get("picks", _sl_parsed.get("lines",
+                                         _sl_parsed.get("projections", [_sl_parsed])))
+                        sl_rows = []
+                        for item in _sl_parsed:
+                            _pn = (item.get("player_name") or item.get("name") or item.get("player","")).strip()
+                            _st = (item.get("stat_type") or item.get("stat") or item.get("category","")).strip()
+                            _ln = item.get("line") or item.get("line_score") or item.get("value")
+                            if _pn and _st and _ln is not None:
+                                sl_rows.append({"player": _pn, "stat_type": _st,
+                                                "line": float(_ln), "source": "sleeper"})
+                        if sl_rows:
+                            _sl_df = pd.DataFrame(sl_rows)
+                            st.session_state["sl_lines"] = _sl_df
+                            st.success(f"✓ {len(sl_rows)} Sleeper lines imported")
+                            st.dataframe(_sl_df.head(20), use_container_width=True)
+                        else:
+                            st.warning("No valid props found — check JSON structure.")
+                    except Exception as e:
+                        st.error(f"JSON parse error: {e}")
+            else:
+                sl_file = st.file_uploader("Upload Sleeper CSV", type="csv", key="sl_csv_upload")
+                if sl_file:
+                    try:
+                        _sl_csv = pd.read_csv(sl_file)
+                        _sl_csv.columns = [c.strip().lower().replace(" ","_") for c in _sl_csv.columns]
+                        _sl_col_map = {}
+                        for _need, _alts in [
+                            ("player",    ["player","player_name","name","athlete"]),
+                            ("stat_type", ["stat_type","stat","category","market","prop"]),
+                            ("line",      ["line","line_score","value","over_under"]),
+                        ]:
+                            for _a in _alts:
+                                if _a in _sl_csv.columns:
+                                    _sl_col_map[_need] = _a; break
+                            if _need not in _sl_col_map:
+                                _best = difflib.get_close_matches(_alts[0], _sl_csv.columns, n=1, cutoff=0.7)
+                                if _best: _sl_col_map[_need] = _best[0]
+                        if all(k in _sl_col_map for k in ("player","stat_type","line")):
+                            _sl_rows2 = []
+                            for _, row in _sl_csv.iterrows():
+                                _pn2 = str(row.get(_sl_col_map["player"],"")).strip()
+                                _st2 = str(row.get(_sl_col_map["stat_type"],"")).strip()
+                                _ln2 = row.get(_sl_col_map["line"])
+                                if _pn2 and _st2 and _ln2 is not None:
+                                    try: _sl_rows2.append({"player":_pn2,"stat_type":_st2,"line":float(_ln2),"source":"sleeper"})
+                                    except: pass
+                            if _sl_rows2:
+                                _sl_df2 = pd.DataFrame(_sl_rows2)
+                                st.session_state["sl_lines"] = _sl_df2
+                                st.success(f"✓ {len(_sl_rows2)} Sleeper lines from CSV")
+                                st.dataframe(_sl_df2.head(20), use_container_width=True)
+                            else:
+                                st.warning("No valid rows parsed.")
+                        else:
+                            st.warning(f"Could not map columns. Found: {list(_sl_csv.columns)}. Need: player, stat_type, line")
+                    except Exception as e:
+                        st.error(f"CSV error: {e}")
+
+        _sl_loaded = st.session_state.get("sl_lines")
+        if _sl_loaded is not None and not _sl_loaded.empty:
+            st.markdown(f"<div style='font-size:0.62rem;color:#9B59F5;margin-top:4px;'>✓ {len(_sl_loaded)} Sleeper lines loaded — available in Scanner (select 'PP + UD only' or 'All sources')</div>", unsafe_allow_html=True)
+
+    with plat_tabs[3]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>PROP LINE HISTORY</div>", unsafe_allow_html=True)
         ph_col1, ph_col2 = st.columns(2)
         with ph_col1:
@@ -4527,7 +4874,7 @@ with tabs[3]:
             ph_csv = ph_df.to_csv(index=False)
             st.download_button("Export Line History CSV", ph_csv, "prop_line_history.csv", "text/csv")
 
-    with plat_tabs[3]:
+    with plat_tabs[4]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>BEST AVAILABLE LINE SHOPPING</div>", unsafe_allow_html=True)
         st.caption("Checks all available books for the highest price on any scanner result. Requires a valid Odds API key.")
         scanner_out_shop = st.session_state.get("scanner_results")
