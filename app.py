@@ -2945,7 +2945,9 @@ with tabs[0]:
                 mline = st.number_input(f"Line", min_value=0.0, value=float(st.session_state.get(f"line_{leg_n}",22.5)), step=0.5, key=f"mline_{leg_n}")
                 out_cb = st.checkbox(f"Key teammate OUT?", key=f"out_{leg_n}")
                 leg_configs.append((tag, pname, mkt, manual, mline, out_cb))
-    run_btn = st.button("RUN MODEL", use_container_width=True)
+    if st.session_state.get("_auto_run_model"):
+        st.info("⚡ Legs loaded from Live Scanner — running model automatically...")
+    run_btn = st.button("RUN MODEL", use_container_width=True) or bool(st.session_state.pop("_auto_run_model", False))
     if run_btn:
         results = []; warnings = []; tasks = []
         for (tag, pname, mkt, manual, mline, teammate_out) in leg_configs:
@@ -3572,6 +3574,55 @@ with tabs[2]:
                     st.dataframe(under_out, use_container_width=True)
             elif under_out is not None:
                 st.caption("↓ No Under edges found meeting threshold criteria.")
+
+        # ── SEND TO MODEL ────────────────────────────────────────────────
+        st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
+        st.markdown(
+            "<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00AAFF;"
+            "letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>"
+            "▶ SEND TO MODEL TAB</div>",
+            unsafe_allow_html=True
+        )
+        # Build labels for both OVER and Under results combined
+        _model_labels = [
+            f"{r['player']} — {r['market']} {'O' if str(r.get('side','')).lower() != 'under' else 'U'}{r['line']} ({r.get('ev_adj_pct',0):+.1f}%)"
+            for _, r in scanner_out.iterrows()
+        ]
+        _under_res_for_model = st.session_state.get("scanner_under_results")
+        if bool(st.session_state.get("show_unders", False)) and _under_res_for_model is not None and not _under_res_for_model.empty:
+            _model_labels += [
+                f"{r['player']} — {r['market']} U{r['line']} ({r.get('ev_adj_pct',0):+.1f}%) [UNDER]"
+                for _, r in _under_res_for_model.iterrows()
+            ]
+        _legs_for_model = st.multiselect(
+            "Select up to 4 legs to run through full model",
+            options=_model_labels,
+            max_selections=4,
+            key="scanner_model_pick",
+            help="Selected legs will populate MODEL tab inputs and auto-run projections"
+        )
+        if _legs_for_model and st.button("▶ Send to MODEL + Run", key="send_to_model_btn", use_container_width=True):
+            # Build combined row lookup (Over rows first, then Under)
+            _all_model_rows = list(scanner_out.iterrows())
+            if bool(st.session_state.get("show_unders", False)) and _under_res_for_model is not None and not _under_res_for_model.empty:
+                _all_model_rows += list(_under_res_for_model.iterrows())
+            _row_by_label = {lbl: row for lbl, (_, row) in zip(_model_labels, _all_model_rows)}
+            for i, lbl in enumerate(_legs_for_model[:4], 1):
+                r = _row_by_label.get(lbl)
+                if r is None:
+                    continue
+                st.session_state[f"pname_{i}"] = str(r.get("player", ""))
+                _mkt_v = str(r.get("market", "Points"))
+                if _mkt_v in MARKET_OPTIONS:
+                    st.session_state[f"mkt_{i}"]  = _mkt_v
+                st.session_state[f"mline_{i}"] = float(r.get("line", 22.5))
+                st.session_state[f"manual_{i}"] = True   # Use pre-scanned line
+                st.session_state[f"out_{i}"]   = False
+            # Clear any unused legs beyond selection count
+            for i in range(len(_legs_for_model) + 1, 5):
+                st.session_state[f"pname_{i}"] = ""
+            st.session_state["_auto_run_model"] = True   # MODEL tab will detect and auto-run
+            st.rerun()
 
         # [UPGRADE 21] One-click parlay builder from scanner results
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
