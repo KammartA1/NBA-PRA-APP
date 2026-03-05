@@ -107,6 +107,43 @@ Be specific with player names, lines, and percentages. Write like a quant fund's
         return f"AI briefing unavailable: {e}"
 
 @st.cache_data(ttl=60*60*2, show_spinner=False)
+def ai_prizepicks_helper(entry_json: str, legs_json: str) -> str | None:
+    """
+    Use Claude to recommend Power Play vs Flex for a PrizePicks entry.
+    Inputs are sportsbook-calibrated (p_cal from -110 vig-removed model).
+    The core model math is unchanged — this is purely a PP-mode decision layer.
+    """
+    client = _anthropic_client()
+    if not client:
+        return None
+    try:
+        import anthropic
+        prompt = f"""You are a PrizePicks strategy expert. The legs below were selected using a sportsbook quantitative model — each player's win probability (p_cal) is calibrated against sharp -110 sportsbook lines (52.4% breakeven), meaning any p_cal above 52.4% already beats the market. On PrizePicks specifically, each leg is a flat 50/50 — so the sportsbook edge acts as a selection filter, not a pricing input.
+
+ENTRY COMBINATIONS (sorted by best EV):
+{entry_json}
+
+INDIVIDUAL LEG DETAILS (sportsbook-calibrated):
+{legs_json}
+
+For each entry combination, analyze:
+1. **Power Play vs Flex** — Which mode maximizes expected value? Consider: joint hit probability, payout multiplier, and whether the miss-insurance of Flex is worth the lower ceiling.
+2. **Weakest Leg** — Which leg in the best entry is the most likely to miss (lowest p_cal or highest volatility)? Does this justify Flex?
+3. **Correlation Risk** — Are any legs from the same team/game? If yes, does a bad game script hurt multiple legs simultaneously (correlation is a risk here, not a benefit)?
+4. **Final Recommendation** — Pick ONE specific entry: the combo, the mode (Power Play or Flex), and the stake. Be decisive and quantitative.
+
+Write in concise bullet format, max 250 words. Reference specific player names and percentages."""
+
+        with client.messages.stream(
+            model="claude-sonnet-4-6",
+            max_tokens=450,
+            messages=[{"role": "user", "content": prompt}]
+        ) as stream:
+            return stream.get_final_message().content[0].text.strip()
+    except Exception as e:
+        return f"PP Helper unavailable: {e}"
+
+@st.cache_data(ttl=60*60*2, show_spinner=False)
 def ai_parlay_optimizer(legs_json):
     """Use Claude Sonnet to recommend optimal parlay combinations."""
     client = _anthropic_client()
@@ -233,6 +270,147 @@ ODDS_MARKETS = {
     "FTM":             "player_free_throws_made",
     "FTA":             "player_free_throws_attempted",
 }
+
+# ──────────────────────────────────────────────
+# DFS PLATFORM PAYOUT STRUCTURES
+# PrizePicks / Underdog / Sleeper use identical or similar payout tables.
+# Individual legs are flat 50% breakeven — the EV lives in the multi-leg structure.
+# ──────────────────────────────────────────────
+DFS_PP_PAYOUTS = {        # Power Play — must hit ALL legs
+    2: 3.0,
+    3: 5.0,
+    4: 10.0,
+    5: 20.0,
+    6: 40.0,
+}
+DFS_UD_PAYOUTS = {        # Underdog Pick'em — similar tiers
+    2: 3.0,
+    3: 6.0,
+    4: 10.0,
+    5: 20.0,
+}
+DFS_SLEEPER_PAYOUTS = {   # Sleeper default
+    2: 3.0,
+    3: 5.0,
+    4: 10.0,
+    5: 20.0,
+}
+DFS_PP_FLEX_PAYOUTS = {   # Flex — hit k-of-n for tiered payout
+    3: {2: 1.25, 3: 2.25},
+    4: {3: 1.5,  4: 5.0},
+    5: {4: 2.0,  5: 10.0},
+    6: {4: 0.4,  5: 2.0,  6: 25.0},
+}
+
+def dfs_power_play_ev(joint_prob: float, n_legs: int, platform: str = "prizepicks") -> float | None:
+    """EV of a DFS power play entry (must hit all legs)."""
+    tbl = {"prizepicks": DFS_PP_PAYOUTS, "underdog": DFS_UD_PAYOUTS, "sleeper": DFS_SLEEPER_PAYOUTS}
+    payouts = tbl.get(platform.lower(), DFS_PP_PAYOUTS)
+    mult = payouts.get(n_legs)
+    return (mult * joint_prob - 1.0) if mult else None
+
+def dfs_flex_ev(hit_dist: dict, n_legs: int) -> float | None:
+    """EV of a DFS flex entry. hit_dist = {k: P(exactly k legs hit)}."""
+    tier = DFS_PP_FLEX_PAYOUTS.get(n_legs, {})
+    if not tier:
+        return None
+    ev = -1.0
+    for k_correct, payout_mult in tier.items():
+        ev += payout_mult * hit_dist.get(int(k_correct), 0.0)
+    return ev
+
+def dfs_entry_optimizer(legs: list, platform: str = "prizepicks",
+                        max_legs: int = 4, n_sims: int = 4000,
+                        bankroll: float = 1000.0, frac_kelly: float = 0.25) -> list:
+    """
+    Find optimal DFS power-play + flex combos using Gaussian copula Monte Carlo.
+    Returns list of dicts sorted by best EV (Power Play or Flex, whichever is higher).
+    """
+    from itertools import combinations
+    import scipy.stats as _sc
+
+    valid = [l for l in legs if float(l.get("p_cal") or 0) > 0.50]
+    if len(valid) < 2:
+        return []
+
+    nv = len(valid)
+    full_corr = np.eye(nv)
+    for _i in range(nv):
+        for _j in range(_i + 1, nv):
+            c = float(estimate_player_correlation(valid[_i], valid[_j]) or 0.0)
+            full_corr[_i, _j] = full_corr[_j, _i] = c
+
+    rng = np.random.default_rng(7)
+    results = []
+
+    tbl = {"prizepicks": DFS_PP_PAYOUTS, "underdog": DFS_UD_PAYOUTS, "sleeper": DFS_SLEEPER_PAYOUTS}
+    payouts_tbl = tbl.get(platform.lower(), DFS_PP_PAYOUTS)
+
+    for n in range(2, min(max_legs + 1, nv + 1)):
+        if n not in payouts_tbl:
+            continue
+        for combo in combinations(range(nv), n):
+            combo_legs = [valid[i] for i in combo]
+            probs = np.array([float(l["p_cal"]) for l in combo_legs])
+
+            # Build PSD correlation sub-matrix
+            sub = full_corr[np.ix_(list(combo), list(combo))]
+            evals, evecs = np.linalg.eigh(sub)
+            evals = np.clip(evals, 1e-6, None)
+            corr_psd = evecs @ np.diag(evals) @ evecs.T
+
+            # Gaussian copula MC
+            z = rng.multivariate_normal(np.zeros(n), corr_psd, n_sims)
+            u = _sc.norm.cdf(z)
+            hits = (u < probs).astype(int)          # shape (n_sims, n)
+            per_sim_k = hits.sum(axis=1)             # how many legs hit per sim
+
+            joint_prob = float((per_sim_k == n).mean())
+            naive_joint = float(np.prod(probs))
+
+            # Hit distribution P(exactly k hit)
+            hit_dist = {k: float((per_sim_k == k).mean()) for k in range(n + 1)}
+
+            # Power play EV
+            pp_ev = dfs_power_play_ev(joint_prob, n, platform)
+
+            # Flex EV (if available for this n)
+            flex_ev = dfs_flex_ev(hit_dist, n)
+
+            # Per-leg DFS edge (average probability above 50% floor)
+            avg_edge = float(np.mean(probs) - 0.5)
+
+            best_ev = max(
+                pp_ev if pp_ev is not None else -99,
+                flex_ev if flex_ev is not None else -99,
+            )
+            rec_mode = "PowerPlay" if (pp_ev or -99) >= (flex_ev or -99) else "Flex"
+
+            # Kelly stake using best_ev / (payout - 1)
+            payout_used = payouts_tbl.get(n, 3.0) if rec_mode == "PowerPlay" else (
+                DFS_PP_FLEX_PAYOUTS.get(n, {}).get(n, 3.0)
+            )
+            kelly_f = max(0.0, best_ev / (payout_used - 1.0)) if payout_used > 1 else 0.0
+            stake = min(bankroll * frac_kelly * kelly_f, bankroll * 0.05)
+
+            results.append({
+                "combo": " + ".join(
+                    f"{l['player']} {l['market']} O{l.get('line','?')}" for l in combo_legs
+                ),
+                "n_legs": n,
+                "platform": platform,
+                "joint_prob_%": round(joint_prob * 100, 1),
+                "naive_prob_%": round(naive_joint * 100, 1),
+                "pp_payout_x": payouts_tbl.get(n, "—"),
+                "pp_ev_%": round(pp_ev * 100, 1) if pp_ev is not None else "—",
+                "flex_ev_%": round(flex_ev * 100, 1) if flex_ev is not None else "—",
+                "rec_mode": rec_mode,
+                "best_ev_%": round(best_ev * 100, 1) if best_ev > -99 else "—",
+                "avg_leg_edge_%": round(avg_edge * 100, 1),
+                "rec_stake_$": round(stake, 2),
+            })
+
+    return sorted(results, key=lambda x: x["best_ev_%"] if isinstance(x["best_ev_%"], (int, float)) else -99, reverse=True)[:30]
 
 # Markets that require batching separately (not all books offer these)
 SPECIALTY_MARKET_KEYS = {
@@ -2940,84 +3118,649 @@ def append_history(uid, row):
 # STREAMLIT UI
 # ============================================================
 st.set_page_config(
-    page_title="NBA QUANT ENGINE",
-    page_icon="📡",
+    page_title="NBA ALPHA ENGINE",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ─── FONTS + GLOBAL STYLES ───────────────────────────────────
+# ─── FONTS + GLOBAL PREMIUM STYLES ───────────────────────────
 st.markdown("""
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;600;700&family=Fira+Code:wght@300;400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Fira+Code:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   DESIGN TOKENS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 :root {
-  --bg:#070B10;--bg2:#0D1117;--bg3:#111820;--panel:#0F1620;--border:#1E2D3D;
-  --green:#00FFB2;--green-dim:#00C88A;--blue:#00AAFF;--red:#FF3358;--amber:#FFB800;
-  --muted:#4A607A;--text:#C8D8E8;--text-hi:#EEF4FF;
-  --font-head:'Chakra Petch',monospace;--font-mono:'Fira Code',monospace;
+  --bg:       #030810;
+  --bg2:      #060D18;
+  --bg3:      #080F1C;
+  --bg4:      #0A1220;
+  --panel:    #0C1524;
+  --panel2:   #0E1828;
+  --border:   #112030;
+  --border2:  #1A3050;
+  --green:    #00FFB2;
+  --green2:   #00D494;
+  --green-lo: #00FFB210;
+  --blue:     #00AAFF;
+  --blue2:    #0088DD;
+  --blue-lo:  #00AAFF10;
+  --red:      #FF3358;
+  --red-lo:   #FF335810;
+  --amber:    #FFB800;
+  --amber-lo: #FFB80010;
+  --purple:   #A855F7;
+  --muted:    #3A5570;
+  --muted2:   #2A4060;
+  --text:     #B8CCE0;
+  --text-hi:  #E8F0FA;
+  --text-lo:  #4A607A;
+  --font-head: 'Chakra Petch', monospace;
+  --font-mono: 'Fira Code', monospace;
+  --font-body: 'Space Grotesk', sans-serif;
+  --radius:   3px;
+  --radius2:  6px;
 }
-.stApp{background:var(--bg)!important;font-family:var(--font-mono)!important;color:var(--text)!important;}
-.block-container{padding-top:1.2rem!important;max-width:1400px!important;}
-section[data-testid="stSidebar"]{background:var(--bg2)!important;border-right:1px solid var(--border)!important;}
-section[data-testid="stSidebar"] *{color:var(--text)!important;font-family:var(--font-mono)!important;}
-h1,h2,h3{font-family:var(--font-head)!important;color:var(--text-hi)!important;letter-spacing:0.04em;}
-.stTabs [data-baseweb="tab-list"]{background:var(--bg2)!important;border-bottom:1px solid var(--border)!important;gap:0px;}
-.stTabs [data-baseweb="tab"]{font-family:var(--font-head)!important;font-size:0.72rem!important;letter-spacing:0.08em;color:var(--muted)!important;padding:0.6rem 1.2rem!important;border-bottom:2px solid transparent!important;text-transform:uppercase;}
-.stTabs [aria-selected="true"]{color:var(--green)!important;border-bottom-color:var(--green)!important;background:transparent!important;}
-.stButton>button{background:transparent!important;border:1px solid var(--green)!important;color:var(--green)!important;font-family:var(--font-head)!important;font-size:0.75rem!important;letter-spacing:0.10em;text-transform:uppercase;padding:0.5rem 1.4rem!important;transition:all 0.2s;border-radius:2px!important;}
-.stButton>button:hover{background:var(--green)!important;color:var(--bg)!important;box-shadow:0 0 18px rgba(0,255,178,0.35)!important;}
-.stTextInput input,.stNumberInput input,.stSelectbox select{background:var(--bg3)!important;border:1px solid var(--border)!important;color:var(--text-hi)!important;font-family:var(--font-mono)!important;border-radius:2px!important;}
-.stDataFrame{background:var(--panel)!important;border:1px solid var(--border)!important;}
-.stDataFrame thead th{background:var(--bg3)!important;color:var(--green)!important;font-family:var(--font-head)!important;font-size:0.68rem!important;text-transform:uppercase;}
-.stDataFrame td{font-family:var(--font-mono)!important;font-size:0.72rem!important;color:var(--text)!important;}
-[data-testid="stMetric"]{background:var(--panel)!important;border:1px solid var(--border)!important;border-left:3px solid var(--green)!important;padding:0.8rem 1rem!important;border-radius:2px!important;}
-[data-testid="stMetricLabel"]{font-family:var(--font-head)!important;font-size:0.65rem!important;letter-spacing:0.10em;text-transform:uppercase;color:var(--muted)!important;}
-[data-testid="stMetricValue"]{font-family:var(--font-mono)!important;font-size:1.4rem!important;color:var(--text-hi)!important;}
-.stAlert{background:var(--panel)!important;border:1px solid var(--border)!important;font-family:var(--font-mono)!important;font-size:0.74rem!important;}
-::-webkit-scrollbar{width:5px;height:5px;}::-webkit-scrollbar-track{background:var(--bg2);}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
-.stApp::after{content:"";position:fixed;top:0;left:0;right:0;bottom:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.03) 2px,rgba(0,0,0,0.03) 4px);pointer-events:none;z-index:9999;}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   BASE / APP SHELL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.stApp {
+  background: var(--bg) !important;
+  font-family: var(--font-mono) !important;
+  color: var(--text) !important;
+}
+/* Subtle grid overlay */
+.stApp::before {
+  content: "";
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-image:
+    linear-gradient(rgba(0,170,255,0.012) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,170,255,0.012) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: 0;
+}
+/* CRT scanline texture */
+.stApp::after {
+  content: "";
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 3px,
+    rgba(0,0,0,0.04) 3px,
+    rgba(0,0,0,0.04) 4px
+  );
+  pointer-events: none;
+  z-index: 9998;
+}
+.block-container {
+  padding-top: 0.8rem !important;
+  padding-bottom: 2rem !important;
+  max-width: 1500px !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   TAB BAR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.stTabs [data-baseweb="tab-list"] {
+  background: var(--bg2) !important;
+  border-bottom: 1px solid var(--border) !important;
+  gap: 0 !important;
+  padding: 0 0.5rem !important;
+}
+.stTabs [data-baseweb="tab"] {
+  font-family: var(--font-head) !important;
+  font-size: 0.68rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.12em !important;
+  color: var(--muted) !important;
+  padding: 0.65rem 1.1rem !important;
+  border-bottom: 2px solid transparent !important;
+  text-transform: uppercase !important;
+  transition: color 0.15s, border-color 0.15s !important;
+  background: transparent !important;
+}
+.stTabs [data-baseweb="tab"]:hover {
+  color: var(--text) !important;
+  background: rgba(0,170,255,0.04) !important;
+}
+.stTabs [aria-selected="true"] {
+  color: var(--green) !important;
+  border-bottom: 2px solid var(--green) !important;
+  background: transparent !important;
+  text-shadow: 0 0 12px rgba(0,255,178,0.4) !important;
+}
+.stTabs [data-baseweb="tab-panel"] {
+  padding-top: 1.2rem !important;
+  background: transparent !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   BUTTONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.stButton > button {
+  background: transparent !important;
+  border: 1px solid var(--green) !important;
+  color: var(--green) !important;
+  font-family: var(--font-head) !important;
+  font-size: 0.70rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.14em !important;
+  text-transform: uppercase !important;
+  padding: 0.5rem 1.4rem !important;
+  border-radius: var(--radius) !important;
+  transition: all 0.18s ease !important;
+  position: relative !important;
+  overflow: hidden !important;
+}
+.stButton > button:hover {
+  background: var(--green) !important;
+  color: #030810 !important;
+  box-shadow: 0 0 24px rgba(0,255,178,0.40), 0 0 48px rgba(0,255,178,0.15) !important;
+  transform: translateY(-1px) !important;
+}
+.stButton > button:active {
+  transform: translateY(0px) !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   INPUTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.stTextInput input,
+.stNumberInput input,
+.stSelectbox > div > div,
+.stTextArea textarea {
+  background: var(--bg3) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-hi) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.78rem !important;
+  border-radius: var(--radius) !important;
+  transition: border-color 0.15s !important;
+}
+.stTextInput input:focus,
+.stNumberInput input:focus,
+.stTextArea textarea:focus {
+  border-color: rgba(0,255,178,0.4) !important;
+  box-shadow: 0 0 0 2px rgba(0,255,178,0.06) !important;
+  outline: none !important;
+}
+.stTextInput label p,
+.stNumberInput label p,
+.stSelectbox label p,
+.stTextArea label p {
+  font-family: var(--font-head) !important;
+  font-size: 0.60rem !important;
+  font-weight: 600 !important;
+  color: var(--muted) !important;
+  letter-spacing: 0.12em !important;
+  text-transform: uppercase !important;
+  margin-bottom: 3px !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   SLIDERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+[data-testid="stSlider"] label p {
+  font-family: var(--font-head) !important;
+  font-size: 0.60rem !important;
+  color: var(--muted) !important;
+  letter-spacing: 0.10em !important;
+  text-transform: uppercase !important;
+}
+[data-testid="stSlider"] [data-baseweb="slider"] > div {
+  background: var(--border) !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   DATAFRAMES / TABLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.stDataFrame {
+  background: var(--panel) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius2) !important;
+  overflow: hidden !important;
+}
+.stDataFrame [data-testid="stDataFrameResizable"] {
+  border-radius: var(--radius2) !important;
+}
+.stDataFrame thead tr th {
+  background: var(--bg3) !important;
+  color: var(--green) !important;
+  font-family: var(--font-head) !important;
+  font-size: 0.62rem !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.10em !important;
+  border-bottom: 1px solid var(--border2) !important;
+  padding: 0.5rem 0.8rem !important;
+}
+.stDataFrame tbody tr td {
+  font-family: var(--font-mono) !important;
+  font-size: 0.72rem !important;
+  color: var(--text) !important;
+  border-bottom: 1px solid var(--border) !important;
+  padding: 0.4rem 0.8rem !important;
+}
+.stDataFrame tbody tr:hover td {
+  background: rgba(0,170,255,0.04) !important;
+}
+.stDataFrame tbody tr:nth-child(even) td {
+  background: rgba(0,0,0,0.15) !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   METRICS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+[data-testid="stMetric"] {
+  background: linear-gradient(135deg, var(--panel) 0%, var(--panel2) 100%) !important;
+  border: 1px solid var(--border) !important;
+  border-top: 2px solid var(--green) !important;
+  padding: 0.9rem 1.1rem !important;
+  border-radius: var(--radius2) !important;
+  transition: border-color 0.2s, box-shadow 0.2s !important;
+  position: relative !important;
+  overflow: hidden !important;
+}
+[data-testid="stMetric"]::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--green), transparent);
+  opacity: 0.5;
+}
+[data-testid="stMetric"]:hover {
+  border-color: var(--border2) !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4) !important;
+}
+[data-testid="stMetricLabel"] > div {
+  font-family: var(--font-head) !important;
+  font-size: 0.60rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.14em !important;
+  text-transform: uppercase !important;
+  color: var(--muted) !important;
+}
+[data-testid="stMetricValue"] > div {
+  font-family: var(--font-mono) !important;
+  font-size: 1.45rem !important;
+  font-weight: 700 !important;
+  color: var(--text-hi) !important;
+  letter-spacing: -0.01em !important;
+}
+[data-testid="stMetricDelta"] > div {
+  font-family: var(--font-mono) !important;
+  font-size: 0.68rem !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   ALERTS / NOTIFICATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+[data-testid="stAlert"] {
+  background: var(--panel) !important;
+  border-radius: var(--radius) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.73rem !important;
+}
+.stSuccess {
+  border-left: 3px solid var(--green) !important;
+  background: var(--green-lo) !important;
+}
+.stWarning {
+  border-left: 3px solid var(--amber) !important;
+  background: var(--amber-lo) !important;
+}
+.stError {
+  border-left: 3px solid var(--red) !important;
+  background: var(--red-lo) !important;
+}
+.stInfo {
+  border-left: 3px solid var(--blue) !important;
+  background: var(--blue-lo) !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   EXPANDERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+[data-testid="stExpander"] {
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  background: var(--bg2) !important;
+  margin-bottom: 0.4rem !important;
+}
+[data-testid="stExpander"] summary {
+  font-family: var(--font-head) !important;
+  font-size: 0.68rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.10em !important;
+  text-transform: uppercase !important;
+  color: var(--text-lo) !important;
+  padding: 0.5rem 0.8rem !important;
+}
+[data-testid="stExpander"] summary:hover {
+  color: var(--text) !important;
+  background: rgba(255,255,255,0.02) !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   CHECKBOXES & RADIO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+[data-testid="stCheckbox"] label p,
+[data-testid="stRadio"] label p {
+  font-family: var(--font-body) !important;
+  font-size: 0.73rem !important;
+  color: var(--text) !important;
+  letter-spacing: 0.01em !important;
+}
+[data-testid="stCheckbox"] [data-testid="stCheckboxWidget"],
+[data-testid="stRadio"] input {
+  accent-color: var(--green) !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   SPINNER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+[data-testid="stSpinner"] {
+  font-family: var(--font-head) !important;
+  font-size: 0.68rem !important;
+  color: var(--green) !important;
+  letter-spacing: 0.1em !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   CAPTIONS & MARKDOWN TEXT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.stMarkdown p {
+  font-family: var(--font-body) !important;
+  color: var(--text) !important;
+  font-size: 0.82rem !important;
+  line-height: 1.6 !important;
+}
+[data-testid="stCaptionContainer"] p {
+  font-family: var(--font-mono) !important;
+  font-size: 0.63rem !important;
+  color: var(--text-lo) !important;
+  letter-spacing: 0.04em !important;
+}
+h1, h2, h3 {
+  font-family: var(--font-head) !important;
+  color: var(--text-hi) !important;
+  letter-spacing: 0.04em !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   SELECT SLIDER (RADIO BUTTONS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+[data-testid="stRadio"] > div {
+  gap: 0.4rem !important;
+}
+[data-testid="stRadio"] label {
+  background: var(--bg3) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  padding: 0.3rem 0.7rem !important;
+  transition: all 0.15s !important;
+}
+[data-testid="stRadio"] label:has(input:checked) {
+  border-color: var(--green) !important;
+  background: var(--green-lo) !important;
+  color: var(--green) !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   SCROLLBARS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--bg2); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   ANIMATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 4px #00FFB2; opacity: 1; }
+  50%       { box-shadow: 0 0 10px #00FFB2, 0 0 20px #00FFB240; opacity: 0.8; }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.pulse-dot {
+  animation: pulse-green 2s ease-in-out infinite;
+}
+.fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   MULTISELECT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+[data-testid="stMultiSelect"] > div > div {
+  background: var(--bg3) !important;
+  border-color: var(--border) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.75rem !important;
+}
+[data-baseweb="tag"] {
+  background: var(--border2) !important;
+  font-family: var(--font-mono) !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   DATE INPUT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+[data-testid="stDateInput"] input {
+  background: var(--bg3) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-hi) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.75rem !important;
+  border-radius: var(--radius) !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   TOP NAV BAR HIDE / STREAMLIT CHROME REMOVAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+#MainMenu { visibility: hidden; }
+footer    { visibility: hidden; }
+header    { visibility: hidden; }
+[data-testid="stToolbar"] { display: none !important; }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   DIVIDERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+hr {
+  border: none !important;
+  border-top: 1px solid var(--border) !important;
+  margin: 0.8rem 0 !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   SIDEBAR OVERRIDE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+section[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #04080F 0%, #060D18 100%) !important;
+  border-right: 1px solid #0A1828 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("""
-<div style="display:flex;align-items:center;gap:1.5rem;padding:0.8rem 0 1.2rem;border-bottom:1px solid #1E2D3D;margin-bottom:1.2rem;">
-  <div style="font-family:'Chakra Petch',monospace;font-size:1.7rem;font-weight:700;color:#00FFB2;letter-spacing:0.06em;">
-    NBA QUANT ENGINE <span style="font-size:0.75rem;color:#4A607A;vertical-align:middle;margin-left:0.5rem;">v4.0</span>
+# ─── MAIN HEADER ─────────────────────────────────────────────
+_now_str = datetime.utcnow().strftime("%b %d %Y  %H:%M UTC")
+st.markdown(f"""
+<div class="fade-in" style="
+    background: linear-gradient(135deg, #060E1C 0%, #07101E 50%, #050C18 100%);
+    border: 1px solid #0E2040;
+    border-top: 2px solid #00FFB2;
+    border-radius: 6px;
+    padding: 1.1rem 1.6rem 1rem 1.6rem;
+    margin-bottom: 1.4rem;
+    position: relative;
+    overflow: hidden;
+">
+  <!-- Background accent glow -->
+  <div style="position:absolute;top:-40px;right:-40px;width:200px;height:200px;
+              background:radial-gradient(circle,rgba(0,255,178,0.04) 0%,transparent 70%);
+              pointer-events:none;"></div>
+  <div style="position:absolute;bottom:-30px;left:30%;width:300px;height:150px;
+              background:radial-gradient(ellipse,rgba(0,170,255,0.03) 0%,transparent 70%);
+              pointer-events:none;"></div>
+
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+
+    <!-- LEFT: Branding -->
+    <div>
+      <div style="font-family:'Chakra Petch',monospace;font-size:0.55rem;
+                  color:#2A5070;letter-spacing:0.30em;text-transform:uppercase;
+                  margin-bottom:0.2rem;">
+        QUANTITATIVE SPORTS ANALYTICS
+      </div>
+      <div style="font-family:'Chakra Petch',monospace;font-size:1.75rem;
+                  font-weight:700;color:#EEF4FF;letter-spacing:0.05em;line-height:1.05;">
+        NBA <span style="color:#00FFB2;">ALPHA</span> ENGINE
+        <span style="font-size:0.60rem;color:#2A5070;vertical-align:middle;
+                     margin-left:0.6rem;font-weight:400;letter-spacing:0.12em;">v2.2</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:1.2rem;margin-top:0.4rem;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:0.4rem;">
+          <div class="pulse-dot" style="width:6px;height:6px;border-radius:50%;
+                      background:#00FFB2;flex-shrink:0;"></div>
+          <span style="font-family:'Fira Code',monospace;font-size:0.58rem;
+                       color:#00FFB2;letter-spacing:0.08em;">LIVE ODDS</span>
+        </div>
+        <span style="font-family:'Fira Code',monospace;font-size:0.55rem;color:#1A3050;">|</span>
+        <span style="font-family:'Fira Code',monospace;font-size:0.55rem;color:#2A4060;
+                     letter-spacing:0.06em;">BOOTSTRAP · BAYESIAN · KELLY</span>
+        <span style="font-family:'Fira Code',monospace;font-size:0.55rem;color:#1A3050;">|</span>
+        <span style="font-family:'Fira Code',monospace;font-size:0.55rem;color:#2A4060;
+                     letter-spacing:0.06em;">-110 VIG REMOVED</span>
+      </div>
+    </div>
+
+    <!-- RIGHT: Status panel -->
+    <div style="display:flex;gap:1rem;align-items:flex-start;flex-wrap:wrap;">
+      <div style="background:#04080F;border:1px solid #0A1828;border-radius:4px;
+                  padding:0.5rem 0.8rem;min-width:90px;text-align:center;">
+        <div style="font-family:'Fira Code',monospace;font-size:0.50rem;color:#2A4060;
+                    letter-spacing:0.12em;margin-bottom:2px;">BREAKEVEN</div>
+        <div style="font-family:'Fira Code',monospace;font-size:0.90rem;font-weight:700;
+                    color:#FFB800;letter-spacing:0.04em;">52.4%</div>
+        <div style="font-family:'Fira Code',monospace;font-size:0.47rem;color:#1A3050;
+                    margin-top:1px;">AT -110</div>
+      </div>
+      <div style="background:#04080F;border:1px solid #0A1828;border-radius:4px;
+                  padding:0.5rem 0.8rem;min-width:90px;text-align:center;">
+        <div style="font-family:'Fira Code',monospace;font-size:0.50rem;color:#2A4060;
+                    letter-spacing:0.12em;margin-bottom:2px;">PP FLOOR</div>
+        <div style="font-family:'Fira Code',monospace;font-size:0.90rem;font-weight:700;
+                    color:#00AAFF;letter-spacing:0.04em;">50.0%</div>
+        <div style="font-family:'Fira Code',monospace;font-size:0.47rem;color:#1A3050;
+                    margin-top:1px;">PRIZEPICKS</div>
+      </div>
+      <div style="background:#04080F;border:1px solid #0A1828;border-radius:4px;
+                  padding:0.5rem 0.8rem;min-width:110px;text-align:center;">
+        <div style="font-family:'Fira Code',monospace;font-size:0.50rem;color:#2A4060;
+                    letter-spacing:0.12em;margin-bottom:2px;">UTC</div>
+        <div style="font-family:'Fira Code',monospace;font-size:0.70rem;font-weight:600;
+                    color:#8BA8BF;letter-spacing:0.02em;">{_now_str}</div>
+        <div style="font-family:'Fira Code',monospace;font-size:0.47rem;color:#1A3050;
+                    margin-top:1px;">MARKET CLOCK</div>
+      </div>
+    </div>
+
   </div>
-  <div style="flex:1;height:1px;background:linear-gradient(90deg,#00FFB2,transparent);"></div>
-  <div style="font-family:'Fira Code',monospace;font-size:0.65rem;color:#4A607A;text-align:right;">
-    BOOTSTRAP &middot; BAYESIAN &middot; KELLY &middot; LIVE ODDS
-  </div>
+
+  <!-- Bottom divider rule with gradient -->
+  <div style="margin-top:0.8rem;height:1px;
+              background:linear-gradient(90deg,#00FFB230,#00AAFF20,transparent);"></div>
 </div>
 """, unsafe_allow_html=True)
 
-# ─── CARD HELPERS ─────────────────────────────────────────────
-def make_card(content_html, border_color="#1E2D3D", glow=False):
-    glow_css = f"box-shadow:0 0 20px {border_color}40;" if glow else ""
-    return f"""<div style="background:#0F1620;border:1px solid {border_color};border-radius:3px;padding:1.1rem 1.2rem;margin-bottom:0.8rem;{glow_css}font-family:'Fira Code',monospace;">{content_html}</div>"""
+# ─── CARD & UI HELPERS ────────────────────────────────────────
+def make_card(content_html, border_color="#112030", glow=False, accent_top=None):
+    glow_css = f"box-shadow:0 0 28px {border_color}60,0 4px 16px rgba(0,0,0,0.4);" if glow else "box-shadow:0 2px 12px rgba(0,0,0,0.3);"
+    top_border = f"border-top:2px solid {accent_top};" if accent_top else ""
+    return (
+        f"<div style=\"background:linear-gradient(135deg,#0C1524 0%,#0A1220 100%);"
+        f"border:1px solid {border_color};{top_border}border-radius:6px;"
+        f"padding:1.1rem 1.3rem;margin-bottom:0.9rem;{glow_css}"
+        f"font-family:'Fira Code',monospace;transition:all 0.2s;\">"
+        f"{content_html}</div>"
+    )
+
+def section_header(title, color="#3A5570", icon=""):
+    return (
+        f"<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;"
+        f"font-weight:700;color:{color};letter-spacing:0.20em;text-transform:uppercase;"
+        f"margin:1.2rem 0 0.6rem 0;display:flex;align-items:center;gap:0.5rem;'>"
+        f"<div style='width:3px;height:12px;background:{color};border-radius:1px;opacity:0.7;'></div>"
+        f"{icon}{title}"
+        f"<div style='flex:1;height:1px;background:linear-gradient(90deg,{color}40,transparent);margin-left:0.5rem;'></div>"
+        f"</div>"
+    )
 
 def color_for_edge(cat):
     if cat == "Strong Edge": return "#00FFB2"
     if cat == "Solid Edge":  return "#00AAFF"
     if cat == "Lean Edge":   return "#FFB800"
-    return "#4A607A"
+    return "#3A5570"
 
 def prob_bar_html(p, line_pct=0.50, label=""):
-    if p is None: return "<span style='color:#4A607A;font-size:0.72rem;'>--</span>"
+    if p is None: return "<span style='color:#3A5570;font-size:0.72rem;'>—</span>"
     pct = int(round(p * 100))
     color = "#00FFB2" if p > 0.57 else ("#FFB800" if p > 0.52 else "#FF3358")
-    return f"""<div style="margin:0.35rem 0;"><div style="display:flex;justify-content:space-between;font-size:0.65rem;color:#4A607A;margin-bottom:2px;"><span>{label}</span><span style="color:{color};font-weight:600;">{pct}%</span></div><div style="background:#111820;border-radius:1px;height:6px;overflow:hidden;"><div style="width:{pct}%;height:100%;background:{color};border-radius:1px;transition:width 0.4s;"></div></div></div>"""
+    glow  = f"box-shadow:0 0 6px {color}60;" if p > 0.57 else ""
+    return (
+        f"<div style='margin:0.35rem 0;'>"
+        f"<div style='display:flex;justify-content:space-between;font-size:0.63rem;"
+        f"color:#3A5570;margin-bottom:3px;font-family:Chakra Petch,monospace;letter-spacing:0.06em;'>"
+        f"<span>{label}</span>"
+        f"<span style='color:{color};font-weight:700;font-family:Fira Code,monospace;"
+        f"font-size:0.70rem;{glow}'>{pct}%</span></div>"
+        f"<div style='background:#06101E;border-radius:2px;height:5px;overflow:hidden;"
+        f"border:1px solid #0A1828;'>"
+        f"<div style='width:{pct}%;height:100%;background:linear-gradient(90deg,{color}AA,{color});"
+        f"border-radius:2px;transition:width 0.5s cubic-bezier(0.4,0,0.2,1);'></div>"
+        f"</div></div>"
+    )
 
 def regime_badge(label):
-    colors = {"Stable":"#00FFB2","Mixed":"#FFB800","Chaotic":"#FF3358"}
-    c = colors.get(label, "#4A607A")
-    return f"<span style='background:{c}18;border:1px solid {c};color:{c};padding:1px 7px;border-radius:1px;font-size:0.60rem;letter-spacing:0.08em;font-family:Chakra Petch,monospace;'>{label.upper()}</span>"
+    cfg = {
+        "Stable":  ("#00FFB2", "#00FFB215"),
+        "Mixed":   ("#FFB800", "#FFB80015"),
+        "Chaotic": ("#FF3358", "#FF335815"),
+    }
+    c, bg = cfg.get(label, ("#3A5570", "#3A557010"))
+    return (
+        f"<span style='background:{bg};border:1px solid {c}50;color:{c};"
+        f"padding:2px 8px;border-radius:2px;font-size:0.58rem;letter-spacing:0.10em;"
+        f"font-family:Chakra Petch,monospace;font-weight:600;'>{label.upper()}</span>"
+    )
 
 def hot_cold_badge(label):
-    colors = {"Hot": "#FF6B35", "Cold": "#00AAFF", "Average": "#4A607A"}
-    c = colors.get(label, "#4A607A")
-    return f"<span style='background:{c}18;border:1px solid {c};color:{c};padding:1px 7px;border-radius:1px;font-size:0.60rem;letter-spacing:0.08em;font-family:Chakra Petch,monospace;'>{label.upper()}</span>"
+    cfg = {
+        "Hot":     ("#FF6B35", "#FF6B3515"),
+        "Cold":    ("#00AAFF", "#00AAFF15"),
+        "Average": ("#3A5570", "#3A557010"),
+    }
+    c, bg = cfg.get(label, ("#3A5570", "#3A557010"))
+    return (
+        f"<span style='background:{bg};border:1px solid {c}50;color:{c};"
+        f"padding:2px 8px;border-radius:2px;font-size:0.58rem;letter-spacing:0.10em;"
+        f"font-family:Chakra Petch,monospace;font-weight:600;'>{label.upper()}</span>"
+    )
 
 def confidence_tier_color(p_cal):
     """Return border color based on calibrated probability confidence tier."""
@@ -3037,17 +3780,173 @@ def mv_badge(mv):
     arrow = "UP" if pips > 0 else "DN"
     return f"<span style='color:{col};font-size:0.65rem;'>{icon} {arrow} {abs(pips):.1f}</span>"
 
+# ─── SIDEBAR CSS INJECTION ─────────────────────────────────────
+st.markdown("""
+<style>
+/* ── Sidebar shell ── */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #04080F 0%, #070F1C 60%, #060C18 100%) !important;
+    border-right: 1px solid #0E1E30 !important;
+    min-width: 230px !important;
+    max-width: 260px !important;
+}
+[data-testid="stSidebar"] > div:first-child {
+    padding: 0 !important;
+}
+[data-testid="stSidebarContent"] {
+    padding: 0 0.9rem 1rem 0.9rem !important;
+}
+
+/* ── Slider track & thumb ── */
+[data-testid="stSidebar"] [data-testid="stSlider"] > div > div > div {
+    background: #0E1E30 !important;
+}
+[data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stSliderThumb"] {
+    background: #00FFB2 !important;
+    border: 2px solid #00FFB2 !important;
+    box-shadow: 0 0 8px #00FFB255 !important;
+    width: 14px !important;
+    height: 14px !important;
+}
+[data-testid="stSidebar"] [data-testid="stSlider"] [data-baseweb="slider"] > div:nth-child(3) {
+    background: #00FFB2 !important;
+}
+
+/* ── Number input ── */
+[data-testid="stSidebar"] [data-testid="stNumberInput"] input {
+    background: #080F1A !important;
+    border: 1px solid #0E1E30 !important;
+    color: #00FFB2 !important;
+    font-family: 'Fira Code', monospace !important;
+    font-size: 0.82rem !important;
+    border-radius: 3px !important;
+}
+[data-testid="stSidebar"] [data-testid="stNumberInput"] button {
+    background: #0E1E30 !important;
+    border: 1px solid #1A2F45 !important;
+    color: #4A9EBF !important;
+}
+
+/* ── Text input ── */
+[data-testid="stSidebar"] [data-testid="stTextInput"] input {
+    background: #080F1A !important;
+    border: 1px solid #0E1E30 !important;
+    color: #EEF4FF !important;
+    font-family: 'Fira Code', monospace !important;
+    font-size: 0.75rem !important;
+    border-radius: 3px !important;
+}
+[data-testid="stSidebar"] [data-testid="stTextInput"] input:focus {
+    border-color: #00FFB255 !important;
+    box-shadow: 0 0 0 1px #00FFB222 !important;
+}
+
+/* ── Checkbox ── */
+[data-testid="stSidebar"] [data-testid="stCheckbox"] label {
+    font-family: 'Fira Code', monospace !important;
+    font-size: 0.70rem !important;
+    color: #8BA8BF !important;
+    letter-spacing: 0.03em !important;
+}
+[data-testid="stSidebar"] [data-testid="stCheckbox"] [data-testid="stCheckboxWidget"] {
+    accent-color: #00FFB2 !important;
+}
+
+/* ── Slider label text ── */
+[data-testid="stSidebar"] [data-testid="stSlider"] label p,
+[data-testid="stSidebar"] [data-testid="stNumberInput"] label p,
+[data-testid="stSidebar"] [data-testid="stTextInput"] label p {
+    font-family: 'Fira Code', monospace !important;
+    font-size: 0.63rem !important;
+    color: #4A607A !important;
+    letter-spacing: 0.06em !important;
+    text-transform: uppercase !important;
+    margin-bottom: 2px !important;
+}
+
+/* ── Slider value readout ── */
+[data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stSliderTickBarMin"],
+[data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stSliderTickBarMax"] {
+    font-family: 'Fira Code', monospace !important;
+    font-size: 0.60rem !important;
+    color: #2A4060 !important;
+}
+
+/* ── Expander header ── */
+[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+    font-family: 'Chakra Petch', monospace !important;
+    font-size: 0.62rem !important;
+    color: #4A607A !important;
+    letter-spacing: 0.10em !important;
+    text-transform: uppercase !important;
+    background: #080F1A !important;
+    border: 1px solid #0E1E30 !important;
+    border-radius: 3px !important;
+    padding: 0.35rem 0.6rem !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
+    color: #8BA8BF !important;
+    border-color: #1A2F45 !important;
+}
+
+/* ── Scrollbar ── */
+[data-testid="stSidebar"]::-webkit-scrollbar { width: 3px; }
+[data-testid="stSidebar"]::-webkit-scrollbar-track { background: #04080F; }
+[data-testid="stSidebar"]::-webkit-scrollbar-thumb { background: #1A2F45; border-radius: 2px; }
+
+/* ── Select box ── */
+[data-testid="stSidebar"] [data-testid="stSelectbox"] > div > div {
+    background: #080F1A !important;
+    border: 1px solid #0E1E30 !important;
+    font-family: 'Fira Code', monospace !important;
+    font-size: 0.72rem !important;
+    color: #8BA8BF !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ─── SIDEBAR ──────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;border-bottom:1px solid #1E2D3D;padding-bottom:0.5rem;'>CONTROL PANEL</div>""", unsafe_allow_html=True)
-    user_id = st.text_input("Personal ID", value=st.session_state.get("user_id","trader"))
+
+    # ── BRAND HEADER ──────────────────────────────────────────
+    st.markdown("""
+<div style='
+    padding: 1rem 0.2rem 0.8rem 0.2rem;
+    border-bottom: 1px solid #0E1E30;
+    margin-bottom: 0.8rem;
+'>
+    <div style='font-family:Chakra Petch,monospace;font-size:0.58rem;color:#1E4060;
+                letter-spacing:0.25em;text-transform:uppercase;margin-bottom:0.2rem;'>
+        QUANTITATIVE ENGINE
+    </div>
+    <div style='font-family:Chakra Petch,monospace;font-size:1.05rem;font-weight:700;
+                color:#EEF4FF;letter-spacing:0.08em;line-height:1.1;'>
+        NBA PROP<br>
+        <span style='color:#00FFB2;'>ALPHA</span> ENGINE
+    </div>
+    <div style='display:flex;align-items:center;gap:0.5rem;margin-top:0.45rem;'>
+        <div style='width:6px;height:6px;border-radius:50%;background:#00FFB2;
+                    box-shadow:0 0 6px #00FFB2;animation:none;'></div>
+        <div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#00FFB2;
+                    letter-spacing:0.1em;'>LIVE  ·  v2.2</div>
+        <div style='margin-left:auto;font-family:Fira Code,monospace;font-size:0.55rem;
+                    color:#2A4060;'>NBA 2024-25</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+    # ── OPERATOR ──────────────────────────────────────────────
+    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;margin-bottom:0.4rem;'>
+▸ OPERATOR</div>""", unsafe_allow_html=True)
+
+    user_id = st.text_input("Operator ID", value=st.session_state.get("user_id","trader"))
     st.session_state["user_id"] = user_id
     _active = st.session_state.get("_active_user_id")
     if _active != user_id:
         state = load_user_state(user_id)
         st.session_state["bankroll"] = safe_float(state.get("bankroll"), default=st.session_state.get("bankroll",1000.0))
         st.session_state["_active_user_id"] = user_id
-        # Clear previous user's data so it doesn't leak into new user session
         for _ck in ["last_results","scanner_results","scanner_under_results",
                     "pp_lines","ud_lines","scanner_offers","calibrator_map",
                     "injury_team_map","scanner_dropped","scanner_scan_id"]:
@@ -3055,59 +3954,163 @@ with st.sidebar:
         for _si in range(1, 5):
             for _pfx in ("pname_","mkt_","mline_","manual_","out_","line_"):
                 st.session_state.pop(f"{_pfx}{_si}", None)
+
     bankroll = st.number_input("Bankroll ($)", min_value=0.0, value=float(st.session_state.get("bankroll",1000.0)), step=50.0)
     st.session_state["bankroll"] = float(bankroll)
     _lb = st.session_state.get("_last_saved_bankroll")
     if _lb is None or float(_lb) != float(bankroll):
         state = load_user_state(user_id); state["bankroll"]=float(bankroll)
         save_user_state(user_id, state); st.session_state["_last_saved_bankroll"]=float(bankroll)
-    st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
-    payout_multi = st.number_input("Multi-Leg Payout (x)", min_value=1.0, value=float(st.session_state.get("payout_multi",3.0)), step=0.1)
-    st.session_state["payout_multi"] = payout_multi
-    frac_kelly = st.slider("Fractional Kelly", 0.0, 1.0, float(st.session_state.get("frac_kelly",0.25)), 0.05)
-    st.session_state["frac_kelly"] = frac_kelly
-    market_prior_weight = st.slider("Model Weight (vs Market)", 0.0, 1.0, float(st.session_state.get("market_prior_weight",0.65)), 0.05, help="1.0 = pure model; 0.0 = pure market implied prob")
+
+    # Bankroll display card
+    _br_val = float(st.session_state.get("bankroll", 1000.0))
+    st.markdown(f"""
+<div style='background:linear-gradient(135deg,#00FFB208,#00AAFF06);
+            border:1px solid #0E2840;border-radius:4px;
+            padding:0.45rem 0.7rem;margin:0.3rem 0 0.8rem 0;'>
+    <div style='font-family:Fira Code,monospace;font-size:0.55rem;
+                color:#2A6080;letter-spacing:0.12em;margin-bottom:2px;'>CAPITAL DEPLOYED</div>
+    <div style='font-family:Fira Code,monospace;font-size:1.05rem;
+                font-weight:700;color:#00FFB2;letter-spacing:0.04em;'>
+        ${_br_val:,.2f}
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+    # ── MODEL PARAMETERS ──────────────────────────────────────
+    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-top:0.5rem;margin-bottom:0.5rem;padding-top:0.6rem;
+border-top:1px solid #0E1E30;'>▸ MODEL PARAMETERS</div>""", unsafe_allow_html=True)
+
+    market_prior_weight = st.slider("Model Weight vs Market", 0.0, 1.0,
+        float(st.session_state.get("market_prior_weight",0.65)), 0.05,
+        help="1.0 = pure statistical model · 0.0 = pure market implied prob")
     st.session_state["market_prior_weight"] = float(market_prior_weight)
-    max_risk_per_bet = st.slider("Max Bet Size (% BR)", 0.0, 10.0, float(st.session_state.get("max_risk_per_bet",3.0)), 0.5)
-    st.session_state["max_risk_per_bet"] = float(max_risk_per_bet)
+
     n_games = st.slider("Sample Window (games)", 5, 30, int(st.session_state.get("n_games",10)))
     st.session_state["n_games"] = n_games
-    st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
-    exclude_chaotic = st.checkbox("Block Chaotic Regime", value=bool(st.session_state.get("exclude_chaotic",True)), help="Filters high-CV / blowout-risk environments")
-    st.session_state["exclude_chaotic"] = bool(exclude_chaotic)
-    show_unders = st.checkbox("Show Under opportunities", value=bool(st.session_state.get("show_unders", False)), key="show_unders_cb", help="Surface high-probability Unders alongside each leg (zero extra API calls — reuses cached projections)")
-    st.session_state["show_unders"] = bool(show_unders)
+
+    frac_kelly = st.slider("Fractional Kelly", 0.0, 1.0,
+        float(st.session_state.get("frac_kelly",0.25)), 0.05)
+    st.session_state["frac_kelly"] = frac_kelly
+
+    payout_multi = st.number_input("Parlay Payout (x)", min_value=1.0,
+        value=float(st.session_state.get("payout_multi",3.0)), step=0.1)
+    st.session_state["payout_multi"] = payout_multi
+
+    # ── RISK CONTROLS ─────────────────────────────────────────
+    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-top:0.5rem;margin-bottom:0.5rem;padding-top:0.6rem;
+border-top:1px solid #0E1E30;'>▸ RISK CONTROLS</div>""", unsafe_allow_html=True)
+
+    max_risk_per_bet = st.slider("Max Bet Size (% BR)", 0.0, 10.0,
+        float(st.session_state.get("max_risk_per_bet",3.0)), 0.5)
+    st.session_state["max_risk_per_bet"] = float(max_risk_per_bet)
+
     max_daily_loss = st.slider("Daily Loss Stop (%)", 0, 50, int(st.session_state.get("max_daily_loss",15)))
     max_weekly_loss = st.slider("Weekly Loss Stop (%)", 0, 50, int(st.session_state.get("max_weekly_loss",25)))
     st.session_state["max_daily_loss"] = max_daily_loss
     st.session_state["max_weekly_loss"] = max_weekly_loss
-    with st.expander("Odds API", expanded=False):
-        scan_book_override = st.text_input("Book override (blank=auto)", value="")
-        max_req_day = st.number_input("Max requests/day", 1, 500, int(st.session_state.get("max_req_day",100)), 10)
-        st.session_state["max_req_day"] = int(max_req_day)
 
-    # [UPGRADE 24] Always-visible quota tracker
+    # Risk gauge inline display
+    _daily_pct  = int(st.session_state.get("max_daily_loss", 15))
+    _weekly_pct = int(st.session_state.get("max_weekly_loss", 25))
+    _risk_color = "#FF3358" if max_risk_per_bet >= 7 else ("#FFB800" if max_risk_per_bet >= 4 else "#00FFB2")
+    st.markdown(f"""
+<div style='background:#04080F;border:1px solid #0E1E30;border-radius:4px;
+            padding:0.4rem 0.7rem;margin:0.3rem 0 0.2rem 0;
+            display:flex;gap:1rem;align-items:center;'>
+    <div style='flex:1;text-align:center;'>
+        <div style='font-family:Fira Code,monospace;font-size:0.55rem;color:#2A6080;'>DAILY STOP</div>
+        <div style='font-family:Fira Code,monospace;font-size:0.80rem;color:#FFB800;font-weight:600;'>{_daily_pct}%</div>
+    </div>
+    <div style='width:1px;height:28px;background:#0E1E30;'></div>
+    <div style='flex:1;text-align:center;'>
+        <div style='font-family:Fira Code,monospace;font-size:0.55rem;color:#2A6080;'>WEEKLY STOP</div>
+        <div style='font-family:Fira Code,monospace;font-size:0.80rem;color:#FFB800;font-weight:600;'>{_weekly_pct}%</div>
+    </div>
+    <div style='width:1px;height:28px;background:#0E1E30;'></div>
+    <div style='flex:1;text-align:center;'>
+        <div style='font-family:Fira Code,monospace;font-size:0.55rem;color:#2A6080;'>MAX BET</div>
+        <div style='font-family:Fira Code,monospace;font-size:0.80rem;color:{_risk_color};font-weight:600;'>{max_risk_per_bet:.1f}%</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+    # ── FILTERS ───────────────────────────────────────────────
+    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-top:0.6rem;margin-bottom:0.4rem;padding-top:0.6rem;
+border-top:1px solid #0E1E30;'>▸ FILTERS</div>""", unsafe_allow_html=True)
+
+    exclude_chaotic = st.checkbox("Block Chaotic Regime",
+        value=bool(st.session_state.get("exclude_chaotic",True)),
+        help="Filters high-CV / blowout-risk environments")
+    st.session_state["exclude_chaotic"] = bool(exclude_chaotic)
+
+    show_unders = st.checkbox("Show Under Opportunities",
+        value=bool(st.session_state.get("show_unders", False)), key="show_unders_cb",
+        help="Surface high-probability Unders alongside each leg")
+    st.session_state["show_unders"] = bool(show_unders)
+
+    # ── ODDS API ──────────────────────────────────────────────
+    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-top:0.6rem;margin-bottom:0.4rem;padding-top:0.6rem;
+border-top:1px solid #0E1E30;'>▸ ODDS API</div>""", unsafe_allow_html=True)
+
+    # Quota tracker — always visible
     hdr = st.session_state.get("_odds_headers_last", {})
     rem  = hdr.get("remaining", "?")
     used = hdr.get("used", "?")
     try:
-        rem_int = int(rem)
+        rem_int  = int(rem)
+        used_int = int(used)
+        total    = rem_int + used_int
+        pct_used = (used_int / total * 100) if total > 0 else 0
         rem_color = "#FF3358" if rem_int < 10 else ("#FFB800" if rem_int < 30 else "#00FFB2")
-        rem_label = f"<span style='color:{rem_color};font-weight:600;'>{rem}</span>"
+        bar_color = "#FF3358" if pct_used > 85 else ("#FFB800" if pct_used > 60 else "#00FFB2")
+        bar_w     = f"{min(pct_used, 100):.0f}%"
     except Exception:
-        rem_label = f"<span style='color:#4A607A;'>{rem}</span>"
-    st.markdown(
-        f"<div style='font-family:Fira Code,monospace;font-size:0.62rem;color:#4A607A;margin-top:0.4rem;'>"
-        f"API QUOTA: used {used} | rem {rem_label}"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-    if hdr.get("remaining") == "0":
-        st.error("Odds API quota exhausted — all fetches paused.")
+        rem_color = "#4A607A"; bar_color = "#1E2D3D"; bar_w = "0%"; pct_used = 0
+        used_int = 0; rem_int = 0
 
-    # [UPGRADE 22] Watchlist quick view
-    st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
-    with st.expander("Watchlist", expanded=False):
+    st.markdown(f"""
+<div style='background:#04080F;border:1px solid #0E1E30;border-radius:4px;
+            padding:0.5rem 0.7rem;margin-bottom:0.4rem;'>
+    <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;'>
+        <div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#2A6080;
+                    letter-spacing:0.08em;'>QUOTA USAGE</div>
+        <div style='font-family:Fira Code,monospace;font-size:0.60rem;'>
+            <span style='color:#4A607A;'>used </span>
+            <span style='color:#8BA8BF;'>{used}</span>
+            <span style='color:#2A4060;'> / rem </span>
+            <span style='color:{rem_color};font-weight:600;'>{rem}</span>
+        </div>
+    </div>
+    <div style='background:#0A1628;border-radius:2px;height:3px;'>
+        <div style='background:{bar_color};width:{bar_w};height:3px;border-radius:2px;
+                    box-shadow:0 0 4px {bar_color}88;transition:width 0.3s;'></div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+    if hdr.get("remaining") == "0":
+        st.error("Quota exhausted — fetches paused.")
+
+    with st.expander("BOOK SETTINGS", expanded=False):
+        scan_book_override = st.text_input("Book override (blank=auto)", value="")
+        max_req_day = st.number_input("Max requests/day", 1, 500, int(st.session_state.get("max_req_day",100)), 10)
+        st.session_state["max_req_day"] = int(max_req_day)
+
+    # ── WATCHLIST ─────────────────────────────────────────────
+    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-top:0.6rem;margin-bottom:0.4rem;padding-top:0.6rem;
+border-top:1px solid #0E1E30;'>▸ WATCHLIST</div>""", unsafe_allow_html=True)
+
+    with st.expander("MANAGE WATCHLIST", expanded=False):
         wl = load_watchlist(st.session_state.get("user_id","trader"))
         wl_input = st.text_input("Add player", placeholder="LeBron James", key="wl_add")
         wl_col1, wl_col2 = st.columns(2)
@@ -3122,13 +4125,32 @@ with st.sidebar:
                 wl = [p for p in wl if p != rm]
                 save_watchlist(st.session_state.get("user_id","trader"), wl)
                 st.rerun()
-            for p in wl:
-                st.markdown(f"<div style='font-size:0.68rem;color:#00AAFF;'>· {p}</div>", unsafe_allow_html=True)
-        else:
-            st.caption("No players on watchlist.")
 
-    st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
-    with st.expander("🤖 AI Settings", expanded=False):
+    # Watchlist player pills — always visible outside expander
+    _wl_display = load_watchlist(st.session_state.get("user_id","trader"))
+    if _wl_display:
+        _wl_html = "".join([
+            f"<div style='display:flex;align-items:center;gap:0.4rem;"
+            f"padding:0.2rem 0;border-bottom:1px solid #080F1A;'>"
+            f"<div style='width:4px;height:4px;border-radius:50%;background:#00AAFF;"
+            f"flex-shrink:0;'></div>"
+            f"<div style='font-family:Fira Code,monospace;font-size:0.65rem;"
+            f"color:#6AABCF;'>{p}</div></div>"
+            for p in _wl_display
+        ])
+        st.markdown(f"<div style='margin-top:0.3rem;'>{_wl_html}</div>", unsafe_allow_html=True)
+    else:
+        st.markdown("<div style='font-family:Fira Code,monospace;font-size:0.60rem;"
+                    "color:#1E3050;margin-top:0.2rem;'>No players tracked.</div>",
+                    unsafe_allow_html=True)
+
+    # ── AI ENGINE ─────────────────────────────────────────────
+    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-top:0.6rem;margin-bottom:0.4rem;padding-top:0.6rem;
+border-top:1px solid #0E1E30;'>▸ AI ENGINE</div>""", unsafe_allow_html=True)
+
+    with st.expander("CLAUDE AI SETTINGS", expanded=False):
         _ai_key_stored = st.session_state.get("_anthropic_key_override", "")
         _ai_key_input = st.text_input(
             "Anthropic API Key",
@@ -3143,12 +4165,42 @@ with st.sidebar:
                 os.environ["ANTHROPIC_API_KEY"] = _ai_key_input
         elif _ai_key_input and not os.environ.get("ANTHROPIC_API_KEY"):
             os.environ["ANTHROPIC_API_KEY"] = _ai_key_input
-        _ai_active = _get_anthropic_key()
-        if _ai_active:
-            st.markdown("<div style='font-size:0.62rem;color:#00FFB2;margin-top:4px;'>✓ Claude AI Ready</div>", unsafe_allow_html=True)
-        else:
-            st.markdown("<div style='font-size:0.62rem;color:#4A607A;margin-top:4px;'>⚠ No key — AI features disabled</div>", unsafe_allow_html=True)
-        st.caption("Key used only for on-device API calls. Never stored on disk.")
+
+    _ai_active = _get_anthropic_key()
+    if _ai_active:
+        st.markdown("""
+<div style='background:linear-gradient(90deg,#00FFB208,transparent);
+            border:1px solid #00FFB230;border-radius:3px;
+            padding:0.3rem 0.6rem;display:flex;align-items:center;gap:0.5rem;
+            margin-top:0.2rem;'>
+    <div style='width:5px;height:5px;border-radius:50%;background:#00FFB2;
+                box-shadow:0 0 5px #00FFB2;'></div>
+    <div style='font-family:Fira Code,monospace;font-size:0.60rem;color:#00FFB2;
+                letter-spacing:0.06em;'>CLAUDE AI  ·  ACTIVE</div>
+</div>""", unsafe_allow_html=True)
+    else:
+        st.markdown("""
+<div style='background:#04080F;border:1px solid #1A2030;border-radius:3px;
+            padding:0.3rem 0.6rem;display:flex;align-items:center;gap:0.5rem;
+            margin-top:0.2rem;'>
+    <div style='width:5px;height:5px;border-radius:50%;background:#2A4060;'></div>
+    <div style='font-family:Fira Code,monospace;font-size:0.60rem;color:#2A4060;
+                letter-spacing:0.06em;'>CLAUDE AI  ·  OFFLINE</div>
+</div>""", unsafe_allow_html=True)
+
+    # ── FOOTER ────────────────────────────────────────────────
+    st.markdown(f"""
+<div style='margin-top:1.5rem;padding-top:0.6rem;border-top:1px solid #080F1A;
+            text-align:center;'>
+    <div style='font-family:Fira Code,monospace;font-size:0.52rem;color:#1A2F45;
+                letter-spacing:0.08em;line-height:1.8;'>
+        SPORTSBOOK MODEL · -110 VIG REMOVED<br>
+        KELLY STAKING · MC CORRELATED<br>
+        <span style='color:#0E2840;'>━━━━━━━━━━━━━━━━</span><br>
+        <span style='color:#1A3050;'>NBA QUANT ENGINE v2.2</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 # ─── SESSION STATE INIT ────────────────────────────────────────
 for k in ["last_results","calibrator_map","scanner_offers","scanner_results"]:
@@ -3534,6 +4586,93 @@ with tabs[1]:
             else:
                 st.warning("Need 2+ gated legs with P > 50% to generate combos.")
 
+        # ── 🎰 DFS Entry Builder ─────────────────────────────────
+        st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.72rem;color:#FFB800;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>🎰 DFS ENTRY BUILDER — PRIZEPICKS / UNDERDOG / SLEEPER</div>", unsafe_allow_html=True)
+        dfs_c1, dfs_c2, dfs_c3 = st.columns(3)
+        with dfs_c1:
+            dfs_platform = st.selectbox("Platform", ["prizepicks","underdog","sleeper"], key="dfs_platform_sel")
+        with dfs_c2:
+            dfs_max_legs = st.slider("Max legs per entry", 2, 6,
+                                     min(4, max(2, len([l for l in res if float(l.get("p_cal") or 0) > 0.50]))),
+                                     key="dfs_max_legs")
+        with dfs_c3:
+            dfs_entry_type = st.radio("Entry type", ["Power Play", "Flex", "Best of both"],
+                                      key="dfs_entry_type_radio", horizontal=True)
+
+        # Show the platform's payout table inline
+        _tbl = {"prizepicks": DFS_PP_PAYOUTS, "underdog": DFS_UD_PAYOUTS, "sleeper": DFS_SLEEPER_PAYOUTS}
+        _pt = _tbl.get(dfs_platform, DFS_PP_PAYOUTS)
+        _payout_cols = st.columns(len(_pt))
+        for _pi, (_n, _x) in enumerate(_pt.items()):
+            _payout_cols[_pi].metric(f"{_n}-leg PP", f"{_x}x",
+                                     help=f"Must hit all {_n} legs to win {_x}x your entry")
+
+        if st.button("🎰 Find Best DFS Entries", use_container_width=True, key="dfs_optimizer_btn"):
+            _gated = [l for l in res if float(l.get("p_cal") or 0) > 0.50]
+            if len(_gated) < 2:
+                st.warning("Need 2+ legs with P(Over) > 50% to build entries.")
+            else:
+                with st.spinner(f"Optimizing {dfs_platform.title()} entries with MC simulation…"):
+                    dfs_results = dfs_entry_optimizer(
+                        _gated, platform=dfs_platform, max_legs=dfs_max_legs,
+                        n_sims=5000, bankroll=bankroll, frac_kelly=frac_kelly,
+                    )
+                st.session_state["_dfs_entry_results"] = dfs_results
+
+        _dfs_res = st.session_state.get("_dfs_entry_results")
+        if _dfs_res:
+            # Filter by entry type selection
+            if dfs_entry_type == "Power Play":
+                _dfs_show = [r for r in _dfs_res if r.get("rec_mode") == "PowerPlay"]
+            elif dfs_entry_type == "Flex":
+                _dfs_show = [r for r in _dfs_res if r.get("rec_mode") == "Flex"]
+            else:
+                _dfs_show = _dfs_res
+
+            if not _dfs_show:
+                st.caption("No entries matched that filter — try 'Best of both'.")
+            else:
+                dfs_df = pd.DataFrame(_dfs_show)[
+                    ["n_legs","combo","rec_mode","joint_prob_%","pp_payout_x",
+                     "pp_ev_%","flex_ev_%","best_ev_%","avg_leg_edge_%","rec_stake_$"]
+                ].rename(columns={
+                    "n_legs": "Legs", "combo": "Entry", "rec_mode": "Mode",
+                    "joint_prob_%": "Joint%", "pp_payout_x": "PP Payout",
+                    "pp_ev_%": "PP EV%", "flex_ev_%": "Flex EV%",
+                    "best_ev_%": "Best EV%", "avg_leg_edge_%": "Avg Edge%",
+                    "rec_stake_$": "Rec Stake $"
+                })
+                st.dataframe(dfs_df, use_container_width=True, hide_index=True)
+
+                # Visual breakdown of top entry
+                _best = _dfs_show[0]
+                _pp_ev_val = _best.get("pp_ev_%")
+                _fl_ev_val = _best.get("flex_ev_%")
+                _pp_ev_num = _pp_ev_val if isinstance(_pp_ev_val, (int, float)) else 0
+                _fl_ev_num = _fl_ev_val if isinstance(_fl_ev_val, (int, float)) else 0
+
+                st.markdown(f"""
+<div style='background:linear-gradient(135deg,#FFB80018,#0D1B2A);border:1px solid #FFB80050;
+border-radius:6px;padding:0.9rem 1.1rem;margin-top:0.5rem;'>
+<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#FFB800;
+letter-spacing:0.12em;margin-bottom:0.5rem;'>🎰 TOP {dfs_platform.upper()} ENTRY</div>
+<div style='font-size:0.78rem;color:#EEF4FF;font-weight:600;margin-bottom:0.4rem;'>
+{_best.get("combo","")}</div>
+<div style='display:flex;gap:1.2rem;font-size:0.65rem;flex-wrap:wrap;'>
+  <span style='color:#4A607A;'>Legs: <span style='color:#EEF4FF;'>{_best.get("n_legs")}</span></span>
+  <span style='color:#4A607A;'>Mode: <span style='color:#FFB800;'>{_best.get("rec_mode")}</span></span>
+  <span style='color:#4A607A;'>Joint Prob: <span style='color:#00AAFF;font-family:Fira Code,monospace;'>{_best.get("joint_prob_%")}%</span></span>
+  <span style='color:#4A607A;'>PP Payout: <span style='color:#EEF4FF;font-family:Fira Code,monospace;'>{_best.get("pp_payout_x")}x</span></span>
+  <span style='color:#4A607A;'>PP EV: <span style='color:{"#00FFB2" if _pp_ev_num > 0 else "#FF3358"};font-family:Fira Code,monospace;'>{_pp_ev_val}%</span></span>
+  <span style='color:#4A607A;'>Flex EV: <span style='color:{"#00FFB2" if _fl_ev_num > 0 else "#FF3358"};font-family:Fira Code,monospace;'>{_fl_ev_val}%</span></span>
+  <span style='color:#4A607A;'>Rec Stake: <span style='color:#00FFB2;font-family:Fira Code,monospace;'>${_best.get("rec_stake_$")}</span></span>
+</div>
+<div style='margin-top:0.5rem;font-size:0.60rem;color:#4A607A;'>
+Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model probability above the 50% floor.
+</div>
+</div>""", unsafe_allow_html=True)
+
         # 🎯 AI Parlay Optimizer
         if _get_anthropic_key() and len(res) >= 2:
             st.markdown("<hr style='border-color:#1E2D3D;margin:0.5rem 0;'>", unsafe_allow_html=True)
@@ -3566,6 +4705,60 @@ with tabs[1]:
                     f"🎯 CLAUDE AI · PARLAY OPTIMIZER</span>{_parlay_html}</div>",
                     unsafe_allow_html=True,
                 )
+
+        # ── PrizePicks AI Helper ──────────────────────────────
+        if _get_anthropic_key():
+            st.markdown("<hr style='border-color:#1E2D3D;margin:0.5rem 0;'>", unsafe_allow_html=True)
+            st.markdown(
+                "<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#FFB800;"
+                "letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>"
+                "🏆 PRIZEPICKS AI HELPER — POWER PLAY vs FLEX</div>",
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                "Uses your sportsbook-calibrated model results (52.4% breakeven) as the selection "
+                "filter, then determines the optimal PP entry mode. Core model math is unchanged."
+            )
+            _pp_dfs_res = st.session_state.get("_dfs_entry_results")
+            if not _pp_dfs_res:
+                st.info("Run 🎰 Find Best DFS Entries above first to generate PP entry combinations.")
+            else:
+                if st.button("🏆 Get PP Power Play / Flex Recommendation", use_container_width=True, key="ai_pp_helper_btn"):
+                    with st.spinner("Claude analyzing Power Play vs Flex…"):
+                        _pp_top = _pp_dfs_res[:6]  # Top 6 combos for context
+                        _pp_legs_data = [
+                            {
+                                "player": l.get("player"),
+                                "market": l.get("market"),
+                                "line": l.get("line"),
+                                "p_cal_%": round(float(l.get("p_cal") or 0) * 100, 1),
+                                "sb_ev_%": round(float(l.get("ev_pct") or 0), 1),
+                                "edge_cat": l.get("edge_cat"),
+                                "team": l.get("team"),
+                                "opp": l.get("opp"),
+                                "hot_cold": l.get("hot_cold"),
+                                "vol_cv": l.get("vol_cv"),
+                                "dnp_risk": l.get("dnp_risk"),
+                            }
+                            for l in res if float(l.get("p_cal") or 0) > 0.50
+                        ]
+                        _pp_ai = ai_prizepicks_helper(
+                            json.dumps(_pp_top, indent=2),
+                            json.dumps(_pp_legs_data, indent=2),
+                        )
+                    st.session_state["_ai_pp_helper_result"] = _pp_ai
+                _pp_ai_txt = st.session_state.get("_ai_pp_helper_result")
+                if _pp_ai_txt:
+                    _pp_html = _pp_ai_txt.replace("\n", "<br>")
+                    st.markdown(
+                        f"<div style='background:#FFB80009;border:1px solid #FFB80040;"
+                        f"border-radius:4px;padding:0.8rem 1rem;margin-top:0.5rem;"
+                        f"font-size:0.68rem;color:#F0D8A0;line-height:1.6;'>"
+                        f"<span style='font-family:Chakra Petch,monospace;font-size:0.55rem;"
+                        f"color:#FFB800;letter-spacing:0.1em;display:block;margin-bottom:0.5rem;'>"
+                        f"🏆 CLAUDE AI · PRIZEPICKS HELPER</span>{_pp_html}</div>",
+                        unsafe_allow_html=True,
+                    )
 
         # ── Monte Carlo Simulation ────────────────────────────
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
@@ -3607,50 +4800,57 @@ with tabs[2]:
     max_rows = st.slider("Max Results", 10, 200, 60, 10)
 
     # ── Platform Lines (PP / UD) inline in scanner ──────────────────────
-    with st.expander("📱 Platform Lines — PrizePicks & Underdog (scan against platform lines)", expanded=False):
-        _plat_c1, _plat_c2, _plat_c3 = st.columns(3)
+    with st.expander("📱 Platform Lines — PrizePicks / Underdog / Sleeper (scan against platform lines)", expanded=False):
+        _plat_c1, _plat_c2, _plat_c3, _plat_c4 = st.columns(4)
         with _plat_c1:
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;'>PRIZEPICKS</div>", unsafe_allow_html=True)
             _pp_ck = st.session_state.get("pp_cookies","")
             if _pp_ck:
-                st.caption(f"Cookie auth active ({len(_pp_ck)} chars)")
+                st.caption(f"🔑 Cookie active ({len(_pp_ck)} chars)")
             else:
-                _pp_ck_new = st.text_input("PP Cookies (optional)", value="", type="password", key="scanner_pp_cookies", help="Paste your PrizePicks browser cookies to bypass Cloudflare blocks")
+                _pp_ck_new = st.text_input("PP Cookies", value="", type="password", key="scanner_pp_cookies",
+                                            help="Paste PrizePicks browser cookies to bypass Cloudflare")
                 if _pp_ck_new:
                     st.session_state["pp_cookies"] = _pp_ck_new
             if st.button("Fetch PP Lines", key="scanner_fetch_pp_btn", use_container_width=True):
                 with st.spinner("Fetching PrizePicks…"):
                     _pp_rows, _pp_err = fetch_prizepicks_lines()
                 if _pp_err:
-                    st.error(f"PP error: {_pp_err}")
+                    st.error(f"PP: {_pp_err}")
                 elif _pp_rows:
-                    _pp_df = pd.DataFrame(_pp_rows)
-                    st.session_state["pp_lines"] = _pp_df
-                    st.success(f"✓ {len(_pp_rows)} PP props loaded")
+                    st.session_state["pp_lines"] = pd.DataFrame(_pp_rows)
+                    st.success(f"✓ {len(_pp_rows)} PP props")
                 else:
-                    st.warning("PP returned 0 props — slate may not be posted yet")
+                    st.warning("PP: 0 props found")
             _pp_loaded = st.session_state.get("pp_lines")
             if _pp_loaded is not None and not _pp_loaded.empty:
-                st.markdown(f"<div style='font-size:0.60rem;color:#00FFB2;'>✓ {len(_pp_loaded)} PP lines ready</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='font-size:0.58rem;color:#00FFB2;'>✓ {len(_pp_loaded)} ready</div>", unsafe_allow_html=True)
 
         with _plat_c2:
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#FFB800;'>UNDERDOG</div>", unsafe_allow_html=True)
-            if st.button("Fetch Underdog Lines", key="scanner_fetch_ud_btn", use_container_width=True):
+            if st.button("Fetch UD Lines", key="scanner_fetch_ud_btn", use_container_width=True):
                 with st.spinner("Fetching Underdog…"):
                     _ud_rows, _ud_err = fetch_underdog_lines()
                 if _ud_err:
-                    st.error(f"UD error: {_ud_err}")
+                    st.error(f"UD: {_ud_err}")
                 elif _ud_rows:
-                    _ud_df = pd.DataFrame(_ud_rows)
-                    st.session_state["ud_lines"] = _ud_df
-                    st.success(f"✓ {len(_ud_rows)} UD props loaded")
+                    st.session_state["ud_lines"] = pd.DataFrame(_ud_rows)
+                    st.success(f"✓ {len(_ud_rows)} UD props")
                 else:
-                    st.warning("UD returned 0 props")
+                    st.warning("UD: 0 props found")
             _ud_loaded = st.session_state.get("ud_lines")
             if _ud_loaded is not None and not _ud_loaded.empty:
-                st.markdown(f"<div style='font-size:0.60rem;color:#FFB800;'>✓ {len(_ud_loaded)} UD lines ready</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='font-size:0.58rem;color:#FFB800;'>✓ {len(_ud_loaded)} ready</div>", unsafe_allow_html=True)
 
         with _plat_c3:
+            st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#9B59F5;'>SLEEPER</div>", unsafe_allow_html=True)
+            _sl_loaded_sc = st.session_state.get("sl_lines")
+            if _sl_loaded_sc is not None and not _sl_loaded_sc.empty:
+                st.markdown(f"<div style='font-size:0.58rem;color:#9B59F5;'>✓ {len(_sl_loaded_sc)} ready</div>", unsafe_allow_html=True)
+            else:
+                st.caption("Import via Platforms → Sleeper tab")
+
+        with _plat_c4:
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#4A607A;'>SCAN SOURCE</div>", unsafe_allow_html=True)
             _scan_source = st.radio(
                 "Lines to scan",
@@ -3660,7 +4860,7 @@ with tabs[2]:
                 label_visibility="collapsed",
             )
             st.session_state["scan_source_idx"] = ["Odds API only","PP + UD only","All sources"].index(_scan_source)
-            st.caption("PP/UD implied prob: 0.50 (no vig)  Odds API: from market price")
+            st.caption("PP/UD/Sleeper: 50% implied (no vig)  Odds API: from market price")
 
     fetch_col, scan_col = st.columns(2)
     if fetch_col.button("Fetch Live Lines (Odds API)", use_container_width=True):
@@ -3766,9 +4966,9 @@ with tabs[2]:
                             "market_key":ODDS_MARKETS.get(mkt),"side":r.get("side","Over")}
                     candidates.append((pname, mkt, float(line), meta))
 
-            # ── Platform candidates (PP + UD) ──────────────────────────────
+            # ── Platform candidates (PP + UD + Sleeper) ────────────────────
             if _use_platforms:
-                for _plat_store, _plat_label in [("pp_lines","prizepicks"), ("ud_lines","underdog")]:
+                for _plat_store, _plat_label in [("pp_lines","prizepicks"), ("ud_lines","underdog"), ("sl_lines","sleeper")]:
                     _plat_df = st.session_state.get(_plat_store)
                     if _plat_df is None or _plat_df.empty:
                         continue
@@ -3873,6 +5073,9 @@ with tabs[2]:
                                 "n_games":int(leg.get("n_games_used",0)),   # [AUDIT FIX] explicit int
                                 "inj_boost": inj_flag,
                                 "min_proj": safe_round(leg.get("proj_minutes"),0),
+                                # DFS columns — edge above the 50% flat floor
+                                "pp_edge_%": round((pc - 0.50) * 100, 1),
+                                "pp_2leg_ev_%": round((DFS_PP_PAYOUTS[2] * pc**2 - 1.0) * 100, 1),
                             })
             out_df = pd.DataFrame(out_rows)
             if not out_df.empty:
@@ -4205,7 +5408,7 @@ with tabs[2]:
 # ─── PLATFORMS TAB ─────────────────────────────────────────────
 with tabs[3]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>PLATFORMS — PRIZEPICKS / UNDERDOG / LINE SHOPPING</div>""", unsafe_allow_html=True)
-    plat_tabs = st.tabs(["PrizePicks", "Underdog", "Line History", "Best Available"])
+    plat_tabs = st.tabs(["PrizePicks", "Underdog", "Sleeper", "Line History", "Best Available"])
 
     with plat_tabs[0]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>PRIZEPICKS NBA LINES</div>", unsafe_allow_html=True)
@@ -4510,6 +5713,115 @@ with tabs[3]:
                         st.warning("No edges found vs Underdog lines.")
 
     with plat_tabs[2]:
+        # ── SLEEPER FANTASY ─────────────────────────────────────
+        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#9B59F5;letter-spacing:0.12em;'>SLEEPER FANTASY NBA LINES</div>", unsafe_allow_html=True)
+        st.caption("Sleeper Picks lines — paste your JSON export or upload CSV to sync with the scanner.")
+
+        sl_auto_tab, sl_manual_tab = st.tabs(["Auto Fetch", "Manual Import"])
+
+        with sl_auto_tab:
+            st.info("Sleeper's picks API is not publicly documented. Use **Manual Import** to paste your lines, or export from the Sleeper app.")
+            if st.button("Attempt Sleeper Fetch", key="sl_auto_fetch_btn"):
+                # Try known Sleeper endpoints (unofficial)
+                _sl_urls = [
+                    "https://api.sleeper.app/v1/stats/nba/projections/regular/2025/1",
+                    "https://api.sleeper.app/projections/nba",
+                    "https://api.sleeper.com/picks/nba",
+                ]
+                _sl_found = False
+                for _sl_url in _sl_urls:
+                    try:
+                        from curl_cffi import requests as cffi_requests
+                        _sl_r = cffi_requests.get(_sl_url, impersonate="chrome120",
+                                                   headers={"Accept": "application/json"}, timeout=10)
+                    except ImportError:
+                        _sl_r = requests.get(_sl_url, timeout=10)
+                    except Exception:
+                        continue
+                    if _sl_r.ok:
+                        try:
+                            _sl_data = _sl_r.json()
+                            st.json(_sl_data if isinstance(_sl_data, dict) else {"items": len(_sl_data)})
+                            st.success(f"Got response from {_sl_url} — paste in Manual Import to process.")
+                            _sl_found = True
+                            break
+                        except Exception:
+                            pass
+                if not _sl_found:
+                    st.error("Could not reach Sleeper API. Use Manual Import below.")
+
+        with sl_manual_tab:
+            sl_import_mode = st.radio("Import format", ["JSON paste", "CSV upload"], horizontal=True, key="sl_import_mode")
+            if sl_import_mode == "JSON paste":
+                sl_json_raw = st.text_area("Paste Sleeper JSON", height=200, key="sl_json_raw",
+                                           placeholder='[{"player_name":"LeBron James","stat_type":"Points","line":24.5}, ...]')
+                if st.button("Parse Sleeper JSON", key="sl_parse_json_btn"):
+                    try:
+                        _sl_parsed = json.loads(sl_json_raw.strip())
+                        if isinstance(_sl_parsed, dict):
+                            _sl_parsed = _sl_parsed.get("picks", _sl_parsed.get("lines",
+                                         _sl_parsed.get("projections", [_sl_parsed])))
+                        sl_rows = []
+                        for item in _sl_parsed:
+                            _pn = (item.get("player_name") or item.get("name") or item.get("player","")).strip()
+                            _st = (item.get("stat_type") or item.get("stat") or item.get("category","")).strip()
+                            _ln = item.get("line") or item.get("line_score") or item.get("value")
+                            if _pn and _st and _ln is not None:
+                                sl_rows.append({"player": _pn, "stat_type": _st,
+                                                "line": float(_ln), "source": "sleeper"})
+                        if sl_rows:
+                            _sl_df = pd.DataFrame(sl_rows)
+                            st.session_state["sl_lines"] = _sl_df
+                            st.success(f"✓ {len(sl_rows)} Sleeper lines imported")
+                            st.dataframe(_sl_df.head(20), use_container_width=True)
+                        else:
+                            st.warning("No valid props found — check JSON structure.")
+                    except Exception as e:
+                        st.error(f"JSON parse error: {e}")
+            else:
+                sl_file = st.file_uploader("Upload Sleeper CSV", type="csv", key="sl_csv_upload")
+                if sl_file:
+                    try:
+                        _sl_csv = pd.read_csv(sl_file)
+                        _sl_csv.columns = [c.strip().lower().replace(" ","_") for c in _sl_csv.columns]
+                        _sl_col_map = {}
+                        for _need, _alts in [
+                            ("player",    ["player","player_name","name","athlete"]),
+                            ("stat_type", ["stat_type","stat","category","market","prop"]),
+                            ("line",      ["line","line_score","value","over_under"]),
+                        ]:
+                            for _a in _alts:
+                                if _a in _sl_csv.columns:
+                                    _sl_col_map[_need] = _a; break
+                            if _need not in _sl_col_map:
+                                _best = difflib.get_close_matches(_alts[0], _sl_csv.columns, n=1, cutoff=0.7)
+                                if _best: _sl_col_map[_need] = _best[0]
+                        if all(k in _sl_col_map for k in ("player","stat_type","line")):
+                            _sl_rows2 = []
+                            for _, row in _sl_csv.iterrows():
+                                _pn2 = str(row.get(_sl_col_map["player"],"")).strip()
+                                _st2 = str(row.get(_sl_col_map["stat_type"],"")).strip()
+                                _ln2 = row.get(_sl_col_map["line"])
+                                if _pn2 and _st2 and _ln2 is not None:
+                                    try: _sl_rows2.append({"player":_pn2,"stat_type":_st2,"line":float(_ln2),"source":"sleeper"})
+                                    except: pass
+                            if _sl_rows2:
+                                _sl_df2 = pd.DataFrame(_sl_rows2)
+                                st.session_state["sl_lines"] = _sl_df2
+                                st.success(f"✓ {len(_sl_rows2)} Sleeper lines from CSV")
+                                st.dataframe(_sl_df2.head(20), use_container_width=True)
+                            else:
+                                st.warning("No valid rows parsed.")
+                        else:
+                            st.warning(f"Could not map columns. Found: {list(_sl_csv.columns)}. Need: player, stat_type, line")
+                    except Exception as e:
+                        st.error(f"CSV error: {e}")
+
+        _sl_loaded = st.session_state.get("sl_lines")
+        if _sl_loaded is not None and not _sl_loaded.empty:
+            st.markdown(f"<div style='font-size:0.62rem;color:#9B59F5;margin-top:4px;'>✓ {len(_sl_loaded)} Sleeper lines loaded — available in Scanner (select 'PP + UD only' or 'All sources')</div>", unsafe_allow_html=True)
+
+    with plat_tabs[3]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>PROP LINE HISTORY</div>", unsafe_allow_html=True)
         ph_col1, ph_col2 = st.columns(2)
         with ph_col1:
@@ -4527,7 +5839,7 @@ with tabs[3]:
             ph_csv = ph_df.to_csv(index=False)
             st.download_button("Export Line History CSV", ph_csv, "prop_line_history.csv", "text/csv")
 
-    with plat_tabs[3]:
+    with plat_tabs[4]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>BEST AVAILABLE LINE SHOPPING</div>", unsafe_allow_html=True)
         st.caption("Checks all available books for the highest price on any scanner result. Requires a valid Odds API key.")
         scanner_out_shop = st.session_state.get("scanner_results")
