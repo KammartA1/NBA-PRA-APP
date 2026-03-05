@@ -333,7 +333,7 @@ def get_season_string(today=None):
 # ──────────────────────────────────────────────
 # BULK GAME LOG — one API call for ALL players
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*30, show_spinner=False)
+@st.cache_data(ttl=60*10, show_spinner=False)  # [AUDIT FIX] 10min (was 30min) — mid-season trades need freshness
 def _fetch_bulk_gamelogs():
     """LeagueGameLog: ONE call returns every player's game log for the season.
     Replaces ~200 individual PlayerGameLog calls for a full-slate scan.
@@ -380,9 +380,15 @@ def fetch_player_gamelog(player_id, max_games=15):
             return player_df, []
 
     # ── Slow path: individual PlayerGameLog call (10s timeout) ──
+    # [AUDIT FIX] Explicitly filter to Regular Season to exclude preseason/playoff contamination
     errs = []
     season_str = get_season_string()
-    for params in [{"season_nullable": season_str}, {"season": season_str}, {}]:
+    for params in [
+        {"season_nullable": season_str, "season_type_all_star": "Regular Season"},
+        {"season_nullable": season_str},
+        {"season": season_str},
+        {},
+    ]:
         try:
             gl = playergamelog.PlayerGameLog(player_id=player_id, timeout=10, **params)
             df = gl.get_data_frames()[0]
@@ -497,16 +503,20 @@ def compute_rest_factor(game_log_df, game_date):
         rest = (game_date - last_game).days - 1
         rest = max(0, min(rest, 4))
         base_mult = REST_MULTIPLIERS.get(rest, 1.02)
-        # [FIX 4] Season-phase fatigue: B2B hits harder late in season
+        # [AUDIT FIX] Piecewise season-phase multiplier replaces linear fatigue:
+        # Early season (Oct-Nov): players fresh but inconsistent → slight penalty
+        # Mid season (Dec-Jan): peak form, stable → neutral
+        # Trade deadline zone (Feb): disruption, new teammates → slight penalty
+        # Playoff push (Mar-Apr): elevated effort on B2B, fatigue peaks → bigger penalty
         try:
-            season_year = int(get_season_string()[:4])
-            season_start = date(season_year, 10, 1)
-            days_in = max(0, (game_date - season_start).days)
-            games_approx = min(82, days_in // 2)
-            # Coefficient 0.015: late-season B2B should dent output ~1-2%
-            # (0.0008 was negligible at ~0.08%; 0.015 gives realistic 1.5% max)
-            fatigue = 1.0 - 0.015 * (games_approx / 82.0) * max(0, 2 - rest)
-            base_mult *= fatigue
+            _m = game_date.month
+            if _m in (10, 11):    phase_mult = 0.985   # early: inconsistency penalty
+            elif _m in (12, 1):   phase_mult = 1.000   # mid: peak form
+            elif _m == 2:         phase_mult = 0.990   # trade deadline disruption
+            else:                 phase_mult = 0.978   # Mar-Apr: playoff grind fatigue
+            # Extra penalty on B2B only
+            if rest == 0:
+                base_mult *= phase_mult
         except Exception:
             pass
         return float(base_mult), int(rest)
@@ -598,7 +608,8 @@ def compute_volatility(series):
 def compute_skewness(series):
     try:
         arr = pd.to_numeric(series, errors="coerce").dropna().values.astype(float)
-        if arr.size < 4:
+        # [AUDIT FIX] n<4 gives wildly unstable skewness; require >=6 for reliability
+        if arr.size < 6:
             return None
         n = len(arr)
         m = arr.mean()
@@ -738,7 +749,10 @@ def bootstrap_prob_over(stat_series, line, n_sims=8000, cv_override=None, market
         w = w / w.sum()
     else:
         w = None
-    rng = np.random.default_rng(42)
+    # [AUDIT FIX] Per-call unique seed: fixed seed 42 gave identical noise patterns
+    # across all players. Use data-derived seed so each player's bootstrap is independent.
+    _seed = int(abs(hash(tuple(x.round(3).tolist()))) % (2**31))
+    rng = np.random.default_rng(_seed)
     sims = rng.choice(x, size=int(n_sims), replace=True, p=w)
     cv = cv_override or (float(x.std(ddof=1) / x.mean()) if x.mean() != 0 else 0.20)
     noise_scale = max(0.05, min(cv * 0.40, 0.25))
@@ -761,8 +775,13 @@ def empirical_leg_correlation(pid1, pid2, mkt1, mkt2, n_games=20):
             return None
         s1 = compute_stat_from_gamelog(gl1, mkt1).rename("s1")
         s2 = compute_stat_from_gamelog(gl2, mkt2).rename("s2")
-        df1 = pd.concat([gl1["GAME_DATE"].reset_index(drop=True), s1.reset_index(drop=True)], axis=1)
-        df2 = pd.concat([gl2["GAME_DATE"].reset_index(drop=True), s2.reset_index(drop=True)], axis=1)
+        # [AUDIT FIX] Normalize GAME_DATE to ISO date before merge — NBA API returns
+        # dates in varying formats ("Mar 05, 2025" vs "2025-03-05") depending on
+        # bulk-cache vs per-player path; mismatches silently produce empty merges.
+        _d1 = pd.to_datetime(gl1["GAME_DATE"], errors="coerce").dt.date.reset_index(drop=True).rename("GAME_DATE")
+        _d2 = pd.to_datetime(gl2["GAME_DATE"], errors="coerce").dt.date.reset_index(drop=True).rename("GAME_DATE")
+        df1 = pd.concat([_d1, s1.reset_index(drop=True)], axis=1)
+        df2 = pd.concat([_d2, s2.reset_index(drop=True)], axis=1)
         merged = df1.merge(df2, on="GAME_DATE", how="inner")
         if len(merged) < 6:
             return None
@@ -785,10 +804,25 @@ def estimate_player_correlation(leg1, leg2):
         if emp is not None:
             return float(emp)
     corr = 0.0
-    if leg1.get("team") and leg2.get("team") and leg1["team"] == leg2["team"]:
-        corr += 0.15
     m1, m2 = leg1.get("market"), leg2.get("market")
-    if m1 == m2: corr += 0.10
+    same_team = bool(leg1.get("team") and leg2.get("team") and leg1["team"] == leg2["team"])
+    if same_team:
+        # [AUDIT FIX] Market-specific same-team correlation — flat +0.15 was too coarse:
+        # Same stat category on same team shares pace/game-script strongly
+        # Cross-category (Points vs Rebounds) shares less — driven by minutes, not plays
+        if m1 == m2:
+            corr += 0.20   # same market + same team: share touches and game script directly
+        else:
+            _pts_grp = {"Points", "PRA", "PA", "Alt Points"}
+            _reb_grp = {"Rebounds", "PR", "RA"}
+            _ast_grp = {"Assists", "PA", "RA"}
+            _same_grp = (
+                (m1 in _pts_grp and m2 in _pts_grp) or
+                (m1 in _reb_grp and m2 in _reb_grp) or
+                (m1 in _ast_grp and m2 in _ast_grp)
+            )
+            corr += 0.12 if _same_grp else 0.06  # cross-category: weaker same-team link
+    if m1 == m2 and not same_team: corr += 0.10
     if set([m1,m2]) == {"Points","PRA"}: corr += 0.14
     if m1 in ["Rebounds","RA"] and m2 in ["Rebounds","RA"]: corr += 0.06
     if m1 in ["Assists","RA"] and m2 in ["Assists","RA"]: corr += 0.05
@@ -802,11 +836,13 @@ def estimate_player_correlation(leg1, leg2):
 # LINE MOVEMENT ALERT  [FIX 10: dedup]
 # ──────────────────────────────────────────────
 def get_line_movement_signal(player_norm, market_key, current_line, side="Over"):
-    store_key = f"open_line_{player_norm}_{market_key}_{side}"
-    opening = st.session_state.get(store_key)
-    if opening is None:
-        st.session_state[store_key] = float(current_line)
-        return {"direction": "-", "pips": 0.0, "steam": False, "fade": False, "msg": "Opening line recorded"}
+    # [AUDIT FIX] Use file-based immutable opening line (survives page refreshes)
+    # Session state resets on refresh, allowing false "opening" re-records mid-day
+    _file_open, _ = get_opening_line(player_norm, str(market_key), side)
+    if _file_open is None:
+        save_opening_line(player_norm, str(market_key), side, current_line, None)
+        _file_open = float(current_line)
+    opening = _file_open
     delta = float(current_line) - float(opening)
     is_over = "over" in str(side).lower()
     steam = (delta > 0.5 and is_over) or (delta < -0.5 and not is_over)
@@ -875,7 +911,8 @@ def remove_vig(price_over, price_under):
         ip_o = 1.0 / max(float(price_over), 1.0001)
         ip_u = 1.0 / max(float(price_under), 1.0001)
         overround = ip_o + ip_u
-        if overround <= 0:
+        # [AUDIT FIX] Reject corrupted markets: overround should be 1.02-1.10 for typical juice
+        if overround <= 0.99 or overround > 1.15:
             return float(price_over), float(price_under)
         return float(1.0 / (ip_o / overround)), float(1.0 / (ip_u / overround))
     except Exception:
@@ -2300,14 +2337,18 @@ def compute_leg_projection(
                 break
 
     ha_mult = compute_home_away_factor(gldf_n, base_market, is_home_resolved)
-    # [UPGRADE 8] Injury boost scaled by usage capacity
-    # Low-usage players absorb the most opportunity when a teammate goes out;
-    # high-usage players already near their ceiling, so smaller boost.
+    # [UPGRADE 8 + AUDIT FIX] Injury boost is market-specific:
+    # Assists DROP when a primary playmaker (PG/initiator) goes out — fewer plays run through
+    # the offense, fewer assist opportunities. Points/Rebounds absorb usage and go UP.
     _usage_boost = 1.05
     if key_teammate_out and usage_rate is not None:
-        if usage_rate >= 18:   _usage_boost = 1.03   # near ceiling, small room to expand
-        elif usage_rate >= 12: _usage_boost = 1.05   # moderate usage, moderate upside
-        else:                  _usage_boost = 1.08   # low baseline usage, highest opportunity gain
+        if usage_rate >= 18:   _usage_boost = 1.03
+        elif usage_rate >= 12: _usage_boost = 1.05
+        else:                  _usage_boost = 1.08
+    # Market-specific direction: Assists/PA/RA penalized when playmaker is out
+    _assist_heavy = base_market in ("Assists", "PA", "RA", "PRA")
+    if key_teammate_out and _assist_heavy:
+        _usage_boost = min(_usage_boost, 0.97)  # assists down, not up
     ctx_mult = advanced_context_multiplier(player_name, base_market, opp_abbr, False)
     if key_teammate_out:
         ctx_mult *= _usage_boost
@@ -2418,9 +2459,15 @@ def compute_leg_projection(
     if not gate_ok: ev_adj = None
 
     stake_dollars, stake_frac, stake_reason = 0.0, 0.0, "gated"
-    if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj > 0:
+    # [AUDIT FIX] Minimum EV threshold: noise below 2% is not worth staking
+    if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj >= 0.02:
         stake_dollars, stake_frac, stake_reason = recommended_stake(
             bankroll, float(p_cal), float(price_decimal), frac_kelly, max_risk_frac)
+        # [AUDIT FIX] DNP risk halves stake — player may not dress, don't fully commit
+        if dnp_risk and stake_dollars > 0:
+            stake_dollars *= 0.50
+            stake_frac   *= 0.50
+            stake_reason  = "dnp_risk_half"
 
     mk_key = meta.get("market_key") if meta else ODDS_MARKETS.get(market_name,"")
     player_norm = normalize_name(player_name)
@@ -2589,14 +2636,12 @@ def apply_calibrator(p_raw, calib):
     xs = calib.get("x") or []; ys = calib.get("y") or []
     if len(xs)<2 or len(xs)!=len(ys): return float(np.clip(p, 0.0, 1.0))
     try:
-        result = float(np.clip(np.interp(p, xs, ys), 0.0, 1.0))
-        # [FIX 9] Flag OOD but still return interpolated value
         t_min = calib.get("training_min", 0.0)
         t_max = calib.get("training_max", 1.0)
+        # [AUDIT FIX] OOD: return raw p (no extrapolation) instead of silently extrapolating
         if p < t_min * 0.85 or p > t_max * 1.15:
-            # OOD: extrapolation warning (surfaced in UI)
-            pass
-        return result
+            return float(np.clip(p, 0.0, 1.0))
+        return float(np.clip(np.interp(p, xs, ys), 0.0, 1.0))
     except: return float(np.clip(p, 0.0, 1.0))
 
 def recompute_pricing_fields(leg, calib):
@@ -2900,7 +2945,9 @@ with tabs[0]:
                 mline = st.number_input(f"Line", min_value=0.0, value=float(st.session_state.get(f"line_{leg_n}",22.5)), step=0.5, key=f"mline_{leg_n}")
                 out_cb = st.checkbox(f"Key teammate OUT?", key=f"out_{leg_n}")
                 leg_configs.append((tag, pname, mkt, manual, mline, out_cb))
-    run_btn = st.button("RUN MODEL", use_container_width=True)
+    if st.session_state.get("_auto_run_model"):
+        st.info("⚡ Legs loaded from Live Scanner — running model automatically...")
+    run_btn = st.button("RUN MODEL", use_container_width=True) or bool(st.session_state.pop("_auto_run_model", False))
     if run_btn:
         results = []; warnings = []; tasks = []
         for (tag, pname, mkt, manual, mline, teammate_out) in leg_configs:
@@ -3284,10 +3331,17 @@ with tabs[2]:
             st.warning("Fetch lines first.")
         else:
             df2 = df[df["side"].str.lower().isin(["over","o"])].copy()
-            if df2.empty: df2 = df.copy()
+            # [AUDIT FIX] Old fallback silently scanned Under legs when no Overs existed —
+            # violates scan intent. Warn instead and scan nothing.
+            if df2.empty:
+                st.warning("No OVER props found in fetched offers. Fetch lines again or check the sportsbook/market filter.")
+                df2 = pd.DataFrame()
             candidates = []
             for _, r in df2.iterrows():
-                pname = r.get("player"); mkt = r.get("market"); line = r.get("line")
+                # [AUDIT FIX] Strip whitespace — " " is truthy but invalid
+                pname = (r.get("player") or "").strip()
+                mkt   = (r.get("market") or "").strip()
+                line  = r.get("line")
                 if not pname or pd.isna(line) or not mkt: continue
                 meta = {"event_id":r.get("event_id"),"home_team":r.get("home_team"),
                         "away_team":r.get("away_team"),"commence_time":r.get("commence_time"),
@@ -3323,7 +3377,11 @@ with tabs[2]:
                                 for pname, mkt, line, meta in candidates]
                         for (pname, mkt, line, meta), fut in zip(candidates, futs):
                             try:
-                                leg = fut.result()
+                                # [AUDIT FIX] No-timeout result() blocks UI forever on NBA API hang
+                                leg = fut.result(timeout=60)
+                            except TimeoutError:
+                                dropped.append({"player": pname, "market": mkt, "reason": "thread timeout (NBA API ≥60s)"})
+                                continue
                             except Exception as _te:
                                 dropped.append({"player": pname, "market": mkt, "reason": f"thread error: {type(_te).__name__}: {_te}"})
                                 continue
@@ -3332,7 +3390,12 @@ with tabs[2]:
                             all_computed_legs.append((pname, mkt, float(line), meta, leg))
                             if not leg.get("gate_ok"):
                                 dropped.append({"player":pname,"market":mkt,"reason":leg.get("gate_reason","gated")}); continue
-                            pc = float(leg.get("p_cal") or leg.get("p_over") or 0)
+                            # [AUDIT FIX] Use p_cal exclusively after recompute_pricing_fields;
+                            # p_over fallback could use uncalibrated bootstrap prob which bypasses isotonic correction
+                            pc = leg.get("p_cal")
+                            if pc is None:
+                                dropped.append({"player":pname,"market":mkt,"reason":"p_cal None (calibration failed)"}); continue
+                            pc = float(pc)
                             pi = leg.get("p_implied")
                             ev = leg.get("ev_adj")
                             if pi is None or ev is None:
@@ -3345,6 +3408,7 @@ with tabs[2]:
                             inj_flag = ("🏥 " + (leg.get("auto_inj_player") or "").title()
                                         if leg.get("auto_inj") else "")
                             out_rows.append({
+                                "side": "Over",           # [AUDIT FIX] explicit side for schema parity with Under rows
                                 "player":pname,"market":mkt,"line":line,
                                 "p_cal":round(pc,3),"p_implied":round(float(pi),3),
                                 "advantage":round(adv,3),"ev_adj_pct":round(float(ev)*100,2),
@@ -3355,12 +3419,12 @@ with tabs[2]:
                                 "b2b": "B2B" if leg.get("b2b") else "",
                                 "dnp_risk": "DNP?" if leg.get("dnp_risk") else "",
                                 "vol_cv":safe_round(leg.get("volatility_cv")),
-                                "rest_d":leg.get("rest_days",2),
+                                "rest_d":int(leg.get("rest_days",2)),       # [AUDIT FIX] explicit int
                                 "line_mv":mv.get("direction","--"),
-                                "mv_pips":mv.get("pips",0.0),
+                                "mv_pips":float(mv.get("pips",0.0)),        # [AUDIT FIX] explicit float
                                 "steam": "STEAM" if mv.get("steam") else ("FADE" if mv.get("fade") else ""),
                                 "stake_$":round(leg.get("stake",0),2),
-                                "n_games":leg.get("n_games_used",0),
+                                "n_games":int(leg.get("n_games_used",0)),   # [AUDIT FIX] explicit int
                                 "inj_boost": inj_flag,
                                 "min_proj": safe_round(leg.get("proj_minutes"),0),
                             })
@@ -3368,21 +3432,45 @@ with tabs[2]:
             if not out_df.empty:
                 out_df = out_df.sort_values("ev_adj_pct", ascending=False).head(max_rows)
                 # [FIX 13] Persist scanner results in session state
+                # [AUDIT FIX] scan_id ties results to their dropped list — consecutive scans can't corrupt display
+                _scan_id = _now_iso()
                 st.session_state["scanner_results"] = out_df
                 st.session_state["scanner_dropped"] = dropped
+                st.session_state["scanner_scan_id"] = _scan_id
                 # Auto-send Discord/Telegram alerts for strong edges
                 _dw = st.session_state.get("discord_webhook","")
                 _tt = st.session_state.get("tg_token","")
                 _tc = st.session_state.get("tg_chat","")
                 _et = float(st.session_state.get("discord_ev_thresh", 5.0))
                 if (_dw or (_tt and _tc)):
+                    # [AUDIT FIX #16] Hash-based dedup: consecutive scans won't re-send same alert
+                    _sent_hashes = st.session_state.get("_scanner_alert_hashes", set())
+                    _sent_count = 0
                     strong = [r for _, r in out_df.iterrows() if float(r.get("ev_adj_pct") or 0) >= _et]
                     for r in strong:
                         _msg = format_edge_alert(dict(r))
-                        if _dw: send_discord_alert(_dw, _msg)
-                        if _tt and _tc: send_telegram_alert(_tt, _tc, _msg)
-                    if strong:
-                        st.success(f"Auto-sent {len(strong)} alerts.")
+                        _mhash = hashlib.md5(_msg.encode()).hexdigest()
+                        if _mhash not in _sent_hashes:
+                            if _dw: send_discord_alert(_dw, _msg)
+                            if _tt and _tc: send_telegram_alert(_tt, _tc, _msg)
+                            _sent_hashes.add(_mhash)
+                            _sent_count += 1
+                    # [AUDIT FIX #13] Also alert Under edges when show_unders is on
+                    if bool(st.session_state.get("show_unders", False)):
+                        _under_res = st.session_state.get("scanner_under_results", pd.DataFrame())
+                        if not _under_res.empty:
+                            for _, _ur in _under_res.iterrows():
+                                if float(_ur.get("ev_adj_pct") or 0) >= _et:
+                                    _umsg = format_edge_alert(dict(_ur)) + " ↓ UNDER"
+                                    _uhash = hashlib.md5(_umsg.encode()).hexdigest()
+                                    if _uhash not in _sent_hashes:
+                                        if _dw: send_discord_alert(_dw, _umsg)
+                                        if _tt and _tc: send_telegram_alert(_tt, _tc, _umsg)
+                                        _sent_hashes.add(_uhash)
+                                        _sent_count += 1
+                    st.session_state["_scanner_alert_hashes"] = _sent_hashes
+                    if _sent_count > 0:
+                        st.success(f"Auto-sent {_sent_count} new alerts.")
             else:
                 st.session_state["scanner_results"] = pd.DataFrame()
                 st.session_state["scanner_dropped"] = dropped
@@ -3412,6 +3500,7 @@ with tabs[2]:
                     _adv_u = _p_under - _p_imp_u
                     if _adv_u < min_adv or _ev_u < min_ev:
                         continue
+                    _umv = _leg.get("line_movement") or {}
                     under_rows.append({
                         "side": "Under",
                         "player": _pn, "market": _mk, "line": _ln,
@@ -3426,9 +3515,16 @@ with tabs[2]:
                         "team": _leg.get("team", ""),
                         "opp": _leg.get("opp", ""),
                         "b2b": "B2B" if _leg.get("b2b") else "",
+                        # [AUDIT FIX] Add columns OVER rows have to maintain schema parity
+                        "dnp_risk": "DNP?" if _leg.get("dnp_risk") else "",
                         "vol_cv": safe_round(_leg.get("volatility_cv")),
-                        "rest_d": _leg.get("rest_days", 2),
-                        "n_games": _leg.get("n_games_used", 0),
+                        "rest_d": int(_leg.get("rest_days", 2)),
+                        "line_mv": _umv.get("direction", "--"),
+                        "mv_pips": float(_umv.get("pips", 0.0)),
+                        "steam": "STEAM" if _umv.get("steam") else ("FADE" if _umv.get("fade") else ""),
+                        "stake_$": 0.0,
+                        "n_games": int(_leg.get("n_games_used", 0)),
+                        "inj_boost": "🏥 " + (_leg.get("auto_inj_player") or "").title() if _leg.get("auto_inj") else "",
                         "min_proj": safe_round(_leg.get("proj_minutes"), 0),
                     })
                 if under_rows:
@@ -3479,6 +3575,55 @@ with tabs[2]:
             elif under_out is not None:
                 st.caption("↓ No Under edges found meeting threshold criteria.")
 
+        # ── SEND TO MODEL ────────────────────────────────────────────────
+        st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
+        st.markdown(
+            "<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00AAFF;"
+            "letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>"
+            "▶ SEND TO MODEL TAB</div>",
+            unsafe_allow_html=True
+        )
+        # Build labels for both OVER and Under results combined
+        _model_labels = [
+            f"{r['player']} — {r['market']} {'O' if str(r.get('side','')).lower() != 'under' else 'U'}{r['line']} ({r.get('ev_adj_pct',0):+.1f}%)"
+            for _, r in scanner_out.iterrows()
+        ]
+        _under_res_for_model = st.session_state.get("scanner_under_results")
+        if bool(st.session_state.get("show_unders", False)) and _under_res_for_model is not None and not _under_res_for_model.empty:
+            _model_labels += [
+                f"{r['player']} — {r['market']} U{r['line']} ({r.get('ev_adj_pct',0):+.1f}%) [UNDER]"
+                for _, r in _under_res_for_model.iterrows()
+            ]
+        _legs_for_model = st.multiselect(
+            "Select up to 4 legs to run through full model",
+            options=_model_labels,
+            max_selections=4,
+            key="scanner_model_pick",
+            help="Selected legs will populate MODEL tab inputs and auto-run projections"
+        )
+        if _legs_for_model and st.button("▶ Send to MODEL + Run", key="send_to_model_btn", use_container_width=True):
+            # Build combined row lookup (Over rows first, then Under)
+            _all_model_rows = list(scanner_out.iterrows())
+            if bool(st.session_state.get("show_unders", False)) and _under_res_for_model is not None and not _under_res_for_model.empty:
+                _all_model_rows += list(_under_res_for_model.iterrows())
+            _row_by_label = {lbl: row for lbl, (_, row) in zip(_model_labels, _all_model_rows)}
+            for i, lbl in enumerate(_legs_for_model[:4], 1):
+                r = _row_by_label.get(lbl)
+                if r is None:
+                    continue
+                st.session_state[f"pname_{i}"] = str(r.get("player", ""))
+                _mkt_v = str(r.get("market", "Points"))
+                if _mkt_v in MARKET_OPTIONS:
+                    st.session_state[f"mkt_{i}"]  = _mkt_v
+                st.session_state[f"mline_{i}"] = float(r.get("line", 22.5))
+                st.session_state[f"manual_{i}"] = True   # Use pre-scanned line
+                st.session_state[f"out_{i}"]   = False
+            # Clear any unused legs beyond selection count
+            for i in range(len(_legs_for_model) + 1, 5):
+                st.session_state[f"pname_{i}"] = ""
+            st.session_state["_auto_run_model"] = True   # MODEL tab will detect and auto-run
+            st.rerun()
+
         # [UPGRADE 21] One-click parlay builder from scanner results
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>ONE-CLICK PARLAY BUILDER</div>", unsafe_allow_html=True)
@@ -3490,10 +3635,25 @@ with tabs[2]:
             sel_rows = [scanner_out.iloc[i] for i in sel_indices]
             probs = [float(r.get("p_cal") or 0) for r in sel_rows]
             naive_joint = float(np.prod(probs)) if probs else 0.0
-            pm = float(st.session_state.get("payout_multi", 3.0))
-            ev_parlay = pm * naive_joint - 1.0
+            # [AUDIT FIX] Correlation-adjusted joint prob: naive assumes independence;
+            # teammates and game-script-linked players inflate it. Estimate adjustment.
+            _corrs = []
+            for _ci in range(len(sel_rows)):
+                for _cj in range(_ci + 1, len(sel_rows)):
+                    _c = estimate_player_correlation(dict(sel_rows[_ci]), dict(sel_rows[_cj]))
+                    _corrs.append(float(_c or 0.0))
+            avg_corr = float(np.mean(_corrs)) if _corrs else 0.0
+            corr_adj_factor = max(0.60, 1.0 - avg_corr * 0.5)
+            corr_joint = naive_joint * corr_adj_factor
+            # [AUDIT FIX] Add payout input directly in scanner so user can adjust
+            pm = st.number_input("Payout multiplier (x)", 1.5, 20.0,
+                                 value=float(st.session_state.get("payout_multi", 3.0)),
+                                 step=0.5, key="scanner_pm_input")
+            st.session_state["payout_multi"] = pm
+            ev_parlay = pm * corr_joint - 1.0
             pb1, pb2, pb3 = st.columns(3)
-            pb1.metric("Joint Prob (naive)", f"{naive_joint*100:.1f}%")
+            pb1.metric("Joint Prob (corr-adj)", f"{corr_joint*100:.1f}%",
+                       delta=f"naive {naive_joint*100:.1f}%", delta_color="off")
             pb2.metric(f"EV @ {pm:.1f}x payout", f"{ev_parlay*100:+.1f}%")
             rec_stake_parlay = float(st.session_state.get("bankroll", 1000)) * float(st.session_state.get("frac_kelly", 0.25)) * max(0, ev_parlay / (pm - 1)) if pm > 1 else 0
             pb3.metric("Rec Stake", f"${min(rec_stake_parlay, float(st.session_state.get('bankroll',1000))*0.05):.2f}")
