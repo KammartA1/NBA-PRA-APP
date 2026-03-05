@@ -1757,16 +1757,28 @@ def _parse_pp_response(data):
 
 def _pp_request(per_page=500, cookies_str=""):
     """Make one PrizePicks API request.
-    Tries curl_cffi (Chrome TLS impersonation) first, then plain requests.
+    Tries curl_cffi (Chrome TLS impersonation) → cloudscraper → plain requests.
     Returns (response_object_or_None, error_str_or_None).
     """
     url = PRIZEPICKS_API
     params = {"league_id": "7", "per_page": str(per_page),
               "single_stat": "true", "in_play": "false"}
+    # Full Chrome 120 headers — reduces bot-detection fingerprint
     headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/vnd.api+json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
         "Referer": "https://app.prizepicks.com/",
         "Origin": "https://app.prizepicks.com",
+        "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+        "Connection": "keep-alive",
+        "DNT": "1",
     }
     # Parse optional cookie string from user settings
     cookie_dict = {}
@@ -1786,13 +1798,29 @@ def _pp_request(per_page=500, cookies_str=""):
             impersonate="chrome120",
             timeout=25,
         )
-        return r, None
+        if r.status_code not in (403, 429):
+            return r, None
     except ImportError:
         pass
-    except Exception as e:
-        pass  # fall through to plain requests
+    except Exception:
+        pass
 
-    # ── Attempt 2: plain requests (works locally, blocked on cloud IPs) ──
+    # ── Attempt 2: cloudscraper (handles Cloudflare JS challenges) ──
+    try:
+        import cloudscraper
+        scraper = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "mobile": False}
+        )
+        r = scraper.get(url, params=params, headers=headers,
+                        cookies=cookie_dict or None, timeout=25)
+        if r.status_code not in (403, 429):
+            return r, None
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # ── Attempt 3: plain requests (works locally, often blocked on cloud IPs) ──
     try:
         r = requests.get(url, params=params, headers=headers,
                          cookies=cookie_dict or None, timeout=20)
@@ -3578,8 +3606,64 @@ with tabs[2]:
     with sf3: min_ev   = st.slider("Min EV (adj)", -0.05, 0.25, 0.01, 0.005)
     max_rows = st.slider("Max Results", 10, 200, 60, 10)
 
+    # ── Platform Lines (PP / UD) inline in scanner ──────────────────────
+    with st.expander("📱 Platform Lines — PrizePicks & Underdog (scan against platform lines)", expanded=False):
+        _plat_c1, _plat_c2, _plat_c3 = st.columns(3)
+        with _plat_c1:
+            st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;'>PRIZEPICKS</div>", unsafe_allow_html=True)
+            _pp_ck = st.session_state.get("pp_cookies","")
+            if _pp_ck:
+                st.caption(f"Cookie auth active ({len(_pp_ck)} chars)")
+            else:
+                _pp_ck_new = st.text_input("PP Cookies (optional)", value="", type="password", key="scanner_pp_cookies", help="Paste your PrizePicks browser cookies to bypass Cloudflare blocks")
+                if _pp_ck_new:
+                    st.session_state["pp_cookies"] = _pp_ck_new
+            if st.button("Fetch PP Lines", key="scanner_fetch_pp_btn", use_container_width=True):
+                with st.spinner("Fetching PrizePicks…"):
+                    _pp_rows, _pp_err = fetch_prizepicks_lines()
+                if _pp_err:
+                    st.error(f"PP error: {_pp_err}")
+                elif _pp_rows:
+                    _pp_df = pd.DataFrame(_pp_rows)
+                    st.session_state["pp_lines"] = _pp_df
+                    st.success(f"✓ {len(_pp_rows)} PP props loaded")
+                else:
+                    st.warning("PP returned 0 props — slate may not be posted yet")
+            _pp_loaded = st.session_state.get("pp_lines")
+            if _pp_loaded is not None and not _pp_loaded.empty:
+                st.markdown(f"<div style='font-size:0.60rem;color:#00FFB2;'>✓ {len(_pp_loaded)} PP lines ready</div>", unsafe_allow_html=True)
+
+        with _plat_c2:
+            st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#FFB800;'>UNDERDOG</div>", unsafe_allow_html=True)
+            if st.button("Fetch Underdog Lines", key="scanner_fetch_ud_btn", use_container_width=True):
+                with st.spinner("Fetching Underdog…"):
+                    _ud_rows, _ud_err = fetch_underdog_lines()
+                if _ud_err:
+                    st.error(f"UD error: {_ud_err}")
+                elif _ud_rows:
+                    _ud_df = pd.DataFrame(_ud_rows)
+                    st.session_state["ud_lines"] = _ud_df
+                    st.success(f"✓ {len(_ud_rows)} UD props loaded")
+                else:
+                    st.warning("UD returned 0 props")
+            _ud_loaded = st.session_state.get("ud_lines")
+            if _ud_loaded is not None and not _ud_loaded.empty:
+                st.markdown(f"<div style='font-size:0.60rem;color:#FFB800;'>✓ {len(_ud_loaded)} UD lines ready</div>", unsafe_allow_html=True)
+
+        with _plat_c3:
+            st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#4A607A;'>SCAN SOURCE</div>", unsafe_allow_html=True)
+            _scan_source = st.radio(
+                "Lines to scan",
+                ["Odds API only", "PP + UD only", "All sources"],
+                index=int(st.session_state.get("scan_source_idx", 0)),
+                key="scan_source_radio",
+                label_visibility="collapsed",
+            )
+            st.session_state["scan_source_idx"] = ["Odds API only","PP + UD only","All sources"].index(_scan_source)
+            st.caption("PP/UD implied prob: 0.50 (no vig)  Odds API: from market price")
+
     fetch_col, scan_col = st.columns(2)
-    if fetch_col.button("Fetch Live Lines", use_container_width=True):
+    if fetch_col.button("Fetch Live Lines (Odds API)", use_container_width=True):
         selected_keys = list(dict.fromkeys(ODDS_MARKETS.get(m) for m in markets_sel if ODDS_MARKETS.get(m)))
         if not selected_keys:
             st.warning("Select at least one market.")
@@ -3650,28 +3734,62 @@ with tabs[2]:
             st.warning("Bulk load failed — scanner will fall back to per-player fetches.")
 
     if scan_col.button("Run Scan", use_container_width=True):
+        _scan_source = st.session_state.get("scan_source_radio", "Odds API only")
         df = st.session_state.get("scanner_offers")
-        if df is None or (hasattr(df, 'empty') and df.empty):
-            st.warning("Fetch lines first.")
+        _use_odds_api = _scan_source in ("Odds API only", "All sources")
+        _use_platforms = _scan_source in ("PP + UD only", "All sources")
+
+        # Validate we have something to scan
+        _odds_has_data = df is not None and not (hasattr(df, 'empty') and df.empty)
+        _pp_has_data   = bool(st.session_state.get("pp_lines") is not None and not st.session_state["pp_lines"].empty)
+        _ud_has_data   = bool(st.session_state.get("ud_lines") is not None and not st.session_state["ud_lines"].empty)
+        if _use_odds_api and not _odds_has_data and not _use_platforms:
+            st.warning("Fetch Odds API lines first, or switch to PP + UD source.")
+        elif _use_platforms and not _pp_has_data and not _ud_has_data and not _use_odds_api:
+            st.warning("Load PrizePicks or Underdog lines first (expand 'Platform Lines' above).")
         else:
-            df2 = df[df["side"].str.lower().isin(["over","o"])].copy()
-            # [AUDIT FIX] Old fallback silently scanned Under legs when no Overs existed —
-            # violates scan intent. Warn instead and scan nothing.
-            if df2.empty:
-                st.warning("No OVER props found in fetched offers. Fetch lines again or check the sportsbook/market filter.")
-                df2 = pd.DataFrame()
             candidates = []
-            for _, r in df2.iterrows():
-                # [AUDIT FIX] Strip whitespace — " " is truthy but invalid
-                pname = (r.get("player") or "").strip()
-                mkt   = (r.get("market") or "").strip()
-                line  = r.get("line")
-                if not pname or pd.isna(line) or not mkt: continue
-                meta = {"event_id":r.get("event_id"),"home_team":r.get("home_team"),
-                        "away_team":r.get("away_team"),"commence_time":r.get("commence_time"),
-                        "price":r.get("price"),"book":r.get("book"),
-                        "market_key":ODDS_MARKETS.get(mkt),"side":r.get("side","Over")}
-                candidates.append((pname, mkt, float(line), meta))
+
+            # ── Odds API candidates ────────────────────────────────────────
+            if _use_odds_api and _odds_has_data:
+                df2 = df[df["side"].str.lower().isin(["over","o"])].copy()
+                if df2.empty:
+                    st.warning("No OVER props found in Odds API offers. Fetch lines again.")
+                for _, r in df2.iterrows():
+                    pname = (r.get("player") or "").strip()
+                    mkt   = (r.get("market") or "").strip()
+                    line  = r.get("line")
+                    if not pname or pd.isna(line) or not mkt: continue
+                    meta = {"event_id":r.get("event_id"),"home_team":r.get("home_team"),
+                            "away_team":r.get("away_team"),"commence_time":r.get("commence_time"),
+                            "price":r.get("price"),"book":r.get("book"),
+                            "market_key":ODDS_MARKETS.get(mkt),"side":r.get("side","Over")}
+                    candidates.append((pname, mkt, float(line), meta))
+
+            # ── Platform candidates (PP + UD) ──────────────────────────────
+            if _use_platforms:
+                for _plat_store, _plat_label in [("pp_lines","prizepicks"), ("ud_lines","underdog")]:
+                    _plat_df = st.session_state.get(_plat_store)
+                    if _plat_df is None or _plat_df.empty:
+                        continue
+                    for _, r in _plat_df.iterrows():
+                        pname = (r.get("player") or "").strip()
+                        stat_t = r.get("stat_type","")
+                        mkt = map_platform_stat_to_market(stat_t)
+                        if not mkt or mkt not in markets_sel:
+                            continue
+                        line = r.get("line")
+                        if not pname or line is None or pd.isna(line):
+                            continue
+                        # Platforms use ~50% implied prob (no traditional vig)
+                        # Use 1.909 decimal (~-110 equivalent) as conservative baseline
+                        meta = {
+                            "event_id": None, "home_team": "", "away_team": "",
+                            "commence_time": "", "price": 1.909,
+                            "book": _plat_label,
+                            "market_key": ODDS_MARKETS.get(mkt), "side": "Over",
+                        }
+                        candidates.append((pname, mkt, float(line), meta))
             out_rows, dropped = [], []
             all_computed_legs = []  # [FEATURE] Stores all computed legs for Under scan
             if candidates:
@@ -3731,8 +3849,12 @@ with tabs[2]:
                             mv = leg.get("line_movement") or {}
                             inj_flag = ("🏥 " + (leg.get("auto_inj_player") or "").title()
                                         if leg.get("auto_inj") else "")
+                            _src_badge = {"prizepicks": "PP", "underdog": "UD"}.get(
+                                str(meta.get("book","")).lower(), meta.get("book","") or "odds"
+                            )
                             out_rows.append({
                                 "side": "Over",           # [AUDIT FIX] explicit side for schema parity with Under rows
+                                "src": _src_badge,        # PP / UD / book name
                                 "player":pname,"market":mkt,"line":line,
                                 "p_cal":round(pc,3),"p_implied":round(float(pi),3),
                                 "advantage":round(adv,3),"ev_adj_pct":round(float(ev)*100,2),
