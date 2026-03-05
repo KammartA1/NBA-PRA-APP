@@ -333,7 +333,7 @@ def get_season_string(today=None):
 # ──────────────────────────────────────────────
 # BULK GAME LOG — one API call for ALL players
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*30, show_spinner=False)
+@st.cache_data(ttl=60*10, show_spinner=False)  # [AUDIT FIX] 10min (was 30min) — mid-season trades need freshness
 def _fetch_bulk_gamelogs():
     """LeagueGameLog: ONE call returns every player's game log for the season.
     Replaces ~200 individual PlayerGameLog calls for a full-slate scan.
@@ -3329,10 +3329,17 @@ with tabs[2]:
             st.warning("Fetch lines first.")
         else:
             df2 = df[df["side"].str.lower().isin(["over","o"])].copy()
-            if df2.empty: df2 = df.copy()
+            # [AUDIT FIX] Old fallback silently scanned Under legs when no Overs existed —
+            # violates scan intent. Warn instead and scan nothing.
+            if df2.empty:
+                st.warning("No OVER props found in fetched offers. Fetch lines again or check the sportsbook/market filter.")
+                df2 = pd.DataFrame()
             candidates = []
             for _, r in df2.iterrows():
-                pname = r.get("player"); mkt = r.get("market"); line = r.get("line")
+                # [AUDIT FIX] Strip whitespace — " " is truthy but invalid
+                pname = (r.get("player") or "").strip()
+                mkt   = (r.get("market") or "").strip()
+                line  = r.get("line")
                 if not pname or pd.isna(line) or not mkt: continue
                 meta = {"event_id":r.get("event_id"),"home_team":r.get("home_team"),
                         "away_team":r.get("away_team"),"commence_time":r.get("commence_time"),
@@ -3368,7 +3375,11 @@ with tabs[2]:
                                 for pname, mkt, line, meta in candidates]
                         for (pname, mkt, line, meta), fut in zip(candidates, futs):
                             try:
-                                leg = fut.result()
+                                # [AUDIT FIX] No-timeout result() blocks UI forever on NBA API hang
+                                leg = fut.result(timeout=60)
+                            except TimeoutError:
+                                dropped.append({"player": pname, "market": mkt, "reason": "thread timeout (NBA API ≥60s)"})
+                                continue
                             except Exception as _te:
                                 dropped.append({"player": pname, "market": mkt, "reason": f"thread error: {type(_te).__name__}: {_te}"})
                                 continue
@@ -3377,7 +3388,12 @@ with tabs[2]:
                             all_computed_legs.append((pname, mkt, float(line), meta, leg))
                             if not leg.get("gate_ok"):
                                 dropped.append({"player":pname,"market":mkt,"reason":leg.get("gate_reason","gated")}); continue
-                            pc = float(leg.get("p_cal") or leg.get("p_over") or 0)
+                            # [AUDIT FIX] Use p_cal exclusively after recompute_pricing_fields;
+                            # p_over fallback could use uncalibrated bootstrap prob which bypasses isotonic correction
+                            pc = leg.get("p_cal")
+                            if pc is None:
+                                dropped.append({"player":pname,"market":mkt,"reason":"p_cal None (calibration failed)"}); continue
+                            pc = float(pc)
                             pi = leg.get("p_implied")
                             ev = leg.get("ev_adj")
                             if pi is None or ev is None:
@@ -3390,6 +3406,7 @@ with tabs[2]:
                             inj_flag = ("🏥 " + (leg.get("auto_inj_player") or "").title()
                                         if leg.get("auto_inj") else "")
                             out_rows.append({
+                                "side": "Over",           # [AUDIT FIX] explicit side for schema parity with Under rows
                                 "player":pname,"market":mkt,"line":line,
                                 "p_cal":round(pc,3),"p_implied":round(float(pi),3),
                                 "advantage":round(adv,3),"ev_adj_pct":round(float(ev)*100,2),
@@ -3400,12 +3417,12 @@ with tabs[2]:
                                 "b2b": "B2B" if leg.get("b2b") else "",
                                 "dnp_risk": "DNP?" if leg.get("dnp_risk") else "",
                                 "vol_cv":safe_round(leg.get("volatility_cv")),
-                                "rest_d":leg.get("rest_days",2),
+                                "rest_d":int(leg.get("rest_days",2)),       # [AUDIT FIX] explicit int
                                 "line_mv":mv.get("direction","--"),
-                                "mv_pips":mv.get("pips",0.0),
+                                "mv_pips":float(mv.get("pips",0.0)),        # [AUDIT FIX] explicit float
                                 "steam": "STEAM" if mv.get("steam") else ("FADE" if mv.get("fade") else ""),
                                 "stake_$":round(leg.get("stake",0),2),
-                                "n_games":leg.get("n_games_used",0),
+                                "n_games":int(leg.get("n_games_used",0)),   # [AUDIT FIX] explicit int
                                 "inj_boost": inj_flag,
                                 "min_proj": safe_round(leg.get("proj_minutes"),0),
                             })
@@ -3413,21 +3430,45 @@ with tabs[2]:
             if not out_df.empty:
                 out_df = out_df.sort_values("ev_adj_pct", ascending=False).head(max_rows)
                 # [FIX 13] Persist scanner results in session state
+                # [AUDIT FIX] scan_id ties results to their dropped list — consecutive scans can't corrupt display
+                _scan_id = _now_iso()
                 st.session_state["scanner_results"] = out_df
                 st.session_state["scanner_dropped"] = dropped
+                st.session_state["scanner_scan_id"] = _scan_id
                 # Auto-send Discord/Telegram alerts for strong edges
                 _dw = st.session_state.get("discord_webhook","")
                 _tt = st.session_state.get("tg_token","")
                 _tc = st.session_state.get("tg_chat","")
                 _et = float(st.session_state.get("discord_ev_thresh", 5.0))
                 if (_dw or (_tt and _tc)):
+                    # [AUDIT FIX #16] Hash-based dedup: consecutive scans won't re-send same alert
+                    _sent_hashes = st.session_state.get("_scanner_alert_hashes", set())
+                    _sent_count = 0
                     strong = [r for _, r in out_df.iterrows() if float(r.get("ev_adj_pct") or 0) >= _et]
                     for r in strong:
                         _msg = format_edge_alert(dict(r))
-                        if _dw: send_discord_alert(_dw, _msg)
-                        if _tt and _tc: send_telegram_alert(_tt, _tc, _msg)
-                    if strong:
-                        st.success(f"Auto-sent {len(strong)} alerts.")
+                        _mhash = hashlib.md5(_msg.encode()).hexdigest()
+                        if _mhash not in _sent_hashes:
+                            if _dw: send_discord_alert(_dw, _msg)
+                            if _tt and _tc: send_telegram_alert(_tt, _tc, _msg)
+                            _sent_hashes.add(_mhash)
+                            _sent_count += 1
+                    # [AUDIT FIX #13] Also alert Under edges when show_unders is on
+                    if bool(st.session_state.get("show_unders", False)):
+                        _under_res = st.session_state.get("scanner_under_results", pd.DataFrame())
+                        if not _under_res.empty:
+                            for _, _ur in _under_res.iterrows():
+                                if float(_ur.get("ev_adj_pct") or 0) >= _et:
+                                    _umsg = format_edge_alert(dict(_ur)) + " ↓ UNDER"
+                                    _uhash = hashlib.md5(_umsg.encode()).hexdigest()
+                                    if _uhash not in _sent_hashes:
+                                        if _dw: send_discord_alert(_dw, _umsg)
+                                        if _tt and _tc: send_telegram_alert(_tt, _tc, _umsg)
+                                        _sent_hashes.add(_uhash)
+                                        _sent_count += 1
+                    st.session_state["_scanner_alert_hashes"] = _sent_hashes
+                    if _sent_count > 0:
+                        st.success(f"Auto-sent {_sent_count} new alerts.")
             else:
                 st.session_state["scanner_results"] = pd.DataFrame()
                 st.session_state["scanner_dropped"] = dropped
@@ -3457,6 +3498,7 @@ with tabs[2]:
                     _adv_u = _p_under - _p_imp_u
                     if _adv_u < min_adv or _ev_u < min_ev:
                         continue
+                    _umv = _leg.get("line_movement") or {}
                     under_rows.append({
                         "side": "Under",
                         "player": _pn, "market": _mk, "line": _ln,
@@ -3471,9 +3513,16 @@ with tabs[2]:
                         "team": _leg.get("team", ""),
                         "opp": _leg.get("opp", ""),
                         "b2b": "B2B" if _leg.get("b2b") else "",
+                        # [AUDIT FIX] Add columns OVER rows have to maintain schema parity
+                        "dnp_risk": "DNP?" if _leg.get("dnp_risk") else "",
                         "vol_cv": safe_round(_leg.get("volatility_cv")),
-                        "rest_d": _leg.get("rest_days", 2),
-                        "n_games": _leg.get("n_games_used", 0),
+                        "rest_d": int(_leg.get("rest_days", 2)),
+                        "line_mv": _umv.get("direction", "--"),
+                        "mv_pips": float(_umv.get("pips", 0.0)),
+                        "steam": "STEAM" if _umv.get("steam") else ("FADE" if _umv.get("fade") else ""),
+                        "stake_$": 0.0,
+                        "n_games": int(_leg.get("n_games_used", 0)),
+                        "inj_boost": "🏥 " + (_leg.get("auto_inj_player") or "").title() if _leg.get("auto_inj") else "",
                         "min_proj": safe_round(_leg.get("proj_minutes"), 0),
                     })
                 if under_rows:
@@ -3535,10 +3584,25 @@ with tabs[2]:
             sel_rows = [scanner_out.iloc[i] for i in sel_indices]
             probs = [float(r.get("p_cal") or 0) for r in sel_rows]
             naive_joint = float(np.prod(probs)) if probs else 0.0
-            pm = float(st.session_state.get("payout_multi", 3.0))
-            ev_parlay = pm * naive_joint - 1.0
+            # [AUDIT FIX] Correlation-adjusted joint prob: naive assumes independence;
+            # teammates and game-script-linked players inflate it. Estimate adjustment.
+            _corrs = []
+            for _ci in range(len(sel_rows)):
+                for _cj in range(_ci + 1, len(sel_rows)):
+                    _c = estimate_player_correlation(dict(sel_rows[_ci]), dict(sel_rows[_cj]))
+                    _corrs.append(float(_c or 0.0))
+            avg_corr = float(np.mean(_corrs)) if _corrs else 0.0
+            corr_adj_factor = max(0.60, 1.0 - avg_corr * 0.5)
+            corr_joint = naive_joint * corr_adj_factor
+            # [AUDIT FIX] Add payout input directly in scanner so user can adjust
+            pm = st.number_input("Payout multiplier (x)", 1.5, 20.0,
+                                 value=float(st.session_state.get("payout_multi", 3.0)),
+                                 step=0.5, key="scanner_pm_input")
+            st.session_state["payout_multi"] = pm
+            ev_parlay = pm * corr_joint - 1.0
             pb1, pb2, pb3 = st.columns(3)
-            pb1.metric("Joint Prob (naive)", f"{naive_joint*100:.1f}%")
+            pb1.metric("Joint Prob (corr-adj)", f"{corr_joint*100:.1f}%",
+                       delta=f"naive {naive_joint*100:.1f}%", delta_color="off")
             pb2.metric(f"EV @ {pm:.1f}x payout", f"{ev_parlay*100:+.1f}%")
             rec_stake_parlay = float(st.session_state.get("bankroll", 1000)) * float(st.session_state.get("frac_kelly", 0.25)) * max(0, ev_parlay / (pm - 1)) if pm > 1 else 0
             pb3.metric("Rec Stake", f"${min(rec_stake_parlay, float(st.session_state.get('bankroll',1000))*0.05):.2f}")
