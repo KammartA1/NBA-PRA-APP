@@ -3123,7 +3123,7 @@ st.set_page_config(
     page_title="NBA ALPHA ENGINE",
     page_icon="⚡",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="auto"
 )
 
 # ─── FONTS + GLOBAL PREMIUM STYLES ───────────────────────────
@@ -3582,10 +3582,14 @@ footer    { visibility: hidden; }
 header    { visibility: hidden; }
 header > * { visibility: hidden; }
 /* Keep the mobile sidebar toggle button visible and tappable */
-[data-testid="stSidebarCollapsedControl"] {
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="stSidebarCollapsedControl"] button {
   visibility: visible !important;
   display: flex !important;
+  opacity: 1 !important;
   pointer-events: auto !important;
+}
+[data-testid="stSidebarCollapsedControl"] {
   position: fixed !important;
   top: 0.75rem !important;
   left: 0.75rem !important;
@@ -6393,9 +6397,9 @@ with tabs[7]:
 st.markdown("""
 <div style='margin-top:2rem;padding-top:0.8rem;border-top:1px solid #1E2D3D;
 font-family:Fira Code,monospace;font-size:0.60rem;color:#2A3A4A;
-display:flex;justify-content:space-between;'>
+display:flex;flex-wrap:wrap;gap:0.3rem 1rem;justify-content:space-between;'>
   <span>NBA QUANT ENGINE v4.0</span>
-  <span>EXP DECAY | OPP SPLITS | HOT/COLD | O/U ASYMMETRY | CLV LEADERBOARD | BOOK EFFICIENCY | STEAM DETECTOR | ROTOWIRE | PARLAY BUILDER | DIGEST ALERTS | Q1/FANTASY MKTS</span>
+  <span style='flex:1;min-width:0;word-break:break-word;'>EXP DECAY | OPP SPLITS | HOT/COLD | O/U ASYMMETRY | CLV LEADERBOARD | BOOK EFFICIENCY | STEAM DETECTOR | ROTOWIRE | PARLAY BUILDER | DIGEST ALERTS | Q1/FANTASY MKTS</span>
   <span>Powered by Kamal</span>
 </div>
 """, unsafe_allow_html=True)
