@@ -4400,6 +4400,8 @@ for _si in range(1, 5):
         st.session_state[f"manual_{_si}"] = st.session_state.pop(f"_staged_manual_{_si}")
     if f"_staged_out_{_si}" in st.session_state:
         st.session_state[f"out_{_si}"]    = st.session_state.pop(f"_staged_out_{_si}")
+if "_staged_model_date" in st.session_state:
+    st.session_state["model_date"] = st.session_state.pop("_staged_model_date")
 
 with tabs[0]:
     _loss_stop_hit = _check_loss_stops(user_id, bankroll)
@@ -4410,7 +4412,11 @@ with tabs[0]:
     with book_col:
         book_choices, book_err = get_sportsbook_choices(scan_date.isoformat())
         if book_err: st.caption(book_err)
-        sportsbook = st.selectbox("Sportsbook", options=book_choices, index=0)
+        if "_staged_sportsbook" in st.session_state:
+            _sb = st.session_state.pop("_staged_sportsbook")
+            if _sb in book_choices:
+                st.session_state["model_sportsbook"] = _sb
+        sportsbook = st.selectbox("Sportsbook", options=book_choices, index=0, key="model_sportsbook")
     leg_configs = []
     for row_idx in range(2):
         cols = st.columns(2)
@@ -5460,6 +5466,10 @@ with tabs[2]:
             # Clear unused legs beyond selection count
             for i in range(len(_legs_for_model) + 1, 5):
                 st.session_state[f"_staged_pname_{i}"] = ""
+            # Sync scanner date and book to MODEL tab
+            st.session_state["_staged_model_date"] = scan_start
+            if sportsbook2 and sportsbook2 != "all":
+                st.session_state["_staged_sportsbook"] = sportsbook2
             st.session_state["_auto_run_model"] = True   # MODEL tab will detect and auto-run
             st.rerun()
 
