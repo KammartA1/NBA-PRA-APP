@@ -5969,7 +5969,7 @@ with tabs[2]:
                     with st.spinner("Loading all NBA game logs (one-time ~20s)..."):
                         _fetch_bulk_gamelogs.clear()
                         bulk_ready = _fetch_bulk_gamelogs() is not None
-                _scan_workers = 25 if bulk_ready else 6
+                _scan_workers = 50 if bulk_ready else 10
                 if not bulk_ready:
                     st.warning(
                         f"Bulk game log load failed — scanning with {_scan_workers} workers "
