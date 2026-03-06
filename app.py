@@ -11,6 +11,7 @@ import pandas as pd
 import numpy as np
 import requests
 import streamlit as st
+from streamlit_cookies_controller import CookieController
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -3803,6 +3804,25 @@ section[data-testid="stSidebar"] {
 """)
 
 # ─── AUTH GATE ────────────────────────────────────────────────
+# ── Cookie-based session persistence ──────────────────────────
+_cookie_ctrl = CookieController(key="auth_cookie_ctrl")
+if not st.session_state.get("_auth_user"):
+    _cookie_user = _cookie_ctrl.get("auth_user")
+    if _cookie_user and isinstance(_cookie_user, str):
+        _db = _load_auth_db()
+        if _cookie_user in _db:
+            st.session_state["_auth_user"] = _cookie_user
+            st.session_state["user_id"] = _cookie_user
+            _saved = load_user_state(_cookie_user)
+            for _sk in ["bankroll", "market_prior_weight", "n_games",
+                        "frac_kelly", "payout_multi", "max_risk_per_bet",
+                        "max_daily_loss", "max_weekly_loss",
+                        "exclude_chaotic", "show_unders", "max_req_day"]:
+                if _sk in _saved:
+                    st.session_state[_sk] = _saved[_sk]
+            st.session_state["_active_user_id"] = _cookie_user
+            st.rerun()
+
 if not st.session_state.get("_auth_user"):
     st.html("""
 <style>
@@ -3870,6 +3890,7 @@ if not st.session_state.get("_auth_user"):
                                 if _sk in _saved:
                                     st.session_state[_sk] = _saved[_sk]
                             st.session_state["_active_user_id"] = _uid
+                            _cookie_ctrl.set("auth_user", _uid, max_age=30 * 24 * 3600)
                             st.rerun()
                         else:
                             st.error(_msg)
@@ -3901,6 +3922,7 @@ if not st.session_state.get("_auth_user"):
                             st.session_state["user_id"] = _uid
                             st.session_state["bankroll"] = 1000.0
                             st.session_state["_active_user_id"] = _uid
+                            _cookie_ctrl.set("auth_user", _uid, max_age=30 * 24 * 3600)
                             st.success(_msg + " Welcome!")
                             st.rerun()
                         else:
@@ -4303,6 +4325,7 @@ color:#2A5070;margin-bottom:0.6rem;'>→ Configure in <b style='color:#8BA8BF;'>
     st.markdown("""<div style='margin-top:0.4rem;padding-top:0.6rem;
 border-top:1px solid #0E1E30;'></div>""", unsafe_allow_html=True)
     if st.button("SIGN OUT", use_container_width=True, key="sidebar_signout_btn"):
+        _cookie_ctrl.remove("auth_user")
         for _k in list(st.session_state.keys()):
             del st.session_state[_k]
         st.rerun()
@@ -5156,7 +5179,7 @@ with tabs[2]:
                     with st.spinner("Loading all NBA game logs (one-time ~20s)..."):
                         _fetch_bulk_gamelogs.clear()
                         bulk_ready = _fetch_bulk_gamelogs() is not None
-                _scan_workers = 16 if bulk_ready else 6
+                _scan_workers = 25 if bulk_ready else 6
                 if not bulk_ready:
                     st.warning(
                         f"Bulk game log load failed — scanning with {_scan_workers} workers "
