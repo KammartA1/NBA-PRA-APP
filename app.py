@@ -3088,6 +3088,62 @@ def recompute_pricing_fields(leg, calib):
 # ──────────────────────────────────────────────
 # HISTORY PERSISTENCE  [FIX 15: no expiry]
 # ──────────────────────────────────────────────
+# ──────────────────────────────────────────────
+# USER AUTHENTICATION SYSTEM
+# ──────────────────────────────────────────────
+AUTH_DB_PATH = "users_auth.json"
+
+def _hash_pw(pw: str) -> str:
+    return hashlib.sha256(pw.strip().encode()).hexdigest()
+
+def _load_auth_db() -> dict:
+    try:
+        if os.path.exists(AUTH_DB_PATH):
+            with open(AUTH_DB_PATH) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def _save_auth_db(db: dict):
+    try:
+        with open(AUTH_DB_PATH, "w") as f:
+            json.dump(db, f, indent=2)
+    except Exception:
+        pass
+
+def _register_user(username: str, password: str, email: str = "") -> tuple:
+    username = username.strip().lower()
+    if not username or len(username) < 3:
+        return False, "Username must be at least 3 characters."
+    if not re.match(r'^[a-z0-9_]+$', username):
+        return False, "Username: only letters, numbers, underscores allowed."
+    if not password or len(password) < 6:
+        return False, "Password must be at least 6 characters."
+    db = _load_auth_db()
+    if username in db:
+        return False, "Username already taken. Please choose another."
+    db[username] = {
+        "pw_hash": _hash_pw(password),
+        "email": email.strip(),
+        "created": datetime.utcnow().isoformat() + "Z"
+    }
+    _save_auth_db(db)
+    return True, "Account created!"
+
+def _authenticate(username: str, password: str) -> tuple:
+    username = username.strip().lower()
+    db = _load_auth_db()
+    if username not in db:
+        return False, "Invalid username or password."
+    if db[username]["pw_hash"] != _hash_pw(password):
+        return False, "Invalid username or password."
+    return True, "Login successful!"
+
+def _get_user_email(username: str) -> str:
+    db = _load_auth_db()
+    return db.get(username, {}).get("email", "")
+
 def user_state_path(uid): return f"user_state_{re.sub(r'[^a-zA-Z0-9_-]','_',uid or 'default')}.json"
 def history_path(uid):    return f"history_{re.sub(r'[^a-zA-Z0-9_-]','_',uid or 'default')}.csv"
 
@@ -3633,6 +3689,125 @@ section[data-testid="stSidebar"] {
 </style></div>
 """)
 
+# ─── AUTH GATE ────────────────────────────────────────────────
+if not st.session_state.get("_auth_user"):
+    st.html("""
+<style>
+.auth-wrap {
+    display:flex; flex-direction:column; align-items:center;
+    justify-content:center; min-height:80vh; padding:2rem 1rem;
+}
+.auth-box {
+    background:linear-gradient(135deg,#060E1C,#07101E);
+    border:1px solid #0E2040; border-top:2px solid #00FFB2;
+    border-radius:8px; padding:2rem 2.4rem; width:100%;
+    max-width:420px; box-shadow:0 0 40px rgba(0,255,178,0.08);
+}
+.auth-title {
+    font-family:'Chakra Petch',monospace; font-size:1.4rem;
+    font-weight:700; color:#EEF4FF; letter-spacing:0.06em;
+    margin-bottom:0.2rem;
+}
+.auth-subtitle {
+    font-family:'Fira Code',monospace; font-size:0.60rem;
+    color:#2A6080; letter-spacing:0.12em; text-transform:uppercase;
+    margin-bottom:1.6rem;
+}
+</style>
+<div class="auth-wrap">
+<div class="auth-box">
+<div class="auth-title">NBA <span style="color:#00FFB2;">ALPHA</span> ENGINE</div>
+<div class="auth-subtitle">Quantitative Sports Analytics · v2.2</div>
+</div>
+</div>
+""")
+
+    _auth_tab = st.radio("", ["Sign In", "Create Account"], horizontal=True,
+                         label_visibility="collapsed",
+                         key="_auth_tab_radio")
+
+    col_l, col_c, col_r = st.columns([1, 2, 1])
+    with col_c:
+        if _auth_tab == "Sign In":
+            with st.form("signin_form", clear_on_submit=False):
+                st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;"
+                            "color:#2A6080;letter-spacing:0.16em;text-transform:uppercase;"
+                            "margin-bottom:0.8rem;'>▸ SIGN IN TO YOUR ACCOUNT</div>",
+                            unsafe_allow_html=True)
+                _si_user = st.text_input("Username", placeholder="your_username",
+                                         key="_si_username")
+                _si_pass = st.text_input("Password", type="password",
+                                         placeholder="••••••••", key="_si_password")
+                _si_btn = st.form_submit_button("SIGN IN", use_container_width=True)
+                if _si_btn:
+                    if not _si_user.strip():
+                        st.error("Please enter your username.")
+                    else:
+                        _ok, _msg = _authenticate(_si_user, _si_pass)
+                        if _ok:
+                            _uid = _si_user.strip().lower()
+                            st.session_state["_auth_user"] = _uid
+                            st.session_state["user_id"] = _uid
+                            # Load saved user state
+                            _saved = load_user_state(_uid)
+                            for _sk in ["bankroll", "market_prior_weight", "n_games",
+                                        "frac_kelly", "payout_multi", "max_risk_per_bet",
+                                        "max_daily_loss", "max_weekly_loss",
+                                        "exclude_chaotic", "show_unders", "max_req_day"]:
+                                if _sk in _saved:
+                                    st.session_state[_sk] = _saved[_sk]
+                            st.session_state["_active_user_id"] = _uid
+                            st.rerun()
+                        else:
+                            st.error(_msg)
+        else:
+            with st.form("signup_form", clear_on_submit=False):
+                st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;"
+                            "color:#2A6080;letter-spacing:0.16em;text-transform:uppercase;"
+                            "margin-bottom:0.8rem;'>▸ CREATE FREE ACCOUNT</div>",
+                            unsafe_allow_html=True)
+                _su_user = st.text_input("Username", placeholder="choose_a_username",
+                                         key="_su_username",
+                                         help="3+ characters, letters/numbers/underscores only")
+                _su_email = st.text_input("Email (optional)", placeholder="you@email.com",
+                                          key="_su_email")
+                _su_pass = st.text_input("Password", type="password",
+                                         placeholder="••••••••", key="_su_password",
+                                         help="Minimum 6 characters")
+                _su_pass2 = st.text_input("Confirm Password", type="password",
+                                          placeholder="••••••••", key="_su_password2")
+                _su_btn = st.form_submit_button("CREATE ACCOUNT", use_container_width=True)
+                if _su_btn:
+                    if _su_pass != _su_pass2:
+                        st.error("Passwords do not match.")
+                    else:
+                        _ok, _msg = _register_user(_su_user, _su_pass, _su_email)
+                        if _ok:
+                            _uid = _su_user.strip().lower()
+                            st.session_state["_auth_user"] = _uid
+                            st.session_state["user_id"] = _uid
+                            st.session_state["bankroll"] = 1000.0
+                            st.session_state["_active_user_id"] = _uid
+                            st.success(_msg + " Welcome!")
+                            st.rerun()
+                        else:
+                            st.error(_msg)
+
+    st.stop()
+
+# ── Authenticated: set user_id from auth session ──────────────
+_auth_username = st.session_state["_auth_user"]
+if st.session_state.get("user_id") != _auth_username:
+    st.session_state["user_id"] = _auth_username
+    _saved_state = load_user_state(_auth_username)
+    # Restore all saved settings for this user
+    for _sk in ["bankroll", "market_prior_weight", "n_games", "frac_kelly",
+                "payout_multi", "max_risk_per_bet", "max_daily_loss",
+                "max_weekly_loss", "exclude_chaotic", "show_unders", "max_req_day"]:
+        if _sk in _saved_state:
+            st.session_state[_sk] = _saved_state[_sk]
+    st.session_state["_active_user_id"] = _auth_username
+
 # ─── MAIN HEADER ─────────────────────────────────────────────
 _now_str = datetime.utcnow().strftime("%b %d %Y  %H:%M UTC")
 _hdr = (
@@ -3931,7 +4106,7 @@ with st.sidebar:
     </div>
     <div style='display:flex;align-items:center;gap:0.5rem;margin-top:0.45rem;'>
         <div style='width:6px;height:6px;border-radius:50%;background:#00FFB2;
-                    box-shadow:0 0 6px #00FFB2;animation:none;'></div>
+                    box-shadow:0 0 6px #00FFB2;'></div>
         <div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#00FFB2;
                     letter-spacing:0.1em;'>LIVE  ·  v2.2</div>
         <div style='margin-left:auto;font-family:Fira Code,monospace;font-size:0.55rem;
@@ -3940,248 +4115,58 @@ with st.sidebar:
 </div>
 """, unsafe_allow_html=True)
 
-    # ── OPERATOR ──────────────────────────────────────────────
-    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
-color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;margin-bottom:0.4rem;'>
-▸ OPERATOR</div>""", unsafe_allow_html=True)
-
-    user_id = st.text_input("Operator ID", value=st.session_state.get("user_id","trader"))
-    st.session_state["user_id"] = user_id
-    _active = st.session_state.get("_active_user_id")
-    if _active != user_id:
-        state = load_user_state(user_id)
-        st.session_state["bankroll"] = safe_float(state.get("bankroll"), default=st.session_state.get("bankroll",1000.0))
-        st.session_state["_active_user_id"] = user_id
-        for _ck in ["last_results","scanner_results","scanner_under_results",
-                    "pp_lines","ud_lines","scanner_offers","calibrator_map",
-                    "injury_team_map","scanner_dropped","scanner_scan_id"]:
-            st.session_state.pop(_ck, None)
-        for _si in range(1, 5):
-            for _pfx in ("pname_","mkt_","mline_","manual_","out_","line_"):
-                st.session_state.pop(f"{_pfx}{_si}", None)
-
-    bankroll = st.number_input("Bankroll ($)", min_value=0.0, value=float(st.session_state.get("bankroll",1000.0)), step=50.0)
-    st.session_state["bankroll"] = float(bankroll)
-    _lb = st.session_state.get("_last_saved_bankroll")
-    if _lb is None or float(_lb) != float(bankroll):
-        state = load_user_state(user_id); state["bankroll"]=float(bankroll)
-        save_user_state(user_id, state); st.session_state["_last_saved_bankroll"]=float(bankroll)
-
-    # Bankroll display card
-    _br_val = float(st.session_state.get("bankroll", 1000.0))
+    # ── ACCOUNT ───────────────────────────────────────────────
+    _sid_user = st.session_state.get("_auth_user", "")
+    _sid_email = _get_user_email(_sid_user)
     st.markdown(f"""
 <div style='background:linear-gradient(135deg,#00FFB208,#00AAFF06);
             border:1px solid #0E2840;border-radius:4px;
-            padding:0.45rem 0.7rem;margin:0.3rem 0 0.8rem 0;'>
+            padding:0.5rem 0.7rem;margin-bottom:0.6rem;'>
     <div style='font-family:Fira Code,monospace;font-size:0.55rem;
-                color:#2A6080;letter-spacing:0.12em;margin-bottom:2px;'>CAPITAL DEPLOYED</div>
-    <div style='font-family:Fira Code,monospace;font-size:1.05rem;
-                font-weight:700;color:#00FFB2;letter-spacing:0.04em;'>
-        ${_br_val:,.2f}
-    </div>
+                color:#2A6080;letter-spacing:0.10em;margin-bottom:3px;'>SIGNED IN AS</div>
+    <div style='font-family:Chakra Petch,monospace;font-size:0.85rem;
+                font-weight:700;color:#00FFB2;letter-spacing:0.06em;'>{_sid_user}</div>
+    {f"<div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#3A6080;margin-top:2px;'>{_sid_email}</div>" if _sid_email else ""}
 </div>
 """, unsafe_allow_html=True)
 
-    # ── MODEL PARAMETERS ──────────────────────────────────────
+    # Use authenticated username as user_id
+    user_id = _sid_user
+
+    # ── BANKROLL ──────────────────────────────────────────────
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
-color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
-margin-top:0.5rem;margin-bottom:0.5rem;padding-top:0.6rem;
-border-top:1px solid #0E1E30;'>▸ MODEL PARAMETERS</div>""", unsafe_allow_html=True)
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;margin-bottom:0.4rem;'>
+▸ BANKROLL</div>""", unsafe_allow_html=True)
 
-    market_prior_weight = st.slider("Model Weight vs Market", 0.0, 1.0,
-        float(st.session_state.get("market_prior_weight",0.65)), 0.05,
-        help="1.0 = pure statistical model · 0.0 = pure market implied prob")
-    st.session_state["market_prior_weight"] = float(market_prior_weight)
+    bankroll = st.number_input("Bankroll ($)", min_value=0.0,
+        value=float(st.session_state.get("bankroll", 1000.0)), step=50.0)
+    st.session_state["bankroll"] = float(bankroll)
+    _lb = st.session_state.get("_last_saved_bankroll")
+    if _lb is None or float(_lb) != float(bankroll):
+        _bs = load_user_state(user_id)
+        _bs["bankroll"] = float(bankroll)
+        save_user_state(user_id, _bs)
+        st.session_state["_last_saved_bankroll"] = float(bankroll)
 
-    n_games = st.slider("Sample Window (games)", 5, 30, int(st.session_state.get("n_games",10)))
-    st.session_state["n_games"] = n_games
-
-    frac_kelly = st.slider("Fractional Kelly", 0.0, 1.0,
-        float(st.session_state.get("frac_kelly",0.25)), 0.05)
-    st.session_state["frac_kelly"] = frac_kelly
-
-    payout_multi = st.number_input("Parlay Payout (x)", min_value=1.0,
-        value=float(st.session_state.get("payout_multi",3.0)), step=0.1)
-    st.session_state["payout_multi"] = payout_multi
-
-    # ── RISK CONTROLS ─────────────────────────────────────────
-    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
-color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
-margin-top:0.5rem;margin-bottom:0.5rem;padding-top:0.6rem;
-border-top:1px solid #0E1E30;'>▸ RISK CONTROLS</div>""", unsafe_allow_html=True)
-
-    max_risk_per_bet = st.slider("Max Bet Size (% BR)", 0.0, 10.0,
-        float(st.session_state.get("max_risk_per_bet",3.0)), 0.5)
-    st.session_state["max_risk_per_bet"] = float(max_risk_per_bet)
-
-    max_daily_loss = st.slider("Daily Loss Stop (%)", 0, 50, int(st.session_state.get("max_daily_loss",15)))
-    max_weekly_loss = st.slider("Weekly Loss Stop (%)", 0, 50, int(st.session_state.get("max_weekly_loss",25)))
-    st.session_state["max_daily_loss"] = max_daily_loss
-    st.session_state["max_weekly_loss"] = max_weekly_loss
-
-    # Risk gauge inline display
-    _daily_pct  = int(st.session_state.get("max_daily_loss", 15))
-    _weekly_pct = int(st.session_state.get("max_weekly_loss", 25))
-    _risk_color = "#FF3358" if max_risk_per_bet >= 7 else ("#FFB800" if max_risk_per_bet >= 4 else "#00FFB2")
+    _br_val = float(st.session_state.get("bankroll", 1000.0))
     st.markdown(f"""
-<div style='background:#04080F;border:1px solid #0E1E30;border-radius:4px;
-            padding:0.4rem 0.7rem;margin:0.3rem 0 0.2rem 0;
-            display:flex;gap:1rem;align-items:center;'>
-    <div style='flex:1;text-align:center;'>
-        <div style='font-family:Fira Code,monospace;font-size:0.55rem;color:#2A6080;'>DAILY STOP</div>
-        <div style='font-family:Fira Code,monospace;font-size:0.80rem;color:#FFB800;font-weight:600;'>{_daily_pct}%</div>
-    </div>
-    <div style='width:1px;height:28px;background:#0E1E30;'></div>
-    <div style='flex:1;text-align:center;'>
-        <div style='font-family:Fira Code,monospace;font-size:0.55rem;color:#2A6080;'>WEEKLY STOP</div>
-        <div style='font-family:Fira Code,monospace;font-size:0.80rem;color:#FFB800;font-weight:600;'>{_weekly_pct}%</div>
-    </div>
-    <div style='width:1px;height:28px;background:#0E1E30;'></div>
-    <div style='flex:1;text-align:center;'>
-        <div style='font-family:Fira Code,monospace;font-size:0.55rem;color:#2A6080;'>MAX BET</div>
-        <div style='font-family:Fira Code,monospace;font-size:0.80rem;color:{_risk_color};font-weight:600;'>{max_risk_per_bet:.1f}%</div>
-    </div>
+<div style='background:#04080F;border:1px solid #0E2840;border-radius:4px;
+            padding:0.35rem 0.7rem;margin:0.2rem 0 0.8rem 0;
+            display:flex;justify-content:space-between;align-items:center;'>
+    <div style='font-family:Fira Code,monospace;font-size:0.55rem;color:#2A6080;'>CAPITAL</div>
+    <div style='font-family:Fira Code,monospace;font-size:0.95rem;
+                font-weight:700;color:#00FFB2;'>${_br_val:,.2f}</div>
 </div>
 """, unsafe_allow_html=True)
 
-    # ── FILTERS ───────────────────────────────────────────────
-    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
-color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
-margin-top:0.6rem;margin-bottom:0.4rem;padding-top:0.6rem;
-border-top:1px solid #0E1E30;'>▸ FILTERS</div>""", unsafe_allow_html=True)
-
-    exclude_chaotic = st.checkbox("Block Chaotic Regime",
-        value=bool(st.session_state.get("exclude_chaotic",True)),
-        help="Filters high-CV / blowout-risk environments")
-    st.session_state["exclude_chaotic"] = bool(exclude_chaotic)
-
-    show_unders = st.checkbox("Show Under Opportunities",
-        value=bool(st.session_state.get("show_unders", False)), key="show_unders_cb",
-        help="Surface high-probability Unders alongside each leg")
-    st.session_state["show_unders"] = bool(show_unders)
-
-    # ── ODDS API ──────────────────────────────────────────────
-    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
-color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
-margin-top:0.6rem;margin-bottom:0.4rem;padding-top:0.6rem;
-border-top:1px solid #0E1E30;'>▸ ODDS API</div>""", unsafe_allow_html=True)
-
-    # Quota tracker — always visible
-    hdr = st.session_state.get("_odds_headers_last", {})
-    rem  = hdr.get("remaining", "?")
-    used = hdr.get("used", "?")
-    try:
-        rem_int  = int(rem)
-        used_int = int(used)
-        total    = rem_int + used_int
-        pct_used = (used_int / total * 100) if total > 0 else 0
-        rem_color = "#FF3358" if rem_int < 10 else ("#FFB800" if rem_int < 30 else "#00FFB2")
-        bar_color = "#FF3358" if pct_used > 85 else ("#FFB800" if pct_used > 60 else "#00FFB2")
-        bar_w     = f"{min(pct_used, 100):.0f}%"
-    except Exception:
-        rem_color = "#4A607A"; bar_color = "#1E2D3D"; bar_w = "0%"; pct_used = 0
-        used_int = 0; rem_int = 0
-
-    st.markdown(f"""
-<div style='background:#04080F;border:1px solid #0E1E30;border-radius:4px;
-            padding:0.5rem 0.7rem;margin-bottom:0.4rem;'>
-    <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;'>
-        <div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#2A6080;
-                    letter-spacing:0.08em;'>QUOTA USAGE</div>
-        <div style='font-family:Fira Code,monospace;font-size:0.60rem;'>
-            <span style='color:#4A607A;'>used </span>
-            <span style='color:#8BA8BF;'>{used}</span>
-            <span style='color:#2A4060;'> / rem </span>
-            <span style='color:{rem_color};font-weight:600;'>{rem}</span>
-        </div>
-    </div>
-    <div style='background:#0A1628;border-radius:2px;height:3px;'>
-        <div style='background:{bar_color};width:{bar_w};height:3px;border-radius:2px;
-                    box-shadow:0 0 4px {bar_color}88;transition:width 0.3s;'></div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-    if hdr.get("remaining") == "0":
-        st.error("Quota exhausted — fetches paused.")
-
-    with st.expander("BOOK SETTINGS", expanded=False):
-        scan_book_override = st.text_input("Book override (blank=auto)", value="")
-        max_req_day = st.number_input("Max requests/day", 1, 500, int(st.session_state.get("max_req_day",100)), 10)
-        st.session_state["max_req_day"] = int(max_req_day)
-
-    # ── WATCHLIST ─────────────────────────────────────────────
-    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
-color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
-margin-top:0.6rem;margin-bottom:0.4rem;padding-top:0.6rem;
-border-top:1px solid #0E1E30;'>▸ WATCHLIST</div>""", unsafe_allow_html=True)
-
-    with st.expander("MANAGE WATCHLIST", expanded=False):
-        wl = load_watchlist(st.session_state.get("user_id","trader"))
-        wl_input = st.text_input("Add player", placeholder="LeBron James", key="wl_add")
-        wl_col1, wl_col2 = st.columns(2)
-        if wl_col1.button("Add", key="wl_add_btn"):
-            if wl_input.strip() and wl_input.strip() not in wl:
-                wl.append(wl_input.strip())
-                save_watchlist(st.session_state.get("user_id","trader"), wl)
-                st.rerun()
-        if wl:
-            rm = st.selectbox("Remove", ["--"] + wl, key="wl_rm")
-            if wl_col2.button("Remove", key="wl_rm_btn") and rm != "--":
-                wl = [p for p in wl if p != rm]
-                save_watchlist(st.session_state.get("user_id","trader"), wl)
-                st.rerun()
-
-    # Watchlist player pills — always visible outside expander
-    _wl_display = load_watchlist(st.session_state.get("user_id","trader"))
-    if _wl_display:
-        _wl_html = "".join([
-            f"<div style='display:flex;align-items:center;gap:0.4rem;"
-            f"padding:0.2rem 0;border-bottom:1px solid #080F1A;'>"
-            f"<div style='width:4px;height:4px;border-radius:50%;background:#00AAFF;"
-            f"flex-shrink:0;'></div>"
-            f"<div style='font-family:Fira Code,monospace;font-size:0.65rem;"
-            f"color:#6AABCF;'>{p}</div></div>"
-            for p in _wl_display
-        ])
-        st.markdown(f"<div style='margin-top:0.3rem;'>{_wl_html}</div>", unsafe_allow_html=True)
-    else:
-        st.markdown("<div style='font-family:Fira Code,monospace;font-size:0.60rem;"
-                    "color:#1E3050;margin-top:0.2rem;'>No players tracked.</div>",
-                    unsafe_allow_html=True)
-
-    # ── AI ENGINE ─────────────────────────────────────────────
-    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
-color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
-margin-top:0.6rem;margin-bottom:0.4rem;padding-top:0.6rem;
-border-top:1px solid #0E1E30;'>▸ AI ENGINE</div>""", unsafe_allow_html=True)
-
-    with st.expander("CLAUDE AI SETTINGS", expanded=False):
-        _ai_key_stored = st.session_state.get("_anthropic_key_override", "")
-        _ai_key_input = st.text_input(
-            "Anthropic API Key",
-            value=_ai_key_stored,
-            type="password",
-            help="Enter your Anthropic API key to enable Claude AI edge explanations, slate briefings & parlay optimizer.",
-            key="ai_key_sidebar_input"
-        )
-        if _ai_key_input != _ai_key_stored:
-            st.session_state["_anthropic_key_override"] = _ai_key_input
-            if _ai_key_input:
-                os.environ["ANTHROPIC_API_KEY"] = _ai_key_input
-            # Invalidate all cached AI results so new key takes effect immediately
-            for _k in list(st.session_state.keys()):
-                if _k.startswith("_ai_"):
-                    st.session_state.pop(_k, None)
-        elif _ai_key_input and not os.environ.get("ANTHROPIC_API_KEY"):
-            os.environ["ANTHROPIC_API_KEY"] = _ai_key_input
-
+    # ── AI STATUS ─────────────────────────────────────────────
     _ai_active = _get_anthropic_key()
     if _ai_active:
         st.markdown("""
 <div style='background:linear-gradient(90deg,#00FFB208,transparent);
             border:1px solid #00FFB230;border-radius:3px;
             padding:0.3rem 0.6rem;display:flex;align-items:center;gap:0.5rem;
-            margin-top:0.2rem;'>
+            margin-bottom:0.4rem;'>
     <div style='width:5px;height:5px;border-radius:50%;background:#00FFB2;
                 box-shadow:0 0 5px #00FFB2;'></div>
     <div style='font-family:Fira Code,monospace;font-size:0.60rem;color:#00FFB2;
@@ -4191,11 +4176,23 @@ border-top:1px solid #0E1E30;'>▸ AI ENGINE</div>""", unsafe_allow_html=True)
         st.markdown("""
 <div style='background:#04080F;border:1px solid #1A2030;border-radius:3px;
             padding:0.3rem 0.6rem;display:flex;align-items:center;gap:0.5rem;
-            margin-top:0.2rem;'>
+            margin-bottom:0.4rem;'>
     <div style='width:5px;height:5px;border-radius:50%;background:#2A4060;'></div>
     <div style='font-family:Fira Code,monospace;font-size:0.60rem;color:#2A4060;
                 letter-spacing:0.06em;'>CLAUDE AI  ·  OFFLINE</div>
 </div>""", unsafe_allow_html=True)
+
+    st.markdown("""<div style='font-family:Fira Code,monospace;font-size:0.58rem;
+color:#2A5070;margin-bottom:0.6rem;'>→ Configure in <b style='color:#8BA8BF;'>SETTINGS</b> tab</div>""",
+        unsafe_allow_html=True)
+
+    # ── SIGN OUT ──────────────────────────────────────────────
+    st.markdown("""<div style='margin-top:0.4rem;padding-top:0.6rem;
+border-top:1px solid #0E1E30;'></div>""", unsafe_allow_html=True)
+    if st.button("SIGN OUT", use_container_width=True, key="sidebar_signout_btn"):
+        for _k in list(st.session_state.keys()):
+            del st.session_state[_k]
+        st.rerun()
 
     # ── FOOTER ────────────────────────────────────────────────
     st.markdown(f"""
@@ -4212,6 +4209,23 @@ border-top:1px solid #0E1E30;'>▸ AI ENGINE</div>""", unsafe_allow_html=True)
 """, unsafe_allow_html=True)
 
 # ─── SESSION STATE INIT ────────────────────────────────────────
+# Initialize settings defaults so Settings tab doesn't need to be visited first
+_settings_defaults = {
+    "market_prior_weight": 0.65,
+    "n_games": 10,
+    "frac_kelly": 0.25,
+    "payout_multi": 3.0,
+    "max_risk_per_bet": 3.0,
+    "max_daily_loss": 15,
+    "max_weekly_loss": 25,
+    "exclude_chaotic": True,
+    "show_unders": False,
+    "max_req_day": 100,
+}
+for _sk, _sv in _settings_defaults.items():
+    if _sk not in st.session_state:
+        st.session_state[_sk] = _sv
+
 for k in ["last_results","calibrator_map","scanner_offers","scanner_results"]:
     if k not in st.session_state: st.session_state[k] = None if k != "last_results" else []
 
@@ -4246,8 +4260,20 @@ def _check_loss_stops(uid, bankroll):
         return True
     return False
 
+# ── Pull settings from session state for use in tab code ──────
+bankroll           = float(st.session_state.get("bankroll", 1000.0))
+n_games            = int(st.session_state.get("n_games", 10))
+frac_kelly         = float(st.session_state.get("frac_kelly", 0.25))
+payout_multi       = float(st.session_state.get("payout_multi", 3.0))
+market_prior_weight= float(st.session_state.get("market_prior_weight", 0.65))
+max_risk_per_bet   = float(st.session_state.get("max_risk_per_bet", 3.0))
+max_daily_loss     = int(st.session_state.get("max_daily_loss", 15))
+max_weekly_loss    = int(st.session_state.get("max_weekly_loss", 25))
+exclude_chaotic    = bool(st.session_state.get("exclude_chaotic", True))
+show_unders        = bool(st.session_state.get("show_unders", False))
+
 # ─── TABS ─────────────────────────────────────────────────────
-tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "INSIGHTS", "ALERTS"])
+tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "INSIGHTS", "ALERTS", "SETTINGS"])
 
 # Consume staged scanner→model inputs before any widgets render (prevents StreamlitAPIException)
 for _si in range(1, 5):
@@ -6392,6 +6418,248 @@ with tabs[7]:
             if not rw_wl.empty:
                 st.markdown("<div style='color:#FF3358;font-size:0.68rem;font-weight:600;margin-top:0.4rem;'>WATCHLIST ALERT — these players have Rotowire news:</div>", unsafe_allow_html=True)
                 st.dataframe(rw_wl, use_container_width=True)
+
+# ── SETTINGS TAB (tabs[8]) ──────────────────────────────────
+with tabs[8]:
+    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;
+color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;
+margin-bottom:1.2rem;'>ACCOUNT & ENGINE SETTINGS</div>""", unsafe_allow_html=True)
+
+    _set_col1, _set_col2 = st.columns(2)
+
+    with _set_col1:
+        # ── ACCOUNT INFO ────────────────────────────────────
+        st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #0E1E30;'>
+▸ ACCOUNT</div>""", unsafe_allow_html=True)
+        _acct_user = st.session_state.get("_auth_user", "")
+        _acct_email = _get_user_email(_acct_user)
+        st.markdown(f"""
+<div style='background:#060D18;border:1px solid #0E1E30;border-radius:4px;
+            padding:0.7rem 0.9rem;margin-bottom:0.8rem;'>
+    <div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#2A6080;
+                margin-bottom:4px;'>USERNAME</div>
+    <div style='font-family:Chakra Petch,monospace;font-size:1rem;font-weight:700;
+                color:#00FFB2;'>{_acct_user}</div>
+    {f"<div style='font-family:Fira Code,monospace;font-size:0.62rem;color:#4A7090;margin-top:4px;'>{_acct_email}</div>" if _acct_email else ""}
+</div>
+""", unsafe_allow_html=True)
+
+        # ── MODEL PARAMETERS ────────────────────────────────
+        st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-bottom:0.6rem;margin-top:0.8rem;padding-bottom:0.4rem;
+border-bottom:1px solid #0E1E30;'>▸ MODEL PARAMETERS</div>""", unsafe_allow_html=True)
+
+        _mpw = st.slider("Model Weight vs Market", 0.0, 1.0,
+            float(st.session_state.get("market_prior_weight", 0.65)), 0.05,
+            help="1.0 = pure statistical model · 0.0 = pure market implied prob",
+            key="settings_mpw")
+        st.session_state["market_prior_weight"] = float(_mpw)
+
+        _ng = st.slider("Sample Window (games)", 5, 30,
+            int(st.session_state.get("n_games", 10)), key="settings_ng")
+        st.session_state["n_games"] = _ng
+
+        _fk = st.slider("Fractional Kelly", 0.0, 1.0,
+            float(st.session_state.get("frac_kelly", 0.25)), 0.05, key="settings_fk")
+        st.session_state["frac_kelly"] = _fk
+
+        _pm = st.number_input("Parlay Payout (x)", min_value=1.0,
+            value=float(st.session_state.get("payout_multi", 3.0)), step=0.1, key="settings_pm")
+        st.session_state["payout_multi"] = _pm
+
+        # ── FILTERS ──────────────────────────────────────────
+        st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-bottom:0.6rem;margin-top:0.8rem;padding-bottom:0.4rem;
+border-bottom:1px solid #0E1E30;'>▸ FILTERS</div>""", unsafe_allow_html=True)
+
+        _exc = st.checkbox("Block Chaotic Regime",
+            value=bool(st.session_state.get("exclude_chaotic", True)),
+            help="Filters high-CV / blowout-risk environments",
+            key="settings_exc")
+        st.session_state["exclude_chaotic"] = bool(_exc)
+
+        _su = st.checkbox("Show Under Opportunities",
+            value=bool(st.session_state.get("show_unders", False)),
+            help="Surface high-probability Unders alongside each leg",
+            key="settings_su")
+        st.session_state["show_unders"] = bool(_su)
+
+    with _set_col2:
+        # ── RISK CONTROLS ────────────────────────────────────
+        st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #0E1E30;'>
+▸ RISK CONTROLS</div>""", unsafe_allow_html=True)
+
+        _mrpb = st.slider("Max Bet Size (% Bankroll)", 0.0, 10.0,
+            float(st.session_state.get("max_risk_per_bet", 3.0)), 0.5, key="settings_mrpb")
+        st.session_state["max_risk_per_bet"] = float(_mrpb)
+
+        _mdl = st.slider("Daily Loss Stop (%)", 0, 50,
+            int(st.session_state.get("max_daily_loss", 15)), key="settings_mdl")
+        st.session_state["max_daily_loss"] = _mdl
+
+        _mwl = st.slider("Weekly Loss Stop (%)", 0, 50,
+            int(st.session_state.get("max_weekly_loss", 25)), key="settings_mwl")
+        st.session_state["max_weekly_loss"] = _mwl
+
+        _rclr = "#FF3358" if _mrpb >= 7 else ("#FFB800" if _mrpb >= 4 else "#00FFB2")
+        st.markdown(f"""
+<div style='background:#04080F;border:1px solid #0E1E30;border-radius:4px;
+            padding:0.5rem 0.7rem;margin:0.4rem 0 0.8rem 0;
+            display:flex;gap:1rem;align-items:center;'>
+    <div style='flex:1;text-align:center;'>
+        <div style='font-family:Fira Code,monospace;font-size:0.55rem;color:#2A6080;'>DAILY STOP</div>
+        <div style='font-family:Fira Code,monospace;font-size:0.85rem;color:#FFB800;font-weight:600;'>{_mdl}%</div>
+    </div>
+    <div style='width:1px;height:28px;background:#0E1E30;'></div>
+    <div style='flex:1;text-align:center;'>
+        <div style='font-family:Fira Code,monospace;font-size:0.55rem;color:#2A6080;'>WEEKLY STOP</div>
+        <div style='font-family:Fira Code,monospace;font-size:0.85rem;color:#FFB800;font-weight:600;'>{_mwl}%</div>
+    </div>
+    <div style='width:1px;height:28px;background:#0E1E30;'></div>
+    <div style='flex:1;text-align:center;'>
+        <div style='font-family:Fira Code,monospace;font-size:0.55rem;color:#2A6080;'>MAX BET</div>
+        <div style='font-family:Fira Code,monospace;font-size:0.85rem;color:{_rclr};font-weight:600;'>{_mrpb:.1f}%</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+        # ── ODDS API ─────────────────────────────────────────
+        st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #0E1E30;'>
+▸ ODDS API</div>""", unsafe_allow_html=True)
+
+        _hdr_s = st.session_state.get("_odds_headers_last", {})
+        _rem_s = _hdr_s.get("remaining", "?"); _used_s = _hdr_s.get("used", "?")
+        try:
+            _ri = int(_rem_s); _ui = int(_used_s); _tot = _ri + _ui
+            _pct = (_ui / _tot * 100) if _tot > 0 else 0
+            _rc = "#FF3358" if _ri < 10 else ("#FFB800" if _ri < 30 else "#00FFB2")
+            _bc = "#FF3358" if _pct > 85 else ("#FFB800" if _pct > 60 else "#00FFB2")
+            _bw = f"{min(_pct, 100):.0f}%"
+        except Exception:
+            _rc = "#4A607A"; _bc = "#1E2D3D"; _bw = "0%"
+        st.markdown(f"""
+<div style='background:#04080F;border:1px solid #0E1E30;border-radius:4px;
+            padding:0.5rem 0.7rem;margin-bottom:0.5rem;'>
+    <div style='display:flex;justify-content:space-between;margin-bottom:0.3rem;'>
+        <div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#2A6080;'>QUOTA USAGE</div>
+        <div style='font-family:Fira Code,monospace;font-size:0.60rem;'>
+            <span style='color:#4A607A;'>used </span><span style='color:#8BA8BF;'>{_used_s}</span>
+            <span style='color:#2A4060;'> / rem </span><span style='color:{_rc};font-weight:600;'>{_rem_s}</span>
+        </div>
+    </div>
+    <div style='background:#0A1628;border-radius:2px;height:3px;'>
+        <div style='background:{_bc};width:{_bw};height:3px;border-radius:2px;'></div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+        _scan_book_override_s = st.text_input("Book override (blank=auto)", value="", key="settings_book_override")
+        _mrd = st.number_input("Max API requests/day", 1, 500,
+            int(st.session_state.get("max_req_day", 100)), 10, key="settings_mrd")
+        st.session_state["max_req_day"] = int(_mrd)
+
+        # ── CLAUDE AI ────────────────────────────────────────
+        st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-top:0.8rem;margin-bottom:0.6rem;padding-bottom:0.4rem;
+border-bottom:1px solid #0E1E30;'>▸ CLAUDE AI ENGINE</div>""", unsafe_allow_html=True)
+
+        _ai_key_s = _get_anthropic_key()
+        if _ai_key_s:
+            st.markdown("""
+<div style='background:linear-gradient(90deg,#00FFB208,transparent);
+            border:1px solid #00FFB230;border-radius:3px;
+            padding:0.4rem 0.7rem;display:flex;align-items:center;gap:0.5rem;
+            margin-bottom:0.5rem;'>
+    <div style='width:6px;height:6px;border-radius:50%;background:#00FFB2;
+                box-shadow:0 0 6px #00FFB2;'></div>
+    <div style='font-family:Fira Code,monospace;font-size:0.62rem;color:#00FFB2;'>
+        CLAUDE AI ACTIVE — all users have access</div>
+</div>""", unsafe_allow_html=True)
+        else:
+            st.info("Claude AI key not configured. Add ANTHROPIC_API_KEY to Streamlit secrets to enable AI for all users.")
+
+        with st.expander("Override API Key (optional)", expanded=False):
+            _ai_ov_stored = st.session_state.get("_anthropic_key_override", "")
+            _ai_ov_input = st.text_input(
+                "Personal Anthropic API Key",
+                value=_ai_ov_stored,
+                type="password",
+                help="Leave blank to use the app's shared key.",
+                key="settings_ai_key_input"
+            )
+            if _ai_ov_input != _ai_ov_stored:
+                st.session_state["_anthropic_key_override"] = _ai_ov_input
+                if _ai_ov_input:
+                    os.environ["ANTHROPIC_API_KEY"] = _ai_ov_input
+                for _k in list(st.session_state.keys()):
+                    if _k.startswith("_ai_"):
+                        st.session_state.pop(_k, None)
+            elif _ai_ov_input and not os.environ.get("ANTHROPIC_API_KEY"):
+                os.environ["ANTHROPIC_API_KEY"] = _ai_ov_input
+
+        # ── WATCHLIST ────────────────────────────────────────
+        st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-top:0.8rem;margin-bottom:0.6rem;padding-bottom:0.4rem;
+border-bottom:1px solid #0E1E30;'>▸ WATCHLIST</div>""", unsafe_allow_html=True)
+
+        _wl_s = load_watchlist(st.session_state.get("user_id", "trader"))
+        _wl_add_s = st.text_input("Add player to watchlist", placeholder="LeBron James",
+                                   key="settings_wl_add")
+        _wl_c1, _wl_c2 = st.columns(2)
+        if _wl_c1.button("Add", key="settings_wl_add_btn"):
+            if _wl_add_s.strip() and _wl_add_s.strip() not in _wl_s:
+                _wl_s.append(_wl_add_s.strip())
+                save_watchlist(st.session_state.get("user_id", "trader"), _wl_s)
+                st.rerun()
+        if _wl_s:
+            _wl_rm_s = st.selectbox("Remove player", ["--"] + _wl_s, key="settings_wl_rm")
+            if _wl_c2.button("Remove", key="settings_wl_rm_btn") and _wl_rm_s != "--":
+                _wl_s = [p for p in _wl_s if p != _wl_rm_s]
+                save_watchlist(st.session_state.get("user_id", "trader"), _wl_s)
+                st.rerun()
+        if _wl_s:
+            _wl_pills = "".join([
+                f"<div style='display:inline-block;background:#0A1828;border:1px solid #1A3050;"
+                f"border-radius:3px;padding:0.15rem 0.5rem;margin:0.15rem;font-family:Fira Code,monospace;"
+                f"font-size:0.62rem;color:#6AABCF;'>{p}</div>"
+                for p in _wl_s
+            ])
+            st.markdown(f"<div style='margin-top:0.4rem;'>{_wl_pills}</div>",
+                        unsafe_allow_html=True)
+
+    # ── SAVE SETTINGS NOTICE ─────────────────────────────────
+    st.markdown("""<div style='margin-top:1rem;font-family:Fira Code,monospace;font-size:0.60rem;
+color:#2A5070;border-top:1px solid #0E1E30;padding-top:0.6rem;'>
+Settings are applied immediately and saved to your account.</div>""",
+        unsafe_allow_html=True)
+
+    # Save settings to user state
+    _settings_to_save = {
+        "market_prior_weight": st.session_state.get("market_prior_weight", 0.65),
+        "n_games": st.session_state.get("n_games", 10),
+        "frac_kelly": st.session_state.get("frac_kelly", 0.25),
+        "payout_multi": st.session_state.get("payout_multi", 3.0),
+        "max_risk_per_bet": st.session_state.get("max_risk_per_bet", 3.0),
+        "max_daily_loss": st.session_state.get("max_daily_loss", 15),
+        "max_weekly_loss": st.session_state.get("max_weekly_loss", 25),
+        "exclude_chaotic": st.session_state.get("exclude_chaotic", True),
+        "show_unders": st.session_state.get("show_unders", False),
+        "max_req_day": st.session_state.get("max_req_day", 100),
+        "bankroll": st.session_state.get("bankroll", 1000.0),
+    }
+    _cur_saved = load_user_state(st.session_state.get("user_id", "trader"))
+    if any(_cur_saved.get(k) != v for k, v in _settings_to_save.items()):
+        _cur_saved.update(_settings_to_save)
+        save_user_state(st.session_state.get("user_id", "trader"), _cur_saved)
 
 # ── FOOTER ──────────────────────────────────────────────────
 st.markdown("""
