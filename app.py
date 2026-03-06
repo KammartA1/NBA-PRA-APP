@@ -753,16 +753,17 @@ def fetch_player_gamelog(player_id, max_games=15):
     errs = []
     season_str = get_season_string()
     for params in [
+        {"season": season_str, "season_type_all_star": "Regular Season"},
+        {"season": season_str},
         {"season_nullable": season_str, "season_type_all_star": "Regular Season"},
         {"season_nullable": season_str},
-        {"season": season_str},
         {},
     ]:
         try:
             gl = playergamelog.PlayerGameLog(player_id=player_id, timeout=10, **params)
             df = gl.get_data_frames()[0]
             if not df.empty:
-                return df.head(int(max_games)).copy(), errs
+                return df.head(int(max_games)).copy(), []
             errs.append(f"Empty log with params {params}")
         except TypeError as te:
             errs.append(f"TypeError {params}: {te}")
