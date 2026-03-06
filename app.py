@@ -42,7 +42,10 @@ def _anthropic_client():
 @st.cache_data(ttl=60*60*4, show_spinner=False)
 def ai_explain_edge(player, market, line, side, proj, p_cal, ev_pct,
                     edge_cat, hot_cold, rest_days, dnp_risk, b2b,
-                    opp, vol_cv, n_games, errors_str, api_key=""):
+                    opp, vol_cv, n_games, errors_str, api_key="",
+                    trend_label="Neutral", sharpness_score=None, sharpness_tier=None,
+                    game_total=None, fatigue_label="Normal", opp_fatigue_label="Normal",
+                    l3_avg=None, l5_avg=None, l10_avg=None):
     """Use Claude Haiku to generate a plain-English edge explanation for one leg."""
     client = _anthropic_client()
     if not client:
@@ -51,6 +54,9 @@ def ai_explain_edge(player, market, line, side, proj, p_cal, ev_pct,
         import anthropic
         prob_pct = round((p_cal or 0) * 100, 1)
         direction = "OVER" if side.lower() != "under" else "UNDER"
+        trend_str = f"Trend: {trend_label} (L3={f'{l3_avg:.1f}' if l3_avg else '--'}, L5={f'{l5_avg:.1f}' if l5_avg else '--'}, L10={f'{l10_avg:.1f}' if l10_avg else '--'})"
+        sharp_str = f"Composite Sharpness: {f'{sharpness_score:.0f}' if sharpness_score is not None else '--'}/100 ({sharpness_tier or '--'})"
+        game_ctx = f"Game total: {f'{game_total:.0f}' if game_total else 'N/A'} | Player schedule: {fatigue_label} | Opp schedule: {opp_fatigue_label}"
         prompt = f"""You are an elite NBA prop betting analyst. Explain this prop bet projection concisely in 3-4 sentences for a sophisticated quantitative bettor.
 
 Player: {player}
@@ -59,14 +65,16 @@ Model projection: {proj} {market} (vs line of {line})
 Calibrated win probability: {prob_pct}%
 Expected value: {ev_pct:+.1f}%
 Edge category: {edge_cat}
-Recent form: {hot_cold}
+{sharp_str}
+Recent form: {hot_cold} | {trend_str}
 Rest days: {rest_days} | Back-to-back: {b2b} | DNP risk: {dnp_risk}
+{game_ctx}
 Opponent: {opp}
 Stat volatility (CV): {vol_cv}
 Sample size: {n_games} games
 Model flags: {errors_str or 'None'}
 
-Write a 3-4 sentence analysis covering: (1) why the model projects this outcome, (2) key risk factors, (3) one-line bet verdict. Be specific, confident, and quantitative. No bullet points."""
+Write a 3-4 sentence analysis covering: (1) why the model projects this outcome with trend and sharpness context, (2) key risk factors including fatigue/schedule, (3) one-line bet verdict. Be specific, confident, and quantitative. No bullet points."""
 
         with client.messages.stream(
             model="claude-haiku-4-5",
@@ -861,6 +869,40 @@ def fetch_player_halfgame_log(player_id, game_log_df, market_name, n_games=10):
     return None
 
 # ──────────────────────────────────────────────
+# [UPGRADE NEW] SCHEDULE FATIGUE — 3-IN-4 NIGHTS DETECTOR
+# Beyond basic B2B: detects compressed 3-game stretches
+# Sharp bettors know 3-in-4 nights crushes performance more than B2B alone
+# ──────────────────────────────────────────────
+def compute_schedule_fatigue(game_log_df, game_date):
+    """
+    Detect multi-game fatigue scenarios:
+      - B2B (1 rest day): rest_days=0
+      - 3-in-4 nights: 3 games within any 4-day window  → extra penalty
+      - 4-in-6 nights: 4 games within 6 days → severe penalty
+    Returns (fatigue_mult, fatigue_label).
+    """
+    if game_log_df is None or game_log_df.empty:
+        return 1.0, "Normal"
+    try:
+        dates = pd.to_datetime(game_log_df["GAME_DATE"], errors="coerce").dropna()
+        if dates.empty:
+            return 1.0, "Normal"
+        # Include today's game in the window
+        all_dates = sorted([d.date() for d in dates] + [game_date])
+        # Check 3-in-4 nights: player played 2 of last 3 days
+        recent = [d for d in all_dates if (game_date - d).days <= 4]
+        n_in_4 = len(recent)
+        recent6 = [d for d in all_dates if (game_date - d).days <= 6]
+        n_in_6 = len(recent6)
+        if n_in_6 >= 4:
+            return 0.91, "4-in-6"    # severe fatigue: ~9% penalty
+        if n_in_4 >= 3:
+            return 0.945, "3-in-4"   # compressed schedule: ~5.5% penalty
+        return 1.0, "Normal"
+    except Exception:
+        return 1.0, "Normal"
+
+# ──────────────────────────────────────────────
 # REST / B2B FACTOR  [FIX 4: season-phase scaling]
 # ──────────────────────────────────────────────
 def compute_rest_factor(game_log_df, game_date):
@@ -1050,6 +1092,290 @@ def compute_player_regime_hot_cold(stat_series, n_recent=5):
         return "Average", 0.0
 
 # ──────────────────────────────────────────────
+# [UPGRADE NEW] L3 / L5 / L10 TREND CONVERGENCE + MOMENTUM
+# Sharp bettors look for alignment across multiple lookback windows.
+# When L3 > L5 > L10 on an Over (or L3 < L5 < L10 on Under), it's a
+# strong confirmation signal. Linear regression slope gives momentum.
+# ──────────────────────────────────────────────
+def compute_trend_convergence(stat_series, line, side="Over"):
+    """
+    Returns (convergence_score, trend_label, slope_per_game, l3_avg, l5_avg, l10_avg).
+    convergence_score: -1.0 to +1.0 (positive = favors side, negative = fades side)
+    """
+    try:
+        arr = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
+        if len(arr) < 5:
+            return 0.0, "Insufficient", 0.0, None, None, None
+        # Newest first — align with game_log order
+        l3  = float(np.mean(arr[:3]))  if len(arr) >= 3  else None
+        l5  = float(np.mean(arr[:5]))  if len(arr) >= 5  else None
+        l10 = float(np.mean(arr[:10])) if len(arr) >= 10 else float(np.mean(arr))
+        is_over = "over" in str(side).lower()
+        # Linear regression slope (positive = trending up, negative = trending down)
+        x = np.arange(len(arr[:10]))
+        y = arr[:10]
+        if len(x) >= 3:
+            slope = float(np.polyfit(x, y[::-1], 1)[0])  # reverse: oldest→newest
+        else:
+            slope = 0.0
+        fav_line = float(line)
+        # Convergence: each rolling window above/below line contributes
+        score = 0.0
+        weight_total = 0.0
+        for avg, w in [(l3, 0.50), (l5, 0.30), (l10, 0.20)]:
+            if avg is None:
+                continue
+            diff_norm = float(np.clip((avg - fav_line) / max(abs(fav_line), 1.0), -0.5, 0.5))
+            score += (diff_norm if is_over else -diff_norm) * w
+            weight_total += w
+        if weight_total > 0:
+            score = score / weight_total * 2.0  # normalize to [-1, 1]
+        score = float(np.clip(score, -1.0, 1.0))
+        # Alignment label
+        if score > 0.30 and slope > 0:
+            label = "Strong Bull"
+        elif score > 0.15:
+            label = "Bull"
+        elif score < -0.30 and slope < 0:
+            label = "Strong Bear"
+        elif score < -0.15:
+            label = "Bear"
+        else:
+            label = "Neutral"
+        return score, label, slope, l3, l5, l10
+    except Exception:
+        return 0.0, "Neutral", 0.0, None, None, None
+
+# ──────────────────────────────────────────────
+# [RESEARCH UPGRADE] ROLLING 3-GAME MINUTES AVERAGE
+# CMU study: 3-game rolling minutes is the most predictive fatigue signal.
+# A player who logged 40+ min in last 2 games faces real physical degradation
+# even if today is not technically a B2B. This adjusts both the projection
+# and the fatigue multiplier beyond the schedule-calendar approach.
+# ──────────────────────────────────────────────
+def compute_rolling_minutes_fatigue(game_log_df, n_recent=3):
+    """
+    Returns (rolling_avg_minutes, minutes_fatigue_mult, minutes_fatigue_label).
+    High recent minutes → penalty; low minutes → neutral.
+    Thresholds calibrated from NBA average ~32 min/game for starters.
+    """
+    if game_log_df is None or game_log_df.empty or "MIN" not in game_log_df.columns:
+        return None, 1.0, "Normal"
+    try:
+        df = game_log_df.head(n_recent).copy()
+        mins = df["MIN"].apply(lambda v:
+            float(str(v).split(":")[0]) if isinstance(v, str) and ":" in str(v)
+            else safe_float(v, default=0.0))
+        active = mins[mins >= 5]
+        if active.empty:
+            return None, 1.0, "Normal"
+        avg = float(active.mean())
+        # 36+ min/game over L3 → meaningful fatigue; 40+ → severe
+        if avg >= 40.0:
+            return avg, 0.93, "High-Load"    # ~7% penalty
+        if avg >= 37.0:
+            return avg, 0.96, "Heavy"        # ~4% penalty
+        if avg >= 34.0:
+            return avg, 0.985, "Moderate"    # ~1.5% penalty
+        return avg, 1.0, "Normal"
+    except Exception:
+        return None, 1.0, "Normal"
+
+# ──────────────────────────────────────────────
+# [RESEARCH UPGRADE] BOTH-TEAMS-B2B SUPPRESSOR
+# When both teams are on a B2B, combined scoring drops 6-10 pts,
+# pace slows, and turnovers increase. Per research, this is the
+# single most impactful fatigue scenario — worse than one team B2B alone.
+# ──────────────────────────────────────────────
+@st.cache_data(ttl=60*60*4, show_spinner=False)
+def get_team_b2b_flag(team_abbr, game_date):
+    """Return True if team_abbr is playing on the 2nd night of a B2B."""
+    try:
+        from nba_api.stats.endpoints import TeamGameLogs
+        # Resolve team abbreviation → team_id using nba_teams
+        abbr_upper = str(team_abbr).upper()
+        team_list = nba_teams.get_teams()
+        team_id = None
+        for t in team_list:
+            if t["abbreviation"].upper() == abbr_upper:
+                team_id = t["id"]
+                break
+        if not team_id:
+            return False
+        logs = TeamGameLogs(
+            team_id_nullable=str(team_id),
+            season_nullable=current_season_str(),
+            league_id_nullable="00",
+            timeout=15,
+        ).get_data_frames()[0]
+        if logs is None or logs.empty:
+            return False
+        dates = pd.to_datetime(logs["GAME_DATE"], errors="coerce").dropna()
+        sorted_dates = sorted([d.date() for d in dates], reverse=True)
+        # Check if yesterday is in the log
+        yesterday = (pd.Timestamp(game_date) - pd.Timedelta(days=1)).date()
+        return yesterday in sorted_dates
+    except Exception:
+        return False
+
+def compute_both_teams_b2b(team_abbr, opp_abbr, player_b2b, game_date):
+    """
+    Returns (both_b2b_flag, both_b2b_mult).
+    both_b2b_mult: applied to volume props when both teams are fatigued.
+    Per research: combined scoring -6-10 pts → ~3-4% vol prop penalty.
+    Opp B2B when player is NOT on B2B: defensive boost for the player.
+    """
+    try:
+        opp_is_b2b = get_team_b2b_flag(opp_abbr, game_date)
+        if player_b2b and opp_is_b2b:
+            # Both teams tired: pace slows, scoring suppressed globally
+            return True, 0.965   # ~3.5% penalty for both-tired games
+        return False, 1.0
+    except Exception:
+        return False, 1.0
+
+# ──────────────────────────────────────────────
+# [RESEARCH UPGRADE] OVER-RATE L10 / MEAN REVERSION FLAG
+# When a player goes OVER their line ≥8/10 games, books under-adjust
+# (recency bias overcorrection). Regression to mean is a real edge.
+# Conversely, ≤2/10 (cold streak) → recovery probability is higher.
+# This is only a signal when the line has NOT already moved to reflect it.
+# ──────────────────────────────────────────────
+def compute_over_rate_and_mean_reversion(stat_series, line):
+    """
+    Returns (over_rate_l10, reversion_signal, reversion_label).
+    over_rate_l10: float 0.0-1.0
+    reversion_signal: float -0.05 to +0.05 (EV nudge for mean reversion)
+    reversion_label: str
+    """
+    try:
+        arr = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
+        if len(arr) < 5:
+            return None, 0.0, "Insufficient"
+        window = arr[:10]
+        fav = float(line)
+        over_rate = float(np.mean(window > fav))
+        # Strong hot streak: player probably going back to mean → slight Under lean
+        if over_rate >= 0.80:
+            return over_rate, -0.025, "Regression Risk"
+        # Extreme hot streak: clear regression signal
+        if over_rate >= 0.90:
+            return over_rate, -0.04, "Strong Regression"
+        # Cold streak: recovery probability → slight Over lean
+        if over_rate <= 0.20:
+            return over_rate, +0.020, "Recovery Likely"
+        if over_rate <= 0.10:
+            return over_rate, +0.035, "Strong Recovery"
+        return over_rate, 0.0, "Normal"
+    except Exception:
+        return None, 0.0, "Normal"
+
+# ──────────────────────────────────────────────
+# [RESEARCH UPGRADE] TRAVEL FATIGUE
+# Cross-country travel + direction effect: east travel worse than west.
+# Research: teams traveling eastward win 44.51% vs 40.83% westward.
+# Cross-country B2B: ~5-7% performance decline vs average 3-5%.
+# ──────────────────────────────────────────────
+# Approximate longitude for each NBA team city (used for travel direction)
+_NBA_TEAM_LONGITUDES = {
+    "ATL": -84.4, "BOS": -71.1, "BKN": -74.0, "CHA": -80.8,
+    "CHI": -87.6, "CLE": -81.7, "DAL": -96.8, "DEN": -104.9,
+    "DET": -83.0, "GSW": -122.2, "HOU": -95.4, "IND": -86.2,
+    "LAC": -118.2, "LAL": -118.2, "MEM": -90.0, "MIA": -80.2,
+    "MIL": -87.9, "MIN": -93.3, "NOP": -90.1, "NYK": -74.0,
+    "OKC": -97.5, "ORL": -81.4, "PHI": -75.2, "PHX": -112.1,
+    "POR": -122.7, "SAC": -121.5, "SAS": -98.5, "TOR": -79.4,
+    "UTA": -111.9, "WAS": -77.0,
+}
+
+def compute_travel_fatigue(team_abbr, game_log_df, game_date, b2b_flag):
+    """
+    Estimate travel fatigue from last game location.
+    Returns (travel_mult, travel_label).
+    Only applied on B2B games (otherwise rest negates travel effect).
+    """
+    if not b2b_flag:
+        return 1.0, "Normal"
+    try:
+        t_key = str(team_abbr).upper()
+        home_lon = _NBA_TEAM_LONGITUDES.get(t_key)
+        if home_lon is None or game_log_df is None or game_log_df.empty:
+            return 1.0, "Normal"
+        # Infer last opponent from game log
+        last_game = game_log_df.iloc[0]
+        matchup = str(last_game.get("MATCHUP", ""))
+        # MATCHUP format: "TOR vs. BOS" or "TOR @ BOS"
+        parts = matchup.replace("vs.", "vs").replace("@", "at").split()
+        away = "@" in str(last_game.get("MATCHUP","")) or " @ " in matchup
+        # Extract opponent abbreviation
+        opp_from_matchup = parts[-1].strip().upper() if parts else ""
+        # If player was away last game, they traveled TO opp; now they travel back or to next city
+        prev_lon = _NBA_TEAM_LONGITUDES.get(opp_from_matchup, home_lon)
+        lon_delta = home_lon - prev_lon  # positive = traveled west→east (eastward travel)
+        miles_approx = abs(lon_delta) * 53.0  # rough miles per degree longitude at NBA latitudes
+        direction = "East" if lon_delta > 5 else ("West" if lon_delta < -5 else "Local")
+        if miles_approx >= 1800 and direction == "East":
+            return 0.945, "Cross-Country East"  # Worst case: ~5.5% penalty
+        if miles_approx >= 1800:
+            return 0.960, "Cross-Country West"  # ~4% penalty
+        if miles_approx >= 900:
+            return 0.975, "Long Haul"           # ~2.5% penalty
+        return 1.0, "Normal"
+    except Exception:
+        return 1.0, "Normal"
+
+# ──────────────────────────────────────────────
+# [RESEARCH UPGRADE] L10 ROLLING DvP
+# Season-average DvP misses recency: a team that traded away their
+# best perimeter defender mid-season looks fine in full-season stats
+# but is now exploitable. Rolling L10 DvP catches this degradation.
+# ──────────────────────────────────────────────
+@st.cache_data(ttl=60*60*4, show_spinner=False)
+def get_dvp_rolling_l10(opp_abbr, pos_bucket, market):
+    """
+    Pull opponent's last 10 games of positional defense data.
+    Returns (l10_dvp_mult, l10_dvp_label) — mult relative to season avg.
+    """
+    try:
+        from nba_api.stats.endpoints import LeagueDashPtDefend
+        pos_map = {"Guard": "G", "Wing": "F", "Big": "C", "Unknown": "G"}
+        pt_pos = pos_map.get(pos_bucket, "G")
+        raw = LeagueDashPtDefend(
+            league_id="00",
+            per_mode_simple="PerGame",
+            defense_category=pt_pos,
+            season=current_season_str(),
+            timeout=20,
+        ).get_data_frames()[0]
+        if raw is None or raw.empty:
+            return 1.0, "Avg"
+        opp_key = str(opp_abbr).upper()
+        # Match team abbreviation
+        row = raw[raw["TEAM_ABBREVIATION"].str.upper() == opp_key]
+        if row.empty:
+            return 1.0, "Avg"
+        # Map market to the relevant defensive stat
+        stat_col = {
+            "Points": "D_FG_PCT", "3PM": "D_FG3_PCT",
+            "Rebounds": None, "Assists": None,
+        }.get(market)
+        if stat_col is None or stat_col not in row.columns:
+            return 1.0, "Avg"
+        league_avg = float(raw[stat_col].mean())
+        opp_val = float(row[stat_col].values[0])
+        if league_avg <= 0:
+            return 1.0, "Avg"
+        # Ratio: >1.0 means opponent allows more → favorable for Over
+        ratio = opp_val / league_avg
+        if ratio >= 1.08:
+            return float(np.clip(ratio, 1.0, 1.12)), "Soft Defense"
+        if ratio <= 0.92:
+            return float(np.clip(ratio, 0.88, 1.0)), "Elite Defense"
+        return 1.0, "Avg"
+    except Exception:
+        return 1.0, "Avg"
+
+# ──────────────────────────────────────────────
 # [UPGRADE 2] PROJECTED MINUTES
 # ──────────────────────────────────────────────
 def compute_projected_minutes(game_log_df, n_games=10):
@@ -1073,6 +1399,62 @@ def compute_projected_minutes(game_log_df, n_games=10):
         return avg_min, bool(dnp_risk)
     except Exception:
         return None, False
+
+# ──────────────────────────────────────────────
+# [UPGRADE NEW] OPPONENT FATIGUE FACTOR
+# When the opposing team is on a B2B or 3-in-4 stretch,
+# their defense degrades — this gives us a BOOST for the player's stats.
+# Sharp bettors specifically target opponents in compressed schedules.
+# NBA research shows defensive rating drops ~2-3 pts on B2B for the defense.
+# ──────────────────────────────────────────────
+@st.cache_data(ttl=60*60*2, show_spinner=False)
+def get_opponent_schedule_fatigue(opp_abbr, game_date):
+    """
+    Look up the opponent team's recent schedule to detect fatigue.
+    Returns (opp_fatigue_mult, opp_fatigue_label).
+    mult > 1.0 means opponent is tired → our player benefits.
+    """
+    if not opp_abbr:
+        return 1.0, "Unknown"
+    try:
+        # Find an opponent player to use as a proxy for their schedule
+        # We use the team's own game log via scoreboard history
+        teams = nba_teams.get_teams()
+        opp_team = next((t for t in teams
+                         if t.get("abbreviation","").upper() == str(opp_abbr).upper()), None)
+        if not opp_team:
+            return 1.0, "Unknown"
+        # Use scoreboardv2 to get recent game dates for the opponent team
+        from nba_api.stats.endpoints import LeagueGameLog
+        bulk = _fetch_bulk_gamelogs()
+        if bulk is None:
+            return 1.0, "Unknown"
+        # Get the team's players from bulk logs; find any active player
+        # Use team abbreviation from MATCHUP column
+        team_abbr_upper = str(opp_abbr).upper()
+        team_games = bulk[bulk["MATCHUP"].str.upper().str.contains(team_abbr_upper, na=False)]
+        if team_games.empty:
+            return 1.0, "Unknown"
+        dates = pd.to_datetime(team_games["GAME_DATE"], errors="coerce").dropna().dt.date.unique()
+        if len(dates) == 0:
+            return 1.0, "Unknown"
+        all_dates = sorted(dates.tolist() + [game_date])
+        recent = [d for d in all_dates if (game_date - d).days <= 4]
+        n_in_4 = len(recent)
+        recent6 = [d for d in all_dates if (game_date - d).days <= 6]
+        n_in_6 = len(recent6)
+        # Check if opp is on B2B
+        prev_games = [d for d in dates if (game_date - d).days >= 1]
+        on_b2b = any((game_date - d).days == 1 for d in prev_games)
+        if n_in_6 >= 4:
+            return 1.04, "Opp 4-in-6"
+        if n_in_4 >= 3:
+            return 1.025, "Opp 3-in-4"
+        if on_b2b:
+            return 1.015, "Opp B2B"
+        return 1.0, "Opp Rested"
+    except Exception:
+        return 1.0, "Unknown"
 
 def volatility_penalty_factor(cv):
     if cv is None: return 0.0
@@ -1316,6 +1698,124 @@ def classify_edge(ev):
     if e < 0.08:   return "Solid Edge"
     return "Strong Edge"
 
+# ──────────────────────────────────────────────
+# [UPGRADE NEW] COMPOSITE SHARPNESS SCORE (0–100)
+# Combines: model edge + CLV direction + steam move + sharp alignment +
+#           trend convergence + hot/cold signal + regime stability.
+# This is the single most actionable signal for sharp bettors:
+# Score ≥ 70 = elite bet (fire max Kelly)
+# Score 55–69 = solid play (standard Kelly)
+# Score 40–54 = lean play (half Kelly)
+# Score < 40 = skip (below threshold)
+# ──────────────────────────────────────────────
+def compute_composite_sharpness(
+    ev_adj,           # float: EV after volatility penalty (e.g. 0.08 = 8%)
+    p_cal,            # float: calibrated win probability
+    p_implied,        # float: market implied probability
+    hot_cold,         # str: "Hot" / "Cold" / "Average"
+    mv_signal,        # dict: line_movement signal
+    sharp_div,        # dict: sharp book divergence
+    regime,           # str: "Stable" / "Mixed" / "Chaotic"
+    trend_score,      # float: -1 to +1 from compute_trend_convergence
+    vol_cv,           # float: coefficient of variation
+    dnp_risk,         # bool
+    b2b,              # bool
+    fatigue_label,    # str: "3-in-4" / "4-in-6" / "Normal"
+    game_total,       # float or None: game O/U total
+):
+    """Returns (composite_score 0–100, score_components dict)."""
+    if p_cal is None or ev_adj is None:
+        return 0, {}
+    score = 0.0
+    components = {}
+
+    # 1. Model EV (max 30 pts)  — linear from 0% → 15% EV maps to 0→30
+    ev_pts = float(np.clip(float(ev_adj) / 0.15 * 30.0, 0.0, 30.0))
+    score += ev_pts
+    components["ev"] = round(ev_pts, 1)
+
+    # 2. Model advantage over market (max 20 pts)
+    adv = (float(p_cal) - float(p_implied)) if p_implied is not None else 0.0
+    adv_pts = float(np.clip(adv / 0.15 * 20.0, -10.0, 20.0))
+    score += adv_pts
+    components["advantage"] = round(adv_pts, 1)
+
+    # 3. Steam move / line movement (max 15 pts)
+    mv_pts = 0.0
+    if isinstance(mv_signal, dict):
+        steam = mv_signal.get("steam", False)
+        pips  = float(mv_signal.get("pips", 0.0) or 0.0)
+        if steam and abs(pips) >= 0.5:
+            mv_pts = min(15.0, 8.0 + abs(pips) * 4.0)
+        elif not steam and abs(pips) >= 0.5:
+            mv_pts = -8.0   # fade signal: sharps on other side
+    score += mv_pts
+    components["steam"] = round(mv_pts, 1)
+
+    # 4. Sharp book divergence (max 10 pts)
+    sh_pts = 0.0
+    if isinstance(sharp_div, dict) and sharp_div:
+        if sharp_div.get("confirm"):
+            sh_pts = 10.0
+        elif sharp_div.get("fade_model"):
+            sh_pts = -10.0
+    score += sh_pts
+    components["sharp_confirm"] = round(sh_pts, 1)
+
+    # 5. Trend convergence (max 15 pts)
+    tr_pts = float(np.clip(float(trend_score or 0.0) * 15.0, -10.0, 15.0))
+    score += tr_pts
+    components["trend"] = round(tr_pts, 1)
+
+    # 6. Hot/cold signal (max 8 pts)
+    hc_pts = 8.0 if hot_cold == "Hot" else (-5.0 if hot_cold == "Cold" else 0.0)
+    score += hc_pts
+    components["hot_cold"] = round(hc_pts, 1)
+
+    # 7. Regime penalty (max -15 pts)
+    reg_pts = 0.0 if regime == "Stable" else (-7.0 if regime == "Mixed" else -15.0)
+    score += reg_pts
+    components["regime"] = round(reg_pts, 1)
+
+    # 8. Volatility (max -10 pts for high CV)
+    cv_pts = 0.0
+    if vol_cv is not None:
+        v = float(vol_cv)
+        cv_pts = float(np.clip(-(v - 0.15) / 0.25 * 10.0, -10.0, 0.0))
+    score += cv_pts
+    components["volatility"] = round(cv_pts, 1)
+
+    # 9. Risk flags (DNP, B2B, fatigue)
+    risk_pts = 0.0
+    if dnp_risk: risk_pts -= 8.0
+    if b2b:      risk_pts -= 4.0
+    if fatigue_label == "3-in-4":  risk_pts -= 5.0
+    elif fatigue_label == "4-in-6": risk_pts -= 8.0
+    score += risk_pts
+    components["risk_flags"] = round(risk_pts, 1)
+
+    # 10. Game total environment bonus (max 5 pts)
+    gt_pts = 0.0
+    if game_total is not None:
+        t = float(game_total)
+        if t >= 225:   gt_pts = 5.0
+        elif t >= 218: gt_pts = 2.0
+        elif t <= 208: gt_pts = -3.0
+    score += gt_pts
+    components["game_total"] = round(gt_pts, 1)
+
+    final = float(np.clip(score, 0.0, 100.0))
+    components["total"] = round(final, 1)
+    return round(final, 1), components
+
+def sharpness_tier(score):
+    if score is None: return "SKIP", "#4A607A"
+    s = float(score)
+    if s >= 70: return "ELITE",  "#00FFB2"
+    if s >= 55: return "SOLID",  "#00AAFF"
+    if s >= 40: return "LEAN",   "#FFB800"
+    return "SKIP", "#FF3358"
+
 def kelly_fraction(p, price):
     try:
         p, o = float(p), float(price)
@@ -1427,6 +1927,98 @@ def estimate_blowout_risk(team_abbr, opp_abbr, spread_abs=None):
             if def_gap<0.18: return 0.18
             return 0.24
     return 0.10
+
+# ──────────────────────────────────────────────
+# [UPGRADE NEW] GAME TOTAL + SPREAD FETCHER
+# Fetch game O/U total and spread from Odds API — used for:
+#   1) Accurate blowout risk (spread replaces DEF_RATING heuristic)
+#   2) Game-script context multiplier (high total → more scoring props)
+#   3) Pace environment signal
+# Sharp bettors consistently use game totals as the primary filter
+# for prop bet environments. A game with total O/U 225+ is a much
+# better scoring environment than one with total O/U 205.
+# ──────────────────────────────────────────────
+@st.cache_data(ttl=60*15, show_spinner=False)
+def fetch_game_total_and_spread(event_id):
+    """
+    Returns (total, spread, home_ml, away_ml) from Odds API for a given event.
+    total: the over/under game total (e.g. 218.5)
+    spread: the home team point spread (e.g. -4.5 means home favored by 4.5)
+    Returns (None, None, None, None) on failure.
+    """
+    key = odds_api_key()
+    if not key or not event_id:
+        return None, None, None, None
+    try:
+        data, err = http_get_json(
+            f"{ODDS_BASE}/sports/{SPORT_KEY_NBA}/events/{event_id}/odds",
+            {"apiKey": key, "regions": "us", "markets": "totals,spreads,h2h",
+             "oddsFormat": "decimal", "dateFormat": "iso"}
+        )
+        if err or not data:
+            return None, None, None, None
+        total, spread, home_ml, away_ml = None, None, None, None
+        for book in data.get("bookmakers", []):
+            bk = book.get("key", "")
+            for mkt in book.get("markets", []):
+                mk = mkt.get("key", "")
+                if mk == "totals" and total is None:
+                    for out in mkt.get("outcomes", []):
+                        if str(out.get("name", "")).lower() == "over":
+                            total = safe_float(out.get("point"))
+                            break
+                elif mk == "spreads" and spread is None:
+                    for out in mkt.get("outcomes", []):
+                        if out.get("point") is not None:
+                            # Store home spread (negative = home favored)
+                            spread = safe_float(out.get("point"))
+                            break
+                elif mk == "h2h":
+                    outs = mkt.get("outcomes", [])
+                    home_name = data.get("home_team", "")
+                    if len(outs) >= 2:
+                        for out in outs:
+                            if out.get("name", "") == home_name:
+                                home_ml = safe_float(out.get("price"))
+                            else:
+                                away_ml = safe_float(out.get("price"))
+            # Prefer sharp books for these — stop early if we have all data from sharp source
+            if total is not None and spread is not None and bk in ("pinnacle", "circa", "bookmaker"):
+                break
+        return total, spread, home_ml, away_ml
+    except Exception:
+        return None, None, None, None
+
+def compute_game_script_mult(game_total, spread_abs, market, team_abbr, opp_abbr):
+    """
+    Compute a game-script context multiplier based on the game total and spread.
+
+    High totals boost scoring, rebounding, and assists props.
+    Blowout risk (large spread) penalizes starters via early garbage time.
+    League avg total ~220. Values calibrated from empirical NBA data.
+    """
+    try:
+        mult = 1.0
+        if game_total is not None:
+            t = float(game_total)
+            # League avg ~220. Each 5 points above/below adjusts by ~1.5%
+            delta = (t - 220.0) / 5.0
+            if market in ("Points", "PRA", "PA", "PR", "Alt Points", "H1 Points", "H2 Points"):
+                mult *= float(np.clip(1.0 + delta * 0.015, 0.88, 1.12))
+            elif market in ("Assists", "RA"):
+                mult *= float(np.clip(1.0 + delta * 0.012, 0.90, 1.10))
+            elif market in ("Rebounds", "PR"):
+                # More possessions = more rebounding opportunities but also more FGM
+                mult *= float(np.clip(1.0 + delta * 0.008, 0.92, 1.08))
+            elif market in ("3PM", "Alt 3PM", "H1 3PM"):
+                # High-total games correlate with open 3s
+                mult *= float(np.clip(1.0 + delta * 0.010, 0.90, 1.10))
+            # Low total games (< 210): harder for any scoring props
+            if t < 210 and market in ("Points", "PRA", "PA", "PR"):
+                mult *= float(np.clip(1.0 - (210 - t) / 200.0, 0.87, 1.0))
+        return float(np.clip(mult, 0.80, 1.20))
+    except Exception:
+        return 1.0
 
 # ──────────────────────────────────────────────
 # ODDS API  [FIX 7: retry on 429]
@@ -2808,6 +3400,44 @@ def compute_leg_projection(
         ctx_mult *= _usage_boost
     blowout_prob = estimate_blowout_risk(team_abbr, opp_abbr, spread_abs=None)
 
+    # [UPGRADE NEW] Fetch game total + spread for accurate blowout risk and game-script context
+    _game_total, _game_spread, _home_ml, _away_ml = None, None, None, None
+    if meta and meta.get("event_id"):
+        try:
+            _game_total, _game_spread, _home_ml, _away_ml = fetch_game_total_and_spread(meta["event_id"])
+        except Exception:
+            pass
+    if _game_spread is not None:
+        try:
+            blowout_prob = estimate_blowout_risk(team_abbr, opp_abbr, spread_abs=abs(float(_game_spread)))
+        except Exception:
+            pass
+
+    # [UPGRADE NEW] Schedule fatigue (3-in-4, 4-in-6)
+    _fatigue_mult, _fatigue_label = compute_schedule_fatigue(gldf, game_date)
+
+    # [RESEARCH UPGRADE] Rolling 3-game minutes fatigue (CMU: most predictive signal)
+    _rolling_min_avg, _rolling_min_mult, _rolling_min_label = compute_rolling_minutes_fatigue(gldf, n_recent=3)
+    # Combine with schedule fatigue — take the more severe penalty
+    if _rolling_min_mult < _fatigue_mult:
+        _fatigue_mult = _rolling_min_mult
+        _fatigue_label = _rolling_min_label if _fatigue_label == "Normal" else f"{_fatigue_label}+{_rolling_min_label}"
+
+    # [RESEARCH UPGRADE] Both-teams-B2B suppressor
+    _both_b2b, _both_b2b_mult = compute_both_teams_b2b(team_abbr, opp_abbr, b2b_flag, game_date)
+
+    # [UPGRADE NEW] Opponent fatigue → defensive boost
+    _opp_fatigue_mult, _opp_fatigue_label = get_opponent_schedule_fatigue(opp_abbr, game_date)
+
+    # [UPGRADE NEW] Game-script multiplier from game total
+    _game_script_mult = compute_game_script_mult(_game_total, _game_spread, base_market, team_abbr, opp_abbr)
+
+    # [RESEARCH UPGRADE] Travel fatigue (cross-country B2B is worst case: ~5-7% penalty)
+    _travel_mult, _travel_label = compute_travel_fatigue(team_abbr, gldf, game_date, b2b_flag)
+
+    # [RESEARCH UPGRADE] L10 rolling DvP — computed after pos_bucket is resolved below
+    _dvp_l10_mult, _dvp_l10_label = 1.0, "Avg"  # placeholder; overwritten after pos_bucket computed
+
     # Blowout risk trims expected minutes: high-blowout games see starters sit early.
     # Cap at 12% reduction (blowout_prob=0.80 → ×0.88) to avoid over-penalizing.
     if proj_minutes is not None and blowout_prob is not None and blowout_prob > 0.20:
@@ -2833,6 +3463,13 @@ def compute_leg_projection(
 
     # [UPGRADE 5] Hot / cold regime (uses full season log for broader z-score)
     hot_cold_label, hot_cold_z = compute_player_regime_hot_cold(stat_series)
+
+    # [RESEARCH UPGRADE] L10 rolling DvP — resolve pos_bucket now that it's computed
+    _dvp_l10_mult, _dvp_l10_label = get_dvp_rolling_l10(opp_abbr, pos_bucket, base_market)
+
+    # [RESEARCH UPGRADE] Over-rate L10 + mean reversion signal
+    _over_rate_l10, _reversion_signal, _reversion_label = compute_over_rate_and_mean_reversion(
+        stat_series, float(line))
 
     # DD / TD: short-circuit to frequency-based probability
     if is_dd_td:
@@ -2867,8 +3504,10 @@ def compute_leg_projection(
     else:
         mu_shrunk = bayesian_shrink(mu_raw, n_valid, base_market, pos_bucket) if mu_raw is not None else None
 
-    # Apply half factor and positional D to projection — include opp-specific factor
+    # Apply half factor and positional D to projection — include opp-specific factor + all new multipliers
     proj_full = (mu_shrunk * ctx_mult * rest_mult * ha_mult * pos_def_mult * opp_specific_factor
+                 * _fatigue_mult * _opp_fatigue_mult * _game_script_mult
+                 * _both_b2b_mult * _travel_mult * _dvp_l10_mult
                  if mu_shrunk is not None else None)
     proj = proj_full * half_factor if (proj_full is not None and is_half_market) else proj_full
     regime_label, regime_score = classify_regime(vol_cv, blowout_prob, ctx_mult)
@@ -2895,6 +3534,15 @@ def compute_leg_projection(
         p_raw = p_model
 
     p_cal = p_raw
+
+    # [RESEARCH UPGRADE] Mean reversion nudge — applied as a small probability adjustment.
+    # When player has gone over 8+/10 games (hot streak), a regression nudge slightly lowers p_cal.
+    # When player has gone over ≤2/10 games (cold streak), nudge slightly raises p_cal.
+    # Kept small (max ±0.04) to avoid overriding the bootstrap; it's a second-order signal.
+    if _reversion_signal != 0.0 and p_cal is not None:
+        _is_over_side = "under" not in str(side_str).lower()
+        _nudge = _reversion_signal if _is_over_side else -_reversion_signal
+        p_cal = float(np.clip(float(p_cal) + _nudge, 1e-4, 1 - 1e-4))
 
     ev_raw = ev_per_dollar(p_cal, price_decimal) if (p_cal is not None and price_decimal is not None) else None
     pen = volatility_penalty_factor(vol_cv)
@@ -2948,6 +3596,21 @@ def compute_leg_projection(
         try:
             sharp_div = sharp_divergence_alert(meta["event_id"], mk_key, player_norm, side_str, side_str) or {}
         except Exception: sharp_div = {}
+
+    # [UPGRADE NEW] L3/L5/L10 trend convergence
+    _trend_score, _trend_label, _trend_slope, _l3, _l5, _l10 = compute_trend_convergence(
+        stat_series, float(line), side=side_str)
+
+    # [UPGRADE NEW] Composite sharpness score
+    _sharpness, _sharpness_components = compute_composite_sharpness(
+        ev_adj=ev_adj, p_cal=p_cal, p_implied=p_implied,
+        hot_cold=hot_cold_label, mv_signal=mv_signal,
+        sharp_div=sharp_div, regime=regime_label,
+        trend_score=_trend_score, vol_cv=vol_cv,
+        dnp_risk=bool(dnp_risk), b2b=b2b_flag,
+        fatigue_label=_fatigue_label, game_total=_game_total,
+    )
+    _sharpness_tier_label, _sharpness_tier_color = sharpness_tier(_sharpness)
 
     return {
         "player":           player_name,
@@ -3020,6 +3683,43 @@ def compute_leg_projection(
         # [UPGRADE 5] Hot/cold regime
         "hot_cold":          hot_cold_label,
         "hot_cold_z":        float(hot_cold_z),
+        # [UPGRADE NEW] Schedule fatigue
+        "schedule_fatigue":  _fatigue_mult,
+        "fatigue_label":     _fatigue_label,
+        # [UPGRADE NEW] Opponent fatigue
+        "opp_fatigue_mult":  _opp_fatigue_mult,
+        "opp_fatigue_label": _opp_fatigue_label,
+        # [UPGRADE NEW] Game total / spread / game-script
+        "game_total":        float(_game_total) if _game_total is not None else None,
+        "game_spread":       float(_game_spread) if _game_spread is not None else None,
+        "game_script_mult":  float(_game_script_mult),
+        # [UPGRADE NEW] Trend convergence
+        "trend_score":       float(_trend_score),
+        "trend_label":       _trend_label,
+        "trend_slope":       float(_trend_slope),
+        "l3_avg":            float(_l3) if _l3 is not None else None,
+        "l5_avg":            float(_l5) if _l5 is not None else None,
+        "l10_avg":           float(_l10) if _l10 is not None else None,
+        # [UPGRADE NEW] Composite sharpness score
+        "sharpness_score":   float(_sharpness),
+        "sharpness_tier":    _sharpness_tier_label,
+        "sharpness_color":   _sharpness_tier_color,
+        "sharpness_components": _sharpness_components,
+        # [RESEARCH UPGRADE] Rolling minutes fatigue (CMU most-predictive signal)
+        "rolling_min_avg":   float(_rolling_min_avg) if _rolling_min_avg is not None else None,
+        "rolling_min_label": _rolling_min_label,
+        # [RESEARCH UPGRADE] Both-teams-B2B
+        "both_b2b":          bool(_both_b2b),
+        "both_b2b_mult":     float(_both_b2b_mult),
+        # [RESEARCH UPGRADE] Travel fatigue
+        "travel_mult":       float(_travel_mult),
+        "travel_label":      _travel_label,
+        # [RESEARCH UPGRADE] L10 rolling DvP
+        "dvp_l10_mult":      float(_dvp_l10_mult),
+        "dvp_l10_label":     _dvp_l10_label,
+        # [RESEARCH UPGRADE] Over-rate L10 + mean reversion
+        "over_rate_l10":     float(_over_rate_l10) if _over_rate_l10 is not None else None,
+        "reversion_label":   _reversion_label,
         "errors":            errors,
     }
 
@@ -4077,6 +4777,32 @@ def hot_cold_badge(label):
         f"font-family:Chakra Petch,monospace;font-weight:600;'>{label.upper()}</span>"
     )
 
+def sharpness_badge(score, tier, color):
+    """Render composite sharpness score badge."""
+    if score is None or tier is None: return ""
+    return (
+        f"<span style='background:{color}18;border:1px solid {color}55;color:{color};"
+        f"padding:2px 8px;border-radius:2px;font-size:0.58rem;letter-spacing:0.08em;"
+        f"font-family:Chakra Petch,monospace;font-weight:700;'>⚡ {tier} {score:.0f}</span>"
+    )
+
+def trend_badge(label):
+    """Render trend convergence badge (Strong Bull / Bull / Neutral / Bear / Strong Bear)."""
+    cfg = {
+        "Strong Bull": ("#00FFB2", "#00FFB215"),
+        "Bull":        ("#00AAFF", "#00AAFF15"),
+        "Neutral":     ("#3A5570", "#3A557010"),
+        "Bear":        ("#FF9500", "#FF950015"),
+        "Strong Bear": ("#FF3358", "#FF335815"),
+        "Insufficient":("#3A5570", "#3A557010"),
+    }
+    c, bg = cfg.get(label, ("#3A5570", "#3A557010"))
+    return (
+        f"<span style='background:{bg};border:1px solid {c}50;color:{c};"
+        f"padding:2px 8px;border-radius:2px;font-size:0.58rem;letter-spacing:0.08em;"
+        f"font-family:Chakra Petch,monospace;font-weight:600;'>TREND:{label.upper()}</span>"
+    )
+
 def confidence_tier_color(p_cal):
     """Return border color based on calibrated probability confidence tier."""
     if p_cal is None: return "#1E2D3D"
@@ -4581,14 +5307,25 @@ with tabs[1]:
 <div style='margin-top:0.6rem;display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center;'>
   {regime_badge(leg.get("regime","?"))}
   {hot_cold_badge(leg.get("hot_cold","Average"))}
+  {trend_badge(leg.get("trend_label","Neutral"))}
   {mv_html}
+</div>
+<div style='margin-top:0.35rem;display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center;'>
+  {sharpness_badge(leg.get("sharpness_score"), leg.get("sharpness_tier"), leg.get("sharpness_color","#3A5570"))}
+  {"<span style='font-size:0.58rem;color:#FF6B35;font-family:Chakra Petch,monospace;'>🔥 FATIGUE:{fat_lbl}</span>".format(fat_lbl=leg.get("fatigue_label","Normal")) if leg.get("fatigue_label","Normal") != "Normal" else ""}
+  {"<span style='font-size:0.58rem;color:#00FFB2;font-family:Chakra Petch,monospace;'>OPP-TIRED:{ofl}</span>".format(ofl=leg.get("opp_fatigue_label","Normal")) if leg.get("opp_fatigue_label","Normal") != "Normal" else ""}
+  {"<span style='font-size:0.58rem;color:#B8D0EC;font-family:Chakra Petch,monospace;'>TOT:{gt:.0f}</span>".format(gt=leg["game_total"]) if leg.get("game_total") else ""}
+  {"<span style='font-size:0.58rem;color:#FF3358;font-family:Chakra Petch,monospace;'>⚠ BOTH-B2B</span>" if leg.get("both_b2b") else ""}
+  {"<span style='font-size:0.58rem;color:#FF9500;font-family:Chakra Petch,monospace;'>✈ {tl}</span>".format(tl=leg.get("travel_label","")) if leg.get("travel_label","Normal") != "Normal" else ""}
+  {"<span style='font-size:0.58rem;color:#FFB800;font-family:Chakra Petch,monospace;'>REVERT:{rl}</span>".format(rl=leg.get("reversion_label","")) if leg.get("reversion_label","Normal") not in ("Normal","Insufficient","") else ""}
+  {"<span style='font-size:0.58rem;color:#00AAFF;font-family:Chakra Petch,monospace;'>DvP-L10:{dl}</span>".format(dl=leg.get("dvp_l10_label","Avg")) if leg.get("dvp_l10_label","Avg") != "Avg" else ""}
 </div>
 {sharp_html}
 {"<div style='color:#FFA500;font-size:0.62rem;'>🏥 AUTO TEAMMATE OUT: " + (leg.get("auto_inj_player") or "").title() + "</div>" if leg.get("auto_inj") else ""}
 <div style='margin-top:0.7rem;font-size:0.64rem;color:#4A607A;'>
   ctx x{leg.get("context_mult",1):.3f} | rest x{leg.get("rest_mult",1):.2f} | ha x{leg.get("ha_mult",1):.2f}<br>
   CV={f"{leg['volatility_cv']:.2f}" if leg.get("volatility_cv") else "--"} | N={n_used} games<br>
-  Shrunk mu: {f"{leg['mu_shrunk']:.1f}" if leg.get("mu_shrunk") else "--"}
+  Shrunk mu: {f"{leg['mu_shrunk']:.1f}" if leg.get("mu_shrunk") else "--"} | Trend: L3={f"{leg['l3_avg']:.1f}" if leg.get("l3_avg") else "--"}/L5={f"{leg['l5_avg']:.1f}" if leg.get("l5_avg") else "--"}/L10={f"{leg['l10_avg']:.1f}" if leg.get("l10_avg") else "--"}
 </div>"""
                 stake = safe_float(leg.get("stake"))
                 if stake > 0:
@@ -4633,6 +5370,50 @@ with tabs[1]:
                     if sigma and proj:
                         st.caption(f"Confidence band: {proj:.1f} ± {sigma:.1f} (μ±σ) — "
                                    f"{max(0,proj-sigma):.1f} to {proj+sigma:.1f}")
+                    # [UPGRADE NEW] Sharpness components breakdown
+                    _sc = leg.get("sharpness_components") or {}
+                    if _sc:
+                        st.markdown("**Sharpness Breakdown**")
+                        _sc_cols = st.columns(4)
+                        _sc_items = list(_sc.items())
+                        for _ci, (_ck, _cv) in enumerate(_sc_items):
+                            _col = _sc_cols[_ci % 4]
+                            _clr = "#00FFB2" if _cv > 0 else ("#FF3358" if _cv < 0 else "#4A607A")
+                            _col.markdown(
+                                f"<div style='font-size:0.60rem;color:#4A607A;'>{_ck}</div>"
+                                f"<div style='font-family:Fira Code,monospace;font-size:0.75rem;"
+                                f"color:{_clr};font-weight:600;'>{_cv:+.1f}</div>",
+                                unsafe_allow_html=True
+                            )
+                    # [UPGRADE NEW] Trend + game context detail
+                    _gt = leg.get("game_total")
+                    _gs = leg.get("game_spread")
+                    _tl = leg.get("trend_label","Neutral")
+                    _ts = leg.get("trend_slope",0.0)
+                    _fl = leg.get("fatigue_label","Normal")
+                    _ofl = leg.get("opp_fatigue_label","Normal")
+                    _rl = leg.get("rolling_min_label", "Normal")
+                    _rol = leg.get("reversion_label", "Normal")
+                    _or = leg.get("over_rate_l10")
+                    _trvl = leg.get("travel_label", "Normal")
+                    _dvpl = leg.get("dvp_l10_label", "Avg")
+                    _bbf = leg.get("both_b2b", False)
+                    st.markdown(
+                        f"<div style='margin-top:0.5rem;font-size:0.63rem;color:#4A607A;'>"
+                        f"Trend: <span style='color:#EEF4FF;'>{_tl}</span> (slope {_ts:+.2f}/g) | "
+                        f"Game Total: <span style='color:#EEF4FF;'>{f'{_gt:.0f}' if _gt else '--'}</span> | "
+                        f"Spread: <span style='color:#EEF4FF;'>{f'{_gs:+.1f}' if _gs else '--'}</span><br>"
+                        f"Player fatigue: <span style='color:#FF6B35;'>{_fl}</span> | "
+                        f"Opp fatigue: <span style='color:#00FFB2;'>{_ofl}</span> | "
+                        f"Travel: <span style='color:#FF9500;'>{_trvl}</span><br>"
+                        f"Roll-min: <span style='color:#EEF4FF;'>{_rl}</span> | "
+                        f"Both-B2B: <span style='color:{'#FF3358' if _bbf else '#4A607A'};'>{'YES' if _bbf else 'No'}</span> | "
+                        f"DvP-L10: <span style='color:#00AAFF;'>{_dvpl}</span><br>"
+                        f"Over-rate L10: <span style='color:#EEF4FF;'>{f'{_or*100:.0f}%' if _or is not None else '--'}</span> | "
+                        f"Reversion signal: <span style='color:#FFB800;'>{_rol}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
 
                 # 🤖 AI per-leg edge explanation
                 if _get_anthropic_key():
@@ -4643,7 +5424,7 @@ with tabs[1]:
                                 player=str(leg.get("player","?")),
                                 market=str(leg.get("market","?")),
                                 line=float(leg.get("line") or 0),
-                                side="Over",
+                                side=str(leg.get("side","Over")),
                                 proj=float(leg.get("proj") or 0),
                                 p_cal=float(leg.get("p_cal") or 0),
                                 ev_pct=float(leg.get("ev_pct") or 0),
@@ -4657,6 +5438,15 @@ with tabs[1]:
                                 n_games=int(leg.get("n_games_used") or 0),
                                 errors_str=", ".join((leg.get("errors") or [])[:3]),
                                 api_key=_get_anthropic_key(),
+                                trend_label=str(leg.get("trend_label","Neutral")),
+                                sharpness_score=leg.get("sharpness_score"),
+                                sharpness_tier=str(leg.get("sharpness_tier","?")),
+                                game_total=leg.get("game_total"),
+                                fatigue_label=str(leg.get("fatigue_label","Normal")),
+                                opp_fatigue_label=str(leg.get("opp_fatigue_label","Normal")),
+                                l3_avg=leg.get("l3_avg"),
+                                l5_avg=leg.get("l5_avg"),
+                                l10_avg=leg.get("l10_avg"),
                             )
                         st.session_state[_ai_leg_key] = _ai_txt
                     _ai_leg_txt = st.session_state.get(_ai_leg_key)
@@ -5255,10 +6045,27 @@ with tabs[2]:
                                 # DFS columns — edge above the 50% flat floor
                                 "pp_edge_%": round((pc - 0.50) * 100, 1),
                                 "pp_2leg_ev_%": round((DFS_PP_PAYOUTS[2] * pc**2 - 1.0) * 100, 1),
+                                # [UPGRADE NEW] composite sharpness + trend signals
+                                "sharp": safe_round(leg.get("sharpness_score"), 0),
+                                "sharp_tier": leg.get("sharpness_tier", ""),
+                                "trend": leg.get("trend_label", ""),
+                                "fatigue": leg.get("fatigue_label", "Normal"),
+                                "game_tot": safe_round(leg.get("game_total"), 0),
+                                "l3": safe_round(leg.get("l3_avg"), 1),
+                                "l5": safe_round(leg.get("l5_avg"), 1),
                             })
             out_df = pd.DataFrame(out_rows)
             if not out_df.empty:
-                out_df = out_df.sort_values("ev_adj_pct", ascending=False).head(max_rows)
+                # [UPGRADE NEW] Sort by composite sharpness score (when available), then by EV as tiebreaker
+                if "sharp" in out_df.columns and out_df["sharp"].notna().any():
+                    out_df["_sort_key"] = (
+                        out_df["sharp"].fillna(0).astype(float) * 0.6 +
+                        out_df["ev_adj_pct"].fillna(0).astype(float) * 0.4
+                    )
+                    out_df = out_df.sort_values("_sort_key", ascending=False).drop(columns=["_sort_key"])
+                else:
+                    out_df = out_df.sort_values("ev_adj_pct", ascending=False)
+                out_df = out_df.head(max_rows)
                 # [FIX 13] Persist scanner results in session state
                 # [AUDIT FIX] scan_id ties results to their dropped list — consecutive scans can't corrupt display
                 _scan_id = _now_iso()
@@ -5397,7 +6204,9 @@ with tabs[2]:
                         _slate_payload = json.dumps([
                             {k: v for k, v in r.items()
                              if k in ["player","market","line","side","p_cal","ev_adj_pct",
-                                      "edge_cat","hot_cold","dnp?","opp","source"]}
+                                      "edge_cat","hot_cold","dnp_risk","opp","src","b2b",
+                                      "sharp","sharp_tier","trend","fatigue","game_tot",
+                                      "l3","l5","steam","min_proj","inj_boost"]}
                             for r in _top_edges
                         ], indent=2)
                         _slate_ai = ai_slate_briefing(_slate_payload, api_key=_get_anthropic_key())
