@@ -101,7 +101,6 @@ Be specific with player names, lines, and percentages. Write like a quant fund's
         with client.messages.stream(
             model="claude-sonnet-4-6",
             max_tokens=500,
-            thinking={"type": "adaptive"},
             messages=[{"role": "user", "content": prompt}]
         ) as stream:
             msg = stream.get_final_message()
@@ -3578,16 +3577,37 @@ h1, h2, h3 {
 --------------------------------------------------- */
 #MainMenu { visibility: hidden; }
 footer    { visibility: hidden; }
-header    { visibility: hidden; }
 [data-testid="stToolbar"] { display: none !important; }
+/* Hide header content but NOT the sidebar toggle */
+header    { visibility: hidden; }
+header > * { visibility: hidden; }
 /* Keep the mobile sidebar toggle button visible and tappable */
 [data-testid="stSidebarCollapsedControl"] {
   visibility: visible !important;
+  display: flex !important;
   pointer-events: auto !important;
   position: fixed !important;
-  top: 0.5rem !important;
+  top: 0.75rem !important;
   left: 0.75rem !important;
   z-index: 999999 !important;
+  background: rgba(0,255,178,0.12) !important;
+  border: 1px solid rgba(0,255,178,0.3) !important;
+  border-radius: 6px !important;
+  padding: 0.3rem !important;
+  min-width: 2.5rem !important;
+  min-height: 2.5rem !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+[data-testid="stSidebarCollapsedControl"]:active {
+  background: rgba(0,255,178,0.25) !important;
+}
+[data-testid="stSidebarCollapsedControl"] svg {
+  visibility: visible !important;
+  display: block !important;
+  fill: #00FFB2 !important;
+  width: 1.2rem !important;
+  height: 1.2rem !important;
 }
 
 /* ---------------------------------------------------
