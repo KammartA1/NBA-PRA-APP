@@ -3,7 +3,7 @@
 # Claude AI integration: edge explainer, slate briefing,
 # parlay optimizer — plus all v2.1 fixes
 # ============================================================
-import os, re, math, time, json, difflib, hashlib, logging, threading
+import os, re, math, time, json, difflib, hashlib, logging, threading, html as _html
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from concurrent.futures import ThreadPoolExecutor
@@ -4137,6 +4137,10 @@ border-top:1px solid #0E1E30;'>▸ AI ENGINE</div>""", unsafe_allow_html=True)
             st.session_state["_anthropic_key_override"] = _ai_key_input
             if _ai_key_input:
                 os.environ["ANTHROPIC_API_KEY"] = _ai_key_input
+            # Invalidate all cached AI results so new key takes effect immediately
+            for _k in list(st.session_state.keys()):
+                if _k.startswith("_ai_"):
+                    st.session_state.pop(_k, None)
         elif _ai_key_input and not os.environ.get("ANTHROPIC_API_KEY"):
             os.environ["ANTHROPIC_API_KEY"] = _ai_key_input
 
@@ -4670,7 +4674,7 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                 st.session_state["_ai_parlay_result"] = _parlay_ai
             _parlay_ai_txt = st.session_state.get("_ai_parlay_result")
             if _parlay_ai_txt:
-                _parlay_html = _parlay_ai_txt.replace("\n", "<br>")
+                _parlay_html = _html.escape(_parlay_ai_txt).replace("\n", "<br>")
                 st.markdown(
                     f"<div style='background:#00FFB20A;border:1px solid #00FFB228;"
                     f"border-radius:4px;padding:0.8rem 1rem;margin-top:0.5rem;"
@@ -4725,7 +4729,7 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                     st.session_state["_ai_pp_helper_result"] = _pp_ai
                 _pp_ai_txt = st.session_state.get("_ai_pp_helper_result")
                 if _pp_ai_txt:
-                    _pp_html = _pp_ai_txt.replace("\n", "<br>")
+                    _pp_html = _html.escape(_pp_ai_txt).replace("\n", "<br>")
                     st.markdown(
                         f"<div style='background:#FFB80009;border:1px solid #FFB80040;"
                         f"border-radius:4px;padding:0.8rem 1rem;margin-top:0.5rem;"
@@ -5204,7 +5208,7 @@ with tabs[2]:
                     st.session_state.pop("_ai_slate_result", None)
             _slate_ai_txt = st.session_state.get("_ai_slate_result")
             if _slate_ai_txt:
-                _slate_html = _slate_ai_txt.replace("\n", "<br>")
+                _slate_html = _html.escape(_slate_ai_txt).replace("\n", "<br>")
                 st.markdown(
                     f"<div style='background:#00AAFF0A;border:1px solid #00AAFF25;"
                     f"border-radius:4px;padding:0.85rem 1.1rem;margin:0.5rem 0;"
