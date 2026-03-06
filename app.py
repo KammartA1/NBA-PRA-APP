@@ -3580,8 +3580,15 @@ h1, h2, h3 {
 footer    { visibility: hidden; }
 header    { visibility: hidden; }
 [data-testid="stToolbar"] { display: none !important; }
-/* Keep the mobile sidebar toggle button visible even though we hide the header */
-[data-testid="stSidebarCollapsedControl"] { visibility: visible !important; }
+/* Keep the mobile sidebar toggle button visible and tappable */
+[data-testid="stSidebarCollapsedControl"] {
+  visibility: visible !important;
+  pointer-events: auto !important;
+  position: fixed !important;
+  top: 0.5rem !important;
+  left: 0.75rem !important;
+  z-index: 999999 !important;
+}
 
 /* ---------------------------------------------------
    DIVIDERS
