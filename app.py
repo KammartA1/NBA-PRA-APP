@@ -3128,10 +3128,10 @@ st.set_page_config(
 st.markdown("""
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Fira+Code:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<style>
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<div style="display:none"><style>
+/* ---------------------------------------------------
    DESIGN TOKENS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 :root {
   --bg:       #030810;
   --bg2:      #060D18;
@@ -3164,9 +3164,9 @@ st.markdown("""
   --radius2:  6px;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    BASE / APP SHELL
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 .stApp {
   background: var(--bg) !important;
   font-family: var(--font-mono) !important;
@@ -3205,9 +3205,9 @@ st.markdown("""
   max-width: 1500px !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    TAB BAR
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 .stTabs [data-baseweb="tab-list"] {
   background: var(--bg2) !important;
   border-bottom: 1px solid var(--border) !important;
@@ -3241,9 +3241,9 @@ st.markdown("""
   background: transparent !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    BUTTONS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 .stButton > button {
   background: transparent !important;
   border: 1px solid var(--green) !important;
@@ -3269,9 +3269,9 @@ st.markdown("""
   transform: translateY(0px) !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    INPUTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 .stTextInput input,
 .stNumberInput input,
 .stSelectbox > div > div,
@@ -3304,9 +3304,9 @@ st.markdown("""
   margin-bottom: 3px !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    SLIDERS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 [data-testid="stSlider"] label p {
   font-family: var(--font-head) !important;
   font-size: 0.60rem !important;
@@ -3318,9 +3318,9 @@ st.markdown("""
   background: var(--border) !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    DATAFRAMES / TABLES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 .stDataFrame {
   background: var(--panel) !important;
   border: 1px solid var(--border) !important;
@@ -3355,9 +3355,9 @@ st.markdown("""
   background: rgba(0,0,0,0.15) !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    METRICS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 [data-testid="stMetric"] {
   background: linear-gradient(135deg, var(--panel) 0%, var(--panel2) 100%) !important;
   border: 1px solid var(--border) !important;
@@ -3400,9 +3400,9 @@ st.markdown("""
   font-size: 0.68rem !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    ALERTS / NOTIFICATIONS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 [data-testid="stAlert"] {
   background: var(--panel) !important;
   border-radius: var(--radius) !important;
@@ -3426,9 +3426,9 @@ st.markdown("""
   background: var(--blue-lo) !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    EXPANDERS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 [data-testid="stExpander"] {
   border: 1px solid var(--border) !important;
   border-radius: var(--radius) !important;
@@ -3449,9 +3449,9 @@ st.markdown("""
   background: rgba(255,255,255,0.02) !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    CHECKBOXES & RADIO
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 [data-testid="stCheckbox"] label p,
 [data-testid="stRadio"] label p {
   font-family: var(--font-body) !important;
@@ -3464,9 +3464,9 @@ st.markdown("""
   accent-color: var(--green) !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    SPINNER
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 [data-testid="stSpinner"] {
   font-family: var(--font-head) !important;
   font-size: 0.68rem !important;
@@ -3474,9 +3474,9 @@ st.markdown("""
   letter-spacing: 0.1em !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    CAPTIONS & MARKDOWN TEXT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 .stMarkdown p {
   font-family: var(--font-body) !important;
   color: var(--text) !important;
@@ -3495,9 +3495,9 @@ h1, h2, h3 {
   letter-spacing: 0.04em !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    SELECT SLIDER (RADIO BUTTONS)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 [data-testid="stRadio"] > div {
   gap: 0.4rem !important;
 }
@@ -3514,17 +3514,17 @@ h1, h2, h3 {
   color: var(--green) !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    SCROLLBARS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: var(--bg2); }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    ANIMATIONS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 @keyframes pulse-green {
   0%, 100% { box-shadow: 0 0 4px #00FFB2; opacity: 1; }
   50%       { box-shadow: 0 0 10px #00FFB2, 0 0 20px #00FFB240; opacity: 0.8; }
@@ -3544,9 +3544,9 @@ h1, h2, h3 {
   animation: fade-in 0.3s ease-out;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    MULTISELECT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 [data-testid="stMultiSelect"] > div > div {
   background: var(--bg3) !important;
   border-color: var(--border) !important;
@@ -3558,9 +3558,9 @@ h1, h2, h3 {
   font-family: var(--font-mono) !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    DATE INPUT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 [data-testid="stDateInput"] input {
   background: var(--bg3) !important;
   border: 1px solid var(--border) !important;
@@ -3570,31 +3570,31 @@ h1, h2, h3 {
   border-radius: var(--radius) !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    TOP NAV BAR HIDE / STREAMLIT CHROME REMOVAL
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 #MainMenu { visibility: hidden; }
 footer    { visibility: hidden; }
 header    { visibility: hidden; }
 [data-testid="stToolbar"] { display: none !important; }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    DIVIDERS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 hr {
   border: none !important;
   border-top: 1px solid var(--border) !important;
   margin: 0.8rem 0 !important;
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ---------------------------------------------------
    SIDEBAR OVERRIDE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+--------------------------------------------------- */
 section[data-testid="stSidebar"] {
   background: linear-gradient(180deg, #04080F 0%, #060D18 100%) !important;
   border-right: 1px solid #0A1828 !important;
 }
-</style>
+</style></div>
 """, unsafe_allow_html=True)
 
 # ─── MAIN HEADER ─────────────────────────────────────────────
@@ -3782,7 +3782,7 @@ def mv_badge(mv):
 
 # ─── SIDEBAR CSS INJECTION ─────────────────────────────────────
 st.markdown("""
-<style>
+<div style="display:none"><style>
 /* ── Sidebar shell ── */
 [data-testid="stSidebar"] {
     background: linear-gradient(180deg, #04080F 0%, #070F1C 60%, #060C18 100%) !important;
@@ -3902,7 +3902,7 @@ st.markdown("""
     font-size: 0.72rem !important;
     color: #8BA8BF !important;
 }
-</style>
+</style></div>
 """, unsafe_allow_html=True)
 
 # ─── SIDEBAR ──────────────────────────────────────────────────
