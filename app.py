@@ -6446,6 +6446,20 @@ margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #0E1E30;'>
 </div>
 """, unsafe_allow_html=True)
 
+        # ── BANKROLL ─────────────────────────────────────────
+        st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-bottom:0.6rem;margin-top:0.8rem;padding-bottom:0.4rem;
+border-bottom:1px solid #0E1E30;'>▸ BANKROLL</div>""", unsafe_allow_html=True)
+
+        _set_br = st.number_input("Bankroll ($)", min_value=0.0,
+            value=float(st.session_state.get("bankroll", 1000.0)), step=50.0,
+            key="settings_bankroll")
+        st.session_state["bankroll"] = float(_set_br)
+        _bs2 = load_user_state(user_id)
+        _bs2["bankroll"] = float(_set_br)
+        save_user_state(user_id, _bs2)
+
         # ── MODEL PARAMETERS ────────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
