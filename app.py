@@ -3125,7 +3125,7 @@ st.set_page_config(
 )
 
 # ─── FONTS + GLOBAL PREMIUM STYLES ───────────────────────────
-st.markdown("""
+st.html("""
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Fira+Code:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <div style="display:none"><style>
@@ -3595,98 +3595,67 @@ section[data-testid="stSidebar"] {
   border-right: 1px solid #0A1828 !important;
 }
 </style></div>
-""", unsafe_allow_html=True)
+""")
 
 # ─── MAIN HEADER ─────────────────────────────────────────────
 _now_str = datetime.utcnow().strftime("%b %d %Y  %H:%M UTC")
-st.markdown(f"""
-<div class="fade-in" style="
-    background: linear-gradient(135deg, #060E1C 0%, #07101E 50%, #050C18 100%);
-    border: 1px solid #0E2040;
-    border-top: 2px solid #00FFB2;
-    border-radius: 6px;
-    padding: 1.1rem 1.6rem 1rem 1.6rem;
-    margin-bottom: 1.4rem;
-    position: relative;
-    overflow: hidden;
-">
-  <!-- Background accent glow -->
-  <div style="position:absolute;top:-40px;right:-40px;width:200px;height:200px;
-              background:radial-gradient(circle,rgba(0,255,178,0.04) 0%,transparent 70%);
-              pointer-events:none;"></div>
-  <div style="position:absolute;bottom:-30px;left:30%;width:300px;height:150px;
-              background:radial-gradient(ellipse,rgba(0,170,255,0.03) 0%,transparent 70%);
-              pointer-events:none;"></div>
-
-  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
-
-    <!-- LEFT: Branding -->
-    <div>
-      <div style="font-family:'Chakra Petch',monospace;font-size:0.55rem;
-                  color:#2A5070;letter-spacing:0.30em;text-transform:uppercase;
-                  margin-bottom:0.2rem;">
-        QUANTITATIVE SPORTS ANALYTICS
-      </div>
-      <div style="font-family:'Chakra Petch',monospace;font-size:1.75rem;
-                  font-weight:700;color:#EEF4FF;letter-spacing:0.05em;line-height:1.05;">
-        NBA <span style="color:#00FFB2;">ALPHA</span> ENGINE
-        <span style="font-size:0.60rem;color:#2A5070;vertical-align:middle;
-                     margin-left:0.6rem;font-weight:400;letter-spacing:0.12em;">v2.2</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:1.2rem;margin-top:0.4rem;flex-wrap:wrap;">
-        <div style="display:flex;align-items:center;gap:0.4rem;">
-          <div class="pulse-dot" style="width:6px;height:6px;border-radius:50%;
-                      background:#00FFB2;flex-shrink:0;"></div>
-          <span style="font-family:'Fira Code',monospace;font-size:0.58rem;
-                       color:#00FFB2;letter-spacing:0.08em;">LIVE ODDS</span>
-        </div>
-        <span style="font-family:'Fira Code',monospace;font-size:0.55rem;color:#1A3050;">|</span>
-        <span style="font-family:'Fira Code',monospace;font-size:0.55rem;color:#2A4060;
-                     letter-spacing:0.06em;">BOOTSTRAP · BAYESIAN · KELLY</span>
-        <span style="font-family:'Fira Code',monospace;font-size:0.55rem;color:#1A3050;">|</span>
-        <span style="font-family:'Fira Code',monospace;font-size:0.55rem;color:#2A4060;
-                     letter-spacing:0.06em;">-110 VIG REMOVED</span>
-      </div>
-    </div>
-
-    <!-- RIGHT: Status panel -->
-    <div style="display:flex;gap:1rem;align-items:flex-start;flex-wrap:wrap;">
-      <div style="background:#04080F;border:1px solid #0A1828;border-radius:4px;
-                  padding:0.5rem 0.8rem;min-width:90px;text-align:center;">
-        <div style="font-family:'Fira Code',monospace;font-size:0.50rem;color:#2A4060;
-                    letter-spacing:0.12em;margin-bottom:2px;">BREAKEVEN</div>
-        <div style="font-family:'Fira Code',monospace;font-size:0.90rem;font-weight:700;
-                    color:#FFB800;letter-spacing:0.04em;">52.4%</div>
-        <div style="font-family:'Fira Code',monospace;font-size:0.47rem;color:#1A3050;
-                    margin-top:1px;">AT -110</div>
-      </div>
-      <div style="background:#04080F;border:1px solid #0A1828;border-radius:4px;
-                  padding:0.5rem 0.8rem;min-width:90px;text-align:center;">
-        <div style="font-family:'Fira Code',monospace;font-size:0.50rem;color:#2A4060;
-                    letter-spacing:0.12em;margin-bottom:2px;">PP FLOOR</div>
-        <div style="font-family:'Fira Code',monospace;font-size:0.90rem;font-weight:700;
-                    color:#00AAFF;letter-spacing:0.04em;">50.0%</div>
-        <div style="font-family:'Fira Code',monospace;font-size:0.47rem;color:#1A3050;
-                    margin-top:1px;">PRIZEPICKS</div>
-      </div>
-      <div style="background:#04080F;border:1px solid #0A1828;border-radius:4px;
-                  padding:0.5rem 0.8rem;min-width:110px;text-align:center;">
-        <div style="font-family:'Fira Code',monospace;font-size:0.50rem;color:#2A4060;
-                    letter-spacing:0.12em;margin-bottom:2px;">UTC</div>
-        <div style="font-family:'Fira Code',monospace;font-size:0.70rem;font-weight:600;
-                    color:#8BA8BF;letter-spacing:0.02em;">{_now_str}</div>
-        <div style="font-family:'Fira Code',monospace;font-size:0.47rem;color:#1A3050;
-                    margin-top:1px;">MARKET CLOCK</div>
-      </div>
-    </div>
-
-  </div>
-
-  <!-- Bottom divider rule with gradient -->
-  <div style="margin-top:0.8rem;height:1px;
-              background:linear-gradient(90deg,#00FFB230,#00AAFF20,transparent);"></div>
-</div>
-""", unsafe_allow_html=True)
+_hdr = (
+    "<div style='background:linear-gradient(135deg,#060E1C,#07101E,#050C18);"
+    "border:1px solid #0E2040;border-top:2px solid #00FFB2;border-radius:6px;"
+    "padding:1.1rem 1.6rem 1rem 1.6rem;margin-bottom:1.4rem;overflow:hidden;'>"
+    "<div style='display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;'>"
+    "<div>"
+    "<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;color:#2A5070;"
+    "letter-spacing:0.30em;text-transform:uppercase;margin-bottom:0.2rem;'>QUANTITATIVE SPORTS ANALYTICS</div>"
+    "<div style='font-family:Chakra Petch,monospace;font-size:1.75rem;font-weight:700;"
+    "color:#EEF4FF;letter-spacing:0.05em;line-height:1.05;'>NBA "
+    "<span style='color:#00FFB2;'>ALPHA</span> ENGINE "
+    "<span style='font-size:0.60rem;color:#2A5070;vertical-align:middle;"
+    "margin-left:0.6rem;font-weight:400;letter-spacing:0.12em;'>v2.2</span></div>"
+    "<div style='display:flex;align-items:center;gap:1.2rem;margin-top:0.4rem;flex-wrap:wrap;'>"
+    "<div style='display:flex;align-items:center;gap:0.4rem;'>"
+    "<div style='width:6px;height:6px;border-radius:50%;background:#00FFB2;"
+    "box-shadow:0 0 6px #00FFB2;flex-shrink:0;'></div>"
+    "<span style='font-family:Fira Code,monospace;font-size:0.58rem;"
+    "color:#00FFB2;letter-spacing:0.08em;'>LIVE ODDS</span></div>"
+    "<span style='font-family:Fira Code,monospace;font-size:0.55rem;color:#1A3050;'>|</span>"
+    "<span style='font-family:Fira Code,monospace;font-size:0.55rem;color:#2A4060;"
+    "letter-spacing:0.06em;'>BOOTSTRAP · BAYESIAN · KELLY</span>"
+    "<span style='font-family:Fira Code,monospace;font-size:0.55rem;color:#1A3050;'>|</span>"
+    "<span style='font-family:Fira Code,monospace;font-size:0.55rem;color:#2A4060;"
+    "letter-spacing:0.06em;'>-110 VIG REMOVED</span>"
+    "</div></div>"
+    "<div style='display:flex;gap:1rem;align-items:flex-start;flex-wrap:wrap;'>"
+    "<div style='background:#04080F;border:1px solid #0A1828;border-radius:4px;"
+    "padding:0.5rem 0.8rem;min-width:90px;text-align:center;'>"
+    "<div style='font-family:Fira Code,monospace;font-size:0.50rem;color:#2A4060;"
+    "letter-spacing:0.12em;margin-bottom:2px;'>BREAKEVEN</div>"
+    "<div style='font-family:Fira Code,monospace;font-size:0.90rem;font-weight:700;"
+    "color:#FFB800;letter-spacing:0.04em;'>52.4%</div>"
+    "<div style='font-family:Fira Code,monospace;font-size:0.47rem;color:#1A3050;"
+    "margin-top:1px;'>AT -110</div></div>"
+    "<div style='background:#04080F;border:1px solid #0A1828;border-radius:4px;"
+    "padding:0.5rem 0.8rem;min-width:90px;text-align:center;'>"
+    "<div style='font-family:Fira Code,monospace;font-size:0.50rem;color:#2A4060;"
+    "letter-spacing:0.12em;margin-bottom:2px;'>PP FLOOR</div>"
+    "<div style='font-family:Fira Code,monospace;font-size:0.90rem;font-weight:700;"
+    "color:#00AAFF;letter-spacing:0.04em;'>50.0%</div>"
+    "<div style='font-family:Fira Code,monospace;font-size:0.47rem;color:#1A3050;"
+    "margin-top:1px;'>PRIZEPICKS</div></div>"
+    f"<div style='background:#04080F;border:1px solid #0A1828;border-radius:4px;"
+    f"padding:0.5rem 0.8rem;min-width:110px;text-align:center;'>"
+    f"<div style='font-family:Fira Code,monospace;font-size:0.50rem;color:#2A4060;"
+    f"letter-spacing:0.12em;margin-bottom:2px;'>UTC</div>"
+    f"<div style='font-family:Fira Code,monospace;font-size:0.70rem;font-weight:600;"
+    f"color:#8BA8BF;letter-spacing:0.02em;'>{_now_str}</div>"
+    f"<div style='font-family:Fira Code,monospace;font-size:0.47rem;color:#1A3050;"
+    f"margin-top:1px;'>MARKET CLOCK</div></div>"
+    "</div></div>"
+    "<div style='margin-top:0.8rem;height:1px;"
+    "background:linear-gradient(90deg,#00FFB230,#00AAFF20,transparent);'></div>"
+    "</div>"
+)
+st.html(_hdr)
 
 # ─── CARD & UI HELPERS ────────────────────────────────────────
 def make_card(content_html, border_color="#112030", glow=False, accent_top=None):
@@ -3781,7 +3750,7 @@ def mv_badge(mv):
     return f"<span style='color:{col};font-size:0.65rem;'>{icon} {arrow} {abs(pips):.1f}</span>"
 
 # ─── SIDEBAR CSS INJECTION ─────────────────────────────────────
-st.markdown("""
+st.html("""
 <div style="display:none"><style>
 /* ── Sidebar shell ── */
 [data-testid="stSidebar"] {
@@ -3903,7 +3872,7 @@ st.markdown("""
     color: #8BA8BF !important;
 }
 </style></div>
-""", unsafe_allow_html=True)
+""")
 
 # ─── SIDEBAR ──────────────────────────────────────────────────
 with st.sidebar:
