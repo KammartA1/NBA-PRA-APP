@@ -18,7 +18,10 @@ logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(m
 # CLAUDE AI INTEGRATION
 # ──────────────────────────────────────────────
 def _get_anthropic_key():
-    """Get Anthropic API key from Streamlit secrets or environment."""
+    """Get Anthropic API key from session state, Streamlit secrets, or environment."""
+    override = st.session_state.get("_anthropic_key_override", "")
+    if override:
+        return override
     try:
         return st.secrets.get("ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
     except Exception:
@@ -38,7 +41,7 @@ def _anthropic_client():
 @st.cache_data(ttl=60*60*4, show_spinner=False)
 def ai_explain_edge(player, market, line, side, proj, p_cal, ev_pct,
                     edge_cat, hot_cold, rest_days, dnp_risk, b2b,
-                    opp, vol_cv, n_games, errors_str):
+                    opp, vol_cv, n_games, errors_str, api_key=""):
     """Use Claude Haiku to generate a plain-English edge explanation for one leg."""
     client = _anthropic_client()
     if not client:
@@ -74,7 +77,7 @@ Write a 3-4 sentence analysis covering: (1) why the model projects this outcome,
         return f"AI analysis unavailable: {e}"
 
 @st.cache_data(ttl=60*60*2, show_spinner=False)
-def ai_slate_briefing(slate_json):
+def ai_slate_briefing(slate_json, api_key=""):
     """Use Claude Sonnet to generate a comprehensive slate analysis."""
     client = _anthropic_client()
     if not client:
@@ -107,7 +110,7 @@ Be specific with player names, lines, and percentages. Write like a quant fund's
         return f"AI briefing unavailable: {e}"
 
 @st.cache_data(ttl=60*60*2, show_spinner=False)
-def ai_prizepicks_helper(entry_json: str, legs_json: str) -> str | None:
+def ai_prizepicks_helper(entry_json: str, legs_json: str, api_key: str = "") -> str | None:
     """
     Use Claude to recommend Power Play vs Flex for a PrizePicks entry.
     Inputs are sportsbook-calibrated (p_cal from -110 vig-removed model).
@@ -144,7 +147,7 @@ Write in concise bullet format, max 250 words. Reference specific player names a
         return f"PP Helper unavailable: {e}"
 
 @st.cache_data(ttl=60*60*2, show_spinner=False)
-def ai_parlay_optimizer(legs_json):
+def ai_parlay_optimizer(legs_json, api_key=""):
     """Use Claude Sonnet to recommend optimal parlay combinations."""
     client = _anthropic_client()
     if not client:
@@ -3577,6 +3580,8 @@ h1, h2, h3 {
 footer    { visibility: hidden; }
 header    { visibility: hidden; }
 [data-testid="stToolbar"] { display: none !important; }
+/* Keep the mobile sidebar toggle button visible even though we hide the header */
+[data-testid="stSidebarCollapsedControl"] { visibility: visible !important; }
 
 /* ---------------------------------------------------
    DIVIDERS
@@ -4448,6 +4453,7 @@ with tabs[1]:
                                 vol_cv=float(leg.get("volatility_cv") or 0),
                                 n_games=int(leg.get("n_games_used") or 0),
                                 errors_str=", ".join((leg.get("errors") or [])[:3]),
+                                api_key=_get_anthropic_key(),
                             )
                         st.session_state[_ai_leg_key] = _ai_txt
                     _ai_leg_txt = st.session_state.get(_ai_leg_key)
@@ -4660,7 +4666,7 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                         }
                         for l in res
                     ]
-                    _parlay_ai = ai_parlay_optimizer(json.dumps(_legs_data, indent=2))
+                    _parlay_ai = ai_parlay_optimizer(json.dumps(_legs_data, indent=2), api_key=_get_anthropic_key())
                 st.session_state["_ai_parlay_result"] = _parlay_ai
             _parlay_ai_txt = st.session_state.get("_ai_parlay_result")
             if _parlay_ai_txt:
@@ -4714,6 +4720,7 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                         _pp_ai = ai_prizepicks_helper(
                             json.dumps(_pp_top, indent=2),
                             json.dumps(_pp_legs_data, indent=2),
+                            api_key=_get_anthropic_key(),
                         )
                     st.session_state["_ai_pp_helper_result"] = _pp_ai
                 _pp_ai_txt = st.session_state.get("_ai_pp_helper_result")
@@ -5190,7 +5197,7 @@ with tabs[2]:
                                       "edge_cat","hot_cold","dnp?","opp","source"]}
                             for r in _top_edges
                         ], indent=2)
-                        _slate_ai = ai_slate_briefing(_slate_payload)
+                        _slate_ai = ai_slate_briefing(_slate_payload, api_key=_get_anthropic_key())
                     st.session_state["_ai_slate_result"] = _slate_ai
             with _sl_clear_col:
                 if st.button("Clear", key="ai_slate_clear_btn"):
