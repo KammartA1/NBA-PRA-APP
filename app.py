@@ -3125,7 +3125,7 @@ st.set_page_config(
 )
 
 # ─── FONTS + GLOBAL PREMIUM STYLES ───────────────────────────
-st.markdown("""
+st.html("""
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Fira+Code:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <div style="display:none"><style>
@@ -3595,7 +3595,7 @@ section[data-testid="stSidebar"] {
   border-right: 1px solid #0A1828 !important;
 }
 </style></div>
-""", unsafe_allow_html=True)
+""")
 
 # ─── MAIN HEADER ─────────────────────────────────────────────
 _now_str = datetime.utcnow().strftime("%b %d %Y  %H:%M UTC")
@@ -3655,7 +3655,7 @@ _hdr = (
     "background:linear-gradient(90deg,#00FFB230,#00AAFF20,transparent);'></div>"
     "</div>"
 )
-st.markdown(_hdr, unsafe_allow_html=True)
+st.html(_hdr)
 
 # ─── CARD & UI HELPERS ────────────────────────────────────────
 def make_card(content_html, border_color="#112030", glow=False, accent_top=None):
@@ -3750,7 +3750,7 @@ def mv_badge(mv):
     return f"<span style='color:{col};font-size:0.65rem;'>{icon} {arrow} {abs(pips):.1f}</span>"
 
 # ─── SIDEBAR CSS INJECTION ─────────────────────────────────────
-st.markdown("""
+st.html("""
 <div style="display:none"><style>
 /* ── Sidebar shell ── */
 [data-testid="stSidebar"] {
@@ -3872,7 +3872,7 @@ st.markdown("""
     color: #8BA8BF !important;
 }
 </style></div>
-""", unsafe_allow_html=True)
+""")
 
 # ─── SIDEBAR ──────────────────────────────────────────────────
 with st.sidebar:
