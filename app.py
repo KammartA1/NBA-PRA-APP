@@ -479,7 +479,7 @@ STAT_FIELDS = {
     "FTA":             "FTA",
 }
 
-# Half-game projection scale factors
+# Half-game projection scale factors (league-average baseline)
 HALF_FACTOR = {
     "H1 Points": 0.52, "H1 Rebounds": 0.52, "H1 Assists": 0.52,
     "H1 3PM": 0.52, "H1 PRA": 0.52, "H1 PR": 0.52, "H1 PA": 0.52,
@@ -491,6 +491,30 @@ HALF_FACTOR = {
     "Q1 Points": 0.25, "Q1 Rebounds": 0.24, "Q1 Assists": 0.24,
     "Q1 3PM": 0.24, "Q1 PRA": 0.25, "Q1 FTM": 0.23, "Q1 FGA": 0.25,
 }
+
+# [AUDIT FIX] Position-specific half-game adjustment deltas on top of HALF_FACTOR baseline.
+# Guards attack more in H1 (faster pace, early shot attempts); Bigs grab more boards in H2
+# (closeouts, putbacks in crunch time); Wings are near-neutral.
+_HALF_POS_DELTA = {
+    "Guard": {
+        "H1 Points": +0.02, "H1 3PM": +0.02, "H1 FGA": +0.02, "H1 FGM": +0.01,
+        "H2 Rebounds": -0.02, "H2 PR": -0.01,
+    },
+    "Big": {
+        "H2 Rebounds": +0.03, "H2 PR": +0.02, "H2 RA": +0.02,
+        "H1 FTM": -0.02, "H1 FTA": -0.02,   # fewer foul-drawing touches in H1
+    },
+    "Wing": {},   # near-neutral; real split captured by boxscore data when available
+    "Unknown": {},
+}
+
+def get_half_factor(market_name, position_bucket="Unknown"):
+    """Return position-adjusted half-game scaling factor."""
+    base = HALF_FACTOR.get(market_name, 1.0)
+    if base == 1.0:
+        return base   # not a half/Q1 market
+    delta = _HALF_POS_DELTA.get(position_bucket, {}).get(market_name, 0.0)
+    return float(np.clip(base + delta, 0.05, 0.95))
 
 # Alt markets — same engine, different API key
 ALT_MARKETS = {"Alt Points","Alt Rebounds","Alt Assists","Alt 3PM"}
@@ -678,7 +702,7 @@ def get_season_string(today=None):
 # ──────────────────────────────────────────────
 # BULK GAME LOG — one API call for ALL players
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*30, show_spinner=False)  # 30min — balances freshness vs API quota
+@st.cache_data(ttl=60*10, show_spinner=False)  # 10min — reduced from 30min to keep projections fresh mid-session
 def _fetch_bulk_gamelogs():
     """LeagueGameLog: ONE call returns every player's game log for the season.
     Replaces ~200 individual PlayerGameLog calls for a full-slate scan.
@@ -901,7 +925,9 @@ def bayesian_shrink(observed_mu, n_obs, market, position_bucket):
     if prior is None or observed_mu is None:
         return observed_mu
     # [FIX 2] Adaptive k: shrinks less for experienced players
-    k = max(2.0, 8.0 / (1.0 + math.log1p(max(n_obs, 1) / 5.0)))
+    # [AUDIT FIX] Reduced min k 2.0→1.0 and numerator 8.0→5.0 to preserve observed edges
+    # for players with >8 games of history rather than pulling all projections to league avg
+    k = max(1.0, 5.0 / (1.0 + math.log1p(max(n_obs, 1) / 5.0)))
     w_prior = k / (k + max(n_obs, 1))
     w_obs   = 1.0 - w_prior
     # Clip to >= 0: stat means can't be negative
@@ -991,7 +1017,7 @@ def compute_opp_specific_factor(game_log_df, opp_abbr, market, n_min=3):
         else:
             opp_avg = pd.to_numeric(opp_df.get(stat_col), errors="coerce").mean()
             rest_avg = pd.to_numeric(rest_df.get(stat_col), errors="coerce").mean()
-        if pd.isna(opp_avg) or pd.isna(rest_avg) or rest_avg == 0:
+        if pd.isna(opp_avg) or pd.isna(rest_avg) or rest_avg <= 1e-6:
             return 1.0, n_opp
         ratio = opp_avg / rest_avg
         # 40% weight on opponent-specific (dampen for small sample)
@@ -1064,6 +1090,9 @@ def passes_volatility_gate(cv, ev_raw, skew=None, bet_type="Over"):
         return False, "CV>0.35 (too volatile)"
     if v > 0.25 and (ev_raw is None or float(ev_raw) < 0.06):
         return False, "CV>0.25 needs EV>=6%"
+    # [AUDIT FIX] Low-CV bets still need minimum EV — no edge means no bet
+    if v > 0.15 and (ev_raw is None or float(ev_raw) < 0.02):
+        return False, "CV>0.15 needs EV>=2%"
     # [FIX 5] Skewness-adjusted threshold
     if skew is not None and v > 0.20:
         is_over = "over" in str(bet_type).lower()
@@ -1143,6 +1172,19 @@ def estimate_player_correlation(leg1, leg2):
     # Same player + same market = identical bet (perfect correlation)
     if pid1 and pid2 and int(pid1) == int(pid2) and leg1.get("market") == leg2.get("market"):
         return 1.0
+    # Same player + different markets — correlated via shared minutes/game script
+    if pid1 and pid2 and int(pid1) == int(pid2):
+        m1l = leg1.get("market") or ""
+        m2l = leg2.get("market") or ""
+        _pts_grp = {"Points", "PRA", "PA", "Alt Points"}
+        _reb_grp = {"Rebounds", "PR", "RA"}
+        _ast_grp = {"Assists", "PA", "RA"}
+        _same_family = (
+            (m1l in _pts_grp and m2l in _pts_grp) or
+            (m1l in _reb_grp and m2l in _reb_grp) or
+            (m1l in _ast_grp and m2l in _ast_grp)
+        )
+        return 0.70 if _same_family else 0.45  # different families: correlated via minutes
     if pid1 and pid2:
         emp = empirical_leg_correlation(
             int(pid1), int(pid2), leg1.get("market","Points"), leg2.get("market","Points")
@@ -1277,6 +1319,7 @@ def kelly_fraction(p, price):
         p, o = float(p), float(price)
         if o<=1.0 or p<=0 or p>=1: return 0.0
         b=o-1.0; q=1.0-p
+        if b < 1e-9: return 0.0   # guard against floating-point near-zero denominator
         return float(max(0.0, (b*p-q)/b))
     except: return 0.0
 
@@ -2486,6 +2529,11 @@ def kelly_parlay_optimizer(legs, payout_mult, max_legs=4, bankroll=1000.0, frac_
             evals, evecs = np.linalg.eigh(sub_corr)
             evals = np.clip(evals, 1e-6, None)
             corr_psd = evecs @ np.diag(evals) @ evecs.T
+            # Renormalize diagonal to 1.0 (clipping can perturb it) and enforce symmetry
+            _d = np.sqrt(np.maximum(np.diag(corr_psd), 1e-12))
+            corr_psd = corr_psd / np.outer(_d, _d)
+            np.fill_diagonal(corr_psd, 1.0)
+            corr_psd = (corr_psd + corr_psd.T) / 2.0
 
             # Gaussian copula MC
             z = rng.multivariate_normal(np.zeros(n), corr_psd, N_SIMS_PARLAY)
@@ -2528,6 +2576,11 @@ def monte_carlo_game_sim(legs, n_sims=20000, payout_mult=3.0):
         evals, evecs = np.linalg.eigh(corr_mat)
         evals = np.clip(evals, 1e-6, None)
         corr_psd = evecs @ np.diag(evals) @ evecs.T
+        # Renormalize diagonal to 1.0 and enforce symmetry
+        _d = np.sqrt(np.maximum(np.diag(corr_psd), 1e-12))
+        corr_psd = corr_psd / np.outer(_d, _d)
+        np.fill_diagonal(corr_psd, 1.0)
+        corr_psd = (corr_psd + corr_psd.T) / 2.0
         rng = np.random.default_rng(42)
         z = rng.multivariate_normal(np.zeros(n), corr_psd, n_sims)
         u = _sc.norm.cdf(z)
@@ -2762,6 +2815,11 @@ def compute_leg_projection(
     pos_str = get_player_position(player_name) or ""
     pos_bucket = get_position_bucket(pos_str)
 
+    # [AUDIT FIX] Apply position-specific half-game factor when real split data isn't available
+    if is_half_market and half_factor != 1.0:
+        half_factor = get_half_factor(market_name, pos_bucket)
+        _orig_half_factor = half_factor
+
     # Positional defensive grade multiplier
     pos_def_mult = positional_def_multiplier(opp_abbr, pos_bucket, base_market)
 
@@ -2859,6 +2917,12 @@ def compute_leg_projection(
 
     stake_dollars, stake_frac, stake_reason = 0.0, 0.0, "gated"
     # [AUDIT FIX] Minimum EV threshold: noise below 2% is not worth staking
+    # [AUDIT FIX 2] Enforce daily/weekly loss stops before computing stake
+    _uid = st.session_state.get("_auth_user", "")
+    _stop_hit, _stop_msg = is_loss_stop_active(_uid, bankroll)
+    if _stop_hit:
+        gate_ok = False
+        gate_reason = _stop_msg
     if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj >= 0.02:
         stake_dollars, stake_frac, stake_reason = recommended_stake(
             bankroll, float(p_cal), float(price_decimal), frac_kelly, max_risk_frac)
@@ -3076,6 +3140,13 @@ def recompute_pricing_fields(leg, calib):
     bankroll = float(st.session_state.get("bankroll",0.0) or 0)
     frac_k = float(st.session_state.get("frac_kelly",0.25) or 0.25)
     cap_frac = float(st.session_state.get("max_risk_per_bet",5.0) or 5.0)/100.0
+    uid = st.session_state.get("_auth_user", "")
+    _stop_active, _stop_reason = is_loss_stop_active(uid, bankroll)
+    if _stop_active:
+        gate_ok = False
+        gate_reason = _stop_reason
+        leg["gate_ok"] = False
+        leg["gate_reason"] = _stop_reason
     if gate_ok and p_cal and price and leg.get("ev_adj") and float(leg["ev_adj"])>0 and bankroll>0:
         sd, sf, sr = recommended_stake(bankroll, float(p_cal), float(price), frac_k, cap_frac)
         leg["stake"]=float(sd); leg["stake_frac"]=float(sf); leg["stake_reason"]=sr
@@ -3167,6 +3238,47 @@ def load_history(uid):
         if os.path.exists(fp): return pd.read_csv(fp)
     except Exception: pass
     return pd.DataFrame()
+
+def compute_period_loss_pct(uid, bankroll, days=1):
+    """Return net loss as a fraction of bankroll over the last `days` calendar days.
+    Positive return = net loss. Returns 0.0 on any error."""
+    try:
+        if bankroll <= 0: return 0.0
+        h = load_history(uid)
+        if h.empty or "date" not in h.columns: return 0.0
+        cutoff = (date.today() - timedelta(days=days - 1)).isoformat()
+        recent = h[h["date"] >= cutoff] if "date" in h.columns else pd.DataFrame()
+        if recent.empty: return 0.0
+        pnl = 0.0
+        for _, row in recent.iterrows():
+            outcome = str(row.get("outcome","")).lower()
+            stake = float(row.get("stake", 0) or 0)
+            price = float(row.get("price_decimal", 2.0) or 2.0)
+            if outcome == "win":
+                pnl += stake * (price - 1.0)
+            elif outcome == "loss":
+                pnl -= stake
+        # Return loss as positive fraction (loss_pct = 0.10 means 10% of bankroll lost)
+        return max(0.0, -pnl / bankroll)
+    except Exception:
+        return 0.0
+
+def is_loss_stop_active(uid, bankroll):
+    """Check daily and weekly loss stops. Returns (blocked: bool, reason: str)."""
+    try:
+        max_daily  = float(st.session_state.get("max_daily_loss",  15) or 15) / 100.0
+        max_weekly = float(st.session_state.get("max_weekly_loss", 25) or 25) / 100.0
+        if max_daily > 0:
+            daily_loss = compute_period_loss_pct(uid, bankroll, days=1)
+            if daily_loss >= max_daily:
+                return True, f"daily loss stop hit ({daily_loss*100:.1f}% >= {max_daily*100:.0f}%)"
+        if max_weekly > 0:
+            weekly_loss = compute_period_loss_pct(uid, bankroll, days=7)
+            if weekly_loss >= max_weekly:
+                return True, f"weekly loss stop hit ({weekly_loss*100:.1f}% >= {max_weekly*100:.0f}%)"
+    except Exception:
+        pass
+    return False, ""
 
 def append_history(uid, row):
     df = load_history(uid)
