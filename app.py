@@ -753,16 +753,17 @@ def fetch_player_gamelog(player_id, max_games=15):
     errs = []
     season_str = get_season_string()
     for params in [
+        {"season": season_str, "season_type_all_star": "Regular Season"},
+        {"season": season_str},
         {"season_nullable": season_str, "season_type_all_star": "Regular Season"},
         {"season_nullable": season_str},
-        {"season": season_str},
         {},
     ]:
         try:
             gl = playergamelog.PlayerGameLog(player_id=player_id, timeout=10, **params)
             df = gl.get_data_frames()[0]
             if not df.empty:
-                return df.head(int(max_games)).copy(), errs
+                return df.head(int(max_games)).copy(), []
             errs.append(f"Empty log with params {params}")
         except TypeError as te:
             errs.append(f"TypeError {params}: {te}")
@@ -5454,7 +5455,7 @@ with tabs[2]:
                 if _mkt_v in MARKET_OPTIONS:
                     st.session_state[f"_staged_mkt_{i}"] = _mkt_v
                 st.session_state[f"_staged_mline_{i}"]  = float(r.get("line", 22.5))
-                st.session_state[f"_staged_manual_{i}"] = True   # Use pre-scanned line
+                st.session_state[f"_staged_manual_{i}"] = False  # Fetch from Odds API; scanner line is fallback
                 st.session_state[f"_staged_out_{i}"]    = False
             # Clear unused legs beyond selection count
             for i in range(len(_legs_for_model) + 1, 5):
