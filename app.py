@@ -622,6 +622,8 @@ SPECIALTY_MARKET_KEYS = {
     "player_field_goals_made", "player_field_goals_attempted",
     "player_three_point_field_goals_attempted",
     "player_free_throws_made", "player_free_throws_attempted",
+    # Special / binary markets
+    "player_double_double", "player_triple_double", "player_first_basket",
 }
 
 STAT_FIELDS = {
@@ -2381,10 +2383,22 @@ def _parse_player_prop_outcomes(event_odds, market_key, book_filter=None):
             if mk.get("key") != market_key: continue
             for out in mk.get("outcomes",[]) or []:
                 player = out.get("description") or out.get("name")
-                if player and out.get("point") is not None:
+                point_val = out.get("point")
+                side_val  = out.get("name") or ""
+                # Handle binary markets (DD/TD: Yes/No) and First Basket (player names
+                # as outcomes) which have no numeric point.  Synthesize point=0.5 so
+                # the engine can compare against the Yes-side implied probability.
+                if point_val is None and player:
+                    side_lwr = side_val.strip().lower()
+                    if side_lwr == "no":
+                        continue          # skip No side — engine models Yes probability
+                    # "Yes" outcomes → map to "Over"; First Basket player names → "Over"
+                    side_val  = "Over"
+                    point_val = 0.5
+                if player and point_val is not None:
                     rows.append({"player":player,"player_norm":normalize_name(player),
-                                 "line":float(out.get("point")),"price":out.get("price"),
-                                 "book":(bkey or ""),"side":(out.get("name") or ""),
+                                 "line":float(point_val),"price":out.get("price"),
+                                 "book":(bkey or ""),"side":side_val,
                                  "market_key":market_key,"event_id":eid,
                                  "home_team":home,"away_team":away,"commence_time":ct})
     if book_filter == "consensus" and rows:
@@ -6784,10 +6798,15 @@ with tabs[2]:
                         regions = "us,us2,eu,uk" if any(k in SPECIALTY_MARKET_KEYS for k in batch_keys) else REGION_US
                         odds, oerr = odds_get_event_odds(eid, tuple(batch_keys), regions=regions)
                         if oerr or not odds: continue
+                        _is_spec_batch = any(k in SPECIALTY_MARKET_KEYS for k in batch_keys)
                         for m in markets_sel:
                             mk = ODDS_MARKETS.get(m)
                             if not mk or mk not in batch_keys: continue
-                            bf = sportsbook2 if sportsbook2 != "all" else None
+                            # For specialty markets fetch all books — many books (DK, FD, etc.)
+                            # carry different subsets of H1/H2/FTM/FTA/FGA/FGM/DD/TD etc.
+                            # Applying the book filter here would silently drop all lines when
+                            # the selected book doesn't carry that particular specialty market.
+                            bf = None if _is_spec_batch else (sportsbook2 if sportsbook2 != "all" else None)
                             parsed, _ = _parse_player_prop_outcomes(odds, mk, book_filter=bf)
                             offers.extend([{**r,"market":m} for r in parsed])
                 if offers:
