@@ -378,12 +378,12 @@ def get_referee_foul_factor(crew_chief_name, market):
 # Replaces generic 12% cap with research-validated team-specific margins.
 def get_team_hca_factor(team_abbr, is_home, market):
     """
-    Returns a home-court advantage factor based on team-specific HCA margins.
+    Returns (hca_factor, hca_label) based on team-specific HCA margins.
     Research: OKC+7.0 vs MIA+0.8. Generic 3.0 league avg normalizes to 1.0.
     Converts margin difference to a proportion of typical game scoring (~115 pts).
     """
     if team_abbr is None or is_home is None:
-        return 1.0
+        return 1.0, "N/A"
     try:
         team_hca = TEAM_HCA_MARGIN.get(str(team_abbr).upper(), LEAGUE_AVG_HCA)
         # How much above/below league average is this team's HCA?
@@ -396,9 +396,16 @@ def get_team_hca_factor(team_abbr, is_home, market):
         }
         sensitivity = market_sensitivity.get(market, 0.6)
         factor = 1.0 + (hca_premium * sensitivity * (1.0 if is_home else -1.0))
-        return float(np.clip(factor, 0.97, 1.03))
+        factor = float(np.clip(factor, 0.97, 1.03))
+        if factor >= 1.015:
+            label = f"HCA Boost ({team_abbr}+{team_hca:.1f})"
+        elif factor <= 0.985:
+            label = f"Away Drag ({team_abbr}+{team_hca:.1f})"
+        else:
+            label = "Avg HCA"
+        return factor, label
     except Exception:
-        return 1.0
+        return 1.0, "Avg HCA"
 
 # ──────────────────────────────────────────────
 # CONSTANTS
@@ -885,35 +892,40 @@ def get_season_string(today=None):
 # ──────────────────────────────────────────────
 # BULK GAME LOG — one API call for ALL players
 # ──────────────────────────────────────────────
-@st.cache_data(ttl=60*10, show_spinner=False)  # 10min — reduced from 30min to keep projections fresh mid-session
+@st.cache_data(ttl=60*60*6, show_spinner=False)  # 6h cache — large payload, refresh once per session
 def _fetch_bulk_gamelogs():
     """LeagueGameLog: ONE call returns every player's game log for the season.
     Replaces ~200 individual PlayerGameLog calls for a full-slate scan.
     Returns a DataFrame sorted newest-first per player, or None on failure.
+    Retries up to 3 times with increasing timeout on network errors.
     """
-    try:
-        from nba_api.stats.endpoints import LeagueGameLog
-        df = LeagueGameLog(
-            player_or_team_abbreviation="P",
-            season=get_season_string(),
-            season_type_all_star="Regular Season",
-            timeout=45,
-        ).get_data_frames()[0]
-        if df.empty:
-            return None
-        # Normalize player ID column (LeagueGameLog uses PLAYER_ID)
-        if "PLAYER_ID" not in df.columns and "Player_ID" in df.columns:
-            df = df.rename(columns={"Player_ID": "PLAYER_ID"})
-        df["PLAYER_ID"] = pd.to_numeric(df["PLAYER_ID"], errors="coerce")
-        df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], errors="coerce")
-        # Sort newest → oldest within each player
-        df = df.sort_values(["PLAYER_ID", "GAME_DATE"], ascending=[True, False])
-        # LeagueGameLog returns MIN as float; convert to match PlayerGameLog "MM:SS" format
-        if "MIN" in df.columns:
-            df["MIN"] = pd.to_numeric(df["MIN"], errors="coerce")
-        return df
-    except Exception:
-        return None
+    from nba_api.stats.endpoints import LeagueGameLog
+    for _attempt, _timeout in enumerate([60, 90, 120]):
+        try:
+            df = LeagueGameLog(
+                player_or_team_abbreviation="P",
+                season=get_season_string(),
+                season_type_all_star="Regular Season",
+                timeout=_timeout,
+            ).get_data_frames()[0]
+            if df.empty:
+                return None
+            # Normalize player ID column (LeagueGameLog uses PLAYER_ID)
+            if "PLAYER_ID" not in df.columns and "Player_ID" in df.columns:
+                df = df.rename(columns={"Player_ID": "PLAYER_ID"})
+            df["PLAYER_ID"] = pd.to_numeric(df["PLAYER_ID"], errors="coerce")
+            df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], errors="coerce")
+            # Sort newest → oldest within each player
+            df = df.sort_values(["PLAYER_ID", "GAME_DATE"], ascending=[True, False])
+            # LeagueGameLog returns MIN as float; convert to match PlayerGameLog "MM:SS" format
+            if "MIN" in df.columns:
+                df["MIN"] = pd.to_numeric(df["MIN"], errors="coerce")
+            return df
+        except Exception:
+            if _attempt == 2:
+                return None
+            continue
+    return None
 
 # ──────────────────────────────────────────────
 # GAME LOG FETCHER
