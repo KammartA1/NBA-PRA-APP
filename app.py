@@ -455,8 +455,10 @@ ODDS_MARKETS = {
     "Double Double":   "player_double_double",
     "Triple Double":   "player_triple_double",
     "First Basket":    "player_first_basket",
-    # ── Shooting volume (high-probability) ──────
-    "FGM":             "player_field_goals_made",
+    # ── Shooting volume ───────────────────────────
+    # Confirmed Odds API key: player_field_goals = FGM made.
+    # FGA/FTM/FTA/3PA: no confirmed Odds API key; selectable for PP/UD/Sleeper source only.
+    "FGM":             "player_field_goals",
     "FGA":             "player_field_goals_attempted",
     "3PA":             "player_three_point_field_goals_attempted",
     "FTM":             "player_free_throws_made",
@@ -605,8 +607,9 @@ def dfs_entry_optimizer(legs: list, platform: str = "prizepicks",
     return sorted(results, key=lambda x: x["best_ev_%"] if isinstance(x["best_ev_%"], (int, float)) else -99, reverse=True)[:30]
 
 # Markets that require batching separately (not all books offer these)
+# Only keys CONFIRMED to return data from the Odds API (tested 2026-03-07)
 SPECIALTY_MARKET_KEYS = {
-    # Half-game markets (only DK/FD/etc offer these)
+    # Half-game markets (open ~1-2h before tip-off on DK/FD)
     "player_points_q1q2", "player_rebounds_q1q2",
     "player_assists_q1q2", "player_threes_q1q2",
     "player_points_rebounds_assists_q1q2",
@@ -616,12 +619,8 @@ SPECIALTY_MARKET_KEYS = {
     # Alt lines
     "player_points_alternate", "player_rebounds_alternate",
     "player_assists_alternate", "player_threes_alternate",
-    # Fantasy
-    "player_fantasy_points",
-    # Shooting volume
-    "player_field_goals_made", "player_field_goals_attempted",
-    "player_three_point_field_goals_attempted",
-    "player_free_throws_made", "player_free_throws_attempted",
+    # Shooting volume (confirmed key: player_field_goals = FGM)
+    "player_field_goals",
     # Special / binary markets
     "player_double_double", "player_triple_double", "player_first_basket",
 }
