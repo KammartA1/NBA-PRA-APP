@@ -778,6 +778,27 @@ OPENING_LINES_PATH   = "opening_lines.json"
 WATCHLIST_PATH_TPL   = "watchlist_{uid}.json"
 SCANNER_CACHE_PATH   = "scanner_results_cache.pkl"
 ALERT_HASHES_PATH    = "alert_hashes_cache.json"
+PP_SETTINGS_PATH     = "pp_settings.json"
+
+def load_pp_settings():
+    """Load persisted PrizePicks settings (cookies/JSON, etc.) from disk."""
+    try:
+        if os.path.exists(PP_SETTINGS_PATH):
+            with open(PP_SETTINGS_PATH) as f:
+                return json.load(f) or {}
+    except Exception:
+        pass
+    return {}
+
+def save_pp_settings(**kwargs):
+    """Persist PrizePicks settings to disk.  Pass keyword args to update individual keys."""
+    existing = load_pp_settings()
+    existing.update(kwargs)
+    try:
+        with open(PP_SETTINGS_PATH, "w") as f:
+            json.dump(existing, f)
+    except Exception:
+        pass
 
 
 def _save_scanner_cache():
@@ -2811,43 +2832,61 @@ def compute_td_prob(game_log_df, n_games=10):
 # ──────────────────────────────────────────────
 PRIZEPICKS_API = "https://api.prizepicks.com/projections"
 
-def _parse_pp_response(data):
-    """Parse PrizePicks JSON response into list of prop dicts."""
-    included = {item["id"]: item for item in data.get("included", [])}
+def _parse_pp_response(data, league_filter=("NBA",)):
+    """Parse PrizePicks JSON response into list of prop dicts.
+    Pass league_filter=None to accept all leagues (e.g. when user pastes full-site JSON).
+    """
+    _PP_VALID_TYPES = {"projection", "new_player_projection", "boardprojection"}
+    included = {item["id"]: item for item in data.get("included", []) if isinstance(item, dict) and "id" in item}
     rows = []
     for proj in data.get("data", []):
-        if proj.get("type") != "Projection":
+        if not isinstance(proj, dict):
             continue
-        attrs = proj.get("attributes", {})
-        league = str(attrs.get("league", "") or "").upper()
-        if league and league not in ("NBA",):
+        _type = str(proj.get("type", "")).lower()
+        attrs = proj.get("attributes", {}) or {}
+        # Accept if type matches OR if it has required fields (future-proof against type renames)
+        _has_fields = bool(attrs.get("stat_type") and attrs.get("line_score") is not None)
+        if _type not in _PP_VALID_TYPES and not _has_fields:
             continue
-        rels = proj.get("relationships", {})
+        if league_filter:
+            league = str(attrs.get("league", "") or "").upper()
+            if league and league not in league_filter:
+                continue
+        rels = proj.get("relationships", {}) or {}
         player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
         if not player_id:
             player_id = (rels.get("player", {}).get("data", {}) or {}).get("id")
         player_attrs = included.get(player_id, {}).get("attributes", {}) if player_id else {}
-        player_name = player_attrs.get("name", "") or attrs.get("name", "")
+        player_name = player_attrs.get("name", "") or attrs.get("name", "") or attrs.get("display_name", "")
         stat_type = attrs.get("stat_type", "")
         line_score = attrs.get("line_score")
         if player_name and stat_type and line_score is not None:
-            rows.append({
-                "player": player_name,
-                "stat_type": stat_type,
-                "line": float(line_score),
-                "start_time": attrs.get("start_time", ""),
-                "source": "prizepicks",
-            })
+            try:
+                rows.append({
+                    "player": player_name,
+                    "stat_type": stat_type,
+                    "line": float(line_score),
+                    "start_time": attrs.get("start_time", ""),
+                    "source": "prizepicks",
+                })
+            except (TypeError, ValueError):
+                pass
     return rows
 
-def _pp_request(per_page=500, cookies_str=""):
+def _parse_pp_response_all(data):
+    """Parse PP JSON accepting all leagues — used when user pastes full-site JSON."""
+    return _parse_pp_response(data, league_filter=None)
+
+def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """Make one PrizePicks API request.
     Tries curl_cffi (Chrome TLS impersonation) → cloudscraper → plain requests.
     Returns (response_object_or_None, error_str_or_None).
+    single_stat='true'  → standard stats (Points, Rebounds, etc.)
+    single_stat='false' → combo/specialty stats (PRA, Pts+Reb, Fantasy Score, etc.)
     """
     url = PRIZEPICKS_API
     params = {"league_id": "7", "per_page": str(per_page),
-              "single_stat": "true", "in_play": "false"}
+              "single_stat": single_stat, "in_play": "false"}
     # Full Chrome 120 headers — reduces bot-detection fingerprint
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -2866,13 +2905,19 @@ def _pp_request(per_page=500, cookies_str=""):
         "DNT": "1",
     }
     # Parse optional cookie string from user settings
+    # Guard: if the stored value is actually a JSON response (user pasted JSON into cookies field),
+    # skip it here — fetch_prizepicks_lines() handles that case before calling _pp_request.
     cookie_dict = {}
-    if cookies_str:
+    if cookies_str and not cookies_str.strip().startswith("{"):
         for part in cookies_str.split(";"):
             part = part.strip()
             if "=" in part:
                 k, v = part.split("=", 1)
-                cookie_dict[k.strip()] = v.strip()
+                # Sanitize: HTTP cookie headers must be latin-1 safe
+                k = k.strip().encode("latin-1", errors="ignore").decode("latin-1")
+                v = v.strip().encode("latin-1", errors="ignore").decode("latin-1")
+                if k:
+                    cookie_dict[k] = v
 
     # ── Attempt 1: curl_cffi Chrome TLS impersonation (bypasses PerimeterX) ──
     try:
@@ -2913,42 +2958,77 @@ def _pp_request(per_page=500, cookies_str=""):
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
+def _pp_fetch_one(per_page, cookies_str, single_stat):
+    """Fetch one PP request with retry on 429. Returns (rows, error)."""
+    for attempt in range(3):
+        r, err = _pp_request(per_page=per_page, cookies_str=cookies_str, single_stat=single_stat)
+        if err:
+            return [], err
+        if r is None:
+            return [], "No response from PrizePicks"
+        if r.status_code == 429:
+            if attempt < 2:
+                time.sleep(2 ** (attempt + 1))
+                continue
+            return [], (
+                "PrizePicks rate-limited (429) — Streamlit Cloud IP is throttled. "
+                "Wait 60s and retry, or run the app locally."
+            )
+        if r.status_code == 403:
+            return [], (
+                "HTTP 403 — PerimeterX block. Fix: paste your PrizePicks browser "
+                "cookies into Settings → PrizePicks Cookies, then retry."
+            )
+        if not r.ok:
+            return [], f"HTTP {r.status_code}: {r.text[:300]}"
+        try:
+            rows = _parse_pp_response(r.json())
+        except Exception as e:
+            return [], f"Parse error: {e}"
+        return rows, None
+    return [], None
+
 @st.cache_data(ttl=60*10, show_spinner=False)
 def _fetch_prizepicks_lines_cached(cookies_str=""):
-    for per_page in (500, 250):
-        # Retry up to 3 times on 429 with backoff
-        for attempt in range(3):
-            r, err = _pp_request(per_page=per_page, cookies_str=cookies_str)
+    """Fetch both single-stat AND combo/specialty markets and merge."""
+    all_rows = []
+    seen = set()
+    last_err = None
+
+    for single_stat in ("true", "false"):  # true=standard, false=combo/specialty
+        for per_page in (500, 250):
+            rows, err = _pp_fetch_one(per_page, cookies_str, single_stat)
             if err:
-                return [], err
-            if r is None:
-                return [], "No response from PrizePicks"
-            if r.status_code == 429:
-                if attempt < 2:
-                    time.sleep(2 ** (attempt + 1))  # 2s, 4s
-                    continue
-                return [], (
-                    "PrizePicks rate-limited (429) — Streamlit Cloud IP is throttled. "
-                    "Wait 60s and retry, or run the app locally."
-                )
-            if r.status_code == 403:
-                return [], (
-                    "HTTP 403 — PerimeterX block. Fix: paste your PrizePicks browser "
-                    "cookies into Settings → PrizePicks Cookies, then retry."
-                )
-            if not r.ok:
-                return [], f"HTTP {r.status_code}: {r.text[:300]}"
-            try:
-                rows = _parse_pp_response(r.json())
-            except Exception as e:
-                return [], f"Parse error: {e}"
+                last_err = err
+                # Hard errors (403/429/network) — abort entirely
+                if any(x in err for x in ("403", "429", "rate-limited", "PerimeterX")):
+                    return [], err
+                break  # soft error — try next single_stat value
+            for row in rows:
+                key = (row["player"], row["stat_type"])
+                if key not in seen:
+                    seen.add(key)
+                    all_rows.append(row)
             if rows:
-                return rows, None
-            break  # non-429, non-error, empty — try next per_page
-    return [], "No NBA props found — slate may not be posted yet"
+                break  # got results for this single_stat, no need to try smaller per_page
+
+    if all_rows:
+        return all_rows, None
+    return [], last_err or "No NBA props found — slate may not be posted yet"
 
 def fetch_prizepicks_lines():
     cookies_str = st.session_state.get("pp_cookies", "")
+    # ── Detect if user pasted a full PP JSON response into the cookies/JSON field ──
+    # (common: user pastes the API JSON there instead of actual browser cookies)
+    _stripped = cookies_str.strip() if cookies_str else ""
+    if _stripped.startswith("{") and '"data"' in _stripped:
+        try:
+            data = json.loads(_stripped)
+            rows = _parse_pp_response_all(data)
+            if rows:
+                return rows, None
+        except Exception as _je:
+            return [], f"Stored JSON parse error: {_je}"
     # Only clear cache when cookies changed — avoids redundant API hits
     if st.session_state.get("_pp_last_cookies_used") != cookies_str:
         _fetch_prizepicks_lines_cached.clear()
@@ -3059,18 +3139,43 @@ def fetch_underdog_lines():
 def map_platform_stat_to_market(stat_type):
     """Map PrizePicks/Underdog stat label to internal market name."""
     mapping = {
+        # Standard
         "Points": "Points", "Pts": "Points",
-        "Rebounds": "Rebounds", "Reb": "Rebounds",
+        "Rebounds": "Rebounds", "Reb": "Rebounds", "Total Rebounds": "Rebounds",
         "Assists": "Assists", "Ast": "Assists",
         "3-Pointers Made": "3PM", "3 Pointers Made": "3PM", "3PM": "3PM",
-        "Pts+Reb+Ast": "PRA", "Pts+Reb": "PR", "Pts+Ast": "PA", "Reb+Ast": "RA",
+        # Combo
+        "Pts+Reb+Ast": "PRA", "Points+Rebounds+Assists": "PRA",
+        "Pts+Reb": "PR", "Points+Rebounds": "PR",
+        "Pts+Ast": "PA", "Points+Assists": "PA",
+        "Reb+Ast": "RA", "Rebounds+Assists": "RA",
+        # Defense
         "Blocked Shots": "Blocks", "Blocks": "Blocks", "Blk": "Blocks",
         "Steals": "Steals", "Stl": "Steals",
         "Turnovers": "Turnovers", "Tov": "Turnovers",
-        "Blks+Stls": "Stocks", "Stocks": "Stocks",
+        "Blks+Stls": "Stocks", "Stocks": "Stocks", "Blks+Stls": "Stocks",
+        # Shooting volume (PP specialty markets)
+        "Field Goals Made": "FGM", "FGM": "FGM",
+        "Field Goals Attempted": "FGA", "FGA": "FGA",
+        "3-Pt Attempts": "3PA", "3PA": "3PA", "3-Point Attempts": "3PA",
+        "Free Throws Made": "FTM", "FTM": "FTM",
+        "Free Throws Attempted": "FTA", "FTA": "FTA",
+        # Fantasy / combo
+        "Fantasy Score": "Fantasy Score", "Fantasy Points": "Fantasy Score",
+        # Binary / special
+        "Double Double": "Double Double", "Double-Double": "Double Double",
+        "Triple Double": "Triple Double", "Triple-Double": "Triple Double",
+        # Half / quarter lines
+        "H1 Points": "H1 Points", "H2 Points": "H2 Points",
+        "H1 Rebounds": "H1 Rebounds", "H2 Rebounds": "H2 Rebounds",
+        "H1 Assists": "H1 Assists",
+        "Q1 Points": "Q1 Points", "Q1 Rebounds": "Q1 Rebounds", "Q1 Assists": "Q1 Assists",
+        "1st Half Points": "H1 Points", "2nd Half Points": "H2 Points",
     }
+    s = str(stat_type).strip()
+    s_lower = s.lower()
     for k, v in mapping.items():
-        if k.lower() == str(stat_type).strip().lower():
+        if k.lower() == s_lower:
             return v
     return None
 
@@ -5870,6 +5975,11 @@ for _sk, _sv in _settings_defaults.items():
     if _sk not in st.session_state:
         st.session_state[_sk] = _sv
 
+# Load persisted PrizePicks cookies/JSON from disk so user never has to re-paste
+if "pp_cookies" not in st.session_state:
+    _pp_disk = load_pp_settings()
+    st.session_state["pp_cookies"] = _pp_disk.get("pp_cookies", "")
+
 for k in ["last_results","calibrator_map","scanner_offers","scanner_results"]:
     if k not in st.session_state: st.session_state[k] = None if k != "last_results" else []
 
@@ -5884,10 +5994,10 @@ if st.session_state.get("scanner_results") is None:
 if "_scanner_alert_hashes" not in st.session_state:
     st.session_state["_scanner_alert_hashes"] = _load_alert_hashes()
 
-# Remove markets that have no confirmed Odds API support and are rarely
-# available on PP/UD (shooting volume + binary markets that clutter the list).
-# FGM/FGA/3PA/FTM/FTA: no reliable Odds API key. First Basket: binary, not modeled.
-_MARKET_EXCLUDE_FROM_UI = {"FGM", "FGA", "3PA", "FTM", "FTA", "First Basket"}
+# First Basket is a binary market with no numeric line — exclude from MODEL tab selector.
+# All shooting volume markets (FGM/FGA/FTM/FTA/3PA) and specialty combos are now re-enabled;
+# they're supported via PP/UD direct lines even if Odds API has no matching market key.
+_MARKET_EXCLUDE_FROM_UI = {"First Basket"}
 MARKET_OPTIONS = [k for k in ODDS_MARKETS.keys() if k not in _MARKET_EXCLUDE_FROM_UI]
 
 def _daily_pnl(uid):
@@ -7483,10 +7593,12 @@ with tabs[3]:
                 st.caption("PrizePicks blocks Streamlit Cloud IPs. Paste your browser cookies here to bypass — or use Manual Import below.")
                 _new_ck = st.text_area("Cookie string", value="", height=60, placeholder="_pxmvid=...; __cf_bm=...", key="pp_ck_platforms")
                 if st.button("Save Cookies", key="pp_ck_save_plat"):
-                    st.session_state["pp_cookies"] = _new_ck.strip()
+                    _ck_val2 = _new_ck.strip()
+                    st.session_state["pp_cookies"] = _ck_val2
+                    save_pp_settings(pp_cookies=_ck_val2)
                     _fetch_prizepicks_lines_cached.clear()
                     st.session_state["_pp_last_cookies_used"] = ""
-                    st.success("Cookies saved.")
+                    st.success("Saved to disk — persists across restarts.")
                     st.rerun()
 
         pp_load_tab, pp_manual_tab = st.tabs(["Auto Fetch", "Manual Import"])
@@ -7558,43 +7670,13 @@ with tabs[3]:
                             raise ValueError("Expected a JSON object starting with {. Make sure you copied the full Response body, not just part of it.")
                         if "data" not in data:
                             raise ValueError('JSON is missing a "data" key. Copy the Response tab (not Preview or Headers).')
-                        included = {item["id"]: item for item in data.get("included", []) if isinstance(item, dict) and "id" in item}
-                        # PP API type field varies: "Projection", "new_player_projection",
-                        # "BoardProjection", or may be absent — accept any entry with stat_type + line_score
-                        _PP_VALID_TYPES = {"projection", "new_player_projection", "boardprojection"}
-                        for proj in data.get("data", []):
-                            if not isinstance(proj, dict): continue
-                            _type = str(proj.get("type","")).lower()
-                            attrs = proj.get("attributes", {}) or {}
-                            # Accept if type matches OR if it has required fields (future-proof)
-                            _has_fields = bool(attrs.get("stat_type") and attrs.get("line_score") is not None)
-                            if _type not in _PP_VALID_TYPES and not _has_fields:
-                                continue
-                            rels = proj.get("relationships", {}) or {}
-                            pid = (rels.get("new_player",{}).get("data",{}) or {}).get("id")
-                            if not pid:
-                                pid = (rels.get("player",{}).get("data",{}) or {}).get("id")
-                            pattrs = included.get(pid,{}).get("attributes",{}) if pid else {}
-                            pname = pattrs.get("name","") or attrs.get("name","") or attrs.get("display_name","")
-                            stat_type = attrs.get("stat_type","")
-                            line_score = attrs.get("line_score")
-                            # League filter: only NBA
-                            league = str(attrs.get("league","") or pattrs.get("league","")).upper()
-                            if league and league not in ("NBA",""):
-                                continue
-                            if pname and stat_type and line_score is not None:
-                                try:
-                                    rows.append({"player": pname, "stat_type": stat_type,
-                                                 "line": float(line_score), "source": "prizepicks"})
-                                except (TypeError, ValueError):
-                                    pass
+                        # Use _parse_pp_response_all to accept all leagues + all specialty markets
+                        rows = _parse_pp_response_all(data)
                         if not rows:
-                            # Show debug info to help diagnose
                             _types_seen = list({str(p.get("type","")) for p in data.get("data",[]) if isinstance(p,dict)})[:8]
                             err_msg = (
-                                f"No NBA projections found in the JSON. Types seen: {_types_seen}. "
-                                "Make sure you're on the NBA board in PrizePicks before copying the response, "
-                                "and copy the full Response body (not just headers or preview)."
+                                f"No projections found in the JSON. Types seen: {_types_seen}. "
+                                "Copy the full Response body from the Network tab (not just headers or preview)."
                             )
                     except json.JSONDecodeError as e:
                         err_msg = f'Invalid JSON: {e}. Make sure you copied the entire response (it should start with {{"data":[).'
@@ -7610,6 +7692,12 @@ with tabs[3]:
                     pp_df_manual = pd.DataFrame(rows)
                     st.session_state["pp_lines"] = pp_df_manual
                     st.success(f"Loaded {len(pp_df_manual)} PrizePicks props.")
+                    # Offer to save JSON so future fetches auto-use it without re-pasting
+                    if pp_paste.strip() and pp_paste.strip().startswith("{"):
+                        if st.button("💾 Save this JSON (auto-load on next visit)", key="pp_save_json_btn"):
+                            st.session_state["pp_cookies"] = pp_paste.strip()
+                            save_pp_settings(pp_cookies=pp_paste.strip())
+                            st.success("JSON saved — 'Fetch PP Lines' will use it automatically from now on.")
 
         pp_df = st.session_state.get("pp_lines")
         if pp_df is not None and not pp_df.empty:
@@ -8340,8 +8428,13 @@ with tabs[7]:
             key="pp_cookies_input",
         )
         if st.button("Save PrizePicks Cookies", use_container_width=True):
-            st.session_state["pp_cookies"] = pp_cookies_val.strip()
-            st.success("Cookies saved — Auto Fetch will now use these for auth.")
+            _ck_val = pp_cookies_val.strip()
+            st.session_state["pp_cookies"] = _ck_val
+            save_pp_settings(pp_cookies=_ck_val)
+            _fetch_prizepicks_lines_cached.clear()
+            st.session_state["_pp_last_cookies_used"] = ""
+            _is_json = _ck_val.startswith("{") and '"data"' in _ck_val
+            st.success(f"{'JSON response' if _is_json else 'Cookies'} saved to disk — will persist across restarts.")
     st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
     al_col1, al_col2 = st.columns(2)
     with al_col1:
