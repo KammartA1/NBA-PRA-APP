@@ -5065,6 +5065,8 @@ def compute_leg_projection(
     try:
         if meta and meta.get("price") is not None:
             price_decimal = float(meta.get("price"))
+        elif not meta:
+            price_decimal = 1.909  # Manual line: assume standard -110 so EV/gate compute properly
     except Exception: pass
     p_implied = implied_prob_from_decimal(price_decimal)
 
@@ -6763,7 +6765,7 @@ if "_scanner_alert_hashes" not in st.session_state:
 # First Basket is a binary market with no numeric line — exclude from MODEL tab selector.
 # All shooting volume markets (FGM/FGA/FTM/FTA/3PA) and specialty combos are now re-enabled;
 # they're supported via PP/UD direct lines even if Odds API has no matching market key.
-_MARKET_EXCLUDE_FROM_UI = {"First Basket"}
+_MARKET_EXCLUDE_FROM_UI = {"First Basket", "Alt Points", "Alt Rebounds", "Alt Assists", "Alt 3PM"}
 MARKET_OPTIONS = [k for k in ODDS_MARKETS.keys() if k not in _MARKET_EXCLUDE_FROM_UI]
 
 def _daily_pnl(uid):
