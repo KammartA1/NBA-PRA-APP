@@ -975,8 +975,11 @@ def get_player_position(name):
                 # Fallback: single CommonPlayerInfo call (slow, only if not in bulk map)
                 try:
                     info = CommonPlayerInfo(player_id=pid).get_data_frames()[0]
-                    raw = str(info.get("POSITION", "") or info.get("POSITION_SHORT","") or "")
-                    pos = raw or ""
+                    # H-8 audit fix: DataFrame.get() returns a Series; use .iloc[0] for scalar
+                    def _scalar(col):
+                        s = info.get(col)
+                        return str(s.iloc[0]) if s is not None and not s.empty else ""
+                    pos = _scalar("POSITION") or _scalar("POSITION_SHORT")
                 except Exception:
                     pos = ""
     _POSITION_CACHE[key] = pos
@@ -1696,7 +1699,7 @@ def get_team_b2b_flag(team_abbr, game_date):
             return False
         logs = TeamGameLogs(
             team_id_nullable=str(team_id),
-            season_nullable=current_season_str(),
+            season_nullable=get_season_string(),
             league_id_nullable="00",
             timeout=15,
         ).get_data_frames()[0]
@@ -1884,7 +1887,7 @@ def get_dvp_rolling_l10(opp_abbr, pos_bucket, market):
             league_id="00",
             per_mode_simple="PerGame",
             defense_category=pt_pos,
-            season=current_season_str(),
+            season=get_season_string(),
             timeout=20,
         ).get_data_frames()[0]
         if raw is None or raw.empty:
@@ -2565,9 +2568,13 @@ def recommended_stake(bankroll, p, price_decimal, frac_kelly, cap_frac=0.05,
 def get_team_context():
     try:
         ss = get_season_string()
-        adv = LeagueDashTeamStats(season=ss, measure_type_detailed="Advanced",
-                                  per_mode_detailed="PerGame").get_data_frames()[0][
-              ["TEAM_ID","TEAM_ABBREVIATION","PACE","REB_PCT","AST_PCT"]]
+        adv_raw = LeagueDashTeamStats(season=ss, measure_type_detailed="Advanced",
+                                      per_mode_detailed="PerGame").get_data_frames()[0]
+        _adv_cols = ["TEAM_ID","TEAM_ABBREVIATION","PACE","REB_PCT","AST_PCT"]
+        # L-2 audit fix: also fetch NET_RATING for blowout-risk mismatch calculation
+        if "NET_RATING" in adv_raw.columns:
+            _adv_cols.append("NET_RATING")
+        adv = adv_raw[_adv_cols]
         try:
             defn = LeagueDashTeamStats(season=ss, measure_type_detailed_defense="Defense",
                                        per_mode_detailed="PerGame").get_data_frames()[0][
@@ -2576,12 +2583,15 @@ def get_team_context():
         except Exception:
             df = adv.copy()
             df["DEF_RATING"] = 113.0
+        if "NET_RATING" not in df.columns:
+            df["NET_RATING"] = 0.0
         league_avg = {c: df[c].mean() for c in ["PACE","DEF_RATING","REB_PCT","AST_PCT"]}
         ctx = {}
         for _, r in df.iterrows():
             ctx[str(r["TEAM_ABBREVIATION"]).upper()] = {
                 "PACE": float(r.get("PACE",0)),
                 "DEF_RATING": float(r.get("DEF_RATING",113)),
+                "NET_RATING": float(r.get("NET_RATING",0)),
                 "REB_PCT": float(r.get("REB_PCT",0)),
                 "AST_PCT": float(r.get("AST_PCT",0)),
             }
@@ -2640,9 +2650,11 @@ def estimate_blowout_risk(team_abbr, opp_abbr, spread_abs=None):
     if TEAM_CTX and LEAGUE_CTX and team_abbr and opp_abbr:
         tk, ok = str(team_abbr).upper(), str(opp_abbr).upper()
         if tk in TEAM_CTX and ok in TEAM_CTX:
-            def_gap = abs(TEAM_CTX[ok].get("DEF_RATING",113)-TEAM_CTX[tk].get("DEF_RATING",113)) / (LEAGUE_CTX.get("DEF_RATING",113) or 1)
-            # Convert DEF_RATING gap to implied spread (~2 pts per DRTG point)
-            implied_spread = def_gap * 113 * 1.8
+            # L-2 audit fix: use NET_RATING differential as strength-of-mismatch proxy.
+            # DEF_RATING gap conflated poor defense (high-scoring) with game closeness.
+            net_mismatch = abs(TEAM_CTX[tk].get("NET_RATING",0) - TEAM_CTX[ok].get("NET_RATING",0))
+            # ~2 pts net mismatch ≈ 1 pt spread; calibrate to logistic sigmoid
+            implied_spread = net_mismatch * 0.9
             p = float(1.0 / (1.0 + math.exp(-0.25 * (implied_spread - 11.0))))
             return float(np.clip(p, 0.04, 0.45))
     return 0.10
@@ -2687,11 +2699,20 @@ def fetch_game_total_and_spread(event_id):
                             total = safe_float(out.get("point"))
                             break
                 elif mk == "spreads" and spread is None:
-                    for out in mkt.get("outcomes", []):
-                        if out.get("point") is not None:
-                            # Store home spread (negative = home favored)
-                            spread = safe_float(out.get("point"))
-                            break
+                    # H-7 audit fix: Odds API does not guarantee outcome ordering.
+                    # Filter by home team name to always get the home spread.
+                    home_name = data.get("home_team", "")
+                    home_out = next(
+                        (o for o in mkt.get("outcomes", [])
+                         if normalize_name(o.get("name","")) == normalize_name(home_name)
+                         and o.get("point") is not None),
+                        None
+                    )
+                    if home_out is None:
+                        # Fallback: take first non-None point if team name match fails
+                        home_out = next((o for o in mkt.get("outcomes", []) if o.get("point") is not None), None)
+                    if home_out is not None:
+                        spread = safe_float(home_out.get("point"))
                 elif mk == "h2h":
                     outs = mkt.get("outcomes", [])
                     home_name = data.get("home_team", "")
@@ -2952,14 +2973,17 @@ def _parse_player_prop_outcomes(event_odds, market_key, book_filter=None):
                 player = out.get("description") or out.get("name")
                 point_val = out.get("point")
                 side_val  = out.get("name") or ""
-                # Handle binary markets (DD/TD: Yes/No) and First Basket (player names
-                # as outcomes) which have no numeric point.  Synthesize point=0.5 so
-                # the engine can compare against the Yes-side implied probability.
+                # Handle binary markets (DD/TD: Yes/No) which have no numeric point.
+                # First Basket is a binary win/lose market (player name = outcome); routing
+                # it through the numeric prop engine (P(pts > 0.5) ≈ 1.0) produces garbage.
+                # Skip First Basket entirely — it needs a dedicated binary model.
+                if market_key == "player_first_basket":
+                    continue
                 if point_val is None and player:
                     side_lwr = side_val.strip().lower()
                     if side_lwr == "no":
                         continue          # skip No side — engine models Yes probability
-                    # "Yes" outcomes → map to "Over"; First Basket player names → "Over"
+                    # "Yes" outcomes → map to "Over"
                     side_val  = "Over"
                     point_val = 0.5
                 if player and point_val is not None:
@@ -3109,13 +3133,24 @@ def apply_clv_update_to_legs(legs):
             leg2["clv_line_fav"]=bool(line1<line0 if "under" not in side else line1>line0)
         else:
             leg2["clv_line"]=None; leg2["clv_line_fav"]=None
-        # [FIX 6] No-vig CLV for prices
+        # M-2 audit fix: the complement approximation (1/(1-1/p)) yields overround=1.0,
+        # so remove_vig returns the raw price unchanged — no vig is actually removed.
+        # Fix: fetch the other side's closing price for proper two-sided vig removal.
+        # For the open price, use a standard ~4.5% player-prop overround assumption.
         if price0 is not None and price1 is not None and price0 > 1 and price1 > 1:
-            # Approximate other side as complement
-            other0 = max(1.01, 1.0 / max(0.01, 1.0 - 1.0/price0))
-            other1 = max(1.01, 1.0 / max(0.01, 1.0 - 1.0/price1))
-            nv0, _ = remove_vig(price0, other0)
-            nv1, _ = remove_vig(price1, other1)
+            _OVR_ASSUMED = 1.045  # typical player-prop overround; makes nv ~ price * OVR
+            # Open side: no historical other side available; apply standard overround
+            imp0 = 1.0 / price0
+            nv0 = float(np.clip(1.0 / (imp0 / _OVR_ASSUMED), 1.001, 50.0))
+            # Close side: try to fetch live other-side price for true two-sided removal
+            opp_side = "Under" if "over" in (leg2.get("side") or "Over").lower() else "Over"
+            leg_opp = dict(leg2); leg_opp["side"] = opp_side
+            _, price_opp, _, _ = fetch_latest_market_for_leg(leg_opp)
+            if price_opp is not None and float(price_opp) > 1:
+                nv1, _ = remove_vig(price1, float(price_opp))
+            else:
+                imp1 = 1.0 / price1
+                nv1 = float(np.clip(1.0 / (imp1 / _OVR_ASSUMED), 1.001, 50.0))
             leg2["clv_price"]=float(nv1-nv0)
             leg2["clv_price_fav"]=bool(nv1>nv0)
             leg2["clv_price_novig_open"]=float(nv0)
@@ -3293,7 +3328,7 @@ def compute_pace_adjusted_series(stat_series, opp_team):
 # O/U 230+ = high-pace game → props hit more. O/U 205 = grind = props hit less.
 # Uses league-average implied total (~214 pts in 2024-25) as baseline reference.
 # Returns a multiplier 0.92–1.08 for use as an additional projection factor.
-_LEAGUE_AVG_GAME_TOTAL = 214.0  # 2024-25 league average O/U total
+_LEAGUE_AVG_GAME_TOTAL = 226.5  # 2024-25 league average O/U total (empirical; update each season)
 def compute_game_total_pace_mult(game_total, market):
     """Compute pace/environment multiplier from game O/U total vs league average."""
     if game_total is None:
@@ -3856,7 +3891,7 @@ def map_platform_stat_to_market(stat_type):
         "Blocked Shots": "Blocks", "Blocks": "Blocks", "Blk": "Blocks",
         "Steals": "Steals", "Stl": "Steals",
         "Turnovers": "Turnovers", "Tov": "Turnovers",
-        "Blks+Stls": "Stocks", "Stocks": "Stocks", "Blks+Stls": "Stocks",
+        "Blks+Stls": "Stocks", "Stocks": "Stocks",
         # Shooting volume (PP specialty markets)
         "Field Goals Made": "FGM", "FGM": "FGM",
         "Field Goals Attempted": "FGA", "FGA": "FGA",
@@ -4199,7 +4234,10 @@ def kelly_parlay_optimizer(legs, payout_mult, max_legs=4, bankroll=1000.0, frac_
             c = float(estimate_player_correlation(valid[_i], valid[_j]) or 0.0)
             full_corr[_i, _j] = full_corr[_j, _i] = c
 
-    rng = np.random.default_rng(42)
+    # H-5 audit fix: derive seed from leg identities so different combos get different draws.
+    # Hard-coded 42 caused identical noise patterns across all parlay simulations.
+    _seed = hash(tuple(sorted(l.get("player","") + l.get("market","") for l in valid))) % (2**31)
+    rng = np.random.default_rng(_seed)
     results = []
 
     for n in range(2, min(max_legs + 1, nv + 1)):
@@ -4403,9 +4441,11 @@ def compute_win_loss_split(game_log_df, market, expected_win_prob=0.5):
             return 1.0, "Insufficient", None, None
         w_avg = float(w_games["_stat"].mean())
         l_avg = float(l_games["_stat"].mean())
-        if pd.isna(w_avg) or pd.isna(l_avg) or l_avg <= 1e-6 or w_avg <= 1e-6:
+        # M-5 audit fix: drop guard that silently discards extreme splits (e.g. player only
+        # blocks in wins → l_avg=0, which is itself a strong signal and should not be dropped.
+        if pd.isna(w_avg) or pd.isna(l_avg):
             return 1.0, "N/A", None, None
-        win_ratio = w_avg / l_avg
+        win_ratio = (w_avg / l_avg) if l_avg > 1e-9 else (2.0 if w_avg > 1e-9 else 1.0)
         # Weighted blend: expected stat = win_prob * w_avg + (1-win_prob) * l_avg
         win_prob = float(np.clip(expected_win_prob or 0.5, 0.2, 0.8))
         expected_avg = win_prob * w_avg + (1 - win_prob) * l_avg
