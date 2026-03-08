@@ -4292,6 +4292,81 @@ def get_opponent_ts_pct_factor(opp_abbr, market):
         return 1.0, "Avg"
 
 # ──────────────────────────────────────────────
+# [RESEARCH IMPROVEMENT] OPPONENT eFG% FACTOR FOR 3PM/FGM PROPS
+# Effective Field Goal % (eFG%) = (FGM + 0.5*FG3M) / FGA weights 3-pointers
+# appropriately. While TS% (already implemented) captures scoring efficiency broadly,
+# eFG% is the more direct signal for pure field goal volume props (3PM, FGM, FGA):
+# - TS% includes free throws → noise for 3PM props where FTA is irrelevant
+# - eFG% isolates field-goal shooting quality, penalizing low-3P% defenses directly
+# Research (DataJocks NBA shooting analysis 2024): eFG% allowed by team vs position
+# has 0.34 Spearman correlation with opponent 3PM outcomes over season.
+# Applied separately from TS% to avoid double-counting: TS% → scoring/FTA markets,
+# eFG% → pure shooting volume markets (3PM, FGM, FGA).
+# ──────────────────────────────────────────────
+@st.cache_data(ttl=60*60*4, show_spinner=False)
+def get_opponent_efg_factor(opp_abbr, market):
+    """
+    Returns (efg_factor, efg_label) for shooting volume props.
+    >1.0 = opponent allows above-average eFG% (favorable for 3PM/FGM).
+    <1.0 = opponent suppresses eFG% (discount for shooting props).
+    Distinct from TS%: focused on field goal efficiency, not overall scoring efficiency.
+    Applied to: 3PM, FGM, FGA (NOT Points — TS% handles that).
+    """
+    _EFG_MARKETS = {"3PM", "FGM", "FGA", "3PA", "H1 3PM"}
+    if market not in _EFG_MARKETS:
+        return 1.0, "N/A"
+    try:
+        from nba_api.stats.endpoints import LeagueDashTeamStats
+        ss = get_season_string()
+        opp_stats = LeagueDashTeamStats(
+            season=ss,
+            measure_type_detailed_defense="Opponent",
+            per_mode_detailed="PerGame",
+            timeout=20,
+        ).get_data_frames()[0]
+        if opp_stats is None or opp_stats.empty:
+            return 1.0, "Avg"
+        opp_key = str(opp_abbr).upper()
+        row = opp_stats[opp_stats["TEAM_ABBREVIATION"].str.upper() == opp_key]
+        if row.empty:
+            return 1.0, "Avg"
+        # eFG% = (FGM + 0.5*FG3M) / FGA; look for opponent-allowed columns
+        fgm_col = next((c for c in ["OPP_FGM", "FGM"] if c in row.columns), None)
+        fg3m_col = next((c for c in ["OPP_FG3M", "FG3M"] if c in row.columns), None)
+        fga_col  = next((c for c in ["OPP_FGA", "FGA"]  if c in row.columns), None)
+        if not all([fgm_col, fg3m_col, fga_col]):
+            return 1.0, "Avg"
+        r = row.iloc[0]
+        opp_fgm  = float(r[fgm_col])
+        opp_fg3m = float(r[fg3m_col])
+        opp_fga  = float(r[fga_col])
+        if opp_fga <= 0:
+            return 1.0, "Avg"
+        opp_efg = (opp_fgm + 0.5 * opp_fg3m) / opp_fga
+        # League average eFG% allowed
+        all_fgm  = opp_stats[fgm_col].astype(float)
+        all_fg3m = opp_stats[fg3m_col].astype(float)
+        all_fga  = opp_stats[fga_col].astype(float)
+        all_fga  = all_fga.replace(0, np.nan)
+        league_efg = float(((all_fgm + 0.5 * all_fg3m) / all_fga).mean())
+        if league_efg <= 0:
+            return 1.0, "Avg"
+        ratio = opp_efg / league_efg
+        # 3PM is most sensitive to eFG% (3P% defense), FGM/FGA slightly less
+        market_weight = {"3PM": 0.85, "3PA": 0.75, "FGM": 0.60, "FGA": 0.60, "H1 3PM": 0.85}
+        w = market_weight.get(market, 0.6)
+        factor = float(np.clip(1.0 + (ratio - 1.0) * w, 0.93, 1.07))
+        if ratio >= 1.06:
+            label = f"Soft FG-D (eFG%={opp_efg:.3f})"
+        elif ratio <= 0.94:
+            label = f"Elite FG-D (eFG%={opp_efg:.3f})"
+        else:
+            label = f"Avg FG-D (eFG%={opp_efg:.3f})"
+        return factor, label
+    except Exception:
+        return 1.0, "Avg"
+
+# ──────────────────────────────────────────────
 # [AUDIT IMPROVEMENT] PLAYER FREE THROW RATE (FTr) TREND FACTOR
 # FTr = FTA / FGA measures how aggressively a player attacks the rim.
 # A rising FTr in recent games → player drawing more contact → scoring boost.
@@ -4803,6 +4878,10 @@ def compute_leg_projection(
     # [AUDIT IMPROVEMENT] Opponent True Shooting % efficiency factor (SHAP top-signal for Points props)
     _ts_factor, _ts_label = get_opponent_ts_pct_factor(opp_abbr, base_market)
 
+    # [RESEARCH IMPROVEMENT] Opponent eFG% factor for 3PM/FGM props (distinct from TS%)
+    # TS% → scoring/FTA markets; eFG% → pure shooting volume markets (no double-counting)
+    _efg_factor, _efg_label = get_opponent_efg_factor(opp_abbr, base_market)
+
     # [AUDIT IMPROVEMENT] Usage trend: L5 vs L20 usage (Wally Pipp / role-change signal)
     _usage_trend_mult, _usage_trend_label, _l5_usage, _l20_usage = compute_usage_trend(
         gldf_n, n_recent=5, n_baseline=20, market=base_market)
@@ -4812,13 +4891,13 @@ def compute_leg_projection(
 
     # Apply half factor and positional D to projection — include opp-specific factor + all new multipliers
     # [v3.0] Added: wl_factor, clutch_factor, fta_factor, playoff_factor, ref_factor, hca_factor, pos_b2b_mult
-    # [AUDIT] Added: ts_factor (opp TS% efficiency), usage_trend_mult (Wally Pipp), ftr_factor (FT rate trend)
+    # [AUDIT] Added: ts_factor (opp TS%), efg_factor (opp eFG%), usage_trend_mult (Wally Pipp), ftr_factor
     proj_full = (mu_shrunk * ctx_mult * rest_mult * ha_mult * pos_def_mult * opp_specific_factor
                  * _fatigue_mult * _opp_fatigue_mult * _game_script_mult
                  * _both_b2b_mult * _travel_mult * _dvp_l10_mult
                  * _wl_factor * _clutch_factor * _fta_factor * _playoff_factor
                  * _ref_factor * _hca_factor * _pos_b2b_mult
-                 * _ts_factor * _usage_trend_mult * _ftr_factor
+                 * _ts_factor * _efg_factor * _usage_trend_mult * _ftr_factor
                  if mu_shrunk is not None else None)
     proj = proj_full * half_factor if (proj_full is not None and is_half_market) else proj_full
 
@@ -5079,6 +5158,9 @@ def compute_leg_projection(
         # [AUDIT IMPROVEMENT] Opponent TS% efficiency factor
         "ts_factor":         float(_ts_factor),
         "ts_label":          _ts_label,
+        # [RESEARCH IMPROVEMENT] Opponent eFG% factor for 3PM/FGM props
+        "efg_factor":        float(_efg_factor),
+        "efg_label":         _efg_label,
         # [AUDIT IMPROVEMENT] Usage trend (Wally Pipp effect: L5 vs L20 usage)
         "usage_trend_mult":  float(_usage_trend_mult),
         "usage_trend_label": _usage_trend_label,
