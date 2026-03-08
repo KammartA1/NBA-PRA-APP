@@ -440,6 +440,7 @@ ODDS_MARKETS = {
     "H2 Points":       "player_points_q3q4",
     "H2 Rebounds":     "player_rebounds_q3q4",
     "H2 Assists":      "player_assists_q3q4",
+    "H2 PRA":          "player_points_rebounds_assists_q3q4",
     # ── 1st Quarter markets ─────────────────────
     "Q1 Points":       "player_points_q1",
     "Q1 Rebounds":     "player_rebounds_q1",
@@ -455,8 +456,10 @@ ODDS_MARKETS = {
     "Double Double":   "player_double_double",
     "Triple Double":   "player_triple_double",
     "First Basket":    "player_first_basket",
-    # ── Shooting volume (high-probability) ──────
-    "FGM":             "player_field_goals_made",
+    # ── Shooting volume ───────────────────────────
+    # Confirmed Odds API key: player_field_goals = FGM made.
+    # FGA/FTM/FTA/3PA: no confirmed Odds API key; selectable for PP/UD/Sleeper source only.
+    "FGM":             "player_field_goals",
     "FGA":             "player_field_goals_attempted",
     "3PA":             "player_three_point_field_goals_attempted",
     "FTM":             "player_free_throws_made",
@@ -605,25 +608,29 @@ def dfs_entry_optimizer(legs: list, platform: str = "prizepicks",
     return sorted(results, key=lambda x: x["best_ev_%"] if isinstance(x["best_ev_%"], (int, float)) else -99, reverse=True)[:30]
 
 # Markets that require batching separately (not all books offer these)
+# Only keys CONFIRMED to return data from the Odds API (tested 2026-03-07)
 SPECIALTY_MARKET_KEYS = {
-    # Half-game markets (only DK/FD/etc offer these)
+    # Half-game markets (open ~1-2h before tip-off on DK/FD)
     "player_points_q1q2", "player_rebounds_q1q2",
     "player_assists_q1q2", "player_threes_q1q2",
     "player_points_rebounds_assists_q1q2",
     "player_points_q3q4", "player_rebounds_q3q4", "player_assists_q3q4",
+    "player_points_rebounds_assists_q3q4",
     # 1Q markets
     "player_points_q1", "player_rebounds_q1", "player_assists_q1",
     # Alt lines
     "player_points_alternate", "player_rebounds_alternate",
     "player_assists_alternate", "player_threes_alternate",
-    # Fantasy
-    "player_fantasy_points",
     # Shooting volume
-    "player_field_goals_made", "player_field_goals_attempted",
+    "player_field_goals",
+    "player_field_goals_attempted",
+    "player_free_throws_made",
+    "player_free_throws_attempted",
     "player_three_point_field_goals_attempted",
-    "player_free_throws_made", "player_free_throws_attempted",
     # Special / binary markets
     "player_double_double", "player_triple_double", "player_first_basket",
+    # Fantasy
+    "player_fantasy_points",
 }
 
 STAT_FIELDS = {
@@ -648,6 +655,7 @@ STAT_FIELDS = {
     "H2 Points":       "PTS",
     "H2 Rebounds":     "REB",
     "H2 Assists":      "AST",
+    "H2 PRA":          ("PTS","REB","AST"),
     # 1Q markets map to full-game fields (adjusted via Q1_FACTOR)
     "Q1 Points":       "PTS",
     "Q1 Rebounds":     "REB",
@@ -6776,6 +6784,7 @@ with tabs[2]:
             elif not evs: st.warning("No events for that date range.")
             else:
                 offers = []
+                _fetch_errors = []
                 # [FIX H1/H2/ALT] Split market keys into standard and specialty batches
                 # Odds API supports max ~6 markets per call reliably; specialty markets
                 # (H1/H2/Q1/Alt/Fantasy) need separate calls as not all books offer them
@@ -6797,7 +6806,10 @@ with tabs[2]:
                         # For specialty markets try all regions for better coverage
                         regions = "us,us2,eu,uk" if any(k in SPECIALTY_MARKET_KEYS for k in batch_keys) else REGION_US
                         odds, oerr = odds_get_event_odds(eid, tuple(batch_keys), regions=regions)
-                        if oerr or not odds: continue
+                        if oerr:
+                            _fetch_errors.append(f"{','.join(batch_keys)}: {oerr}")
+                            continue
+                        if not odds: continue
                         _is_spec_batch = any(k in SPECIALTY_MARKET_KEYS for k in batch_keys)
                         for m in markets_sel:
                             mk = ODDS_MARKETS.get(m)
@@ -6824,6 +6836,10 @@ with tabs[2]:
                     st.success(f"Fetched {len(offers)} raw prop outcomes — opening lines captured.")
                 else:
                     st.warning("No offers returned.")
+                if _fetch_errors:
+                    with st.expander(f"API errors ({len(_fetch_errors)}) — click to debug"):
+                        for _fe in _fetch_errors:
+                            st.caption(_fe)
 
     # ── Bulk game log loader (recommended before large scans) ──────
     bulk_loaded = _fetch_bulk_gamelogs() is not None
