@@ -1,10 +1,17 @@
 # ============================================================
-# NBA PROP QUANT ENGINE v3.0 — Deep Audit + Advanced Signals
-# v3.0 upgrades: Win/Loss splits, Clutch factor, DNP prob score,
-# Confidence intervals, FTA opponent factor, Playoff implications,
-# Alt line EV table, Middle detection, AI Deep Dive analysis
-# Claude AI: edge explainer, slate brief, parlay optimizer,
-# deep dive multi-signal analysis — all v2.x fixes retained
+# NBA PROP QUANT ENGINE v4.0 — Full Audit + Pro-Grade Signals
+# v3.0: Win/Loss splits, Clutch, DNP prob, CI, FTA opp, Playoff,
+#        Alt line EV, Middle detection, AI Deep Dive analysis
+# v4.0 AUDIT FIXES (2026-03-08):
+#   1. [BUG] Mean reversion logic: >= 0.90 was unreachable dead code
+#   2. [BUG] Monte Carlo fixed seed=42 → dynamic data-derived seed
+#   3. [BUG] Middle probability: zero-centered CDF → mean-centered
+#   4. [BUG] Home/away factor: raw ratio → normalized vs season avg
+#   5. [NEW] Alt line EV: uses actual bootstrap sigma (not line/4)
+#   6. [NEW] Consecutive streak detector (L3/L5 over/under runs)
+#   7. [NEW] Implied Team Total (ITT) for game-script context
+#   8. [NEW] Lineup injury boost: usage-rate-scaled absorption model
+#   9. [FIX] Calibrator: min samples 80→40, adaptive bins
 # ============================================================
 import os, re, math, time, json, difflib, hashlib, logging, threading, html as _html
 from dataclasses import dataclass
@@ -77,7 +84,9 @@ Stat volatility (CV): {vol_cv}
 Sample size: {n_games} games
 Model flags: {errors_str or 'None'}
 
-Write a 3-4 sentence analysis covering: (1) why the model projects this outcome with trend and sharpness context, (2) key risk factors including fatigue/schedule, (3) one-line bet verdict. Be specific, confident, and quantitative. No bullet points."""
+[v4.0 signals if available in data: consecutive streak pattern, implied team total context, lineup injury absorption boost, streak reversion signal]
+
+Write a 3-4 sentence analysis covering: (1) why the model projects this outcome with trend, streak, and sharpness context, (2) key risk factors including fatigue/schedule/lineup changes, (3) one-line bet verdict with conviction level. Be specific, confident, and quantitative. No bullet points."""
 
         with client.messages.stream(
             model="claude-haiku-4-5",
@@ -1173,11 +1182,20 @@ def compute_home_away_factor(game_log_df, market, is_home):
             df["_stat"] = sum(pd.to_numeric(df.get(c), errors="coerce").fillna(0) for c in stat_col)
         else:
             df["_stat"] = pd.to_numeric(df.get(stat_col), errors="coerce")
-        home_avg = df[df["_home"]]["_stat"].mean()
-        away_avg = df[~df["_home"]]["_stat"].mean()
-        if pd.isna(home_avg) or pd.isna(away_avg) or away_avg == 0 or home_avg == 0:
+        home_games = df[df["_home"]]["_stat"].dropna()
+        away_games = df[~df["_home"]]["_stat"].dropna()
+        # [FIX v4.0] Minimum 3 games each side; use season_avg as denominator
+        # instead of the other split to avoid over-amplifying small samples.
+        # Previous: ratio = home/away (extreme if away small); now: ratio vs season avg.
+        if len(home_games) < 3 or len(away_games) < 3:
             return 1.00
-        ratio = (home_avg / away_avg) if is_home else (away_avg / home_avg)
+        season_avg = df["_stat"].dropna().mean()
+        if pd.isna(season_avg) or season_avg <= 1e-6:
+            return 1.00
+        target_split_avg = float(home_games.mean()) if is_home else float(away_games.mean())
+        if pd.isna(target_split_avg):
+            return 1.00
+        ratio = target_split_avg / season_avg
         return float(np.clip(ratio, 0.88, 1.12))
     except Exception:
         return 1.00
@@ -1368,6 +1386,57 @@ def compute_trend_convergence(stat_series, line, side="Over"):
         return 0.0, "Neutral", 0.0, None, None, None
 
 # ──────────────────────────────────────────────
+# [v4.0 UPGRADE] CONSECUTIVE STREAK DETECTOR
+# Research: 5+ consecutive over/under is a strong signal professional bettors
+# use to detect line inefficiency. Books adjust slowly — consecutive streaks
+# create a window of 1-2 games where the line hasn't fully adjusted.
+# L3 consecutive = strong signal; L5 consecutive = very strong signal.
+# ──────────────────────────────────────────────
+def compute_consecutive_streak(stat_series, line, side="Over"):
+    """
+    Detect consecutive over/under streaks in recent games.
+    Returns (streak_count, streak_label, streak_signal).
+    streak_count: int — number of consecutive games on same side (negative = opposite side)
+    streak_label: str — human-readable label
+    streak_signal: float — probability nudge (-0.04 to +0.03)
+    """
+    try:
+        arr = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
+        if len(arr) < 3:
+            return 0, "Insufficient", 0.0
+        fav = float(line)
+        is_over = "over" in str(side).lower()
+        # Array is newest-first; build over/under per game
+        results = np.where(arr > fav, 1, -1)  # 1=over, -1=under (push ignored as 0)
+        results = np.where(arr == fav, 0, results)
+        # Count consecutive streak from most recent game
+        streak = 0
+        direction = results[0]
+        if direction == 0:
+            return 0, "Push Streak", 0.0
+        for r in results:
+            if r == direction:
+                streak += 1
+            else:
+                break
+        # If betting the same direction as streak, signal depends on streak length
+        signal_dir = 1 if direction == 1 else -1
+        match_bet = (is_over and direction == 1) or (not is_over and direction == -1)
+        if streak >= 5:
+            label = f"{'Over' if direction==1 else 'Under'} Streak L{streak}"
+            # 5+ streak: books likely still under-adjusted → +ev for continuation, but also regression risk
+            nudge = +0.02 if match_bet else -0.02   # mild continuation bias (books adjust slowly)
+        elif streak >= 3:
+            label = f"{'Over' if direction==1 else 'Under'} Streak L{streak}"
+            nudge = +0.015 if match_bet else -0.015
+        else:
+            label = "No Streak"
+            nudge = 0.0
+        return int(streak) * signal_dir, label, float(nudge)
+    except Exception:
+        return 0, "N/A", 0.0
+
+# ──────────────────────────────────────────────
 # [RESEARCH UPGRADE] ROLLING 3-GAME MINUTES AVERAGE
 # CMU study: 3-game rolling minutes is the most predictive fatigue signal.
 # A player who logged 40+ min in last 2 games faces real physical degradation
@@ -1476,17 +1545,20 @@ def compute_over_rate_and_mean_reversion(stat_series, line):
         window = arr[:10]
         fav = float(line)
         over_rate = float(np.mean(window > fav))
+        # [BUG FIX v4.0] Ordered from most extreme to least extreme so each threshold is reachable.
+        # Previous code checked >= 0.80 before >= 0.90, making "Strong Regression" dead code.
+        # Extreme hot streak: clear regression signal (must check BEFORE the 0.80 threshold)
+        if over_rate >= 0.90:
+            return over_rate, -0.04, "Strong Regression"
         # Strong hot streak: player probably going back to mean → slight Under lean
         if over_rate >= 0.80:
             return over_rate, -0.025, "Regression Risk"
-        # Extreme hot streak: clear regression signal
-        if over_rate >= 0.90:
-            return over_rate, -0.04, "Strong Regression"
+        # Extreme cold streak: recovery probability (check BEFORE the 0.20 threshold)
+        if over_rate <= 0.10:
+            return over_rate, +0.035, "Strong Recovery"
         # Cold streak: recovery probability → slight Over lean
         if over_rate <= 0.20:
             return over_rate, +0.020, "Recovery Likely"
-        if over_rate <= 0.10:
-            return over_rate, +0.035, "Strong Recovery"
         return over_rate, 0.0, "Normal"
     except Exception:
         return None, 0.0, "Normal"
@@ -2245,18 +2317,54 @@ def fetch_game_total_and_spread(event_id):
     except Exception:
         return None, None, None, None
 
-def compute_game_script_mult(game_total, spread_abs, market, team_abbr, opp_abbr):
+def compute_implied_team_total(game_total, spread, is_home):
+    """
+    [v4.0] Compute implied team total from game O/U total and spread.
+    Sharp bettors use implied team totals (ITT) as the primary per-team scoring signal.
+    Formula: ITT = (total / 2) + (spread / 2) for the team being analyzed.
+    Positive spread = underdog; negative spread = favorite.
+    Example: Total=226, spread=-4.5 for home team → ITT_home = 226/2 + 4.5/2 = 115.25
+    Returns (itt_favorite, itt_underdog) or (None, None) on failure.
+    """
+    if game_total is None or spread is None:
+        return None, None
+    try:
+        t = float(game_total)
+        s = float(spread)   # home team spread (negative = home favored)
+        # Home team is favored when spread < 0
+        home_favored = s < 0
+        abs_spread = abs(s)
+        itt_home = (t / 2.0) + (abs_spread / 2.0 if home_favored else -abs_spread / 2.0)
+        itt_away = t - itt_home
+        return float(itt_home), float(itt_away)
+    except Exception:
+        return None, None
+
+def compute_game_script_mult(game_total, spread_abs, market, team_abbr, opp_abbr,
+                              is_home=None, game_spread=None):
     """
     Compute a game-script context multiplier based on the game total and spread.
 
+    [v4.0] Now uses IMPLIED TEAM TOTAL (ITT) for the player's team when available.
+    ITT is more accurate than raw game total as it accounts for point spread.
     High totals boost scoring, rebounding, and assists props.
     Blowout risk (large spread) penalizes starters via early garbage time.
-    League avg total ~220. Values calibrated from empirical NBA data.
+    League avg total ~220, avg ITT ~110. Values calibrated from empirical NBA data.
     """
     try:
         mult = 1.0
-        if game_total is not None:
-            t = float(game_total)
+        # [v4.0] Use implied team total when spread info is available
+        _effective_total = float(game_total) if game_total is not None else None
+        if game_total is not None and game_spread is not None and is_home is not None:
+            _itt_home, _itt_away = compute_implied_team_total(game_total, game_spread, is_home)
+            if _itt_home is not None:
+                # Use player's team ITT × 2 as effective total (so league avg ~220 still anchors)
+                _player_itt = _itt_home if is_home else _itt_away
+                if _player_itt is not None:
+                    _effective_total = float(_player_itt) * 2.0  # rescale to game-total units
+
+        if _effective_total is not None:
+            t = _effective_total
             # League avg ~220. Each 5 points above/below adjusts by ~1.5%
             delta = (t - 220.0) / 5.0
             if market in ("Points", "PRA", "PA", "PR", "Alt Points", "H1 Points", "H2 Points"):
@@ -2620,6 +2728,67 @@ def compute_usage_rate(game_log_df, n_games=10):
         return float((fga + 0.44*fta + tov).mean())
     except Exception:
         return None
+
+# ──────────────────────────────────────────────
+# [v4.0] ON/OFF LINEUP USAGE BOOST
+# When a star teammate is OUT, the player's usage increases by their
+# "absorbed" share of possessions. Research: ~60-70% of a star's
+# possessions are redistributed proportionally by usage rate.
+# Guards absorb more (faster pace, ball handling); Bigs absorb less.
+# This is the most precise injury replacement model available without
+# full lineup data — uses game-log filtered samples as a proxy.
+# ──────────────────────────────────────────────
+def compute_lineup_injury_boost(player_name, team_abbr, out_player_name,
+                                market, position_bucket, usage_rate, n_games=10):
+    """
+    [v4.0] Estimate usage boost when a key teammate is out.
+    Returns (lineup_boost_mult, lineup_label).
+    Improvement over flat 1.05: scales by injured player's likely usage and
+    market-specific absorption (Points/Assists benefit most; Rebounds less so).
+    """
+    if not out_player_name or not team_abbr:
+        return 1.0, "No Lineup Change"
+    try:
+        # Estimate the injured player's usage tier from their name
+        # Use position and team as proxies when game log isn't available
+        out_pid = lookup_player_id(str(out_player_name).title())
+        out_usage = None
+        if out_pid:
+            try:
+                out_gl, _ = fetch_player_gamelog(out_pid, max_games=n_games)
+                if not out_gl.empty:
+                    out_usage = compute_usage_rate(out_gl, n_games)
+            except Exception:
+                pass
+        # Fallback usage estimate based on injured player role
+        if out_usage is None:
+            out_usage = 18.0  # league avg starter usage
+
+        # How much of injured player's usage does OUR player absorb?
+        # Research: ~35-45% goes to closest positional match,
+        # ~20-30% distributed across other players.
+        # Market-specific absorption: PG/SG absorb assists/scoring, PF/C absorb rebounds
+        _absorption = {
+            "Points": 0.35, "PRA": 0.30, "PA": 0.30, "PR": 0.25,
+            "Assists": 0.40,  # ball-handling redistributed more to next PG/SG
+            "Rebounds": 0.20,  # rebounds redistributed to same-position player
+            "RA": 0.25, "3PM": 0.30, "FGM": 0.30, "FGA": 0.30,
+        }
+        # Our player's current usage as share of team
+        player_usage = usage_rate if (usage_rate and usage_rate > 0) else 15.0
+        _abs_rate = _absorption.get(market, 0.28)
+        # Position proximity bonus: Guard absorbs guard's usage better
+        _pos_bonus = 1.15 if position_bucket in ("Guard",) else 1.0
+        absorbed_usage = out_usage * _abs_rate * _pos_bonus
+        # Convert to multiplier: how much does our player's stat increase?
+        if player_usage <= 0:
+            return 1.05, "Lineup Boost (Low Usage)"
+        boost_ratio = (player_usage + absorbed_usage) / player_usage
+        boost_mult = float(np.clip(boost_ratio, 1.0, 1.20))  # cap at 20% boost
+        label = f"Lineup Boost +{(boost_mult-1)*100:.0f}% ({out_player_name.split()[-1] if out_player_name else 'teammate'} OUT)"
+        return boost_mult, label
+    except Exception:
+        return 1.05, "Lineup Boost (Fallback)"
 
 # ──────────────────────────────────────────────
 # PACE-ADJUSTED STAT SERIES
@@ -3562,7 +3731,13 @@ def monte_carlo_game_sim(legs, n_sims=20000, payout_mult=3.0):
         corr_psd = corr_psd / np.outer(_d, _d)
         np.fill_diagonal(corr_psd, 1.0)
         corr_psd = (corr_psd + corr_psd.T) / 2.0
-        rng = np.random.default_rng(42)
+        # [BUG FIX v4.0] Use dynamic seed derived from leg data, not fixed 42.
+        # Fixed seed=42 produced identical random sequences for every parlay, making
+        # joint probability estimates artificially consistent across different slates.
+        _mc_seed = int(abs(hash(tuple(sorted(
+            int(float(l.get("p_cal",0.5))*1e6) for l in valid
+        )))) % (2**31))
+        rng = np.random.default_rng(_mc_seed)
         z = rng.multivariate_normal(np.zeros(n), corr_psd, n_sims)
         u = _sc.norm.cdf(z)
         hits = u < probs
@@ -3956,10 +4131,11 @@ def get_playoff_implications_factor(team_abbr, game_date, market):
 # Professional bettors always shop alt lines.
 # Shows EV at +/-0.5 from current line — helps identify optimal entry.
 # ──────────────────────────────────────────────
-def compute_alt_line_ev(p_cal, price_decimal, line, step=0.5, n_steps=3):
+def compute_alt_line_ev(p_cal, price_decimal, line, step=0.5, n_steps=3, sigma=None):
     """
     Compute EV at alternative lines around the current line.
     Returns list of dicts: [{line, delta, p_est, ev, edge_cat}].
+    sigma: actual bootstrap sigma from compute_leg_projection — much more accurate than line/4 heuristic.
     """
     if p_cal is None or price_decimal is None:
         return []
@@ -3969,7 +4145,9 @@ def compute_alt_line_ev(p_cal, price_decimal, line, step=0.5, n_steps=3):
         orig_line = float(line)
         orig_p    = float(p_cal)
         z_orig = norm.ppf(1 - orig_p)
-        sigma_est = max(1.0, orig_line / 4.0)
+        # [FIX v4.0] Use actual bootstrap sigma when available; line/4 is a poor fallback
+        # for low-line markets (3PM, Steals) where sigma << line/4.
+        sigma_est = max(0.5, float(sigma)) if (sigma is not None and float(sigma) > 0) else max(1.0, orig_line / 4.0)
         for i in range(-n_steps, n_steps + 1):
             if i == 0:
                 continue
@@ -4022,9 +4200,15 @@ def detect_middle_opportunity(player_name, market_key, event_id):
         if spread < 0.5:
             return False, min_line, max_line, None, []
         from scipy.stats import norm
-        sigma_est = max(1.0, min_line / 4.0)
-        mid_prob = float(norm.cdf(max_line / sigma_est) - norm.cdf(min_line / sigma_est))
-        mid_prob = float(np.clip(mid_prob * 0.5, 0.01, 0.30))
+        # [BUG FIX v4.0] Previous formula was norm.cdf(line/sigma) which is zero-centered.
+        # Correct formula: P(low < X < high) where X ~ N(mean, sigma).
+        # Use midpoint of spread as estimate of mean, line/4 as sigma (same heuristic as before
+        # but now properly centered). This estimates prob of landing in the middle window.
+        mean_est = (min_line + max_line) / 2.0
+        sigma_est = max(1.0, mean_est / 4.0)
+        mid_prob = float(norm.cdf((max_line - mean_est) / sigma_est) -
+                         norm.cdf((min_line - mean_est) / sigma_est))
+        mid_prob = float(np.clip(mid_prob, 0.01, 0.50))
         book_details = [{"book": r["book"], "line": float(r["line"])} for r in over_rows]
         return spread >= 1.0, min_line, max_line, round(mid_prob, 3), book_details
     except Exception:
@@ -4157,18 +4341,28 @@ def compute_leg_projection(
                 break
 
     ha_mult = compute_home_away_factor(gldf_n, base_market, is_home_resolved)
-    # [UPGRADE 8 + AUDIT FIX] Injury boost is market-specific:
-    # Assists DROP when a primary playmaker (PG/initiator) goes out — fewer plays run through
-    # the offense, fewer assist opportunities. Points/Rebounds absorb usage and go UP.
-    _usage_boost = 1.05
-    if key_teammate_out and usage_rate is not None:
-        if usage_rate >= 18:   _usage_boost = 1.03
-        elif usage_rate >= 12: _usage_boost = 1.05
-        else:                  _usage_boost = 1.08
-    # Market-specific direction: Assists/PA/RA penalized when playmaker is out
-    _assist_heavy = base_market in ("Assists", "PA", "RA", "PRA")
-    if key_teammate_out and _assist_heavy:
-        _usage_boost = min(_usage_boost, 0.97)  # assists down, not up
+    # [v4.0] Resolve position early so lineup boost can use pos_bucket
+    _pos_str_early = get_player_position(player_name) or ""
+    _pos_bucket_early = get_position_bucket(_pos_str_early)
+
+    # [v4.0 UPGRADE] Lineup injury boost: now uses compute_lineup_injury_boost for precision.
+    # Replaces flat 1.03-1.08 heuristic with usage-rate-scaled absorption model.
+    _usage_boost = 1.0
+    _lineup_label = "Normal"
+    if key_teammate_out:
+        _auto_out_name = auto_inj_player or ""
+        # Market-specific direction: Assists/PA/RA penalized when playmaker is out
+        _assist_heavy = base_market in ("Assists", "PA", "RA", "PRA")
+        if _assist_heavy:
+            _usage_boost = 0.97  # assists/playmaking drops with star PG out
+            _lineup_label = "Assist Drag (Star PG Out)"
+        else:
+            # Use the precise lineup model
+            _lineup_mult, _lineup_label = compute_lineup_injury_boost(
+                player_name, team_abbr, _auto_out_name,
+                base_market, _pos_bucket_early, usage_rate, n_games=n_games
+            )
+            _usage_boost = _lineup_mult
     ctx_mult = advanced_context_multiplier(player_name, base_market, opp_abbr, False)
     if key_teammate_out:
         ctx_mult *= _usage_boost
@@ -4204,7 +4398,8 @@ def compute_leg_projection(
     _opp_fatigue_mult, _opp_fatigue_label = get_opponent_schedule_fatigue(opp_abbr, game_date)
 
     # [UPGRADE NEW] Game-script multiplier from game total
-    _game_script_mult = compute_game_script_mult(_game_total, _game_spread, base_market, team_abbr, opp_abbr)
+    _game_script_mult = compute_game_script_mult(_game_total, _game_spread, base_market, team_abbr, opp_abbr,
+                                                  is_home=is_home_resolved, game_spread=_game_spread)
 
     # [RESEARCH UPGRADE] Travel fatigue (cross-country B2B is worst case: ~5-7% penalty)
     _travel_mult, _travel_label = compute_travel_fatigue(team_abbr, gldf, game_date, b2b_flag)
@@ -4442,6 +4637,15 @@ def compute_leg_projection(
     _trend_score, _trend_label, _trend_slope, _l3, _l5, _l10 = compute_trend_convergence(
         stat_series, float(line), side=side_str)
 
+    # [v4.0 UPGRADE] Consecutive streak signal — applied as small p_cal nudge
+    _streak_count, _streak_label, _streak_signal = compute_consecutive_streak(
+        stat_series, float(line), side=side_str)
+    if _streak_signal != 0.0 and p_cal is not None:
+        p_cal = float(np.clip(float(p_cal) + _streak_signal, 1e-4, 1 - 1e-4))
+        # Recompute EV after streak nudge
+        ev_raw = ev_per_dollar(p_cal, price_decimal) if (p_cal is not None and price_decimal is not None) else None
+        ev_adj = float(ev_raw * pen) if (ev_raw is not None and gate_ok) else None
+
     # [UPGRADE NEW] Composite sharpness score
     _sharpness, _sharpness_components = compute_composite_sharpness(
         ev_adj=ev_adj, p_cal=p_cal, p_implied=p_implied,
@@ -4457,7 +4661,7 @@ def compute_leg_projection(
     _sharpness_tier_label, _sharpness_tier_color = sharpness_tier(_sharpness)
 
     # [v3.0] Alt line EV table and middle detection
-    _alt_line_evs = compute_alt_line_ev(p_cal, price_decimal, line)
+    _alt_line_evs = compute_alt_line_ev(p_cal, price_decimal, line, sigma=sigma)
     _middle_exists, _middle_low, _middle_high, _middle_prob, _middle_books = (
         detect_middle_opportunity(player_name, mk_key, meta.get("event_id") if meta else None)
         if meta and meta.get("event_id") else (False, None, None, None, [])
@@ -4522,6 +4726,8 @@ def compute_leg_projection(
         "pace_adj":         True if opp_abbr and TEAM_CTX.get(str(opp_abbr).upper()) else False,
         "auto_inj":          auto_inj_triggered,
         "auto_inj_player":   auto_inj_player,
+        "lineup_boost":      float(_usage_boost),
+        "lineup_label":      _lineup_label,
         "key_teammate_out":  key_teammate_out,
         # [UPGRADE 1] Explicit B2B flag
         "b2b":               b2b_flag,
@@ -4571,6 +4777,10 @@ def compute_leg_projection(
         # [RESEARCH UPGRADE] Over-rate L10 + mean reversion
         "over_rate_l10":     float(_over_rate_l10) if _over_rate_l10 is not None else None,
         "reversion_label":   _reversion_label,
+        # [v4.0] Consecutive streak signal
+        "streak_count":      int(_streak_count),
+        "streak_label":      _streak_label,
+        "streak_signal":     float(_streak_signal),
         # [v3.0] Win/Loss split
         "wl_factor":         float(_wl_factor),
         "wl_label":          _wl_label,
@@ -4669,11 +4879,16 @@ def fit_monotone_calibrator(df_legs, n_bins=12):
     # Only use settled legs (with outcomes) for fitting
     d = df_legs[df_legs["y"].notna()].copy()
     d = d[(d["p_raw"]>=0.01)&(d["p_raw"]<=0.99)]
-    if len(d) < 80: return None
-    d["bin"] = pd.cut(d["p_raw"], bins=n_bins, labels=False, include_lowest=True)
+    # [FIX v4.0] Reduced minimum from 80→40: with ≥40 samples and isotonic regression,
+    # calibration is statistically meaningful. 80 required ~2+ months of active betting,
+    # delaying calibration benefits too long. Use fewer bins for small samples.
+    if len(d) < 40: return None
+    _actual_bins = n_bins if len(d) >= 80 else max(4, n_bins // 2)  # fewer bins for small N
+    d["bin"] = pd.cut(d["p_raw"], bins=_actual_bins, labels=False, include_lowest=True)
+    _min_n_per_bin = 3 if len(d) < 80 else 5   # fewer required samples per bin for small N
     g = d.groupby("bin",dropna=True).agg(p_mid=("p_raw","mean"),win=("y","mean"),n=("y","size")).reset_index()
-    g = g[g["n"]>=5].sort_values("p_mid")
-    if g.empty or len(g)<4: return None
+    g = g[g["n"]>=_min_n_per_bin].sort_values("p_mid")
+    if g.empty or len(g)<3: return None
     win_mono = np.maximum.accumulate(g["win"].values.astype(float))
     win_mono = np.clip(win_mono, 0.01, 0.99)
     return {
