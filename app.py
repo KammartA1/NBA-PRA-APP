@@ -2290,18 +2290,39 @@ def http_get_json(url, params, timeout=25):
             return None, f"{type(e).__name__}: {e}"
     return None, "All retries failed"
 
-@st.cache_data(ttl=60*5, show_spinner=False)
+def _utc_to_et_date(utc_iso: str) -> str:
+    """Convert UTC ISO timestamp to US Eastern date string (YYYY-MM-DD).
+    NBA games tip off in Eastern time; Odds API returns UTC. Late games
+    (e.g. 10 PM ET = 3 AM UTC next day) must be mapped to their ET date
+    so today's slate is shown correctly when using date.today().
+    """
+    try:
+        dt_str = utc_iso.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(dt_str)
+        # Approximate DST: EDT (UTC-4) Apr-Oct, EST (UTC-5) Nov-Mar
+        offset = -4 if 3 < dt.month < 11 else -5
+        et_dt = dt + timedelta(hours=offset)
+        return et_dt.date().isoformat()
+    except Exception:
+        return utc_iso[:10]  # fallback to UTC date
+
+# Lines cache TTL: 2 hours — reduces Odds API usage significantly.
+# Use the Force Refresh button to bypass when needed.
+_LINES_CACHE_TTL = 60 * 60 * 2
+
+@st.cache_data(ttl=_LINES_CACHE_TTL, show_spinner=False)
 def odds_get_events(date_iso=None):
     key = odds_api_key()
     if not key: return [], "Missing ODDS_API_KEY"
     data, err = http_get_json(f"{ODDS_BASE}/sports/{SPORT_KEY_NBA}/events", {"apiKey":key})
     if err or not isinstance(data, list): return [], err or "Unexpected events response"
     if date_iso:
-        return [ev for ev in data if (ev.get("commence_time") or "")[:10] == date_iso], None
+        # Convert UTC commence_time → Eastern date to handle late games (10 PM ET = next UTC day)
+        return [ev for ev in data if _utc_to_et_date(ev.get("commence_time") or "") == date_iso], None
     return data, None
 
 # [FIX 14] Week-ahead: fetch events for a date range
-@st.cache_data(ttl=60*5, show_spinner=False)
+@st.cache_data(ttl=_LINES_CACHE_TTL, show_spinner=False)
 def odds_get_events_range(start_iso, end_iso):
     key = odds_api_key()
     if not key: return [], "Missing ODDS_API_KEY"
@@ -2309,12 +2330,12 @@ def odds_get_events_range(start_iso, end_iso):
     if err or not isinstance(data, list): return [], err or "Unexpected events response"
     filtered = []
     for ev in data:
-        ct = (ev.get("commence_time") or "")[:10]
+        ct = _utc_to_et_date(ev.get("commence_time") or "")
         if start_iso <= ct <= end_iso:
             filtered.append(ev)
     return filtered, None
 
-@st.cache_data(ttl=60*5, show_spinner=False)
+@st.cache_data(ttl=_LINES_CACHE_TTL, show_spinner=False)
 def odds_get_event_odds(event_id, market_keys, regions=REGION_US):
     key = odds_api_key()
     if not key: return None, "Missing ODDS_API_KEY"
@@ -2952,22 +2973,33 @@ _UD_HEADERS = {
 # Basketball sport IDs that Underdog may use (numeric or string)
 _UD_BASKETBALL_SPORT_IDS = {"nba", "basketball", "5", "4", "nba_basketball", "basketball_nba", ""}
 
-@st.cache_data(ttl=60*10, show_spinner=False)
-def _fetch_underdog_lines_cached():
+@st.cache_data(ttl=60*60*2, show_spinner=False)
+def _fetch_underdog_lines_cached(cookies_str=""):
     """Inner cached fetch — call via fetch_underdog_lines() which clears cache first."""
     last_err = "No Underdog props found — slate may not be posted yet"
+    # Parse optional cookie string
+    cookie_dict = {}
+    if cookies_str:
+        for part in cookies_str.split(";"):
+            part = part.strip()
+            if "=" in part:
+                k, v = part.split("=", 1)
+                cookie_dict[k.strip()] = v.strip()
     for url in _UNDERDOG_ENDPOINTS:
         try:
             # Try curl_cffi first (Chrome impersonation bypasses some bot blocks)
             try:
                 from curl_cffi import requests as cffi_requests
-                r = cffi_requests.get(url, headers=_UD_HEADERS, impersonate="chrome120", timeout=20)
+                r = cffi_requests.get(url, headers=_UD_HEADERS,
+                                      cookies=cookie_dict or None,
+                                      impersonate="chrome120", timeout=20)
             except ImportError:
-                r = requests.get(url, headers=_UD_HEADERS, timeout=20)
+                r = requests.get(url, headers=_UD_HEADERS,
+                                 cookies=cookie_dict or None, timeout=20)
             if r.status_code == 429:
                 return [], "Underdog rate-limited (429) — try again in 30s"
             if r.status_code == 403:
-                last_err = "Underdog HTTP 403 — API blocked on this server. Use Manual Import to paste JSON."
+                last_err = "Underdog HTTP 403 — API blocked on this server. Paste your Underdog browser cookies above or use Manual Import to paste JSON."
                 continue
             if not r.ok:
                 last_err = f"Underdog HTTP {r.status_code} from {url}"
@@ -3017,9 +3049,12 @@ def _fetch_underdog_lines_cached():
     return [], last_err
 
 def fetch_underdog_lines():
-    """Clear cache then fetch fresh Underdog lines."""
-    _fetch_underdog_lines_cached.clear()
-    return _fetch_underdog_lines_cached()
+    """Clear cache then fetch fresh Underdog lines using any saved cookies."""
+    cookies_str = st.session_state.get("ud_cookies", "")
+    if st.session_state.get("_ud_last_cookies_used") != cookies_str:
+        _fetch_underdog_lines_cached.clear()
+        st.session_state["_ud_last_cookies_used"] = cookies_str
+    return _fetch_underdog_lines_cached(cookies_str=cookies_str)
 
 def map_platform_stat_to_market(stat_type):
     """Map PrizePicks/Underdog stat label to internal market name."""
@@ -5849,7 +5884,11 @@ if st.session_state.get("scanner_results") is None:
 if "_scanner_alert_hashes" not in st.session_state:
     st.session_state["_scanner_alert_hashes"] = _load_alert_hashes()
 
-MARKET_OPTIONS = list(ODDS_MARKETS.keys())
+# Remove markets that have no confirmed Odds API support and are rarely
+# available on PP/UD (shooting volume + binary markets that clutter the list).
+# FGM/FGA/3PA/FTM/FTA: no reliable Odds API key. First Basket: binary, not modeled.
+_MARKET_EXCLUDE_FROM_UI = {"FGM", "FGA", "3PA", "FTM", "FTA", "First Basket"}
+MARKET_OPTIONS = [k for k in ODDS_MARKETS.keys() if k not in _MARKET_EXCLUDE_FROM_UI]
 
 def _daily_pnl(uid):
     h = load_history(uid)
@@ -6773,8 +6812,40 @@ with tabs[2]:
             st.session_state["scan_source_idx"] = ["Odds API only","PP + UD only","All sources"].index(_scan_source)
             st.caption("PP/UD/Sleeper: 50% implied (no vig)  Odds API: from market price")
 
-    fetch_col, scan_col = st.columns(2)
-    if fetch_col.button("Fetch Live Lines (Odds API)", use_container_width=True):
+    # ── Last-fetch indicator + Force Refresh ──────────────────────
+    _last_fetch_ts  = st.session_state.get("_scanner_lines_fetch_ts")
+    _last_fetch_lbl = ""
+    _lines_stale    = True
+    if _last_fetch_ts:
+        _age_sec = time.time() - _last_fetch_ts
+        _age_min = int(_age_sec / 60)
+        if _age_min < 60:
+            _last_fetch_lbl = f"Lines fetched {_age_min}m ago"
+        else:
+            _last_fetch_lbl = f"Lines fetched {_age_min//60}h {_age_min%60}m ago"
+        _lines_stale = _age_sec > _LINES_CACHE_TTL   # stale after 2 hours
+
+    fetch_col, refresh_col, scan_col = st.columns([3, 2, 3])
+
+    if _last_fetch_ts and not _lines_stale:
+        fetch_col.info(f"✓ {_last_fetch_lbl} (cached 2h)")
+
+    _do_fetch = fetch_col.button(
+        "Fetch Live Lines (Odds API)" if not _last_fetch_ts else "Re-fetch Lines",
+        use_container_width=True,
+        help="Lines are cached 2 hours to preserve API quota. Use Force Refresh to bypass.",
+    )
+
+    if refresh_col.button("Force Refresh", use_container_width=True,
+                          help="Clears 2-hour cache and re-fetches from Odds API. Uses API credits."):
+        odds_get_events.clear()
+        odds_get_events_range.clear()
+        odds_get_event_odds.clear()
+        st.session_state.pop("_scanner_lines_fetch_ts", None)
+        st.session_state.pop("scanner_offers", None)
+        st.toast("Cache cleared — click Fetch Live Lines to refresh.")
+
+    if _do_fetch:
         selected_keys = list(dict.fromkeys(ODDS_MARKETS.get(m) for m in markets_sel if ODDS_MARKETS.get(m)))
         if not selected_keys:
             st.warning("Select at least one market.")
@@ -6785,7 +6856,7 @@ with tabs[2]:
             else:
                 evs, err = odds_get_events(scan_start.isoformat())
             if err: st.error(err)
-            elif not evs: st.warning("No events for that date range.")
+            elif not evs: st.warning("No events found for that date. Note: late games (7–10 PM ET) are now mapped to Eastern date correctly.")
             else:
                 offers = []
                 _fetch_errors = []
@@ -6818,6 +6889,21 @@ with tabs[2]:
                     for sk in spec_keys:
                         market_batches.append([sk])
 
+                    # Inform user about specialty market timing
+                    _SPEC_TIMING_MARKETS = {
+                        "H1 Points","H1 Rebounds","H1 Assists","H1 3PM","H1 PRA",
+                        "H2 Points","H2 Rebounds","H2 Assists","H2 PRA",
+                        "Q1 Points","Q1 Rebounds","Q1 Assists",
+                        "Double Double","Triple Double","Fantasy Score",
+                    }
+                    _sel_spec_timing = [m for m in markets_sel if m in _SPEC_TIMING_MARKETS]
+                    if _sel_spec_timing:
+                        st.info(
+                            f"**{', '.join(_sel_spec_timing)}** — these specialty markets typically open on "
+                            "DraftKings/FanDuel **1–2 hours before tip-off**. If you see 0 lines, try "
+                            "Force Refresh closer to game time. They are rarely available all day."
+                        )
+
                     # Track per-specialty-market counts for debug output
                     _spec_market_counts: dict[str, int] = {m: 0 for m in _supported_sel if ODDS_MARKETS.get(m) in SPECIALTY_MARKET_KEYS}
 
@@ -6848,6 +6934,7 @@ with tabs[2]:
                     if offers:
                         # [FIX 13] Store in session state - persists across tab switches
                         st.session_state["scanner_offers"] = pd.DataFrame(offers)
+                        st.session_state["_scanner_lines_fetch_ts"] = time.time()
                         # Auto-save to prop line history DB + [UPGRADE 10] opening line capture
                         for r2 in offers:
                             save_prop_line(r2.get("player",""), r2.get("market",""),
@@ -6857,7 +6944,7 @@ with tabs[2]:
                             mk2 = r2.get("market_key", ODDS_MARKETS.get(r2.get("market",""), ""))
                             side2 = r2.get("side", "Over")
                             save_opening_line(pn2, mk2, side2, r2.get("line", 0), r2.get("price"))
-                        st.success(f"Fetched {len(offers)} raw prop outcomes — opening lines captured.")
+                        st.success(f"Fetched {len(offers)} raw prop outcomes — opening lines captured. Cached for 2 hours.")
                     else:
                         st.warning("No offers returned.")
                     # Show per-specialty-market debug info for any that returned 0 lines
@@ -6866,8 +6953,9 @@ with tabs[2]:
                         with st.expander(f"Debug ({len(_fetch_errors)} API errors, {len(_empty_spec)} empty specialty markets)"):
                             if _empty_spec:
                                 st.caption(
-                                    "**Specialty markets with 0 lines** (lines may open closer to tip-off, "
-                                    "or book doesn't carry them via Odds API): " + ", ".join(_empty_spec)
+                                    "**Specialty markets with 0 lines** — H1/H2/DD/TD/Fantasy Score open "
+                                    "1–2h before tip-off on most books. Use Force Refresh near game time: "
+                                    + ", ".join(_empty_spec)
                                 )
                             for _fe in _fetch_errors:
                                 st.caption(_fe)
@@ -7471,18 +7559,29 @@ with tabs[3]:
                         if "data" not in data:
                             raise ValueError('JSON is missing a "data" key. Copy the Response tab (not Preview or Headers).')
                         included = {item["id"]: item for item in data.get("included", []) if isinstance(item, dict) and "id" in item}
+                        # PP API type field varies: "Projection", "new_player_projection",
+                        # "BoardProjection", or may be absent — accept any entry with stat_type + line_score
+                        _PP_VALID_TYPES = {"projection", "new_player_projection", "boardprojection"}
                         for proj in data.get("data", []):
                             if not isinstance(proj, dict): continue
-                            if proj.get("type") != "Projection": continue
+                            _type = str(proj.get("type","")).lower()
                             attrs = proj.get("attributes", {}) or {}
+                            # Accept if type matches OR if it has required fields (future-proof)
+                            _has_fields = bool(attrs.get("stat_type") and attrs.get("line_score") is not None)
+                            if _type not in _PP_VALID_TYPES and not _has_fields:
+                                continue
                             rels = proj.get("relationships", {}) or {}
                             pid = (rels.get("new_player",{}).get("data",{}) or {}).get("id")
                             if not pid:
                                 pid = (rels.get("player",{}).get("data",{}) or {}).get("id")
                             pattrs = included.get(pid,{}).get("attributes",{}) if pid else {}
-                            pname = pattrs.get("name","") or attrs.get("name","")
+                            pname = pattrs.get("name","") or attrs.get("name","") or attrs.get("display_name","")
                             stat_type = attrs.get("stat_type","")
                             line_score = attrs.get("line_score")
+                            # League filter: only NBA
+                            league = str(attrs.get("league","") or pattrs.get("league","")).upper()
+                            if league and league not in ("NBA",""):
+                                continue
                             if pname and stat_type and line_score is not None:
                                 try:
                                     rows.append({"player": pname, "stat_type": stat_type,
@@ -7490,7 +7589,13 @@ with tabs[3]:
                                 except (TypeError, ValueError):
                                     pass
                         if not rows:
-                            err_msg = "No NBA projections found. The JSON parsed OK but contained no NBA props — check you selected the NBA board before copying."
+                            # Show debug info to help diagnose
+                            _types_seen = list({str(p.get("type","")) for p in data.get("data",[]) if isinstance(p,dict)})[:8]
+                            err_msg = (
+                                f"No NBA projections found in the JSON. Types seen: {_types_seen}. "
+                                "Make sure you're on the NBA board in PrizePicks before copying the response, "
+                                "and copy the full Response body (not just headers or preview)."
+                            )
                     except json.JSONDecodeError as e:
                         err_msg = f'Invalid JSON: {e}. Make sure you copied the entire response (it should start with {{"data":[).'
                     except ValueError as e:
@@ -7560,6 +7665,20 @@ with tabs[3]:
 
     with plat_tabs[1]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>UNDERDOG FANTASY NBA LINES</div>", unsafe_allow_html=True)
+        _ud_ck = st.session_state.get("ud_cookies","")
+        if _ud_ck:
+            st.caption(f"🔑 UD Cookie active ({len(_ud_ck)} chars) — auto-fetch will use your cookies.")
+        else:
+            with st.expander("🔑 Set Underdog Cookies (needed if auto-fetch is blocked)", expanded=False):
+                st.caption("If Underdog returns 403, paste your browser cookies here to bypass the block.")
+                _new_ud_ck = st.text_area("Cookie string", value="", height=60,
+                                          placeholder="_ud_session=...; __cf_bm=...", key="ud_ck_platforms")
+                if st.button("Save UD Cookies", key="ud_ck_save_plat"):
+                    st.session_state["ud_cookies"] = _new_ud_ck.strip()
+                    _fetch_underdog_lines_cached.clear()
+                    st.session_state["_ud_last_cookies_used"] = ""
+                    st.success("Underdog cookies saved.")
+                    st.rerun()
         ud_auto_tab, ud_manual_tab = st.tabs(["Auto Fetch", "Manual Import"])
         with ud_auto_tab:
             if st.button("Fetch Underdog Lines", use_container_width=True):
@@ -7568,10 +7687,12 @@ with tabs[3]:
                 if ud_err:
                     st.error(f"Underdog: {ud_err}")
                     st.info(
-                        "If blocked, use **Manual Import**:\n\n"
-                        "1. Open [underdogfantasy.com](https://underdogfantasy.com) → NBA board\n"
-                        "2. DevTools → Network → filter `over_under_lines`\n"
-                        "3. Copy Response JSON → paste in Manual Import"
+                        "If blocked:\n\n"
+                        "1. Paste your Underdog browser cookies in the field above and retry, **OR**\n"
+                        "2. Use **Manual Import**:\n"
+                        "   - Open [underdogfantasy.com](https://underdogfantasy.com) → NBA board\n"
+                        "   - DevTools (F12) → Network → filter `over_under_lines`\n"
+                        "   - Click the request → Response tab → Copy → paste in Manual Import"
                     )
                 elif not ud_lines:
                     st.warning("No lines returned. The NBA slate may not be posted yet.")
