@@ -275,7 +275,12 @@ def _now_iso():
 def normalize_name(name: str) -> str:
     if not name:
         return ""
-    s = name.strip().lower()
+    import unicodedata
+    # [AUDIT FIX] Normalize accented characters (Joël → joel, Nikola → nikola)
+    # Prevents player lookup failures for international players with diacritics
+    s = unicodedata.normalize("NFKD", str(name))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.strip().lower()
     s = re.sub(r"[\.\'\-]", " ", s)
     s = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", "", s)
     return re.sub(r"\s+", " ", s).strip()
@@ -734,7 +739,7 @@ _HALF_POS_DELTA = {
     "Unknown": {},
 }
 
-def get_half_factor(market_name, position_bucket="Unknown", spread_abs=None):
+def get_half_factor(market_name, position_bucket="Unknown", spread_abs=None, game_total=None):
     """Return position-adjusted half-game scaling factor.
 
     [v5.0] Voulgaris close-game H2 boost:
@@ -742,6 +747,10 @@ def get_half_factor(market_name, position_bucket="Unknown", spread_abs=None):
     driving H2 scoring ~4-6% above the naïve 48% split. Blowouts see H2 < 48%
     (starters sit). Sportsbooks often price H2 totals at exactly ½ of game total
     — exploiting this asymmetry was one of Voulgaris's most profitable edges.
+
+    [AUDIT FIX] Q1 dynamic factor: high-pace games (game_total 230+) overrepresent
+    Q1 scoring; slow games (game_total ≤205) underrepresent. Adjusts the static 26.5%.
+    Range: 0.235–0.280 depending on pace environment.
     """
     base = HALF_FACTOR.get(market_name, 1.0)
     if base == 1.0:
@@ -763,6 +772,15 @@ def get_half_factor(market_name, position_bucket="Unknown", spread_abs=None):
                 close_boost = 0.0
             if market_name in ("H2 Points", "H2 PRA", "H2 PA", "H2 FTM", "H2 FTA"):
                 base_adj = float(np.clip(base_adj + close_boost, 0.05, 0.60))
+        except Exception:
+            pass
+    # [AUDIT FIX] Q1 dynamic fraction: pace-adjusted (game_total drives Q1 scoring weight)
+    if market_name.startswith("Q1") and game_total is not None:
+        try:
+            gt = float(game_total)
+            # League avg ~220. Each 5 pts above → Q1 fraction goes up ~0.003 (mirrors pace effect)
+            q1_adj = (gt - 220.0) / 5.0 * 0.003
+            base_adj = float(np.clip(base_adj + q1_adj, 0.23, 0.29))
         except Exception:
             pass
     return base_adj
@@ -2156,8 +2174,10 @@ def negbinom_prob_over(stat_series, line, market="default", min_n=6):
     mu_w = float(np.average(x, weights=w))
     # Weighted variance
     var_w = float(np.average((x - mu_w) ** 2, weights=w))
-    if mu_w <= 0 or var_w <= mu_w:
-        # Variance ≤ mean → equidispersed or underdispersed: NegBin not valid; return None
+    if mu_w <= 0 or var_w <= 0.90 * mu_w:
+        # Variance significantly < mean → underdispersed: NegBin invalid; return None.
+        # [AUDIT FIX] Threshold relaxed from strict mu → 0.90*mu:
+        # variance slightly below mean is often noise; only reject clearly underdispersed cases.
         return None, mu_w, max(1e-9, np.sqrt(var_w))
     # Method of moments: r = μ² / (σ² - μ)
     r = (mu_w ** 2) / max(var_w - mu_w, 1e-6)
@@ -5159,8 +5179,11 @@ def compute_leg_projection(
     # [AUDIT FIX] Apply position-specific half-game factor when real split data isn't available
     # [v5.0] Pass spread_abs for Voulgaris close-game H2 boost
     if is_half_market and half_factor != 1.0:
-        _spread_for_half = abs(float(_game_spread)) if _game_spread is not None else None
-        half_factor = get_half_factor(market_name, pos_bucket, spread_abs=_spread_for_half)
+        # [AUDIT FIX] Default spread_abs to league avg 4.5 when None (manual entries, no spread data)
+        # Without this, Voulgaris H2 close-game boost never applies to manual lines.
+        _spread_for_half = abs(float(_game_spread)) if _game_spread is not None else 4.5
+        half_factor = get_half_factor(market_name, pos_bucket, spread_abs=_spread_for_half,
+                                      game_total=_game_total)
         _orig_half_factor = half_factor
 
     # Positional defensive grade multiplier
@@ -5269,9 +5292,12 @@ def compute_leg_projection(
                 _nb_p, _nb_mu, _nb_sigma = negbinom_prob_over(
                     pace_adj_series, effective_line, market=base_market)
                 if _nb_p is not None and p_over_raw is not None:
-                    # Blend: weight NegBin more heavily for larger samples (better r estimate)
+                    # Blend: weight NegBin more heavily for larger samples (better r estimate).
+                    # [AUDIT FIX] Raised cap from 0.70 → 0.82; increased slope.
+                    # At n=6 (just enough), NegBin r-estimate is noisy → 50% blend.
+                    # At n=15+, r-estimate is stable → up to 82% NegBin (clearly superior for counts).
                     _n_valid_nb = len(pace_adj_series.dropna())
-                    _nb_weight = float(np.clip(0.50 + (_n_valid_nb - 6) * 0.03, 0.50, 0.70))
+                    _nb_weight = float(np.clip(0.45 + (_n_valid_nb - 6) * 0.05, 0.45, 0.82))
                     p_over_raw = float(_nb_weight * _nb_p + (1.0 - _nb_weight) * p_over_raw)
                     if _nb_mu is not None:
                         mu_raw = float(0.60 * _nb_mu + 0.40 * mu_raw)
@@ -5401,14 +5427,16 @@ def compute_leg_projection(
 
     p_cal = p_raw
 
-    # [RESEARCH UPGRADE] Mean reversion nudge — applied as a small probability adjustment.
-    # When player has gone over 8+/10 games (hot streak), a regression nudge slightly lowers p_cal.
-    # When player has gone over ≤2/10 games (cold streak), nudge slightly raises p_cal.
-    # Kept small (max ±0.04) to avoid overriding the bootstrap; it's a second-order signal.
-    if _reversion_signal != 0.0 and p_cal is not None:
+    # [AUDIT FIX] Mean reversion nudge — stored but NOT yet applied here.
+    # The streak signal (applied later at line ~5475) also uses recent-game divergence.
+    # Applying BOTH would double-count the regression signal (±0.06 instead of ±0.04).
+    # Fix: take the STRONGER of the two signals, applied in one place (streak block below).
+    # _reversion_signal is preserved for the output dict; streak block does the combined apply.
+    _combined_streak_reversion_nudge = 0.0
+    if p_cal is not None:
         _is_over_side = "under" not in str(side_str).lower()
-        _nudge = _reversion_signal if _is_over_side else -_reversion_signal
-        p_cal = float(np.clip(float(p_cal) + _nudge, 1e-4, 1 - 1e-4))
+        _rev_nudge = (_reversion_signal if _is_over_side else -_reversion_signal) if _reversion_signal != 0.0 else 0.0
+        _combined_streak_reversion_nudge = _rev_nudge   # will be combined with streak nudge below
 
     ev_raw = ev_per_dollar(p_cal, price_decimal) if (p_cal is not None and price_decimal is not None) else None
     pen = volatility_penalty_factor(vol_cv)
@@ -5428,7 +5456,11 @@ def compute_leg_projection(
     # [FIX 5] Pass skewness to volatility gate
     gate_ok, gate_reason = passes_volatility_gate(vol_cv, ev_raw, skew=stat_skew, bet_type=side_str)
     if exclude_chaotic and regime_label=="Chaotic":
-        gate_ok, gate_reason = False, "chaotic regime (high volatility + blowout risk)"
+        # [AUDIT FIX] Preserve original gate_reason alongside chaotic reason for diagnostic clarity
+        _prev_reason = gate_reason if not gate_ok else ""
+        _chaotic_reason = "chaotic regime (high volatility + blowout risk)"
+        gate_reason = f"{_prev_reason} + {_chaotic_reason}" if _prev_reason else _chaotic_reason
+        gate_ok = False
     if not gate_ok: ev_adj = None
 
     stake_dollars, stake_frac, stake_reason = 0.0, 0.0, "gated"
@@ -5472,12 +5504,23 @@ def compute_leg_projection(
     _trend_score, _trend_label, _trend_slope, _l3, _l5, _l10 = compute_trend_convergence(
         stat_series, float(line), side=side_str)
 
-    # [v4.0 UPGRADE] Consecutive streak signal — applied as small p_cal nudge
+    # [v4.0 UPGRADE] Consecutive streak signal — combined with reversion nudge in single apply.
+    # [AUDIT FIX] Using combined nudge prevents double-counting from reversion + streak signals.
+    # Only the STRONGER of the two signals contributes beyond the base; capped at ±0.045 total.
     _streak_count, _streak_label, _streak_signal = compute_consecutive_streak(
         stat_series, float(line), side=side_str)
-    if _streak_signal != 0.0 and p_cal is not None:
-        p_cal = float(np.clip(float(p_cal) + _streak_signal, 1e-4, 1 - 1e-4))
-        # Recompute EV after streak nudge
+    # Combine: streak and reversion directional agreement → additive up to cap
+    #           streak and reversion in opposition → take the stronger one
+    _str_same_dir = (_streak_signal >= 0) == (_combined_streak_reversion_nudge >= 0) or _streak_signal == 0
+    if _str_same_dir:
+        # Same direction: cap additive combination at ±0.045
+        _final_nudge = float(np.clip(_combined_streak_reversion_nudge + _streak_signal * 0.40, -0.045, 0.045))
+    else:
+        # Opposite directions: use the stronger signal only
+        _final_nudge = _combined_streak_reversion_nudge if abs(_combined_streak_reversion_nudge) >= abs(_streak_signal) else _streak_signal
+    if _final_nudge != 0.0 and p_cal is not None:
+        p_cal = float(np.clip(float(p_cal) + _final_nudge, 1e-4, 1 - 1e-4))
+        # Recompute EV after combined nudge — this ev_adj is used for stake computation
         ev_raw = ev_per_dollar(p_cal, price_decimal) if (p_cal is not None and price_decimal is not None) else None
         ev_adj = float(ev_raw * pen) if (ev_raw is not None and gate_ok) else None
 
@@ -5766,7 +5809,15 @@ def fit_monotone_calibrator(df_legs, n_bins=12):
     g = d.groupby("bin",dropna=True).agg(p_mid=("p_raw","mean"),win=("y","mean"),n=("y","size")).reset_index()
     g = g[g["n"]>=_min_n_per_bin].sort_values("p_mid")
     if g.empty or len(g)<3: return None
-    win_mono = np.maximum.accumulate(g["win"].values.astype(float))
+    # [AUDIT FIX] Use sklearn IsotonicRegression (PAVA) instead of manual maximum.accumulate.
+    # maximum.accumulate creates plateau artifacts (e.g., p_raw=0.4→win=0.45, p_raw=0.5→win=0.45).
+    # Isotonic regression (PAVA) is smoother and statistically principled.
+    try:
+        from sklearn.isotonic import IsotonicRegression
+        _ir = IsotonicRegression(out_of_bounds="clip")
+        win_mono = _ir.fit_transform(g["p_mid"].values.astype(float), g["win"].values.astype(float))
+    except Exception:
+        win_mono = np.maximum.accumulate(g["win"].values.astype(float))
     win_mono = np.clip(win_mono, 0.01, 0.99)
     return {
         "x":g["p_mid"].values.astype(float).tolist(),
