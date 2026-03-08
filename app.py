@@ -6096,7 +6096,26 @@ with tabs[0]:
                     line = float(val); meta = m_meta
                     st.success(f"{tag} - {pname} {mkt}: line {line:.1f} ({sportsbook})")
                 else:
-                    st.warning(f"{tag} auto-line failed ({ferr}). Using manual {line:.1f}.")
+                    # Fallback: check stored PrizePicks lines before using manual
+                    _pp_df = st.session_state.get("pp_lines")
+                    _pp_line = None
+                    if _pp_df is not None and not _pp_df.empty:
+                        _norm_pname = normalize_name(pname)
+                        for _, _r in _pp_df.iterrows():
+                            if normalize_name(str(_r.get("player", ""))) == _norm_pname:
+                                _r_mkt = map_platform_stat_to_market(_r.get("stat_type", ""))
+                                _r_line = _r.get("line")
+                                if _r_mkt == mkt and _r_line is not None and not pd.isna(_r_line):
+                                    _pp_line = float(_r_line)
+                                    break
+                    if _pp_line is not None:
+                        line = _pp_line
+                        meta = {"event_id": None, "home_team": "", "away_team": "",
+                                "commence_time": "", "price": 1.909,
+                                "book": "prizepicks", "market_key": market_key, "side": "Over"}
+                        st.success(f"{tag} - {pname} {mkt}: line {line:.1f} (PrizePicks)")
+                    else:
+                        st.warning(f"{tag} auto-line failed ({ferr}). Using manual {line:.1f}.")
             if not line or float(line) <= 0:
                 warnings.append(f"{tag}: invalid line"); continue
             tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out)))
