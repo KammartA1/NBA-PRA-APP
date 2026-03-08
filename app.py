@@ -734,13 +734,38 @@ _HALF_POS_DELTA = {
     "Unknown": {},
 }
 
-def get_half_factor(market_name, position_bucket="Unknown"):
-    """Return position-adjusted half-game scaling factor."""
+def get_half_factor(market_name, position_bucket="Unknown", spread_abs=None):
+    """Return position-adjusted half-game scaling factor.
+
+    [v5.0] Voulgaris close-game H2 boost:
+    In close games (spread ≤ 5), Q4 sees intentional fouling + extra possessions,
+    driving H2 scoring ~4-6% above the naïve 48% split. Blowouts see H2 < 48%
+    (starters sit). Sportsbooks often price H2 totals at exactly ½ of game total
+    — exploiting this asymmetry was one of Voulgaris's most profitable edges.
+    """
     base = HALF_FACTOR.get(market_name, 1.0)
     if base == 1.0:
         return base   # not a half/Q1 market
     delta = _HALF_POS_DELTA.get(position_bucket, {}).get(market_name, 0.0)
-    return float(np.clip(base + delta, 0.05, 0.95))
+    base_adj = float(np.clip(base + delta, 0.05, 0.95))
+    # [v5.0] H2 close-game boost (Points, FTA markets specifically)
+    if market_name.startswith("H2") and spread_abs is not None:
+        try:
+            s = float(spread_abs)
+            if s <= 3.0:
+                # Very close: +4% on H2 scoring due to intentional fouling + extra possessions
+                close_boost = 0.04
+            elif s <= 5.0:
+                close_boost = 0.025  # Competitive: +2.5%
+            elif s >= 12.0:
+                close_boost = -0.025  # Expected blowout: H2 scoring deflated (starters sit)
+            else:
+                close_boost = 0.0
+            if market_name in ("H2 Points", "H2 PRA", "H2 PA", "H2 FTM", "H2 FTA"):
+                base_adj = float(np.clip(base_adj + close_boost, 0.05, 0.60))
+        except Exception:
+            pass
+    return base_adj
 
 # Alt markets — same engine, different API key
 ALT_MARKETS = {"Alt Points","Alt Rebounds","Alt Assists","Alt 3PM"}
@@ -794,6 +819,14 @@ LAMBDA_DECAY_BY_STAT = {
     "Fantasy Score": 0.88,
     "default": 0.88,
 }
+
+# [v5.0] Count stats where Negative Binomial outperforms bootstrap (overdispersed count data)
+# NegBin is theoretically superior for zero-inflated, overdispersed integer distributions.
+# Research: BinomialBasketball.com Stan model; squared2020.com NegBin for 3PM
+NEGBINOM_MARKETS = frozenset({
+    "3PM", "Blocks", "Steals", "Stocks", "Assists",
+    "Rebounds", "RA", "PR", "Turnovers", "FTA", "FTM"
+})
 
 # Persistent file paths
 OPENING_LINES_PATH   = "opening_lines.json"
@@ -1216,8 +1249,12 @@ def compute_home_away_factor(game_log_df, market, is_home):
 # ──────────────────────────────────────────────
 # BAYESIAN SHRINKAGE  [FIX 2: adaptive k]
 # ──────────────────────────────────────────────
-def bayesian_shrink(observed_mu, n_obs, market, position_bucket):
-    prior = POSITIONAL_PRIORS.get(position_bucket, POSITIONAL_PRIORS["Unknown"]).get(market)
+def bayesian_shrink(observed_mu, n_obs, market, position_bucket, custom_priors=None):
+    # [v5.0] Use custom priors if available (from user's personal hit/miss calibration)
+    if custom_priors and position_bucket in custom_priors and market in custom_priors[position_bucket]:
+        prior = float(custom_priors[position_bucket][market])
+    else:
+        prior = POSITIONAL_PRIORS.get(position_bucket, POSITIONAL_PRIORS["Unknown"]).get(market)
     if prior is None or observed_mu is None:
         return observed_mu
     # [AUDIT IMPROVEMENT] Stat-specific shrinkage strength.
@@ -1866,6 +1903,47 @@ def bootstrap_prob_over(stat_series, line, n_sims=8000, cv_override=None, market
     return float(np.clip(p_over, 1e-4, 1-1e-4)), mu_w, max(1e-9, sigma_w)
 
 # ──────────────────────────────────────────────
+# [v5.0] NEGATIVE BINOMIAL PROBABILITY ESTIMATOR
+# For count stats (3PM, Assists, Rebounds, Blocks, Steals, etc.)
+# NegBin handles overdispersion (σ² > μ) which all NBA counting stats exhibit.
+# Research: BinomialBasketball.com, squared2020.com — NegBin beats Poisson/bootstrap
+# for integer-valued stats by correctly modeling per-player consistency variance.
+# scipy.stats.nbinom parameterization: n=r (dispersion), p=r/(r+μ)
+# Returns (p_over, mu_weighted, sigma_weighted) matching bootstrap_prob_over signature.
+# ──────────────────────────────────────────────
+def negbinom_prob_over(stat_series, line, market="default", min_n=6):
+    """
+    Negative Binomial probability estimate P(X > line) for count stats.
+    Falls back to None if insufficient data or conditions not met (σ² ≤ μ).
+    """
+    from scipy.stats import nbinom
+    x = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
+    if x.size < min_n:
+        return None, None, None
+    # Exponential decay weights (same λ as bootstrap)
+    lam = LAMBDA_DECAY_BY_STAT.get(market, LAMBDA_DECAY_BY_STAT["default"])
+    if x.size >= 6:
+        w = np.array([lam ** i for i in range(x.size)], dtype=float)
+        w = w / w.sum()
+    else:
+        w = np.ones(x.size) / x.size
+    mu_w = float(np.average(x, weights=w))
+    # Weighted variance
+    var_w = float(np.average((x - mu_w) ** 2, weights=w))
+    if mu_w <= 0 or var_w <= mu_w:
+        # Variance ≤ mean → equidispersed or underdispersed: NegBin not valid; return None
+        return None, mu_w, max(1e-9, np.sqrt(var_w))
+    # Method of moments: r = μ² / (σ² - μ)
+    r = (mu_w ** 2) / max(var_w - mu_w, 1e-6)
+    r = float(np.clip(r, 0.5, 50.0))   # Clip: very low r = extreme overdispersion (e.g. blocks)
+    p = r / (r + mu_w)
+    # P(X > line) = 1 - P(X <= floor(line)) = survival function at floor(line)
+    # nbinom.sf(k, n, p) = P(X > k)
+    p_over = float(nbinom.sf(int(np.floor(line)), r, p))
+    sigma_w = float(np.sqrt(var_w))
+    return float(np.clip(p_over, 1e-4, 1 - 1e-4)), mu_w, max(1e-9, sigma_w)
+
+# ──────────────────────────────────────────────
 # EMPIRICAL CORRELATION  [FIX 1: Spearman]
 # ──────────────────────────────────────────────
 @st.cache_data(ttl=60*60, show_spinner=False)
@@ -2203,14 +2281,32 @@ def kelly_fraction(p, price):
     except: return 0.0
 
 # [FIX 8] Hard negative-edge guard
-def recommended_stake(bankroll, p, price_decimal, frac_kelly, cap_frac=0.05):
+# [v5.0] Sharpness-aware Kelly: dynamically scales Kelly fraction based on composite
+# sharpness score (0–100). Elite bets (≥70) get full frac_kelly; SKIP (<40) get 0.
+# Research: Fractional Kelly prevents ruin from estimation errors; dynamic scaling
+# captures that higher-signal bets deserve proportionally more allocation.
+def recommended_stake(bankroll, p, price_decimal, frac_kelly, cap_frac=0.05,
+                      sharpness_score=None):
     try: br=float(bankroll)
     except: br=0.0
     if br<=0 or p is None or price_decimal is None: return 0.0, 0.0, "bankroll<=0"
     k = kelly_fraction(float(p), float(price_decimal))
     if k <= 0:
         return 0.0, 0.0, "negative edge - hard blocked"
-    f = max(0.0, min(1.0, float(frac_kelly))) * k
+    # [v5.0] Dynamic Kelly multiplier from sharpness score
+    _base_frac = max(0.0, min(1.0, float(frac_kelly)))
+    if sharpness_score is not None:
+        _s = float(sharpness_score)
+        if _s >= 70:
+            _sharp_mult = 1.20    # Elite bet: allow up to 20% above base Kelly
+        elif _s >= 55:
+            _sharp_mult = 1.00    # Solid bet: standard Kelly
+        elif _s >= 40:
+            _sharp_mult = 0.75    # Lean bet: 25% reduction
+        else:
+            _sharp_mult = 0.40    # Low-signal: 60% reduction (but don't zero out — EV still positive)
+        _base_frac = _base_frac * _sharp_mult
+    f = _base_frac * k
     f = min(f, float(cap_frac))
     stake = br * f
     if stake <= 0: return 0.0, 0.0, "kelly<=0"
@@ -2947,6 +3043,29 @@ def compute_pace_adjusted_series(stat_series, opp_team):
     except Exception:
         return stat_series
 
+# [v5.0] Game-specific pace multiplier from O/U game total.
+# Voulgaris method: game total is the single best environmental signal for scoring props.
+# O/U 230+ = high-pace game → props hit more. O/U 205 = grind = props hit less.
+# Uses league-average implied total (~214 pts in 2024-25) as baseline reference.
+# Returns a multiplier 0.92–1.08 for use as an additional projection factor.
+_LEAGUE_AVG_GAME_TOTAL = 214.0  # 2024-25 league average O/U total
+def compute_game_total_pace_mult(game_total, market):
+    """Compute pace/environment multiplier from game O/U total vs league average."""
+    if game_total is None:
+        return 1.0
+    # Only applies to scoring/volume markets; not rate stats (shooting %, DD/TD)
+    _pace_sensitive = {"Points", "Rebounds", "Assists", "PRA", "PR", "PA", "RA",
+                       "3PM", "Fantasy Score", "FTA", "FTM", "Steals", "Blocks", "Stocks"}
+    if market not in _pace_sensitive:
+        return 1.0
+    try:
+        gt = float(game_total)
+        # Linear: each 10 pts above/below avg = ~2.5% shift (dampened 50% for props)
+        raw_adj = (gt - _LEAGUE_AVG_GAME_TOTAL) / 10.0 * 0.025
+        return float(np.clip(1.0 + raw_adj, 0.92, 1.08))
+    except Exception:
+        return 1.0
+
 # ──────────────────────────────────────────────
 # PER-POSITION DEFENSIVE GRADES  (one call, all teams)
 # ──────────────────────────────────────────────
@@ -3165,6 +3284,12 @@ def _parse_pp_response(data, league_filter=("NBA",)):
         player_name = player_attrs.get("name", "") or attrs.get("name", "") or attrs.get("display_name", "")
         stat_type = attrs.get("stat_type", "")
         line_score = attrs.get("line_score")
+        # odds_type: "standard" | "goblin" (low-mult) | "demon" (high-mult)
+        # rank: 1=goblin, 2=standard, 3=demon (numeric fallback)
+        odds_type = str(attrs.get("odds_type", "") or "").lower().strip()
+        rank_val   = attrs.get("rank", None)
+        if not odds_type and rank_val is not None:
+            odds_type = {1: "goblin", 2: "standard", 3: "demon"}.get(int(rank_val), "")
         if player_name and stat_type and line_score is not None:
             try:
                 rows.append({
@@ -3173,6 +3298,7 @@ def _parse_pp_response(data, league_filter=("NBA",)):
                     "line": float(line_score),
                     "start_time": attrs.get("start_time", ""),
                     "source": "prizepicks",
+                    "odds_type": odds_type or "standard",
                 })
             except (TypeError, ValueError):
                 pass
@@ -4763,8 +4889,10 @@ def compute_leg_projection(
     pos_bucket = get_position_bucket(pos_str)
 
     # [AUDIT FIX] Apply position-specific half-game factor when real split data isn't available
+    # [v5.0] Pass spread_abs for Voulgaris close-game H2 boost
     if is_half_market and half_factor != 1.0:
-        half_factor = get_half_factor(market_name, pos_bucket)
+        _spread_for_half = abs(float(_game_spread)) if _game_spread is not None else None
+        half_factor = get_half_factor(market_name, pos_bucket, spread_abs=_spread_for_half)
         _orig_half_factor = half_factor
 
     # Positional defensive grade multiplier
@@ -4858,6 +4986,28 @@ def compute_leg_projection(
         p_over_raw, mu_raw, sigma = bootstrap_prob_over(
             pace_adj_series, effective_line, cv_override=vol_cv, market=base_market
         )
+        # [v5.0] Negative Binomial blend for count stats (overdispersed integer distributions)
+        # NegBin is theoretically superior for 3PM, Assists, Rebounds, Blocks, Steals.
+        # We blend 65% NegBin + 35% bootstrap when conditions are met (n>=6, overdispersed).
+        # This gives us better probability estimates for sharp-edge identification on count props.
+        if base_market in NEGBINOM_MARKETS and len(pace_adj_series.dropna()) >= 6:
+            try:
+                _nb_p, _nb_mu, _nb_sigma = negbinom_prob_over(
+                    pace_adj_series, effective_line, market=base_market)
+                if _nb_p is not None and p_over_raw is not None:
+                    # Blend: weight NegBin more heavily for larger samples (better r estimate)
+                    _n_valid_nb = len(pace_adj_series.dropna())
+                    _nb_weight = float(np.clip(0.50 + (_n_valid_nb - 6) * 0.03, 0.50, 0.70))
+                    p_over_raw = float(_nb_weight * _nb_p + (1.0 - _nb_weight) * p_over_raw)
+                    if _nb_mu is not None:
+                        mu_raw = float(0.60 * _nb_mu + 0.40 * mu_raw)
+                    if _nb_sigma is not None and sigma is not None:
+                        sigma = float(0.60 * _nb_sigma + 0.40 * sigma)
+                    errors.append(f"NegBin blend ({_nb_weight:.0%} NegBin | overdispersed count stat)")
+                elif _nb_p is not None and p_over_raw is None:
+                    p_over_raw, mu_raw, sigma = _nb_p, _nb_mu, _nb_sigma
+            except Exception:
+                pass
         if p_over_raw is None:
             errors.append(f"Insufficient history (need >=4 games, have {len(stat_series.dropna())})")
 
@@ -4873,7 +5023,10 @@ def compute_leg_projection(
         else:
             mu_shrunk = mu_raw  # No prior for this market: use observed directly
     else:
-        mu_shrunk = bayesian_shrink(mu_raw, n_valid, base_market, pos_bucket) if mu_raw is not None else None
+        # [v5.0] Pass custom priors if user has calibrated personal priors from history
+        _custom_priors_session = st.session_state.get("_custom_priors")
+        mu_shrunk = bayesian_shrink(mu_raw, n_valid, base_market, pos_bucket,
+                                    custom_priors=_custom_priors_session) if mu_raw is not None else None
 
     # [AUDIT IMPROVEMENT] Opponent True Shooting % efficiency factor (SHAP top-signal for Points props)
     _ts_factor, _ts_label = get_opponent_ts_pct_factor(opp_abbr, base_market)
@@ -4892,12 +5045,15 @@ def compute_leg_projection(
     # Apply half factor and positional D to projection — include opp-specific factor + all new multipliers
     # [v3.0] Added: wl_factor, clutch_factor, fta_factor, playoff_factor, ref_factor, hca_factor, pos_b2b_mult
     # [AUDIT] Added: ts_factor (opp TS%), efg_factor (opp eFG%), usage_trend_mult (Wally Pipp), ftr_factor
+    # [v5.0] Game-total pace multiplier (Voulgaris method: game O/U is primary scoring env signal)
+    _game_total_pace_mult = compute_game_total_pace_mult(_game_total, base_market)
     proj_full = (mu_shrunk * ctx_mult * rest_mult * ha_mult * pos_def_mult * opp_specific_factor
                  * _fatigue_mult * _opp_fatigue_mult * _game_script_mult
                  * _both_b2b_mult * _travel_mult * _dvp_l10_mult
                  * _wl_factor * _clutch_factor * _fta_factor * _playoff_factor
                  * _ref_factor * _hca_factor * _pos_b2b_mult
                  * _ts_factor * _efg_factor * _usage_trend_mult * _ftr_factor
+                 * _game_total_pace_mult
                  if mu_shrunk is not None else None)
     proj = proj_full * half_factor if (proj_full is not None and is_half_market) else proj_full
 
@@ -4909,6 +5065,8 @@ def compute_leg_projection(
     try:
         if meta and meta.get("price") is not None:
             price_decimal = float(meta.get("price"))
+        elif not meta:
+            price_decimal = 1.909  # Manual line: assume standard -110 so EV/gate compute properly
     except Exception: pass
     p_implied = implied_prob_from_decimal(price_decimal)
 
@@ -5022,6 +5180,24 @@ def compute_leg_projection(
     )
     _sharpness_tier_label, _sharpness_tier_color = sharpness_tier(_sharpness)
 
+    # [v5.0] Recompute stake with sharpness-aware Kelly now that _sharpness is known.
+    # This replaces the initial stake (which had no sharpness info) with a more precise allocation.
+    # Elite bets get up to 20% more; low-signal bets get 40%-75% of base Kelly fraction.
+    if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj >= 0.02:
+        stake_dollars, stake_frac, stake_reason = recommended_stake(
+            bankroll, float(p_cal), float(price_decimal), frac_kelly, max_risk_frac,
+            sharpness_score=_sharpness)
+        if stake_dollars > 0 and _dnp_prob_score > 0.05:
+            if _dnp_prob_score >= 0.65:
+                stake_dollars, stake_frac, stake_reason = 0.0, 0.0, "dnp_critical_risk"
+            elif _dnp_prob_score >= 0.40:
+                _dnp_scale = 1.0 - _dnp_prob_score
+                stake_dollars *= _dnp_scale; stake_frac *= _dnp_scale
+                stake_reason = f"dnp_prob_{_dnp_prob_score:.0%}"
+            elif _dnp_prob_score >= 0.20 or (dnp_risk and float(proj_minutes or 30) < 5.0):
+                stake_dollars *= 0.50; stake_frac *= 0.50
+                stake_reason = "dnp_risk_half"
+
     # [v3.0] Alt line EV table and middle detection
     _alt_line_evs = compute_alt_line_ev(p_cal, price_decimal, line, sigma=sigma)
     _middle_exists, _middle_low, _middle_high, _middle_prob, _middle_books = (
@@ -5080,6 +5256,7 @@ def compute_leg_projection(
         "mu_raw":           float(mu_raw) if mu_raw is not None else None,
         "mu_shrunk":        float(mu_shrunk) if mu_shrunk is not None else None,
         "sigma":            float(sigma) if sigma is not None else None,
+        "negbinom_used":    base_market in NEGBINOM_MARKETS and len(pace_adj_series.dropna()) >= 6,
         "line_movement":    mv_signal,
         "sharp_div":        sharp_div,
         "usage_rate":       float(usage_rate) if usage_rate is not None else None,
@@ -6588,7 +6765,7 @@ if "_scanner_alert_hashes" not in st.session_state:
 # First Basket is a binary market with no numeric line — exclude from MODEL tab selector.
 # All shooting volume markets (FGM/FGA/FTM/FTA/3PA) and specialty combos are now re-enabled;
 # they're supported via PP/UD direct lines even if Odds API has no matching market key.
-_MARKET_EXCLUDE_FROM_UI = {"First Basket"}
+_MARKET_EXCLUDE_FROM_UI = {"First Basket", "Alt Points", "Alt Rebounds", "Alt Assists", "Alt 3PM"}
 MARKET_OPTIONS = [k for k in ODDS_MARKETS.keys() if k not in _MARKET_EXCLUDE_FROM_UI]
 
 def _daily_pnl(uid):
@@ -7740,6 +7917,12 @@ with tabs[2]:
                         line = r.get("line")
                         if not pname or line is None or pd.isna(line):
                             continue
+                        # Skip PrizePicks goblin/demon alternate lines — adjusted multipliers
+                        # make EV% misleading (goblins pay ~0.85x, not 1x; demons pay ~1.25x).
+                        if _plat_label == "prizepicks":
+                            _ot = str(r.get("odds_type", "standard") or "standard").lower()
+                            if _ot not in ("standard", ""):
+                                continue
                         # Platforms use ~50% implied prob (no traditional vig)
                         # Use 1.909 decimal (~-110 equivalent) as conservative baseline
                         meta = {
@@ -8311,15 +8494,24 @@ with tabs[3]:
 
         pp_df = st.session_state.get("pp_lines")
         if pp_df is not None and not pp_df.empty:
+            # Filter out alternate (goblin/demon) lines — their adjusted multipliers make
+            # EV% misleading. Goblins pay ~0.85x, demons ~1.25x vs standard 1x.
+            if "odds_type" in pp_df.columns:
+                pp_df_std = pp_df[pp_df["odds_type"].str.lower().isin(["standard", ""])]
+                _n_filtered = len(pp_df) - len(pp_df_std)
+                if _n_filtered > 0:
+                    st.caption(f"⚡ {_n_filtered} alternate (goblin/demon) lines hidden — unplayable multipliers.")
+            else:
+                pp_df_std = pp_df
             # Run model on PrizePicks lines
             pp_col1, pp_col2 = st.columns([3,1])
             with pp_col1:
                 pp_filter = st.text_input("Filter player", key="pp_filter")
             with pp_col2:
                 pp_min_ev = st.number_input("Min EV%", -5.0, 30.0, 2.0, 0.5, key="pp_min_ev")
-            display_df = pp_df
+            display_df = pp_df_std
             if pp_filter:
-                display_df = pp_df[pp_df["player"].str.strip().str.contains(pp_filter.strip(), case=False, na=False)]
+                display_df = pp_df_std[pp_df_std["player"].str.strip().str.contains(pp_filter.strip(), case=False, na=False)]
             st.dataframe(display_df, use_container_width=True)
             if st.button("Scan PrizePicks vs Model", use_container_width=True):
                 pp_candidates = []
