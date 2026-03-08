@@ -466,6 +466,10 @@ ODDS_MARKETS = {
     "FTA":             "player_free_throws_attempted",
 }
 
+# Markets with no confirmed Odds API key — available via PP/UD/Sleeper only.
+# These will be skipped during Odds API fetches and the user will be warned.
+ODDS_API_UNSUPPORTED_MARKETS = {"FGA", "3PA", "FTM", "FTA"}
+
 # ──────────────────────────────────────────────
 # DFS PLATFORM PAYOUT STRUCTURES
 # PrizePicks / Underdog / Sleeper use identical or similar payout tables.
@@ -6785,61 +6789,88 @@ with tabs[2]:
             else:
                 offers = []
                 _fetch_errors = []
-                # [FIX H1/H2/ALT] Split market keys into standard and specialty batches
-                # Odds API supports max ~6 markets per call reliably; specialty markets
-                # (H1/H2/Q1/Alt/Fantasy) need separate calls as not all books offer them
-                std_keys     = [k for k in selected_keys if k not in SPECIALTY_MARKET_KEYS]
-                spec_keys    = [k for k in selected_keys if k in SPECIALTY_MARKET_KEYS]
-                market_batches = []
-                BATCH_SIZE = 6
-                if std_keys:
-                    for i in range(0, len(std_keys), BATCH_SIZE):
-                        market_batches.append(std_keys[i:i+BATCH_SIZE])
-                # Specialty markets individually (each book may only carry a subset)
-                for sk in spec_keys:
-                    market_batches.append([sk])
-
-                for ev in evs:
-                    eid = ev.get("id")
-                    if not eid: continue
-                    for batch_keys in market_batches:
-                        # For specialty markets try all regions for better coverage
-                        regions = "us,us2,eu,uk" if any(k in SPECIALTY_MARKET_KEYS for k in batch_keys) else REGION_US
-                        odds, oerr = odds_get_event_odds(eid, tuple(batch_keys), regions=regions)
-                        if oerr:
-                            _fetch_errors.append(f"{','.join(batch_keys)}: {oerr}")
-                            continue
-                        if not odds: continue
-                        _is_spec_batch = any(k in SPECIALTY_MARKET_KEYS for k in batch_keys)
-                        for m in markets_sel:
-                            mk = ODDS_MARKETS.get(m)
-                            if not mk or mk not in batch_keys: continue
-                            # For specialty markets fetch all books — many books (DK, FD, etc.)
-                            # carry different subsets of H1/H2/FTM/FTA/FGA/FGM/DD/TD etc.
-                            # Applying the book filter here would silently drop all lines when
-                            # the selected book doesn't carry that particular specialty market.
-                            bf = None if _is_spec_batch else (sportsbook2 if sportsbook2 != "all" else None)
-                            parsed, _ = _parse_player_prop_outcomes(odds, mk, book_filter=bf)
-                            offers.extend([{**r,"market":m} for r in parsed])
-                if offers:
-                    # [FIX 13] Store in session state - persists across tab switches
-                    st.session_state["scanner_offers"] = pd.DataFrame(offers)
-                    # Auto-save to prop line history DB + [UPGRADE 10] opening line capture
-                    for r2 in offers:
-                        save_prop_line(r2.get("player",""), r2.get("market",""),
-                                       r2.get("line"), r2.get("price"), r2.get("book"),
-                                       event_id=r2.get("event_id"))
-                        pn2 = normalize_name(r2.get("player",""))
-                        mk2 = r2.get("market_key", ODDS_MARKETS.get(r2.get("market",""), ""))
-                        side2 = r2.get("side", "Over")
-                        save_opening_line(pn2, mk2, side2, r2.get("line", 0), r2.get("price"))
-                    st.success(f"Fetched {len(offers)} raw prop outcomes — opening lines captured.")
+                # Warn about markets with no confirmed Odds API key (PP/UD/Sleeper only)
+                _unsupported_sel = [m for m in markets_sel if m in ODDS_API_UNSUPPORTED_MARKETS]
+                _supported_sel   = [m for m in markets_sel if m not in ODDS_API_UNSUPPORTED_MARKETS]
+                if _unsupported_sel:
+                    st.warning(
+                        f"**{', '.join(_unsupported_sel)}** have no confirmed Odds API key and will be skipped. "
+                        "Use PP / UD / Sleeper source for these markets."
+                    )
+                if not _supported_sel:
+                    st.warning("No Odds-API-supported markets selected. Switch to PP + UD source or add standard markets.")
                 else:
-                    st.warning("No offers returned.")
-                if _fetch_errors:
-                    with st.expander(f"API errors ({len(_fetch_errors)}) — click to debug"):
-                        for _fe in _fetch_errors:
-                            st.caption(_fe)
+                    # Rebuild selected_keys from supported markets only
+                    selected_keys = list(dict.fromkeys(
+                        ODDS_MARKETS.get(m) for m in _supported_sel if ODDS_MARKETS.get(m)
+                    ))
+                    # [FIX H1/H2/ALT] Split market keys into standard and specialty batches
+                    # Odds API supports max ~6 markets per call reliably; specialty markets
+                    # (H1/H2/Q1/Alt/Fantasy) need separate calls as not all books offer them
+                    std_keys  = [k for k in selected_keys if k not in SPECIALTY_MARKET_KEYS]
+                    spec_keys = [k for k in selected_keys if k in SPECIALTY_MARKET_KEYS]
+                    market_batches = []
+                    BATCH_SIZE = 6
+                    if std_keys:
+                        for i in range(0, len(std_keys), BATCH_SIZE):
+                            market_batches.append(std_keys[i:i+BATCH_SIZE])
+                    # Specialty markets individually (each book may only carry a subset)
+                    for sk in spec_keys:
+                        market_batches.append([sk])
+
+                    # Track per-specialty-market counts for debug output
+                    _spec_market_counts: dict[str, int] = {m: 0 for m in _supported_sel if ODDS_MARKETS.get(m) in SPECIALTY_MARKET_KEYS}
+
+                    for ev in evs:
+                        eid = ev.get("id")
+                        if not eid: continue
+                        for batch_keys in market_batches:
+                            # For specialty markets try all regions for better coverage
+                            regions = "us,us2,eu,uk" if any(k in SPECIALTY_MARKET_KEYS for k in batch_keys) else REGION_US
+                            odds, oerr = odds_get_event_odds(eid, tuple(batch_keys), regions=regions)
+                            if oerr:
+                                _fetch_errors.append(f"{','.join(batch_keys)}: {oerr}")
+                                continue
+                            if not odds: continue
+                            _is_spec_batch = any(k in SPECIALTY_MARKET_KEYS for k in batch_keys)
+                            for m in _supported_sel:
+                                mk = ODDS_MARKETS.get(m)
+                                if not mk or mk not in batch_keys: continue
+                                # For specialty markets fetch all books — many books (DK, FD, etc.)
+                                # carry different subsets of H1/H2/FGM/DD/TD etc.
+                                # Applying the book filter here would silently drop all lines when
+                                # the selected book doesn't carry that particular specialty market.
+                                bf = None if _is_spec_batch else (sportsbook2 if sportsbook2 != "all" else None)
+                                parsed, _ = _parse_player_prop_outcomes(odds, mk, book_filter=bf)
+                                if parsed and m in _spec_market_counts:
+                                    _spec_market_counts[m] += len(parsed)
+                                offers.extend([{**r,"market":m} for r in parsed])
+                    if offers:
+                        # [FIX 13] Store in session state - persists across tab switches
+                        st.session_state["scanner_offers"] = pd.DataFrame(offers)
+                        # Auto-save to prop line history DB + [UPGRADE 10] opening line capture
+                        for r2 in offers:
+                            save_prop_line(r2.get("player",""), r2.get("market",""),
+                                           r2.get("line"), r2.get("price"), r2.get("book"),
+                                           event_id=r2.get("event_id"))
+                            pn2 = normalize_name(r2.get("player",""))
+                            mk2 = r2.get("market_key", ODDS_MARKETS.get(r2.get("market",""), ""))
+                            side2 = r2.get("side", "Over")
+                            save_opening_line(pn2, mk2, side2, r2.get("line", 0), r2.get("price"))
+                        st.success(f"Fetched {len(offers)} raw prop outcomes — opening lines captured.")
+                    else:
+                        st.warning("No offers returned.")
+                    # Show per-specialty-market debug info for any that returned 0 lines
+                    _empty_spec = [m for m, cnt in _spec_market_counts.items() if cnt == 0]
+                    if _empty_spec or _fetch_errors:
+                        with st.expander(f"Debug ({len(_fetch_errors)} API errors, {len(_empty_spec)} empty specialty markets)"):
+                            if _empty_spec:
+                                st.caption(
+                                    "**Specialty markets with 0 lines** (lines may open closer to tip-off, "
+                                    "or book doesn't carry them via Odds API): " + ", ".join(_empty_spec)
+                                )
+                            for _fe in _fetch_errors:
+                                st.caption(_fe)
 
     # ── Bulk game log loader (recommended before large scans) ──────
     bulk_loaded = _fetch_bulk_gamelogs() is not None
