@@ -3756,8 +3756,23 @@ def _fetch_prizepicks_lines_cached(cookies_str=""):
 
 def fetch_prizepicks_lines():
     cookies_str = st.session_state.get("pp_cookies", "")
-    # ── Detect if user pasted a full PP JSON response into the cookies/JSON field ──
-    # (common: user pastes the API JSON there instead of actual browser cookies)
+    # ── 0. Check relay URL first (local relay script or ngrok tunnel) ──
+    relay_url = st.session_state.get("pp_relay_url", "").strip()
+    if relay_url:
+        try:
+            r = requests.get(relay_url, timeout=10)
+            if r.ok:
+                data = r.json()
+                rows = data if isinstance(data, list) else data.get("rows", [])
+                if rows:
+                    return rows, None
+        except Exception:
+            pass  # relay unavailable — fall through to direct API
+    # ── 1. Check background auto-fetcher state (recent in-memory result) ──
+    _auto_rows, _auto_age, _ = get_pp_auto_lines()
+    if _auto_rows and _auto_age is not None and _auto_age < 900:
+        return _auto_rows, None
+    # ── 2. Detect if user pasted a full PP JSON response into the cookies/JSON field ──
     _stripped = cookies_str.strip() if cookies_str else ""
     if _stripped.startswith("{") and '"data"' in _stripped:
         try:
@@ -3767,11 +3782,131 @@ def fetch_prizepicks_lines():
                 return rows, None
         except Exception as _je:
             return [], f"Stored JSON parse error: {_je}"
-    # Only clear cache when cookies changed — avoids redundant API hits
+    # ── 3. Direct API call with cache ──
     if st.session_state.get("_pp_last_cookies_used") != cookies_str:
         _fetch_prizepicks_lines_cached.clear()
         st.session_state["_pp_last_cookies_used"] = cookies_str
     return _fetch_prizepicks_lines_cached(cookies_str=cookies_str)
+
+# ──────────────────────────────────────────────
+# PP AUTO-FETCH BACKGROUND ENGINE
+# Runs a daemon thread that fetches PP lines on a configurable interval.
+# Works from a local/residential IP; for Streamlit Cloud use pp_relay.py + ngrok.
+# ──────────────────────────────────────────────
+_PP_DISK_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".pp_lines_cache.json")
+
+def _save_pp_disk_cache(rows: list):
+    try:
+        with open(_PP_DISK_CACHE, "w") as f:
+            json.dump({"ts": time.time(), "rows": rows}, f)
+    except Exception:
+        pass
+
+def _load_pp_disk_cache(max_age_sec: int = 1800):
+    try:
+        with open(_PP_DISK_CACHE) as f:
+            d = json.load(f)
+        age = int(time.time() - d.get("ts", 0))
+        if age < max_age_sec:
+            return d.get("rows", []), age
+    except Exception:
+        pass
+    return None, None
+
+@st.cache_resource
+def _pp_auto_state() -> dict:
+    """Singleton state dict shared across all sessions and reruns."""
+    return {
+        "rows": [],
+        "ts": 0.0,
+        "err": None,
+        "cookies": "",
+        "relay_url": "",
+        "enabled": False,
+        "interval": 600,
+        "lock": threading.Lock(),
+        "thread": None,
+        "stop_evt": threading.Event(),
+    }
+
+def _pp_auto_loop(state: dict):
+    """Background daemon: fetch PP lines every `interval` seconds."""
+    while True:
+        state["stop_evt"].wait(state.get("interval", 600))
+        state["stop_evt"].clear()
+        if not state.get("enabled"):
+            continue
+        try:
+            relay_url = state.get("relay_url", "").strip()
+            rows: list = []
+            if relay_url:
+                try:
+                    r = requests.get(relay_url, timeout=10)
+                    if r.ok:
+                        data = r.json()
+                        rows = data if isinstance(data, list) else data.get("rows", [])
+                except Exception:
+                    pass
+            if not rows:
+                cookies_str = state.get("cookies", "")
+                rows_s, err_s = _pp_fetch_one(500, cookies_str, "true")
+                rows_c, _     = _pp_fetch_one(500, cookies_str, "false")
+                rows = (rows_s or []) + (rows_c or [])
+                err = err_s if not rows else None
+            else:
+                err = None
+            with state["lock"]:
+                if rows:
+                    seen: set = set()
+                    deduped = []
+                    for row in rows:
+                        k = (row.get("player"), row.get("stat_type"))
+                        if k not in seen:
+                            seen.add(k)
+                            deduped.append(row)
+                    state["rows"] = deduped
+                    state["ts"] = time.time()
+                    state["err"] = None
+                    _save_pp_disk_cache(deduped)
+                else:
+                    state["err"] = err
+        except Exception as e:
+            with state["lock"]:
+                state["err"] = str(e)
+
+def _ensure_pp_auto_thread():
+    state = _pp_auto_state()
+    if state.get("thread") and state["thread"].is_alive():
+        return
+    t = threading.Thread(target=_pp_auto_loop, args=(state,), daemon=True, name="pp_auto_fetcher")
+    state["thread"] = t
+    t.start()
+
+def set_pp_auto_fetch(enabled: bool, interval_sec: int = 600, cookies: str = "", relay_url: str = ""):
+    """Enable/disable the background fetcher and trigger an immediate fetch."""
+    state = _pp_auto_state()
+    with state["lock"]:
+        state["enabled"] = enabled
+        state["interval"] = max(60, interval_sec)
+        state["cookies"] = cookies
+        state["relay_url"] = relay_url
+    if enabled:
+        _ensure_pp_auto_thread()
+        state["stop_evt"].set()  # poke thread to fetch immediately
+
+def get_pp_auto_lines():
+    """Return (rows, age_sec, err) from background state or disk cache."""
+    state = _pp_auto_state()
+    with state["lock"]:
+        rows = list(state.get("rows", []))
+        ts   = state.get("ts", 0.0)
+        err  = state.get("err")
+    if rows:
+        return rows, int(time.time() - ts), err
+    disk_rows, disk_age = _load_pp_disk_cache(max_age_sec=3600)
+    if disk_rows:
+        return disk_rows, disk_age, err
+    return [], None, err
 
 # ──────────────────────────────────────────────
 # UNDERDOG INGESTION
@@ -7161,7 +7296,27 @@ for _sk, _sv in _settings_defaults.items():
 # Load persisted PrizePicks cookies/JSON from disk so user never has to re-paste
 if "pp_cookies" not in st.session_state:
     _pp_disk = load_pp_settings()
-    st.session_state["pp_cookies"] = _pp_disk.get("pp_cookies", "")
+    st.session_state["pp_cookies"]       = _pp_disk.get("pp_cookies", "")
+    st.session_state["pp_relay_url"]     = _pp_disk.get("pp_relay_url", "")
+    st.session_state["pp_auto_enabled"]  = _pp_disk.get("pp_auto_enabled", False)
+    st.session_state["pp_auto_interval"] = _pp_disk.get("pp_auto_interval", 10)
+
+# Restore background auto-fetcher state if it was enabled last session
+if st.session_state.get("pp_auto_enabled"):
+    set_pp_auto_fetch(
+        enabled=True,
+        interval_sec=int(st.session_state.get("pp_auto_interval", 10)) * 60,
+        cookies=st.session_state.get("pp_cookies", ""),
+        relay_url=st.session_state.get("pp_relay_url", ""),
+    )
+elif _pp_disk.get("pp_auto_enabled"):
+    # Disk had it enabled — also restore
+    set_pp_auto_fetch(
+        enabled=True,
+        interval_sec=int(_pp_disk.get("pp_auto_interval", 10)) * 60,
+        cookies=_pp_disk.get("pp_cookies", ""),
+        relay_url=_pp_disk.get("pp_relay_url", ""),
+    )
 
 for k in ["last_results","calibrator_map","scanner_offers","scanner_results"]:
     if k not in st.session_state: st.session_state[k] = None if k != "last_results" else []
@@ -8838,18 +8993,90 @@ with tabs[3]:
         pp_load_tab, pp_manual_tab = st.tabs(["Auto Fetch", "Manual Import"])
 
         with pp_load_tab:
-            if st.button("Fetch PrizePicks Lines", use_container_width=True):
+            # ── Auto-refresh component (triggers rerun every N seconds) ──
+            try:
+                from streamlit_autorefresh import st_autorefresh
+                _ar_interval_ms = int(st.session_state.get("pp_auto_interval", 10)) * 60 * 1000
+                if st.session_state.get("pp_auto_enabled"):
+                    st_autorefresh(interval=_ar_interval_ms, key="pp_auto_rerun")
+            except ImportError:
+                pass
+
+            # ── Auto-fetch toggle ──
+            _af_col1, _af_col2 = st.columns([2, 2])
+            _auto_on = _af_col1.toggle(
+                "Auto-Refresh Lines",
+                value=st.session_state.get("pp_auto_enabled", False),
+                key="pp_auto_toggle",
+                help="Background thread fetches fresh lines automatically on the interval below.",
+            )
+            _auto_min = _af_col2.number_input(
+                "Interval (minutes)", min_value=2, max_value=60,
+                value=int(st.session_state.get("pp_auto_interval", 10)),
+                step=1, key="pp_auto_interval_input",
+            )
+
+            if _auto_on != st.session_state.get("pp_auto_enabled") or \
+               int(_auto_min) != int(st.session_state.get("pp_auto_interval", 10)):
+                st.session_state["pp_auto_enabled"]  = _auto_on
+                st.session_state["pp_auto_interval"] = int(_auto_min)
+                save_pp_settings(pp_auto_enabled=_auto_on, pp_auto_interval=int(_auto_min))
+                set_pp_auto_fetch(
+                    enabled=_auto_on,
+                    interval_sec=int(_auto_min) * 60,
+                    cookies=st.session_state.get("pp_cookies", ""),
+                    relay_url=st.session_state.get("pp_relay_url", ""),
+                )
+
+            # ── Relay URL (optional — for cloud deployments) ──
+            with st.expander("Local Relay URL (optional, for Streamlit Cloud)", expanded=False):
+                st.caption(
+                    "Run `pp_relay.py` on your local machine (residential IP bypasses PerimeterX). "
+                    "Expose it via [ngrok](https://ngrok.com): `ngrok http 8765` then paste the URL below."
+                )
+                _relay_new = st.text_input(
+                    "Relay URL", value=st.session_state.get("pp_relay_url", ""),
+                    placeholder="http://localhost:8765/lines  or  https://xxxx.ngrok.io/lines",
+                    key="pp_relay_url_input",
+                )
+                if st.button("Save Relay URL", key="pp_relay_save"):
+                    st.session_state["pp_relay_url"] = _relay_new.strip()
+                    save_pp_settings(pp_relay_url=_relay_new.strip())
+                    set_pp_auto_fetch(
+                        enabled=st.session_state.get("pp_auto_enabled", False),
+                        interval_sec=int(st.session_state.get("pp_auto_interval", 10)) * 60,
+                        cookies=st.session_state.get("pp_cookies", ""),
+                        relay_url=_relay_new.strip(),
+                    )
+                    st.success("Relay URL saved.")
+
+            st.markdown("---")
+
+            # ── Status + manual fetch ──
+            _auto_rows, _auto_age, _auto_err = get_pp_auto_lines()
+            if _auto_rows:
+                if _auto_age is not None and _auto_age < 60:
+                    st.success(f"Lines loaded — {len(_auto_rows)} props (updated {_auto_age}s ago)")
+                elif _auto_age is not None:
+                    _m, _s = divmod(_auto_age, 60)
+                    st.info(f"Lines loaded — {len(_auto_rows)} props (last updated {_m}m {_s}s ago)")
+                    if _auto_age > 900:
+                        st.warning("Lines are >15 min old. Click Fetch Now to refresh.")
+            elif _auto_err:
+                st.error(f"Auto-fetch error: {_auto_err}")
+
+            if st.button("Fetch Now", use_container_width=True, key="pp_fetch_now_btn"):
                 with st.spinner("Fetching PrizePicks..."):
                     pp_lines, pp_err = fetch_prizepicks_lines()
                 if pp_err:
                     st.error(f"PrizePicks: {pp_err}")
                     st.info(
-                        "PrizePicks blocks cloud server requests (PerimeterX). "
-                        "Use **Manual Import** instead:\n\n"
-                        "1. Open [PrizePicks](https://app.prizepicks.com) in your browser\n"
-                        "2. Open DevTools → Network tab → filter for `projections`\n"
-                        "3. Copy the **Response** JSON and paste it in Manual Import\n\n"
-                        "Or upload a CSV with columns: `player, stat_type, line`"
+                        "**If running on Streamlit Cloud:** PerimeterX blocks cloud IPs.\n\n"
+                        "**Fix options:**\n"
+                        "1. Run `pp_relay.py` locally + expose via ngrok, paste URL above\n"
+                        "2. Run the app locally (`streamlit run app.py`) — auto-fetch works from home IP\n"
+                        "3. Paste browser cookies in Settings → PrizePicks Cookies\n"
+                        "4. Use **Manual Import** tab"
                     )
                 elif not pp_lines:
                     st.warning("No lines returned.")
@@ -8857,6 +9084,14 @@ with tabs[3]:
                     pp_df = pd.DataFrame(pp_lines)
                     st.session_state["pp_lines"] = pp_df
                     st.success(f"Fetched {len(pp_df)} PrizePicks props.")
+                    if _auto_on:
+                        # Also push to background state so auto-fetcher has fresh baseline
+                        _s = _pp_auto_state()
+                        with _s["lock"]:
+                            _s["rows"] = pp_lines
+                            _s["ts"]   = time.time()
+                            _s["err"]  = None
+                        _save_pp_disk_cache(pp_lines)
 
         with pp_manual_tab:
             st.markdown("""<div style='font-size:0.68rem;color:#4A607A;margin-bottom:0.5rem;'>
