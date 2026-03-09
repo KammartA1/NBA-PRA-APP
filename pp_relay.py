@@ -31,7 +31,7 @@ from urllib.parse import urlparse
 
 PORT = int(os.environ.get("PP_RELAY_PORT", 8765))
 FETCH_INTERVAL = int(os.environ.get("PP_RELAY_INTERVAL", 600))   # seconds between auto-fetches
-LEAGUE_FILTER  = ("NBA",)   # set to None to get all sports
+LEAGUE_FILTER  = ("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")   # set to None to get all sports
 
 PRIZEPICKS_API = "https://api.prizepicks.com/projections"
 
@@ -111,7 +111,6 @@ def _parse_response(data: dict) -> list:
 
 def _do_request(per_page: int = 500, single_stat: str = "true"):
     params = {
-        "league_id":   "7",
         "per_page":    str(per_page),
         "single_stat": single_stat,
         "in_play":     "false",
