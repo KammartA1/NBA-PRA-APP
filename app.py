@@ -3563,7 +3563,7 @@ def compute_td_prob(game_log_df, n_games=10):
 # ──────────────────────────────────────────────
 PRIZEPICKS_API = "https://api.prizepicks.com/projections"
 
-def _parse_pp_response(data, league_filter=("NBA",)):
+def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")):
     """Parse PrizePicks JSON response into list of prop dicts.
     Pass league_filter=None to accept all leagues (e.g. when user pastes full-site JSON).
     """
@@ -3623,7 +3623,7 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     single_stat='false' → combo/specialty stats (PRA, Pts+Reb, Fantasy Score, etc.)
     """
     url = PRIZEPICKS_API
-    params = {"league_id": "7", "per_page": str(per_page),
+    params = {"per_page": str(per_page),
               "single_stat": single_stat, "in_play": "false"}
     # Full Chrome 120 headers — reduces bot-detection fingerprint
     headers = {
