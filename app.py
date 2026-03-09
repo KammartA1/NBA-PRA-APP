@@ -7294,8 +7294,8 @@ for _sk, _sv in _settings_defaults.items():
         st.session_state[_sk] = _sv
 
 # Load persisted PrizePicks cookies/JSON from disk so user never has to re-paste
+_pp_disk = load_pp_settings()
 if "pp_cookies" not in st.session_state:
-    _pp_disk = load_pp_settings()
     st.session_state["pp_cookies"]       = _pp_disk.get("pp_cookies", "")
     st.session_state["pp_relay_url"]     = _pp_disk.get("pp_relay_url", "")
     st.session_state["pp_auto_enabled"]  = _pp_disk.get("pp_auto_enabled", False)
@@ -8862,7 +8862,9 @@ with tabs[2]:
                 if _mkt_v in MARKET_OPTIONS:
                     st.session_state[f"_staged_mkt_{i}"] = _mkt_v
                 st.session_state[f"_staged_mline_{i}"]  = float(r.get("line", 22.5))
-                st.session_state[f"_staged_manual_{i}"] = False  # Fetch from Odds API; scanner line is fallback
+                # If source is PrizePicks, use the scanned line directly — PP lines are not on Odds API
+                _is_pp_source = (sportsbook2 == "prizepicks") or (str(r.get("source","")).lower() == "prizepicks")
+                st.session_state[f"_staged_manual_{i}"] = _is_pp_source
                 st.session_state[f"_staged_out_{i}"]    = False
             # Clear unused legs beyond selection count
             for i in range(len(_legs_for_model) + 1, 5):
