@@ -8076,6 +8076,8 @@ with tabs[2]:
         markets_sel = st.multiselect("Markets", options=MARKET_OPTIONS, default=["Points","Rebounds","Assists"])
     with sc3:
         book_choices2, _ = get_sportsbook_choices(scan_start.isoformat())
+        if "prizepicks" not in book_choices2:
+            book_choices2 = ["prizepicks"] + book_choices2
         sportsbook2 = st.selectbox("Book", options=["all"]+book_choices2, index=0)
     sf1, sf2, sf3 = st.columns(3)
     with sf1: min_prob = st.slider("Min P(Over)", 0.50, 0.80, 0.57, 0.01)
@@ -8260,7 +8262,7 @@ with tabs[2]:
                                 # carry different subsets of H1/H2/FGM/DD/TD etc.
                                 # Applying the book filter here would silently drop all lines when
                                 # the selected book doesn't carry that particular specialty market.
-                                bf = None if _is_spec_batch else (sportsbook2 if sportsbook2 != "all" else None)
+                                bf = None if _is_spec_batch else (sportsbook2 if sportsbook2 not in ("all", "prizepicks") else None)
                                 parsed, _ = _parse_player_prop_outcomes(odds, mk, book_filter=bf)
                                 if parsed and m in _spec_market_counts:
                                     _spec_market_counts[m] += len(parsed)
@@ -8309,8 +8311,8 @@ with tabs[2]:
     if scan_col.button("Run Scan", use_container_width=True):
         _scan_source = st.session_state.get("scan_source_radio", "Odds API only")
         df = st.session_state.get("scanner_offers")
-        _use_odds_api = _scan_source in ("Odds API only", "All sources")
-        _use_platforms = _scan_source in ("PP + UD only", "All sources")
+        _use_odds_api = _scan_source in ("Odds API only", "All sources") and sportsbook2 != "prizepicks"
+        _use_platforms = _scan_source in ("PP + UD only", "All sources") or sportsbook2 == "prizepicks"
 
         # Validate we have something to scan
         _odds_has_data = df is not None and not (hasattr(df, 'empty') and df.empty)
@@ -8342,6 +8344,8 @@ with tabs[2]:
             # ── Platform candidates (PP + UD + Sleeper) ────────────────────
             if _use_platforms:
                 for _plat_store, _plat_label in [("pp_lines","prizepicks"), ("ud_lines","underdog"), ("sl_lines","sleeper")]:
+                    if sportsbook2 == "prizepicks" and _plat_label != "prizepicks":
+                        continue
                     _plat_df = st.session_state.get(_plat_store)
                     if _plat_df is None or _plat_df.empty:
                         continue
