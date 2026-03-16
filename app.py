@@ -7855,9 +7855,14 @@ with tabs[2]:
             book_choices2 = ["prizepicks"] + book_choices2
         sportsbook2 = st.selectbox("Book", options=["all"]+book_choices2, index=0)
     sf1, sf2, sf3 = st.columns(3)
-    with sf1: min_prob = st.slider("Min P(Over)", 0.50, 0.80, 0.57, 0.01)
-    with sf2: min_adv  = st.slider("Min Advantage vs Implied", 0.00, 0.12, 0.02, 0.005)
-    with sf3: min_ev   = st.slider("Min EV (adj)", -0.05, 0.25, 0.01, 0.005)
+    with sf1:
+        min_prob = st.slider("Min P(Over)", 0.50, 0.80, 0.53, 0.01)
+        st.caption("PP/UD breakeven = 0.52 · Sportsbook (-110) breakeven = 0.524")
+    with sf2:
+        min_adv  = st.slider("Min Advantage vs Implied", 0.00, 0.12, 0.01, 0.005)
+        st.caption("PP/UD p_implied = 0.50 · vs book = 0.524")
+    with sf3:
+        min_ev   = st.slider("Min EV (adj)", -0.05, 0.25, 0.01, 0.005)
     max_rows = st.slider("Max Results", 10, 200, 60, 10)
     # ── Platform Lines (PP / UD) inline in scanner ──────────────────────
     with st.expander("📱 Platform Lines — PrizePicks / Underdog / Sleeper (scan against platform lines)", expanded=False):
@@ -8121,11 +8126,15 @@ with tabs[2]:
                             _ot = str(r.get("odds_type", "standard") or "standard").lower()
                             if _ot not in ("standard", ""):
                                 continue
-                        # Platforms use ~50% implied prob (no traditional vig)
-                        # Use 1.909 decimal (~-110 equivalent) as conservative baseline
+                        # Platforms use true 50/50 (no vig): decimal 2.0 = even money.
+                        # IMPORTANT: using 1.909 (-110) was WRONG — it set p_implied=0.524
+                        # instead of 0.50, making every PP leg appear ~2.4% less sharp
+                        # and causing high-variance markets (3PM, Blocks, Steals) to be
+                        # dropped by the p_cal < min_prob gate even when they had real edges.
+                        _plat_price = 2.0 if _plat_label in ("prizepicks", "underdog", "sleeper") else 1.909
                         meta = {
                             "event_id": None, "home_team": "", "away_team": "",
-                            "commence_time": "", "price": 1.909,
+                            "commence_time": "", "price": _plat_price,
                             "book": _plat_label,
                             "market_key": ODDS_MARKETS.get(mkt), "side": "Over",
                         }
@@ -8773,10 +8782,14 @@ with tabs[3]:
             st.dataframe(display_df, use_container_width=True)
             if st.button("Scan PrizePicks vs Model", use_container_width=True):
                 pp_candidates = []
+                _pp_meta_base = {"event_id": None, "home_team": "", "away_team": "",
+                                 "commence_time": "", "price": 2.0,
+                                 "book": "prizepicks", "side": "Over"}
                 for _, r in display_df.iterrows():
                     mkt = map_platform_stat_to_market(r.get("stat_type",""))
                     if mkt and r.get("line"):
-                        pp_candidates.append((r["player"], mkt, float(r["line"]), None))
+                        _m = dict(_pp_meta_base, market_key=ODDS_MARKETS.get(mkt))
+                        pp_candidates.append((r["player"], mkt, float(r["line"]), _m))
                 if pp_candidates:
                     _inj_map = st.session_state.get("injury_team_map", {})
                     with st.spinner(f"Scanning {len(pp_candidates)} PrizePicks props..."):
@@ -8918,10 +8931,14 @@ with tabs[3]:
             st.dataframe(display_ud, use_container_width=True)
             if st.button("Scan Underdog vs Model", use_container_width=True):
                 ud_candidates = []
+                _ud_meta_base = {"event_id": None, "home_team": "", "away_team": "",
+                                 "commence_time": "", "price": 2.0,
+                                 "book": "underdog", "side": "Over"}
                 for _, r in display_ud.iterrows():
                     mkt = map_platform_stat_to_market(r.get("stat_type",""))
                     if mkt and r.get("line"):
-                        ud_candidates.append((r["player"], mkt, float(r["line"]), None))
+                        _m = dict(_ud_meta_base, market_key=ODDS_MARKETS.get(mkt))
+                        ud_candidates.append((r["player"], mkt, float(r["line"]), _m))
                 if ud_candidates:
                     _inj_map = st.session_state.get("injury_team_map", {})
                     with st.spinner(f"Scanning {len(ud_candidates)} Underdog props..."):
