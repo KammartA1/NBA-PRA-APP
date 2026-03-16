@@ -22,9 +22,7 @@ import numpy as np
 import requests
 import streamlit as st
 from streamlit_cookies_controller import CookieController
-
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
-
 # ──────────────────────────────────────────────
 # CLAUDE AI INTEGRATION
 # ──────────────────────────────────────────────
@@ -37,7 +35,6 @@ def _get_anthropic_key():
         return st.secrets.get("ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
     except Exception:
         return os.environ.get("ANTHROPIC_API_KEY", "")
-
 def _anthropic_client():
     """Return an Anthropic client or None if no key configured."""
     key = _get_anthropic_key()
@@ -48,7 +45,6 @@ def _anthropic_client():
         return anthropic.Anthropic(api_key=key)
     except ImportError:
         return None
-
 @st.cache_data(ttl=60*60*4, show_spinner=False)
 def ai_explain_edge(player, market, line, side, proj, p_cal, ev_pct,
                     edge_cat, hot_cold, rest_days, dnp_risk, b2b,
@@ -68,7 +64,6 @@ def ai_explain_edge(player, market, line, side, proj, p_cal, ev_pct,
         sharp_str = f"Composite Sharpness: {f'{sharpness_score:.0f}' if sharpness_score is not None else '--'}/100 ({sharpness_tier or '--'})"
         game_ctx = f"Game total: {f'{game_total:.0f}' if game_total else 'N/A'} | Player schedule: {fatigue_label} | Opp schedule: {opp_fatigue_label}"
         prompt = f"""You are an elite NBA prop betting analyst. Explain this prop bet projection concisely in 3-4 sentences for a sophisticated quantitative bettor.
-
 Player: {player}
 Prop: {market} {direction} {line}
 Model projection: {proj} {market} (vs line of {line})
@@ -83,11 +78,8 @@ Opponent: {opp}
 Stat volatility (CV): {vol_cv}
 Sample size: {n_games} games
 Model flags: {errors_str or 'None'}
-
 [v4.0 signals if available in data: consecutive streak pattern, implied team total context, lineup injury absorption boost, streak reversion signal]
-
 Write a 3-4 sentence analysis covering: (1) why the model projects this outcome with trend, streak, and sharpness context, (2) key risk factors including fatigue/schedule/lineup changes, (3) one-line bet verdict with conviction level. Be specific, confident, and quantitative. No bullet points."""
-
         with client.messages.stream(
             model="claude-haiku-4-5",
             max_tokens=200,
@@ -96,7 +88,6 @@ Write a 3-4 sentence analysis covering: (1) why the model projects this outcome 
             return stream.get_final_message().content[0].text.strip()
     except Exception as e:
         return f"AI analysis unavailable: {e}"
-
 @st.cache_data(ttl=60*60*2, show_spinner=False)
 def ai_slate_briefing(slate_json, api_key=""):
     """Use Claude Sonnet to generate a comprehensive slate analysis."""
@@ -106,19 +97,15 @@ def ai_slate_briefing(slate_json, api_key=""):
     try:
         import anthropic
         prompt = f"""You are a world-class NBA prop betting quant analyst writing a pre-game slate briefing. Based on the model's edge scan results below, provide a sharp, actionable slate analysis.
-
 SCANNER RESULTS (top edges found):
 {slate_json}
-
 Write a structured briefing covering:
 1. **Top 3 Plays** — The strongest model edges with specific reasoning
 2. **Injury/Context Alerts** — Players with DNP risk, B2B fatigue, or key teammate out
 3. **Parlay Opportunity** — 1-2 correlated legs worth combining (same team or game-script)
 4. **Fade Candidates** — Overvalued plays the market has wrong
 5. **One-Liner Summary** — Today's overall slate quality (1-2 sentences)
-
 Be specific with player names, lines, and percentages. Write like a quant fund's morning brief. Max 350 words."""
-
         with client.messages.stream(
             model="claude-sonnet-4-6",
             max_tokens=500,
@@ -128,7 +115,6 @@ Be specific with player names, lines, and percentages. Write like a quant fund's
             return next((b.text for b in msg.content if b.type == "text"), "").strip()
     except Exception as e:
         return f"AI briefing unavailable: {e}"
-
 @st.cache_data(ttl=60*60*2, show_spinner=False)
 def ai_prizepicks_helper(entry_json: str, legs_json: str, api_key: str = "") -> str | None:
     """
@@ -142,21 +128,16 @@ def ai_prizepicks_helper(entry_json: str, legs_json: str, api_key: str = "") -> 
     try:
         import anthropic
         prompt = f"""You are a PrizePicks strategy expert. The legs below were selected using a sportsbook quantitative model — each player's win probability (p_cal) is calibrated against sharp -110 sportsbook lines (52.4% breakeven), meaning any p_cal above 52.4% already beats the market. On PrizePicks specifically, each leg is a flat 50/50 — so the sportsbook edge acts as a selection filter, not a pricing input.
-
 ENTRY COMBINATIONS (sorted by best EV):
 {entry_json}
-
 INDIVIDUAL LEG DETAILS (sportsbook-calibrated):
 {legs_json}
-
 For each entry combination, analyze:
 1. **Power Play vs Flex** — Which mode maximizes expected value? Consider: joint hit probability, payout multiplier, and whether the miss-insurance of Flex is worth the lower ceiling.
 2. **Weakest Leg** — Which leg in the best entry is the most likely to miss (lowest p_cal or highest volatility)? Does this justify Flex?
 3. **Correlation Risk** — Are any legs from the same team/game? If yes, does a bad game script hurt multiple legs simultaneously (correlation is a risk here, not a benefit)?
 4. **Final Recommendation** — Pick ONE specific entry: the combo, the mode (Power Play or Flex), and the stake. Be decisive and quantitative.
-
 Write in concise bullet format, max 250 words. Reference specific player names and percentages."""
-
         with client.messages.stream(
             model="claude-sonnet-4-6",
             max_tokens=450,
@@ -165,7 +146,6 @@ Write in concise bullet format, max 250 words. Reference specific player names a
             return stream.get_final_message().content[0].text.strip()
     except Exception as e:
         return f"PP Helper unavailable: {e}"
-
 @st.cache_data(ttl=60*60*2, show_spinner=False)
 def ai_edge_deepdive(legs_json: str, api_key: str = "") -> str | None:
     """
@@ -180,34 +160,26 @@ def ai_edge_deepdive(legs_json: str, api_key: str = "") -> str | None:
         prompt = f"""You are an elite NBA prop betting quant fund manager running a deep-dive edge analysis.
 You have access to advanced v3.0 signals including win/loss performance splits, clutch statistics,
 playoff implications, confidence intervals, and middle opportunity detection.
-
 LEGS WITH FULL SIGNAL DATA:
 {legs_json}
-
 Provide a DEEP DIVE analysis structured as follows:
-
 **CONVICTION RANKING** (rank legs 1-N by overall confidence)
 For each leg: Conviction score 1-10 with specific reasoning referencing the data signals.
-
 **EDGE DECOMPOSITION**
 Break down WHERE the edge comes from for the top 2 legs:
 - Statistical: Is the model projection significantly above/below the market line?
 - Contextual: W/L splits, clutch factor, playoff situation, game environment
 - Market Structure: Line movement, sharp book divergence, DNP risk adjustment
-
 **RISK MATRIX**
 For each leg, identify:
 - Key Risk #1 (what kills this bet)
 - Key Risk #2 (what makes it worse)
 - Confidence Interval: Is the CI tight (high conviction) or wide (proceed with caution)?
-
 **MIDDLE ALERTS**
 If any middle opportunities detected, explain the exact strategy: which books, which lines, why it's profitable.
-
 **FINAL SLATE STRATEGY**
 1-2 sentences on optimal entry: which leg(s) to fire at full Kelly vs reduced Kelly vs pass.
 Be specific, brutal, and quantitative. Max 450 words."""
-
         with client.messages.stream(
             model="claude-sonnet-4-6",
             max_tokens=600,
@@ -216,7 +188,6 @@ Be specific, brutal, and quantitative. Max 450 words."""
             return stream.get_final_message().content[0].text.strip()
     except Exception as e:
         return f"Deep dive unavailable: {e}"
-
 @st.cache_data(ttl=60*60*2, show_spinner=False)
 def ai_parlay_optimizer(legs_json, api_key=""):
     """Use Claude Sonnet to recommend optimal parlay combinations."""
@@ -226,19 +197,15 @@ def ai_parlay_optimizer(legs_json, api_key=""):
     try:
         import anthropic
         prompt = f"""You are a professional NBA prop parlay optimizer. Given these model-validated legs, recommend the optimal 2-4 leg parlay combinations considering correlation, EV, and risk.
-
 AVAILABLE LEGS (with model data):
 {legs_json}
-
 For each recommended parlay:
 - List the legs (player + market + line + side)
 - Explain WHY these legs correlate well (or are independent)
 - Give a combined probability estimate
 - Note any correlation risk (same team = shared risk)
 - Rate: ⭐⭐⭐ (Best), ⭐⭐ (Good), ⭐ (Speculative)
-
 Suggest 2-3 parlay combinations. Be concise and quantitative. Max 300 words."""
-
         with client.messages.stream(
             model="claude-sonnet-4-6",
             max_tokens=400,
@@ -247,13 +214,11 @@ Suggest 2-3 parlay combinations. Be concise and quantitative. Max 300 words."""
             return stream.get_final_message().content[0].text.strip()
     except Exception as e:
         return f"AI parlay optimizer unavailable: {e}"
-
 from nba_api.stats.static import players as nba_players
 from nba_api.stats.static import teams as nba_teams
 from nba_api.stats.endpoints import (
     playergamelog, scoreboardv2, LeagueDashTeamStats, CommonPlayerInfo
 )
-
 # ──────────────────────────────────────────────
 # SAFE HELPERS
 # ──────────────────────────────────────────────
@@ -262,16 +227,13 @@ def safe_float(v, default=0.0):
         return float(v) if v is not None else default
     except Exception:
         return default
-
 def safe_round(v, d=2):
     try:
         return round(float(v), d) if v is not None else None
     except Exception:
         return None
-
 def _now_iso():
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
 def normalize_name(name: str) -> str:
     if not name:
         return ""
@@ -284,7 +246,6 @@ def normalize_name(name: str) -> str:
     s = re.sub(r"[\.\'\-]", " ", s)
     s = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", "", s)
     return re.sub(r"\s+", " ", s).strip()
-
 def safe_get(d, *keys, default=None):
     cur = d
     for k in keys:
@@ -293,13 +254,11 @@ def safe_get(d, *keys, default=None):
         else:
             return default
     return cur
-
 # ══════════════════════════════════════════════
 # RESEARCH-VALIDATED CONSTANTS (v3.0)
 # Sources: VSiN HCA data, EVAnalytics, PubMed,
 #          RefAnalytics.com, NBAstuffer referee DB
 # ══════════════════════════════════════════════
-
 # [Research] Team-specific Home Court Advantage margins (net pts vs league avg 3.0)
 # Source: VSiN true HCA study — updated annually from 2023-25 seasons
 TEAM_HCA_MARGIN = {
@@ -315,7 +274,6 @@ TEAM_HCA_MARGIN = {
     "SAS": 2.0, "DET": 1.8, "CHA": 1.6, "LAC": 1.4, "MIA": 0.8,
 }
 LEAGUE_AVG_HCA = 3.0  # league-average home court advantage in pts
-
 # [Research] Position-specific B2B performance penalty.
 # Source: PubMed 2020 study — Guards (5+ miles/game movement) hit hardest.
 # Guards: -1% extra vs base B2B penalty. Centers: steady per-minute production.
@@ -325,12 +283,10 @@ POSITION_B2B_EXTRA_PENALTY = {
     "Big":   0.001,   # minimal (Centers most consistent on B2B)
     "Unknown": 0.004,
 }
-
 # [Research] Q1 scoring fraction of full-game.
 # Source: EVAnalytics Q1 data — Q1 is 26-28% of full-game, not 25%.
 # Q4 in close games trends under; Q1 overshoots slightly.
 Q1_SCORING_FRACTION = 0.265  # 26.5% of full-game is more accurate than 25%
-
 # [Research] Referee crew foul tendency database.
 # Source: NBAstuffer 2024-25 referee stats, RefAnalytics.com, Covers.com.
 # Format: {crew_chief_name_normalized: {fouls_per_100: float, o_u_lean: float}}
@@ -357,7 +313,6 @@ REFEREE_FOUL_DB = {
     "pat fraher":        {"fouls_per_100": 41.5, "o_u_lean": 0.46, "tier": "Foul-Light"},
 }
 _LEAGUE_AVG_FOULS_PER_100 = 44.5  # NBA 2024-25 season average
-
 def get_referee_foul_factor(crew_chief_name, market):
     """
     Returns (ref_factor, ref_label, ref_tier) for foul-sensitive props.
@@ -387,7 +342,6 @@ def get_referee_foul_factor(crew_chief_name, market):
     tier = ref_data.get("tier", "Average")
     label = f"{tier} crew ({fouls:.1f}/100)"
     return factor, label, tier
-
 # [Research] Team-specific HCA multiplier for home/away factor computation.
 # Replaces generic 12% cap with research-validated team-specific margins.
 def get_team_hca_factor(team_abbr, is_home, market):
@@ -420,7 +374,6 @@ def get_team_hca_factor(team_abbr, is_home, market):
         return factor, label
     except Exception:
         return 1.0, "Avg HCA"
-
 # ──────────────────────────────────────────────
 # CONSTANTS
 # ──────────────────────────────────────────────
@@ -428,7 +381,6 @@ ODDS_BASE       = "https://api.the-odds-api.com/v4"
 SPORT_KEY_NBA   = "basketball_nba"
 REGION_US       = "us"
 MIN_MINUTES_THRESHOLD = 10  # [FIX 3] filter DNP/garbage-time
-
 ODDS_MARKETS = {
     # ── Full-game standard ──────────────────────
     "Points":          "player_points",
@@ -479,11 +431,9 @@ ODDS_MARKETS = {
     "FTM":             "player_free_throws_made",
     "FTA":             "player_free_throws_attempted",
 }
-
 # Markets with no confirmed Odds API key — available via PP/UD/Sleeper only.
 # These will be skipped during Odds API fetches and the user will be warned.
 ODDS_API_UNSUPPORTED_MARKETS = {"FGA", "3PA", "FTM", "FTA"}
-
 # ──────────────────────────────────────────────
 # DFS PLATFORM PAYOUT STRUCTURES
 # PrizePicks / Underdog / Sleeper use identical or similar payout tables.
@@ -514,14 +464,12 @@ DFS_PP_FLEX_PAYOUTS = {   # Flex — hit k-of-n for tiered payout
     5: {4: 2.0,  5: 10.0},
     6: {4: 0.4,  5: 2.0,  6: 25.0},
 }
-
 def dfs_power_play_ev(joint_prob: float, n_legs: int, platform: str = "prizepicks") -> float | None:
     """EV of a DFS power play entry (must hit all legs)."""
     tbl = {"prizepicks": DFS_PP_PAYOUTS, "underdog": DFS_UD_PAYOUTS, "sleeper": DFS_SLEEPER_PAYOUTS}
     payouts = tbl.get(platform.lower(), DFS_PP_PAYOUTS)
     mult = payouts.get(n_legs)
     return (mult * joint_prob - 1.0) if mult else None
-
 def dfs_flex_ev(hit_dist: dict, n_legs: int) -> float | None:
     """EV of a DFS flex entry. hit_dist = {k: P(exactly k legs hit)}."""
     tier = DFS_PP_FLEX_PAYOUTS.get(n_legs, {})
@@ -531,7 +479,6 @@ def dfs_flex_ev(hit_dist: dict, n_legs: int) -> float | None:
     for k_correct, payout_mult in tier.items():
         ev += payout_mult * hit_dist.get(int(k_correct), 0.0)
     return ev
-
 def dfs_entry_optimizer(legs: list, platform: str = "prizepicks",
                         max_legs: int = 4, n_sims: int = 4000,
                         bankroll: float = 1000.0, frac_kelly: float = 0.25) -> list:
@@ -541,18 +488,15 @@ def dfs_entry_optimizer(legs: list, platform: str = "prizepicks",
     """
     from itertools import combinations
     import scipy.stats as _sc
-
     valid = [l for l in legs if float(l.get("p_cal") or 0) > 0.50]
     if len(valid) < 2:
         return []
-
     nv = len(valid)
     full_corr = np.eye(nv)
     for _i in range(nv):
         for _j in range(_i + 1, nv):
             c = float(estimate_player_correlation(valid[_i], valid[_j]) or 0.0)
             full_corr[_i, _j] = full_corr[_j, _i] = c
-
     # [AUDIT FIX] Data-derived seed: fixed seed=7 produced identical noise patterns for
     # every DFS entry optimization call. Use player IDs + probs to ensure uniqueness.
     _dfs_seed = int(abs(hash(tuple(
@@ -561,17 +505,14 @@ def dfs_entry_optimizer(legs: list, platform: str = "prizepicks",
     ))) % (2**31))
     rng = np.random.default_rng(_dfs_seed)
     results = []
-
     tbl = {"prizepicks": DFS_PP_PAYOUTS, "underdog": DFS_UD_PAYOUTS, "sleeper": DFS_SLEEPER_PAYOUTS}
     payouts_tbl = tbl.get(platform.lower(), DFS_PP_PAYOUTS)
-
     for n in range(2, min(max_legs + 1, nv + 1)):
         if n not in payouts_tbl:
             continue
         for combo in combinations(range(nv), n):
             combo_legs = [valid[i] for i in combo]
             probs = np.array([float(l["p_cal"]) for l in combo_legs])
-
             # Build PSD correlation sub-matrix
             sub = full_corr[np.ix_(list(combo), list(combo))]
             evals, evecs = np.linalg.eigh(sub)
@@ -584,41 +525,32 @@ def dfs_entry_optimizer(legs: list, platform: str = "prizepicks",
             corr_psd = corr_psd / np.outer(_d, _d)
             np.fill_diagonal(corr_psd, 1.0)
             corr_psd = (corr_psd + corr_psd.T) / 2.0
-
             # Gaussian copula MC
             z = rng.multivariate_normal(np.zeros(n), corr_psd, n_sims)
             u = _sc.norm.cdf(z)
             hits = (u < probs).astype(int)          # shape (n_sims, n)
             per_sim_k = hits.sum(axis=1)             # how many legs hit per sim
-
             joint_prob = float((per_sim_k == n).mean())
             naive_joint = float(np.prod(probs))
-
             # Hit distribution P(exactly k hit)
             hit_dist = {k: float((per_sim_k == k).mean()) for k in range(n + 1)}
-
             # Power play EV
             pp_ev = dfs_power_play_ev(joint_prob, n, platform)
-
             # Flex EV (if available for this n)
             flex_ev = dfs_flex_ev(hit_dist, n)
-
             # Per-leg DFS edge (average probability above 50% floor)
             avg_edge = float(np.mean(probs) - 0.5)
-
             best_ev = max(
                 pp_ev if pp_ev is not None else -99,
                 flex_ev if flex_ev is not None else -99,
             )
             rec_mode = "PowerPlay" if (pp_ev or -99) >= (flex_ev or -99) else "Flex"
-
             # Kelly stake using best_ev / (payout - 1)
             payout_used = payouts_tbl.get(n, 3.0) if rec_mode == "PowerPlay" else (
                 DFS_PP_FLEX_PAYOUTS.get(n, {}).get(n, 3.0)
             )
             kelly_f = max(0.0, best_ev / (payout_used - 1.0)) if payout_used > 1 else 0.0
             stake = min(bankroll * frac_kelly * kelly_f, bankroll * 0.05)
-
             results.append({
                 "combo": " + ".join(
                     f"{l['player']} {l['market']} O{l.get('line','?')}" for l in combo_legs
@@ -635,9 +567,7 @@ def dfs_entry_optimizer(legs: list, platform: str = "prizepicks",
                 "avg_leg_edge_%": round(avg_edge * 100, 1),
                 "rec_stake_$": round(stake, 2),
             })
-
     return sorted(results, key=lambda x: x["best_ev_%"] if isinstance(x["best_ev_%"], (int, float)) else -99, reverse=True)[:30]
-
 # Markets that require batching separately (not all books offer these)
 # Only keys CONFIRMED to return data from the Odds API (tested 2026-03-07)
 SPECIALTY_MARKET_KEYS = {
@@ -663,7 +593,6 @@ SPECIALTY_MARKET_KEYS = {
     # Fantasy
     "player_fantasy_points",
 }
-
 STAT_FIELDS = {
     "Points":          "PTS",
     "Rebounds":        "REB",
@@ -709,7 +638,6 @@ STAT_FIELDS = {
     "FTM":             "FTM",
     "FTA":             "FTA",
 }
-
 # Half-game projection scale factors (league-average baseline)
 HALF_FACTOR = {
     "H1 Points": 0.52, "H1 Rebounds": 0.52, "H1 Assists": 0.52,
@@ -722,7 +650,6 @@ HALF_FACTOR = {
     "Q1 Points": Q1_SCORING_FRACTION, "Q1 Rebounds": 0.25, "Q1 Assists": 0.25,
     "Q1 3PM": 0.25, "Q1 PRA": Q1_SCORING_FRACTION, "Q1 FTM": 0.24, "Q1 FGA": Q1_SCORING_FRACTION,
 }
-
 # [AUDIT FIX] Position-specific half-game adjustment deltas on top of HALF_FACTOR baseline.
 # Guards attack more in H1 (faster pace, early shot attempts); Bigs grab more boards in H2
 # (closeouts, putbacks in crunch time); Wings are near-neutral.
@@ -738,16 +665,13 @@ _HALF_POS_DELTA = {
     "Wing": {},   # near-neutral; real split captured by boxscore data when available
     "Unknown": {},
 }
-
 def get_half_factor(market_name, position_bucket="Unknown", spread_abs=None, game_total=None):
     """Return position-adjusted half-game scaling factor.
-
     [v5.0] Voulgaris close-game H2 boost:
     In close games (spread ≤ 5), Q4 sees intentional fouling + extra possessions,
     driving H2 scoring ~4-6% above the naïve 48% split. Blowouts see H2 < 48%
     (starters sit). Sportsbooks often price H2 totals at exactly ½ of game total
     — exploiting this asymmetry was one of Voulgaris's most profitable edges.
-
     [AUDIT FIX] Q1 dynamic factor: high-pace games (game_total 230+) overrepresent
     Q1 scoring; slow games (game_total ≤205) underrepresent. Adjusts the static 26.5%.
     Range: 0.235–0.280 depending on pace environment.
@@ -784,26 +708,20 @@ def get_half_factor(market_name, position_bucket="Unknown", spread_abs=None, gam
         except Exception:
             pass
     return base_adj
-
 # Alt markets — same engine, different API key
 ALT_MARKETS = {"Alt Points","Alt Rebounds","Alt Assists","Alt 3PM"}
-
 # Fantasy score markets need custom stat computation
 FANTASY_MARKETS = {"Fantasy Score"}
-
 # DD/TD markets — probability from game log, not bootstrap
 DD_TD_MARKETS = {"Double Double","Triple Double"}
-
 BOOK_SHARPNESS = {
     "pinnacle":0.99,"circa":0.95,"bookmaker":0.90,"betcris":0.85,
     "draftkings":0.70,"fanduel":0.70,"betmgm":0.65,"caesars":0.65,
     "betrivers":0.60,"pointsbetus":0.55,
     "betonlineag":0.45,"bovada":0.40,"mybookieag":0.30,
 }
-
 def book_sharpness(k):
     return float(BOOK_SHARPNESS.get((k or "").strip().lower(), 0.55))
-
 POSITIONAL_PRIORS = {
     "Guard": {"Points":16.5,"Rebounds":3.4,"Assists":5.8,"3PM":2.1,
               "PRA":25.7,"PR":19.9,"PA":22.3,"RA":9.2,"Blocks":0.4,"Steals":1.2,"Turnovers":2.2,
@@ -822,14 +740,12 @@ POSITIONAL_PRIORS = {
               "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.9,"Fantasy Score":29.7,
               "FGM":5.4,"FGA":12.0,"3PA":4.0,"FTM":2.9,"FTA":3.6},
 }
-
 # [AUDIT CALIBRATION] Rest multipliers re-calibrated to empirical NBA research:
 # PubMed 2020 (Esteves et al.): B2B team performance declines ~1.9 pts/game (~2.7% of ~70-pt total).
 # Individual scoring props: ~3-4% decline; rebounding/assists: ~1.5-2% decline.
 # Previous 0.93 (-7%) was ~2x too aggressive vs. published data.
 # 1-day rest: modest ~1.5% shortfall vs. 2+ days. 3-4 days: slight benefit from freshness.
 REST_MULTIPLIERS = {0: 0.965, 1: 0.985, 2: 1.00, 3: 1.01, 4: 1.015}
-
 # Exponential recency decay per stat (assists autocorrelate longer than blocks)
 LAMBDA_DECAY_BY_STAT = {
     "Points": 0.88, "Rebounds": 0.85, "Assists": 0.88,
@@ -842,22 +758,21 @@ LAMBDA_DECAY_BY_STAT = {
     "Fantasy Score": 0.88,
     "default": 0.88,
 }
-
 # [v5.0] Count stats where Negative Binomial outperforms bootstrap (overdispersed count data)
 # NegBin is theoretically superior for zero-inflated, overdispersed integer distributions.
 # Research: BinomialBasketball.com Stan model; squared2020.com NegBin for 3PM
 NEGBINOM_MARKETS = frozenset({
     "3PM", "Blocks", "Steals", "Stocks", "Assists",
-    "Rebounds", "RA", "PR", "Turnovers", "FTA", "FTM"
+    "Rebounds", "RA", "PR", "Turnovers", "FTA", "FTM",
+    # FGM/FGA/3PA are also overdispersed integer counts — NegBin improves calibration
+    "FGM", "FGA", "3PA",
 })
-
 # Persistent file paths
 OPENING_LINES_PATH   = "opening_lines.json"
 WATCHLIST_PATH_TPL   = "watchlist_{uid}.json"
 SCANNER_CACHE_PATH   = "scanner_results_cache.pkl"
 ALERT_HASHES_PATH    = "alert_hashes_cache.json"
 PP_SETTINGS_PATH     = "pp_settings.json"
-
 def load_pp_settings():
     """Load persisted PrizePicks settings (cookies/JSON, etc.) from disk."""
     try:
@@ -867,7 +782,6 @@ def load_pp_settings():
     except Exception:
         pass
     return {}
-
 def save_pp_settings(**kwargs):
     """Persist PrizePicks settings to disk.  Pass keyword args to update individual keys."""
     existing = load_pp_settings()
@@ -877,8 +791,6 @@ def save_pp_settings(**kwargs):
             json.dump(existing, f)
     except Exception:
         pass
-
-
 def _save_scanner_cache():
     """Persist scanner results to disk so they survive server restarts / WebSocket drops."""
     import pickle
@@ -893,8 +805,6 @@ def _save_scanner_cache():
             pickle.dump(_cache, _f)
     except Exception:
         pass
-
-
 def _load_scanner_cache() -> dict:
     import pickle
     try:
@@ -902,8 +812,6 @@ def _load_scanner_cache() -> dict:
             return pickle.load(_f)
     except Exception:
         return {}
-
-
 def _save_alert_hashes(hashes: set):
     """Persist sent-alert hashes to disk so dedup survives session resets."""
     try:
@@ -911,21 +819,17 @@ def _save_alert_hashes(hashes: set):
             json.dump(list(hashes), _f)
     except Exception:
         pass
-
-
 def _load_alert_hashes() -> set:
     try:
         with open(ALERT_HASHES_PATH) as _f:
             return set(json.load(_f))
     except Exception:
         return set()
-
 # ──────────────────────────────────────────────
 # PLAYER POSITION CACHE
 # ──────────────────────────────────────────────
 _POSITION_CACHE = {}  # {name_lower: pos_str}
 _PID_POSITION_MAP = {}  # {player_id: pos_str} — populated by bulk fetch
-
 @st.cache_data(ttl=60*60*6, show_spinner=False)
 def _bulk_player_position_map():
     """Fetch ALL active player positions in one LeagueDashPlayerStats call.
@@ -947,12 +851,10 @@ def _bulk_player_position_map():
         return {}
     except Exception:
         return {}
-
 def _ensure_pid_position_map():
     global _PID_POSITION_MAP
     if not _PID_POSITION_MAP:
         _PID_POSITION_MAP = _bulk_player_position_map()
-
 def get_player_position(name):
     key = (name or "").strip().lower()
     if not key:
@@ -984,7 +886,6 @@ def get_player_position(name):
                     pos = ""
     _POSITION_CACHE[key] = pos
     return pos
-
 def get_position_bucket(pos):
     if not pos:
         return "Unknown"
@@ -995,7 +896,6 @@ def get_position_bucket(pos):
     if "G" in p and "F" in p: return "Wing"
     if "F" in p and "C" in p: return "Big"
     return "Unknown"
-
 # ──────────────────────────────────────────────
 # SEASON HELPER
 # ──────────────────────────────────────────────
@@ -1004,7 +904,6 @@ def get_season_string(today=None):
     d = today or date.today()
     start = d.year if d.month >= 10 else d.year - 1
     return f"{start}-{(start+1)%100:02d}"
-
 # ──────────────────────────────────────────────
 # BULK GAME LOG — one API call for ALL players
 # ──────────────────────────────────────────────
@@ -1042,7 +941,6 @@ def _fetch_bulk_gamelogs():
                 return None
             continue
     return None
-
 # ──────────────────────────────────────────────
 # GAME LOG FETCHER
 # ──────────────────────────────────────────────
@@ -1058,7 +956,6 @@ def fetch_player_gamelog(player_id, max_games=15):
             # Convert GAME_DATE back to string so downstream code (pd.to_datetime) still works
             player_df["GAME_DATE"] = player_df["GAME_DATE"].dt.strftime("%b %d, %Y")
             return player_df, []
-
     # ── Slow path: individual PlayerGameLog call (10s timeout) ──
     # [AUDIT FIX] Explicitly filter to Regular Season to exclude preseason/playoff contamination
     errs = []
@@ -1081,7 +978,6 @@ def fetch_player_gamelog(player_id, max_games=15):
         except Exception as e:
             errs.append(f"{type(e).__name__}: {e}")
     return pd.DataFrame(), errs
-
 # ──────────────────────────────────────────────
 # REAL HALF-GAME BOXSCORE FETCHER
 # Per-period stats via BoxScoreTraditionalV2.
@@ -1116,7 +1012,6 @@ def _fetch_boxscore_halfgame(game_id, player_id_int, start_period, end_period):
         return result if result else None
     except Exception:
         return None
-
 def fetch_player_halfgame_log(player_id, game_log_df, market_name, n_games=10):
     """
     Build a real H1/H2/Q1 stat series from per-period boxscores.
@@ -1169,7 +1064,6 @@ def fetch_player_halfgame_log(player_id, game_log_df, market_name, n_games=10):
     if stat_field in stats_df.columns:
         return pd.to_numeric(stats_df[stat_field], errors="coerce").reset_index(drop=True)
     return None
-
 # ──────────────────────────────────────────────
 # [UPGRADE NEW] SCHEDULE FATIGUE — 3-IN-4 NIGHTS DETECTOR
 # Beyond basic B2B: detects compressed 3-game stretches
@@ -1203,7 +1097,6 @@ def compute_schedule_fatigue(game_log_df, game_date):
         return 1.0, "Normal"
     except Exception:
         return 1.0, "Normal"
-
 # ──────────────────────────────────────────────
 # REST / B2B FACTOR  [FIX 4: season-phase scaling]
 # ──────────────────────────────────────────────
@@ -1235,7 +1128,6 @@ def compute_rest_factor(game_log_df, game_date):
         return float(base_mult), int(rest)
     except Exception:
         return 1.00, 2
-
 # ──────────────────────────────────────────────
 # HOME / AWAY SPLIT
 # ──────────────────────────────────────────────
@@ -1269,7 +1161,6 @@ def compute_home_away_factor(game_log_df, market, is_home):
         return float(np.clip(ratio, 0.88, 1.12))
     except Exception:
         return 1.00
-
 # ──────────────────────────────────────────────
 # BAYESIAN SHRINKAGE  [FIX 2: adaptive k]
 # ──────────────────────────────────────────────
@@ -1310,7 +1201,6 @@ def bayesian_shrink(observed_mu, n_obs, market, position_bucket, custom_priors=N
     w_obs   = 1.0 - w_prior
     # Clip to >= 0: stat means can't be negative
     return max(0.0, float(w_prior * prior + w_obs * observed_mu))
-
 # ──────────────────────────────────────────────
 # STAT SERIES COMPUTATION
 # ──────────────────────────────────────────────
@@ -1339,7 +1229,6 @@ def compute_stat_from_gamelog(df, market):
             s = s + pd.to_numeric(df.get(col), errors="coerce").fillna(0.0)
         return s
     return pd.to_numeric(df.get(f), errors="coerce")
-
 # ──────────────────────────────────────────────
 # VOLATILITY ENGINE  [FIX 5: skewness helper]
 # ──────────────────────────────────────────────
@@ -1356,7 +1245,6 @@ def compute_volatility(series):
     cv = float(arr.std(ddof=1) / mean)
     label = "Low" if cv < 0.15 else ("Moderate" if cv < 0.30 else "High")
     return cv, label
-
 # [FIX 5/13] Skewness helper
 def compute_skewness(series):
     try:
@@ -1372,7 +1260,6 @@ def compute_skewness(series):
         return float((n / ((n-1)*(n-2))) * np.sum(((arr - m) / s)**3))
     except Exception:
         return None
-
 # ──────────────────────────────────────────────
 # [UPGRADE 3] OPPONENT-SPECIFIC HISTORICAL FACTOR
 # ──────────────────────────────────────────────
@@ -1422,7 +1309,6 @@ def compute_opp_specific_factor(game_log_df, opp_abbr, market, n_min=2):
         return float(np.clip(factor, 0.88, 1.12)), n_opp
     except Exception:
         return 1.0, 0
-
 # ──────────────────────────────────────────────
 # [UPGRADE 5] PLAYER REGIME — HOT / COLD / AVERAGE
 # ──────────────────────────────────────────────
@@ -1442,7 +1328,6 @@ def compute_player_regime_hot_cold(stat_series, n_recent=5):
         return "Average", float(z)
     except Exception:
         return "Average", 0.0
-
 # ──────────────────────────────────────────────
 # [UPGRADE NEW] L3 / L5 / L10 TREND CONVERGENCE + MOMENTUM
 # Sharp bettors look for alignment across multiple lookback windows.
@@ -1453,7 +1338,6 @@ def compute_trend_convergence(stat_series, line, side="Over"):
     """
     Returns (convergence_score, trend_label, slope_per_game, l3_avg, l5_avg, l10_avg).
     convergence_score: -1.0 to +1.0 (positive = favors side, negative = fades side)
-
     [AUDIT IMPROVEMENT] Added L20 window. Research (Deshpande & Jensen 2016; EVAnalytics
     NBA prop modeling docs) shows 20-game rolling window outperforms 10-game as a baseline
     because it reduces game-to-game noise while preserving recent form signal.
@@ -1506,7 +1390,6 @@ def compute_trend_convergence(stat_series, line, side="Over"):
         return score, label, slope, l3, l5, l10
     except Exception:
         return 0.0, "Neutral", 0.0, None, None, None
-
 # ──────────────────────────────────────────────
 # [v4.0 UPGRADE] CONSECUTIVE STREAK DETECTOR
 # Research: 5+ consecutive over/under is a strong signal professional bettors
@@ -1557,7 +1440,6 @@ def compute_consecutive_streak(stat_series, line, side="Over"):
         return int(streak) * signal_dir, label, float(nudge)
     except Exception:
         return 0, "N/A", 0.0
-
 # ──────────────────────────────────────────────
 # [RESEARCH UPGRADE] ROLLING 3-GAME MINUTES AVERAGE
 # CMU study: 3-game rolling minutes is the most predictive fatigue signal.
@@ -1592,7 +1474,6 @@ def compute_rolling_minutes_fatigue(game_log_df, n_recent=3):
         return avg, 1.0, "Normal"
     except Exception:
         return None, 1.0, "Normal"
-
 # ──────────────────────────────────────────────
 # [AUDIT v5.1] PLAYER SHOOTING LUCK REGRESSION
 # ──────────────────────────────────────────────
@@ -1616,13 +1497,19 @@ def compute_shooting_luck_regression(game_log_df, market, n_recent=5, n_season=2
     <1.0 = player shooting above average → expect mean reversion downward
     =1.0 = within normal range or not applicable
     """
-    _applicable = {"Points", "PRA", "PA", "FGM", "FTM", "H1 Points", "H2 Points"}
+    _applicable = {"Points", "PRA", "PA", "FGM", "FTM", "H1 Points", "H2 Points",
+                   "3PM", "3PA", "H1 3PM"}  # 3P% mean-reversion is one of the strongest in NBA research
     if market not in _applicable:
         return 1.0, "N/A"
     if game_log_df is None or game_log_df.empty:
         return 1.0, "N/A"
     try:
-        needed = {"PTS", "FGA", "FTA", "FGM", "FTM"}
+        # For 3PM/3PA markets: use 3P% mean reversion instead of TS%
+        _is_3p_market = market in ("3PM", "3PA", "H1 3PM")
+        if _is_3p_market:
+            needed = {"FG3M", "FG3A"}
+        else:
+            needed = {"PTS", "FGA", "FTA", "FGM", "FTM"}
         df = game_log_df.copy()
         for col in needed:
             if col not in df.columns:
@@ -1632,24 +1519,31 @@ def compute_shooting_luck_regression(game_log_df, market, n_recent=5, n_season=2
         df = df.dropna(subset=list(needed))
         if len(df) < max(n_recent + 1, 6):
             return 1.0, "N/A"
-
-        def _ts_pct(sub):
-            total_pts = sub["PTS"].sum()
-            tsa = sub["FGA"].sum() + 0.44 * sub["FTA"].sum()
-            if tsa < 1.0:
-                return None
-            return float(total_pts / (2.0 * tsa))
-
-        season_df = df.head(n_season)
-        recent_df = df.head(n_recent)
-        ts_season = _ts_pct(season_df)
-        ts_recent = _ts_pct(recent_df)
-
+        if _is_3p_market:
+            # 3P% = FG3M / FG3A — regress to mean when very hot or cold
+            def _3p_pct(sub):
+                attempts = sub["FG3A"].sum()
+                if attempts < 3:
+                    return None
+                return float(sub["FG3M"].sum() / attempts)
+            season_df = df.head(n_season)
+            recent_df = df.head(n_recent)
+            ts_season = _3p_pct(season_df)
+            ts_recent = _3p_pct(recent_df)
+        else:
+            def _ts_pct(sub):
+                total_pts = sub["PTS"].sum()
+                tsa = sub["FGA"].sum() + 0.44 * sub["FTA"].sum()
+                if tsa < 1.0:
+                    return None
+                return float(total_pts / (2.0 * tsa))
+            season_df = df.head(n_season)
+            recent_df = df.head(n_recent)
+            ts_season = _ts_pct(season_df)
+            ts_recent = _ts_pct(recent_df)
         if ts_season is None or ts_recent is None or ts_season <= 0:
             return 1.0, "N/A"
-
         delta = ts_recent - ts_season  # positive = hot streak above average
-
         # Thresholds (validated against empirical NBA prop hit rates):
         # |delta| < 0.04: noise — no signal
         # 0.04-0.07: mild deviation — small nudge (~1.5%)
@@ -1675,7 +1569,6 @@ def compute_shooting_luck_regression(game_log_df, market, n_recent=5, n_season=2
         return mult, label
     except Exception:
         return 1.0, "N/A"
-
 # ──────────────────────────────────────────────
 # [RESEARCH UPGRADE] BOTH-TEAMS-B2B SUPPRESSOR
 # When both teams are on a B2B, combined scoring drops 6-10 pts,
@@ -1712,7 +1605,6 @@ def get_team_b2b_flag(team_abbr, game_date):
         return yesterday in sorted_dates
     except Exception:
         return False
-
 def compute_both_teams_b2b(team_abbr, opp_abbr, player_b2b, game_date):
     """
     Returns (both_b2b_flag, both_b2b_mult).
@@ -1728,7 +1620,6 @@ def compute_both_teams_b2b(team_abbr, opp_abbr, player_b2b, game_date):
         return False, 1.0
     except Exception:
         return False, 1.0
-
 # ──────────────────────────────────────────────
 # [RESEARCH UPGRADE] OVER-RATE L10 / MEAN REVERSION FLAG
 # When a player goes OVER their line ≥8/10 games, books under-adjust
@@ -1767,7 +1658,6 @@ def compute_over_rate_and_mean_reversion(stat_series, line):
         return over_rate, 0.0, "Normal"
     except Exception:
         return None, 0.0, "Normal"
-
 # ──────────────────────────────────────────────
 # [AUDIT NEW] ALTITUDE ADJUSTMENT
 # Denver (Ball Arena, ~5,280 ft) is the only significant high-altitude NBA venue.
@@ -1779,7 +1669,6 @@ def compute_over_rate_and_mean_reversion(stat_series, line):
 _HIGH_ALTITUDE_TEAMS = {"DEN"}  # Ball Arena: 5,280 ft
 _ALTITUDE_PENALTY_VISITOR = 0.975   # ~2.5% decline for visiting team at altitude
 _ALTITUDE_BONUS_VISITING_DEN = 1.01  # ~1% benefit when Denver visits sea-level (altitude-adapted lungs)
-
 def compute_altitude_factor(team_abbr, opp_abbr, is_home, market):
     """
     Returns altitude adjustment multiplier (float only).
@@ -1804,8 +1693,6 @@ def compute_altitude_factor(team_abbr, opp_abbr, is_home, market):
         return 1.0
     except Exception:
         return 1.0
-
-
 # ──────────────────────────────────────────────
 # [RESEARCH UPGRADE] TRAVEL FATIGUE
 # Cross-country travel + direction effect: east travel worse than west.
@@ -1823,7 +1710,6 @@ _NBA_TEAM_LONGITUDES = {
     "POR": -122.7, "SAC": -121.5, "SAS": -98.5, "TOR": -79.4,
     "UTA": -111.9, "WAS": -77.0,
 }
-
 def compute_travel_fatigue(team_abbr, game_log_df, game_date, b2b_flag):
     """
     Estimate travel fatigue from last game location.
@@ -1859,7 +1745,6 @@ def compute_travel_fatigue(team_abbr, game_log_df, game_date, b2b_flag):
         return 1.0, "Normal"
     except Exception:
         return 1.0, "Normal"
-
 # ──────────────────────────────────────────────
 # [RESEARCH UPGRADE] L10 ROLLING DvP
 # Season-average DvP misses recency: a team that traded away their
@@ -1871,7 +1756,6 @@ def get_dvp_rolling_l10(opp_abbr, pos_bucket, market):
     """
     Pull opponent's season positional defense data (LeagueDashPtDefend).
     Returns (dvp_mult, dvp_label) — mult relative to league avg for that position.
-
     [AUDIT FIX] NOTE: Despite the function name "l10", LeagueDashPtDefend does NOT
     support a last-N-games filter — it always returns season-to-date aggregates.
     The label is therefore "Season DvP" not "L10 DvP". Attempting to pass
@@ -1925,7 +1809,6 @@ def get_dvp_rolling_l10(opp_abbr, pos_bucket, market):
         return 1.0, "Avg"
     except Exception:
         return 1.0, "Avg"
-
 # ──────────────────────────────────────────────
 # [AUDIT UPGRADE] PER-MINUTE PRODUCTION RATIO
 # Research (Unabated, ETR 2024-25): "The heart of any NBA projection is projected minutes.
@@ -1970,8 +1853,6 @@ def compute_per_minute_production(game_log_df, market, n_games=10):
         return float(per_min), 1.0   # prod_mult=1.0; caller applies when proj_minutes known
     except Exception:
         return None, 1.0
-
-
 # ──────────────────────────────────────────────
 # [UPGRADE 2] PROJECTED MINUTES
 # ──────────────────────────────────────────────
@@ -1996,7 +1877,6 @@ def compute_projected_minutes(game_log_df, n_games=10):
         return avg_min, bool(dnp_risk)
     except Exception:
         return None, False
-
 # ──────────────────────────────────────────────
 # [UPGRADE NEW] OPPONENT FATIGUE FACTOR
 # When the opposing team is on a B2B or 3-in-4 stretch,
@@ -2052,7 +1932,6 @@ def get_opponent_schedule_fatigue(opp_abbr, game_date):
         return 1.0, "Opp Rested"
     except Exception:
         return 1.0, "Unknown"
-
 def volatility_penalty_factor(cv):
     """
     Smooth, continuous EV penalty factor for high-CV stats.
@@ -2079,7 +1958,6 @@ def volatility_penalty_factor(cv):
             t = (v - cv0) / (cv1 - cv0)
             return float(p0 + t * (p1 - p0))
     return 0.0
-
 # [FIX 5] Skewness-adjusted volatility gate
 def passes_volatility_gate(cv, ev_raw, skew=None, bet_type="Over"):
     """
@@ -2118,7 +1996,6 @@ def passes_volatility_gate(cv, ev_raw, skew=None, bet_type="Over"):
             if v > tightened and (ev_f is None or ev_f < 0.08):
                 return False, f"CV>{tightened:.2f} (pos-skew+Under tightened, needs EV>=8%)"
     return True, ""
-
 # ──────────────────────────────────────────────
 # BOOTSTRAP WITH PER-PLAYER NOISE
 # ──────────────────────────────────────────────
@@ -2148,7 +2025,6 @@ def bootstrap_prob_over(stat_series, line, n_sims=20000, cv_override=None, marke
     mu_w = float(np.average(x, weights=w) if w is not None else x.mean())
     sigma_w = float(np.sqrt(np.average((x - mu_w)**2, weights=w)) if w is not None else x.std(ddof=1))
     return float(np.clip(p_over, 1e-4, 1-1e-4)), mu_w, max(1e-9, sigma_w)
-
 # ──────────────────────────────────────────────
 # [v5.0] NEGATIVE BINOMIAL PROBABILITY ESTIMATOR
 # For count stats (3PM, Assists, Rebounds, Blocks, Steals, etc.)
@@ -2191,7 +2067,6 @@ def negbinom_prob_over(stat_series, line, market="default", min_n=6):
     p_over = float(nbinom.sf(int(np.floor(line)), r, p))
     sigma_w = float(np.sqrt(var_w))
     return float(np.clip(p_over, 1e-4, 1 - 1e-4)), mu_w, max(1e-9, sigma_w)
-
 # ──────────────────────────────────────────────
 # EMPIRICAL CORRELATION  [FIX 1: Spearman]
 # ──────────────────────────────────────────────
@@ -2219,7 +2094,6 @@ def empirical_leg_correlation(pid1, pid2, mkt1, mkt2, n_games=20):
         return float(np.clip(corr, -0.50, 0.70)) if not np.isnan(corr) else None
     except Exception:
         return None
-
 def estimate_player_correlation(leg1, leg2):
     pid1 = leg1.get("player_id")
     pid2 = leg2.get("player_id")
@@ -2273,7 +2147,6 @@ def estimate_player_correlation(leg1, leg2):
     if ctx1<0.97 and ctx2<0.97: corr += 0.03
     if (ctx1>1.03 and ctx2<0.97) or (ctx1<0.97 and ctx2>1.03): corr -= 0.05
     return float(np.clip(corr, -0.25, 0.45))
-
 # ──────────────────────────────────────────────
 # LINE MOVEMENT ALERT  [FIX 10: dedup]
 # ──────────────────────────────────────────────
@@ -2311,7 +2184,6 @@ def get_line_movement_signal(player_norm, market_key, current_line, side="Over")
         "msg": msg,
         "opening": float(opening),
     }
-
 # ──────────────────────────────────────────────
 # REGIME CLASSIFIER
 # ──────────────────────────────────────────────
@@ -2329,7 +2201,6 @@ def classify_regime(cv, blowout_prob, ctx_mult):
     if score >= 0.65: return "Chaotic", score
     if score >= 0.40: return "Mixed", score
     return "Stable", score
-
 # ──────────────────────────────────────────────
 # MARKET PRICING  [FIX 6: remove_vig] [FIX 8: neg-edge guard]
 # ──────────────────────────────────────────────
@@ -2337,7 +2208,6 @@ def implied_prob_from_decimal(price):
     if price is None: return None
     try: return float(np.clip(1.0/float(price), 1e-6, 1.0-1e-6))
     except: return None
-
 def ev_per_dollar(p_win, price):
     if p_win is None or price is None: return None
     try:
@@ -2345,7 +2215,6 @@ def ev_per_dollar(p_win, price):
         if o <= 1.0: return None
         return float(p*(o-1.0) - (1.0-p))
     except: return None
-
 # [FIX 6] No-vig price calculation
 def remove_vig(price_over, price_under):
     """Return no-vig (fair) decimal prices for a two-sided market."""
@@ -2359,7 +2228,6 @@ def remove_vig(price_over, price_under):
         return float(1.0 / (ip_o / overround)), float(1.0 / (ip_u / overround))
     except Exception:
         return float(price_over), float(price_under)
-
 def classify_edge(ev):
     if ev is None: return None
     e = float(ev)
@@ -2367,7 +2235,6 @@ def classify_edge(ev):
     if e < 0.04:   return "Lean Edge"
     if e < 0.08:   return "Solid Edge"
     return "Strong Edge"
-
 # ──────────────────────────────────────────────
 # [UPGRADE NEW] COMPOSITE SHARPNESS SCORE (0–100)
 # Combines: model edge + CLV direction + steam move + sharp alignment +
@@ -2403,18 +2270,15 @@ def compute_composite_sharpness(
         return 0, {}
     score = 0.0
     components = {}
-
     # 1. Model EV (max 30 pts)  — linear from 0% → 15% EV maps to 0→30
     ev_pts = float(np.clip(float(ev_adj) / 0.15 * 30.0, 0.0, 30.0))
     score += ev_pts
     components["ev"] = round(ev_pts, 1)
-
     # 2. Model advantage over market (max 20 pts)
     adv = (float(p_cal) - float(p_implied)) if p_implied is not None else 0.0
     adv_pts = float(np.clip(adv / 0.15 * 20.0, -10.0, 20.0))
     score += adv_pts
     components["advantage"] = round(adv_pts, 1)
-
     # 3. Steam move / line movement (max 15 pts)
     mv_pts = 0.0
     if isinstance(mv_signal, dict):
@@ -2426,7 +2290,6 @@ def compute_composite_sharpness(
             mv_pts = -8.0   # fade signal: sharps on other side
     score += mv_pts
     components["steam"] = round(mv_pts, 1)
-
     # 4. Sharp book divergence (max 10 pts)
     sh_pts = 0.0
     if isinstance(sharp_div, dict) and sharp_div:
@@ -2436,22 +2299,18 @@ def compute_composite_sharpness(
             sh_pts = -10.0
     score += sh_pts
     components["sharp_confirm"] = round(sh_pts, 1)
-
     # 5. Trend convergence (max 15 pts)
     tr_pts = float(np.clip(float(trend_score or 0.0) * 15.0, -10.0, 15.0))
     score += tr_pts
     components["trend"] = round(tr_pts, 1)
-
     # 6. Hot/cold signal (max 8 pts)
     hc_pts = 8.0 if hot_cold == "Hot" else (-5.0 if hot_cold == "Cold" else 0.0)
     score += hc_pts
     components["hot_cold"] = round(hc_pts, 1)
-
     # 7. Regime penalty (max -15 pts)
     reg_pts = 0.0 if regime == "Stable" else (-7.0 if regime == "Mixed" else -15.0)
     score += reg_pts
     components["regime"] = round(reg_pts, 1)
-
     # 8. Volatility (max -10 pts for high CV)
     cv_pts = 0.0
     if vol_cv is not None:
@@ -2459,7 +2318,6 @@ def compute_composite_sharpness(
         cv_pts = float(np.clip(-(v - 0.15) / 0.25 * 10.0, -10.0, 0.0))
     score += cv_pts
     components["volatility"] = round(cv_pts, 1)
-
     # 9. Risk flags (DNP, B2B, fatigue)
     risk_pts = 0.0
     if dnp_risk: risk_pts -= 8.0
@@ -2468,7 +2326,6 @@ def compute_composite_sharpness(
     elif fatigue_label == "4-in-6": risk_pts -= 8.0
     score += risk_pts
     components["risk_flags"] = round(risk_pts, 1)
-
     # 10. Game total environment bonus (max 5 pts)
     gt_pts = 0.0
     if game_total is not None:
@@ -2478,7 +2335,6 @@ def compute_composite_sharpness(
         elif t <= 208: gt_pts = -3.0
     score += gt_pts
     components["game_total"] = round(gt_pts, 1)
-
     # 11. [v3.0] Clutch performance signal (max +5 / -5)
     clutch_pts = 0.0
     if clutch_label:
@@ -2487,7 +2343,6 @@ def compute_composite_sharpness(
         elif "Clutch-" in str(clutch_label): clutch_pts = -4.0
     score += clutch_pts
     components["clutch"] = round(clutch_pts, 1)
-
     # 12. [v3.0] Playoff/Tanking context (max +4 / -5)
     playoff_pts = 0.0
     if playoff_label:
@@ -2497,21 +2352,17 @@ def compute_composite_sharpness(
         elif "Out of Race" in str(playoff_label):     playoff_pts = -2.0
     score += playoff_pts
     components["playoff_context"] = round(playoff_pts, 1)
-
     # 13. [v3.0] Win/Loss split factor deviation (max +3 / -3)
     wl_pts = float(np.clip((float(wl_factor or 1.0) - 1.0) * 30.0, -3.0, 3.0))
     score += wl_pts
     components["wl_split"] = round(wl_pts, 1)
-
     # 14. [v3.0] Quantified DNP risk penalty (max -8)
     dnp_q_pts = float(np.clip(-float(dnp_prob or 0) * 12.0, -8.0, 0.0))
     score += dnp_q_pts
     components["dnp_prob"] = round(dnp_q_pts, 1)
-
     final = float(np.clip(score, 0.0, 100.0))
     components["total"] = round(final, 1)
     return round(final, 1), components
-
 def sharpness_tier(score):
     if score is None: return "SKIP", "#4A607A"
     s = float(score)
@@ -2519,7 +2370,6 @@ def sharpness_tier(score):
     if s >= 55: return "SOLID",  "#00AAFF"
     if s >= 40: return "LEAN",   "#FFB800"
     return "SKIP", "#FF3358"
-
 def kelly_fraction(p, price):
     try:
         p, o = float(p), float(price)
@@ -2528,7 +2378,6 @@ def kelly_fraction(p, price):
         if b < 1e-9: return 0.0   # guard against floating-point near-zero denominator
         return float(max(0.0, (b*p-q)/b))
     except: return 0.0
-
 # [FIX 8] Hard negative-edge guard
 # [v5.0] Sharpness-aware Kelly: dynamically scales Kelly fraction based on composite
 # sharpness score (0–100). Elite bets (≥70) get full frac_kelly; SKIP (<40) get 0.
@@ -2560,7 +2409,6 @@ def recommended_stake(bankroll, p, price_decimal, frac_kelly, cap_frac=0.05,
     stake = br * f
     if stake <= 0: return 0.0, 0.0, "kelly<=0"
     return float(stake), float(f), "ok"
-
 # ──────────────────────────────────────────────
 # TEAM CONTEXT
 # ──────────────────────────────────────────────
@@ -2598,9 +2446,7 @@ def get_team_context():
         return ctx, league_avg
     except Exception:
         return {}, {}
-
 TEAM_CTX, LEAGUE_CTX = get_team_context()
-
 def get_context_multiplier(opp, market, position):
     def _hash_fallback(o):
         # [AUDIT FIX] Removed ASCII-hash pseudo-randomness (deterministic noise, not signal).
@@ -2631,13 +2477,11 @@ def get_context_multiplier(opp, market, position):
     elif market in ("RA","PA","PR"): mult = 0.25*pace_f+0.20*def_f+0.25*reb_adj+0.20*ast_adj+0.10*pos_f
     else:                   mult = 0.45*pace_f+0.40*def_f+0.15*pos_f
     return float(np.clip(mult, 0.80, 1.30))
-
 def advanced_context_multiplier(player_name, market, opp, teammate_out):
     pos = get_player_position(player_name) or ""
     base = get_context_multiplier(opp, market, pos)
     if teammate_out: base *= 1.05
     return float(base)
-
 def estimate_blowout_risk(team_abbr, opp_abbr, spread_abs=None):
     # [Research-upgraded] Logistic sigmoid model calibrated from historical NBA blowout data.
     # Research finding: p_blowout = 1 / (1 + exp(-0.25 * (|spread| - 11)))
@@ -2658,7 +2502,6 @@ def estimate_blowout_risk(team_abbr, opp_abbr, spread_abs=None):
             p = float(1.0 / (1.0 + math.exp(-0.25 * (implied_spread - 11.0))))
             return float(np.clip(p, 0.04, 0.45))
     return 0.10
-
 # ──────────────────────────────────────────────
 # [UPGRADE NEW] GAME TOTAL + SPREAD FETCHER
 # Fetch game O/U total and spread from Odds API — used for:
@@ -2728,7 +2571,6 @@ def fetch_game_total_and_spread(event_id):
         return total, spread, home_ml, away_ml
     except Exception:
         return None, None, None, None
-
 def compute_implied_team_total(game_total, spread, is_home):
     """
     [v4.0] Compute implied team total from game O/U total and spread.
@@ -2751,12 +2593,10 @@ def compute_implied_team_total(game_total, spread, is_home):
         return float(itt_home), float(itt_away)
     except Exception:
         return None, None
-
 def compute_game_script_mult(game_total, spread_abs, market, team_abbr, opp_abbr,
                               is_home=None, game_spread=None):
     """
     Compute a game-script context multiplier based on the game total and spread.
-
     [v4.0] Now uses IMPLIED TEAM TOTAL (ITT) for the player's team when available.
     ITT is more accurate than raw game total as it accounts for point spread.
     High totals boost scoring, rebounding, and assists props.
@@ -2774,7 +2614,6 @@ def compute_game_script_mult(game_total, spread_abs, market, team_abbr, opp_abbr
                 _player_itt = _itt_home if is_home else _itt_away
                 if _player_itt is not None:
                     _effective_total = float(_player_itt) * 2.0  # rescale to game-total units
-
         if _effective_total is not None:
             t = _effective_total
             # League avg ~220. Each 5 points above/below adjusts by ~1.5%
@@ -2795,13 +2634,11 @@ def compute_game_script_mult(game_total, spread_abs, market, team_abbr, opp_abbr
         return float(np.clip(mult, 0.80, 1.20))
     except Exception:
         return 1.0
-
 # ──────────────────────────────────────────────
 # ODDS API  [FIX 7: retry on 429]
 # ──────────────────────────────────────────────
 def odds_api_key():
     return (st.secrets.get("ODDS_API_KEY","") if hasattr(st,"secrets") else "") or os.getenv("ODDS_API_KEY","")
-
 # [FIX 7] Retry with exponential backoff on 429
 def http_get_json(url, params, timeout=25):
     for attempt in range(4):
@@ -2830,7 +2667,6 @@ def http_get_json(url, params, timeout=25):
         except Exception as e:
             return None, f"{type(e).__name__}: {e}"
     return None, "All retries failed"
-
 def _utc_to_et_date(utc_iso: str) -> str:
     """Convert UTC ISO timestamp to US Eastern date string (YYYY-MM-DD).
     NBA games tip off in Eastern time; Odds API returns UTC. Late games
@@ -2860,11 +2696,9 @@ def _utc_to_et_date(utc_iso: str) -> str:
         return et_dt.date().isoformat()
     except Exception:
         return utc_iso[:10]  # fallback to UTC date
-
 # Lines cache TTL: 2 hours — reduces Odds API usage significantly.
 # Use the Force Refresh button to bypass when needed.
 _LINES_CACHE_TTL = 60 * 60 * 2
-
 @st.cache_data(ttl=_LINES_CACHE_TTL, show_spinner=False)
 def odds_get_events(date_iso=None):
     key = odds_api_key()
@@ -2875,7 +2709,6 @@ def odds_get_events(date_iso=None):
         # Convert UTC commence_time → Eastern date to handle late games (10 PM ET = next UTC day)
         return [ev for ev in data if _utc_to_et_date(ev.get("commence_time") or "") == date_iso], None
     return data, None
-
 # [FIX 14] Week-ahead: fetch events for a date range
 @st.cache_data(ttl=_LINES_CACHE_TTL, show_spinner=False)
 def odds_get_events_range(start_iso, end_iso):
@@ -2889,7 +2722,6 @@ def odds_get_events_range(start_iso, end_iso):
         if start_iso <= ct <= end_iso:
             filtered.append(ev)
     return filtered, None
-
 @st.cache_data(ttl=_LINES_CACHE_TTL, show_spinner=False)
 def odds_get_event_odds(event_id, market_keys, regions=REGION_US):
     key = odds_api_key()
@@ -2900,7 +2732,6 @@ def odds_get_event_odds(event_id, market_keys, regions=REGION_US):
          "oddsFormat":"decimal","dateFormat":"iso"}
     )
     return data, err
-
 @st.cache_data(ttl=60*60*24, show_spinner=False)
 def lookup_player_id(name):
     if not name: return None
@@ -2915,10 +2746,8 @@ def lookup_player_id(name):
         for p in plist:
             if p.get("full_name") == cand[0]: return p.get("id")
     return None
-
 def nba_headshot_url(pid):
     return f"https://cdn.nba.com/headshots/nba/latest/260x190/{pid}.png" if pid else None
-
 @st.cache_data(ttl=60*60*24, show_spinner=False)
 def get_team_maps():
     teams = nba_teams.get_teams()
@@ -2929,16 +2758,13 @@ def get_team_maps():
     for a,tgt in [("la clippers","los angeles clippers"),("la lakers","los angeles lakers")]:
         if normalize_name(tgt) in by_name: by_name[normalize_name(a)] = by_name[normalize_name(tgt)]
     return by_name
-
 def map_team_name_to_abbr(name):
     m = get_team_maps()
     rec = m.get(normalize_name(name))
     return rec["abbr"] if rec else None
-
 @st.cache_data(ttl=60*60*24, show_spinner=False)
 def team_id_to_abbr_map():
     return {int(t["id"]): t["abbreviation"] for t in nba_teams.get_teams()}
-
 @st.cache_data(ttl=60*10, show_spinner=False)
 def nba_scoreboard_games(game_date):
     try:
@@ -2948,7 +2774,6 @@ def nba_scoreboard_games(game_date):
                  "away_team_id":int(r.get("VISITOR_TEAM_ID"))} for _,r in df.iterrows()], None
     except Exception as e:
         return [], f"{type(e).__name__}: {e}"
-
 def opponent_from_team_abbr(team_abbr, game_date):
     games, _ = nba_scoreboard_games(game_date)
     tid_map = team_id_to_abbr_map()
@@ -2958,7 +2783,6 @@ def opponent_from_team_abbr(team_abbr, game_date):
         if ha == team_abbr: return aa, True
         if aa == team_abbr: return ha, False
     return None, None
-
 def _parse_player_prop_outcomes(event_odds, market_key, book_filter=None):
     if not event_odds: return [], None
     eid = event_odds.get("id"); home = event_odds.get("home_team"); away = event_odds.get("away_team")
@@ -3022,7 +2846,6 @@ def _parse_player_prop_outcomes(event_odds, market_key, book_filter=None):
                              "event_id":eid,"home_team":home,"away_team":away,"commence_time":ct})
         return out_rows, None
     return rows, None
-
 def find_player_line_from_events(player_name, market_key, date_iso, book_choice):
     evs, err = odds_get_events(date_iso)
     if err: return None, None, err
@@ -3044,7 +2867,6 @@ def find_player_line_from_events(player_name, market_key, date_iso, book_choice)
             rr = next((x for x in rows if x.get("player_norm")==close[0]), None)
             if rr: return float(rr["line"]), rr, None
     return None, None, "Player/market not found in Odds API props"
-
 def get_sportsbook_choices(date_iso):
     evs, err = odds_get_events(date_iso)
     if err or not evs: return ["consensus"], err
@@ -3057,7 +2879,6 @@ def get_sportsbook_choices(date_iso):
                 b.get("key") for b in odds.get("bookmakers",[]) if b.get("key"))))
             return ["consensus"] + books, None
     return ["consensus"], None
-
 # ──────────────────────────────────────────────
 # SHARP BOOK DIVERGENCE ALERT
 # ──────────────────────────────────────────────
@@ -3095,7 +2916,6 @@ def sharp_divergence_alert(event_id, market_key, player_norm, side, model_side="
                 "confirm": confirm, "fade_model": fade_model, "no_signal": no_signal}
     except Exception:
         return {}
-
 # ──────────────────────────────────────────────
 # CLV TRACKING  [FIX 6: no-vig CLV]
 # ──────────────────────────────────────────────
@@ -3118,7 +2938,6 @@ def fetch_latest_market_for_leg(leg):
         return None, None, None, "player/side not found"
     except Exception as e:
         return None, None, None, f"{type(e).__name__}: {e}"
-
 def apply_clv_update_to_legs(legs):
     errs, out = [], []
     for leg in legs:
@@ -3160,7 +2979,6 @@ def apply_clv_update_to_legs(legs):
         if err: errs.append(f"{leg2.get('player')} {leg2.get('market')}: {err}")
         out.append(leg2)
     return out, errs
-
 # ──────────────────────────────────────────────
 # USAGE RATE FROM BOX SCORE
 # ──────────────────────────────────────────────
@@ -3178,7 +2996,6 @@ def compute_usage_rate(game_log_df, n_games=10):
         return float((fga + 0.44*fta + tov).mean())
     except Exception:
         return None
-
 # ──────────────────────────────────────────────
 # [AUDIT IMPROVEMENT] USAGE TREND DETECTOR (WALLY PIPP EFFECT)
 # Compares L5 usage vs L20 usage to detect rising/falling role in team offense.
@@ -3193,7 +3010,6 @@ def compute_usage_trend(game_log_df, n_recent=5, n_baseline=20, market="Points")
     """
     [AUDIT IMPROVEMENT] Detect rising/falling usage trend (Wally Pipp effect).
     Returns (usage_trend_mult, usage_trend_label, l5_usage, l20_usage).
-
     usage_trend_mult: float multiplier for scoring/volume props
       >1.0 = usage trending up (positive signal for Points/FGM/PRA)
       <1.0 = usage declining (negative signal)
@@ -3240,7 +3056,6 @@ def compute_usage_trend(game_log_df, n_recent=5, n_baseline=20, market="Points")
         return mult, label, l5_usage, l20_usage
     except Exception:
         return 1.0, "Avg", None, None
-
 # ──────────────────────────────────────────────
 # [v4.0] ON/OFF LINEUP USAGE BOOST
 # When a star teammate is OUT, the player's usage increases by their
@@ -3275,7 +3090,6 @@ def compute_lineup_injury_boost(player_name, team_abbr, out_player_name,
         # Fallback usage estimate based on injured player role
         if out_usage is None:
             out_usage = 18.0  # league avg starter usage
-
         # How much of injured player's usage does OUR player absorb?
         # Research: ~35-45% goes to closest positional match,
         # ~20-30% distributed across other players.
@@ -3301,7 +3115,6 @@ def compute_lineup_injury_boost(player_name, team_abbr, out_player_name,
         return boost_mult, label
     except Exception:
         return 1.05, "Lineup Boost (Fallback)"
-
 # ──────────────────────────────────────────────
 # PACE-ADJUSTED STAT SERIES
 # ──────────────────────────────────────────────
@@ -3322,7 +3135,6 @@ def compute_pace_adjusted_series(stat_series, opp_team):
         return stat_series * adj_factor
     except Exception:
         return stat_series
-
 # [v5.0] Game-specific pace multiplier from O/U game total.
 # Voulgaris method: game total is the single best environmental signal for scoring props.
 # O/U 230+ = high-pace game → props hit more. O/U 205 = grind = props hit less.
@@ -3345,7 +3157,6 @@ def compute_game_total_pace_mult(game_total, market):
         return float(np.clip(1.0 + raw_adj, 0.92, 1.08))
     except Exception:
         return 1.0
-
 # ──────────────────────────────────────────────
 # PER-POSITION DEFENSIVE GRADES  (one call, all teams)
 # ──────────────────────────────────────────────
@@ -3368,16 +3179,13 @@ def _fetch_positional_def_full(position_bucket):
         return team_map, league_avg
     except Exception:
         return {}, None
-
 def get_opp_positional_pts_allowed(opp_abbr, position_bucket):
     """Returns (opp_pts_allowed, league_avg) using cached bulk table."""
     team_map, league_avg = _fetch_positional_def_full(position_bucket)
     opp = str(opp_abbr or "").upper()
     return team_map.get(opp), league_avg
-
 def positional_def_multiplier(opp_abbr, position_bucket, market):
     """Return a multiplier based on opponent's positional defensive strength.
-
     [AUDIT UPGRADE] Extended to Rebounds, Assists, Blocks, Steals, Stocks:
     - Scoring: full PTS_ALLOWED ratio impact (caps ±18%)
     - Rebounding: bigs dominate, so positional reb defense matters (caps ±10%)
@@ -3414,16 +3222,13 @@ def positional_def_multiplier(opp_abbr, position_bucket, market):
         return float(np.clip(scaled_ratio, lo, hi))
     except Exception:
         return 1.0
-
 # ──────────────────────────────────────────────
 # INJURY REPORT  (ESPN public API — works every day, not just game days)
 # ──────────────────────────────────────────────
 _ESPN_INJURY_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
-
 @st.cache_data(ttl=60*15, show_spinner=False)
 def fetch_injury_report():
     """Fetch NBA injury report from ESPN (primary) with NBA API fallback.
-
     Returns:
         dict: {team_abbr_upper: [{"player": str, "status": str, "reason": str}, ...]}
         AND sets st.session_state["injury_team_map"] = {team_abbr: [player_name, ...]} for OUT/DOUBTFUL only.
@@ -3453,7 +3258,6 @@ def fetch_injury_report():
                         })
     except Exception:
         pass
-
     # NBA API fallback (only on game days)
     if not out:
         try:
@@ -3470,9 +3274,7 @@ def fetch_injury_report():
                     })
         except Exception:
             pass
-
     return out
-
 # ──────────────────────────────────────────────
 # [UPGRADE 9] ROTOWIRE NEWS SCRAPER
 # ──────────────────────────────────────────────
@@ -3514,7 +3316,6 @@ def fetch_rotowire_news():
         return rows[:80], None
     except Exception as ex:
         return [], f"{type(ex).__name__}: {ex}"
-
 def build_injury_team_map(injury_dict):
     """Build {team_abbr: [player_name_lower]} for OUT/DOUBTFUL players only — used for auto key_teammate_out."""
     result = {}
@@ -3524,7 +3325,6 @@ def build_injury_team_map(injury_dict):
         if out_players:
             result[str(team).upper()] = out_players
     return result
-
 # ──────────────────────────────────────────────
 # DD / TD PROBABILITY
 # ──────────────────────────────────────────────
@@ -3542,7 +3342,6 @@ def compute_dd_prob(game_log_df, n_games=10):
         return float(dd / len(df)) if len(df) > 0 else None
     except Exception:
         return None
-
 def compute_td_prob(game_log_df, n_games=10):
     """Historical frequency of triple-doubles from game log."""
     if game_log_df is None or game_log_df.empty:
@@ -3557,15 +3356,21 @@ def compute_td_prob(game_log_df, n_games=10):
         return float(td / len(df)) if len(df) > 0 else None
     except Exception:
         return None
-
 # ──────────────────────────────────────────────
 # PRIZEPICKS INGESTION
 # ──────────────────────────────────────────────
 PRIZEPICKS_API = "https://api.prizepicks.com/projections"
+_PP_NBA_LEAGUE_PREFIXES = ("NBA",)  # matches "NBA", "NBA 1Q", "NBA 1H", "NBA 2H", "NBA_1Q", etc.
+
+def _pp_league_is_nba(league_str: str) -> bool:
+    """Return True if the league string is any NBA variant from PrizePicks API."""
+    s = re.sub(r"[\s_\-\(\)]+", " ", str(league_str or "").upper()).strip()
+    return any(s == p or s.startswith(p + " ") or s.startswith(p + "_") for p in _PP_NBA_LEAGUE_PREFIXES)
 
 def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")):
     """Parse PrizePicks JSON response into list of prop dicts.
     Pass league_filter=None to accept all leagues (e.g. when user pastes full-site JSON).
+    Uses fuzzy NBA league matching so "NBA (1H)", "NBA_1Q", "NBA2H" etc. all pass.
     """
     _PP_VALID_TYPES = {"projection", "new_player_projection", "boardprojection"}
     included = {item["id"]: item for item in data.get("included", []) if isinstance(item, dict) and "id" in item}
@@ -3580,8 +3385,8 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
         if _type not in _PP_VALID_TYPES and not _has_fields:
             continue
         if league_filter:
-            league = str(attrs.get("league", "") or "").upper()
-            if league and league not in league_filter:
+            league = str(attrs.get("league", "") or "")
+            if league and not _pp_league_is_nba(league):
                 continue
         rels = proj.get("relationships", {}) or {}
         player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
@@ -3610,11 +3415,9 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
             except (TypeError, ValueError):
                 pass
     return rows
-
 def _parse_pp_response_all(data):
     """Parse PP JSON accepting all leagues — used when user pastes full-site JSON."""
     return _parse_pp_response(data, league_filter=None)
-
 def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """Make one PrizePicks API request.
     Tries curl_cffi (Chrome TLS impersonation) → cloudscraper → plain requests.
@@ -3656,7 +3459,6 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                 v = v.strip().encode("latin-1", errors="ignore").decode("latin-1")
                 if k:
                     cookie_dict[k] = v
-
     # ── Attempt 1: curl_cffi Chrome TLS impersonation (bypasses PerimeterX) ──
     try:
         from curl_cffi import requests as cffi_requests
@@ -3672,7 +3474,6 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         pass
     except Exception:
         pass
-
     # ── Attempt 2: cloudscraper (handles Cloudflare JS challenges) ──
     try:
         import cloudscraper
@@ -3687,7 +3488,6 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         pass
     except Exception:
         pass
-
     # ── Attempt 3: plain requests (works locally, often blocked on cloud IPs) ──
     try:
         r = requests.get(url, params=params, headers=headers,
@@ -3695,7 +3495,6 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         return r, None
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
-
 def _pp_fetch_one(per_page, cookies_str, single_stat):
     """Fetch one PP request with retry on 429. Returns (rows, error)."""
     for attempt in range(3):
@@ -3725,14 +3524,12 @@ def _pp_fetch_one(per_page, cookies_str, single_stat):
             return [], f"Parse error: {e}"
         return rows, None
     return [], None
-
 @st.cache_data(ttl=60*10, show_spinner=False)
 def _fetch_prizepicks_lines_cached(cookies_str=""):
     """Fetch both single-stat AND combo/specialty markets and merge."""
     all_rows = []
     seen = set()
     last_err = None
-
     for single_stat in ("true", "false"):  # true=standard, false=combo/specialty
         for per_page in (500, 250):
             rows, err = _pp_fetch_one(per_page, cookies_str, single_stat)
@@ -3749,11 +3546,9 @@ def _fetch_prizepicks_lines_cached(cookies_str=""):
                     all_rows.append(row)
             if rows:
                 break  # got results for this single_stat, no need to try smaller per_page
-
     if all_rows:
         return all_rows, None
     return [], last_err or "No NBA props found — slate may not be posted yet"
-
 def fetch_prizepicks_lines():
     cookies_str = st.session_state.get("pp_cookies", "")
     # ── 0. Check relay URL first (local relay script or ngrok tunnel) ──
@@ -3787,21 +3582,18 @@ def fetch_prizepicks_lines():
         _fetch_prizepicks_lines_cached.clear()
         st.session_state["_pp_last_cookies_used"] = cookies_str
     return _fetch_prizepicks_lines_cached(cookies_str=cookies_str)
-
 # ──────────────────────────────────────────────
 # PP AUTO-FETCH BACKGROUND ENGINE
 # Runs a daemon thread that fetches PP lines on a configurable interval.
 # Works from a local/residential IP; for Streamlit Cloud use pp_relay.py + ngrok.
 # ──────────────────────────────────────────────
 _PP_DISK_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".pp_lines_cache.json")
-
 def _save_pp_disk_cache(rows: list):
     try:
         with open(_PP_DISK_CACHE, "w") as f:
             json.dump({"ts": time.time(), "rows": rows}, f)
     except Exception:
         pass
-
 def _load_pp_disk_cache(max_age_sec: int = 1800):
     try:
         with open(_PP_DISK_CACHE) as f:
@@ -3812,23 +3604,26 @@ def _load_pp_disk_cache(max_age_sec: int = 1800):
     except Exception:
         pass
     return None, None
+# [AUDIT FIX] Module-level singleton for PP background fetcher state.
+# Previously _pp_auto_state() returned a new dict every call, breaking singleton semantics:
+# thread tracking, lock sharing, and stop_evt coordination all failed silently,
+# causing unbounded thread spawning and no actual shared state between reruns.
+_PP_AUTO_STATE: dict = {
+    "rows": [],
+    "ts": 0.0,
+    "err": None,
+    "cookies": "",
+    "relay_url": "",
+    "enabled": False,
+    "interval": 600,
+    "lock": threading.Lock(),
+    "thread": None,
+    "stop_evt": threading.Event(),
+}
 
-@st.cache_resource
 def _pp_auto_state() -> dict:
-    """Singleton state dict shared across all sessions and reruns."""
-    return {
-        "rows": [],
-        "ts": 0.0,
-        "err": None,
-        "cookies": "",
-        "relay_url": "",
-        "enabled": False,
-        "interval": 600,
-        "lock": threading.Lock(),
-        "thread": None,
-        "stop_evt": threading.Event(),
-    }
-
+    """Return the module-level singleton state dict for the PP background fetcher."""
+    return _PP_AUTO_STATE
 def _pp_auto_loop(state: dict):
     """Background daemon: fetch PP lines every `interval` seconds."""
     while True:
@@ -3873,7 +3668,6 @@ def _pp_auto_loop(state: dict):
         except Exception as e:
             with state["lock"]:
                 state["err"] = str(e)
-
 def _ensure_pp_auto_thread():
     state = _pp_auto_state()
     if state.get("thread") and state["thread"].is_alive():
@@ -3881,7 +3675,6 @@ def _ensure_pp_auto_thread():
     t = threading.Thread(target=_pp_auto_loop, args=(state,), daemon=True, name="pp_auto_fetcher")
     state["thread"] = t
     t.start()
-
 def set_pp_auto_fetch(enabled: bool, interval_sec: int = 600, cookies: str = "", relay_url: str = ""):
     """Enable/disable the background fetcher and trigger an immediate fetch."""
     state = _pp_auto_state()
@@ -3893,7 +3686,6 @@ def set_pp_auto_fetch(enabled: bool, interval_sec: int = 600, cookies: str = "",
     if enabled:
         _ensure_pp_auto_thread()
         state["stop_evt"].set()  # poke thread to fetch immediately
-
 def get_pp_auto_lines():
     """Return (rows, age_sec, err) from background state or disk cache."""
     state = _pp_auto_state()
@@ -3907,7 +3699,6 @@ def get_pp_auto_lines():
     if disk_rows:
         return disk_rows, disk_age, err
     return [], None, err
-
 # ──────────────────────────────────────────────
 # UNDERDOG INGESTION
 # ──────────────────────────────────────────────
@@ -3925,7 +3716,6 @@ _UD_HEADERS = {
 }
 # Basketball sport IDs that Underdog may use (numeric or string)
 _UD_BASKETBALL_SPORT_IDS = {"nba", "basketball", "5", "4", "nba_basketball", "basketball_nba", ""}
-
 @st.cache_data(ttl=60*60*2, show_spinner=False)
 def _fetch_underdog_lines_cached(cookies_str=""):
     """Inner cached fetch — call via fetch_underdog_lines() which clears cache first."""
@@ -4000,7 +3790,6 @@ def _fetch_underdog_lines_cached(cookies_str=""):
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
     return [], last_err
-
 def fetch_underdog_lines():
     """Clear cache then fetch fresh Underdog lines using any saved cookies."""
     cookies_str = st.session_state.get("ud_cookies", "")
@@ -4008,50 +3797,106 @@ def fetch_underdog_lines():
         _fetch_underdog_lines_cached.clear()
         st.session_state["_ud_last_cookies_used"] = cookies_str
     return _fetch_underdog_lines_cached(cookies_str=cookies_str)
-
 def map_platform_stat_to_market(stat_type):
-    """Map PrizePicks/Underdog stat label to internal market name."""
+    """Map PrizePicks/Underdog stat label to internal market name.
+    Handles all known PP API stat_type strings including combo, specialty,
+    half/quarter, shooting volume, and fantasy markets.
+    """
     mapping = {
-        # Standard
-        "Points": "Points", "Pts": "Points",
-        "Rebounds": "Rebounds", "Reb": "Rebounds", "Total Rebounds": "Rebounds",
-        "Assists": "Assists", "Ast": "Assists",
+        # ── Standard ──────────────────────────────────────────────────────
+        "Points": "Points", "Pts": "Points", "PTS": "Points",
+        "Rebounds": "Rebounds", "Reb": "Rebounds", "REB": "Rebounds",
+        "Total Rebounds": "Rebounds", "Rebs": "Rebounds",
+        "Assists": "Assists", "Ast": "Assists", "AST": "Assists",
+        "Assts": "Assists",
+        # 3PM — all PrizePicks API variants
         "3-Pointers Made": "3PM", "3 Pointers Made": "3PM", "3PM": "3PM",
-        # Combo
-        "Pts+Reb+Ast": "PRA", "Points+Rebounds+Assists": "PRA",
-        "Pts+Reb": "PR", "Points+Rebounds": "PR",
-        "Pts+Ast": "PA", "Points+Assists": "PA",
-        "Reb+Ast": "RA", "Rebounds+Assists": "RA",
-        # Defense
+        "3-PT Made": "3PM", "3PT Made": "3PM", "3-Pt Made": "3PM",
+        "3 PT Made": "3PM", "Three Pointers Made": "3PM",
+        "3-Point Field Goals Made": "3PM",
+        # ── Combo ─────────────────────────────────────────────────────────
+        "Pts+Reb+Ast": "PRA", "Points+Rebounds+Assists": "PRA", "PRA": "PRA",
+        "Pts + Reb + Ast": "PRA", "Points + Rebounds + Assists": "PRA",
+        "Pts+Reb+Ast (PRA)": "PRA",
+        "Pts+Reb": "PR", "Points+Rebounds": "PR", "PR": "PR",
+        "Pts + Reb": "PR", "Points + Rebounds": "PR",
+        "Pts+Ast": "PA", "Points+Assists": "PA", "PA": "PA",
+        "Pts + Ast": "PA", "Points + Assists": "PA",
+        "Reb+Ast": "RA", "Rebounds+Assists": "RA", "RA": "RA",
+        "Reb + Ast": "RA", "Rebounds + Assists": "RA",
+        # ── Defense ───────────────────────────────────────────────────────
         "Blocked Shots": "Blocks", "Blocks": "Blocks", "Blk": "Blocks",
-        "Steals": "Steals", "Stl": "Steals",
-        "Turnovers": "Turnovers", "Tov": "Turnovers",
-        "Blks+Stls": "Stocks", "Stocks": "Stocks",
-        # Shooting volume (PP specialty markets)
-        "Field Goals Made": "FGM", "FGM": "FGM",
-        "Field Goals Attempted": "FGA", "FGA": "FGA",
+        "BLK": "Blocks", "Blks": "Blocks", "Block": "Blocks",
+        "Blocked": "Blocks",
+        "Steals": "Steals", "Stl": "Steals", "STL": "Steals",
+        "Steal": "Steals", "Stls": "Steals",
+        "Turnovers": "Turnovers", "Tov": "Turnovers", "TOV": "Turnovers",
+        "Turnover": "Turnovers", "TOs": "Turnovers",
+        # Stocks — all variants
+        "Blks+Stls": "Stocks", "Stocks": "Stocks", "Blk+Stl": "Stocks",
+        "Blocks+Steals": "Stocks", "Blks + Stls": "Stocks",
+        "Blocks + Steals": "Stocks", "Stls+Blks": "Stocks",
+        "Steals+Blocks": "Stocks", "Stl+Blk": "Stocks",
+        # ── Shooting volume (PP specialty) ────────────────────────────────
+        "Field Goals Made": "FGM", "FGM": "FGM", "FG Made": "FGM",
+        "Field Goals Attempted": "FGA", "FGA": "FGA", "FG Attempted": "FGA",
+        "FG Attempts": "FGA",
         "3-Pt Attempts": "3PA", "3PA": "3PA", "3-Point Attempts": "3PA",
-        "Free Throws Made": "FTM", "FTM": "FTM",
-        "Free Throws Attempted": "FTA", "FTA": "FTA",
-        # Fantasy / combo
+        "3 Pt Attempts": "3PA", "3PT Attempts": "3PA",
+        "Three Point Attempts": "3PA", "3-Point Field Goals Attempted": "3PA",
+        "Free Throws Made": "FTM", "FTM": "FTM", "FT Made": "FTM",
+        "Free Throws Attempted": "FTA", "FTA": "FTA", "FT Attempted": "FTA",
+        "FT Attempts": "FTA",
+        # ── Fantasy / DFS ─────────────────────────────────────────────────
         "Fantasy Score": "Fantasy Score", "Fantasy Points": "Fantasy Score",
-        # Binary / special
+        "DFS Points": "Fantasy Score", "FP": "Fantasy Score",
+        # ── Binary / special ──────────────────────────────────────────────
         "Double Double": "Double Double", "Double-Double": "Double Double",
+        "Dbl Dbl": "Double Double", "DD": "Double Double",
         "Triple Double": "Triple Double", "Triple-Double": "Triple Double",
-        # Half / quarter lines
-        "H1 Points": "H1 Points", "H2 Points": "H2 Points",
-        "H1 Rebounds": "H1 Rebounds", "H2 Rebounds": "H2 Rebounds",
-        "H1 Assists": "H1 Assists",
-        "Q1 Points": "Q1 Points", "Q1 Rebounds": "Q1 Rebounds", "Q1 Assists": "Q1 Assists",
-        "1st Half Points": "H1 Points", "2nd Half Points": "H2 Points",
+        "Trip Dbl": "Triple Double", "TD": "Triple Double",
+        # ── 1st Half ──────────────────────────────────────────────────────
+        "H1 Points": "H1 Points", "1H Points": "H1 Points",
+        "1st Half Points": "H1 Points", "First Half Points": "H1 Points",
+        "H1 Pts": "H1 Points", "1H Pts": "H1 Points",
+        "H1 Rebounds": "H1 Rebounds", "1H Rebounds": "H1 Rebounds",
+        "1st Half Rebounds": "H1 Rebounds", "H1 Reb": "H1 Rebounds",
+        "H1 Assists": "H1 Assists", "1H Assists": "H1 Assists",
+        "1st Half Assists": "H1 Assists", "H1 Ast": "H1 Assists",
+        "H1 3PM": "H1 3PM", "1H 3PM": "H1 3PM",
+        "1st Half 3-Pointers Made": "H1 3PM", "H1 3-Pointers Made": "H1 3PM",
+        "H1 PRA": "H1 PRA", "1H PRA": "H1 PRA",
+        "1st Half PRA": "H1 PRA", "H1 Pts+Reb+Ast": "H1 PRA",
+        # ── 2nd Half ──────────────────────────────────────────────────────
+        "H2 Points": "H2 Points", "2H Points": "H2 Points",
+        "2nd Half Points": "H2 Points", "Second Half Points": "H2 Points",
+        "H2 Pts": "H2 Points", "2H Pts": "H2 Points",
+        "H2 Rebounds": "H2 Rebounds", "2H Rebounds": "H2 Rebounds",
+        "2nd Half Rebounds": "H2 Rebounds", "H2 Reb": "H2 Rebounds",
+        "H2 Assists": "H2 Assists", "2H Assists": "H2 Assists",
+        "2nd Half Assists": "H2 Assists", "H2 Ast": "H2 Assists",
+        "H2 PRA": "H2 PRA", "2H PRA": "H2 PRA",
+        "2nd Half PRA": "H2 PRA", "H2 Pts+Reb+Ast": "H2 PRA",
+        # ── 1st Quarter ───────────────────────────────────────────────────
+        "Q1 Points": "Q1 Points", "1Q Points": "Q1 Points",
+        "1st Quarter Points": "Q1 Points", "Q1 Pts": "Q1 Points",
+        "Q1 Rebounds": "Q1 Rebounds", "1Q Rebounds": "Q1 Rebounds",
+        "1st Quarter Rebounds": "Q1 Rebounds", "Q1 Reb": "Q1 Rebounds",
+        "Q1 Assists": "Q1 Assists", "1Q Assists": "Q1 Assists",
+        "1st Quarter Assists": "Q1 Assists", "Q1 Ast": "Q1 Assists",
     }
     s = str(stat_type).strip()
     s_lower = s.lower()
     for k, v in mapping.items():
         if k.lower() == s_lower:
             return v
+    # Fuzzy fallback: normalize whitespace/separators and retry
+    s_norm = re.sub(r"[\s\-\+]+", " ", s_lower).strip()
+    for k, v in mapping.items():
+        k_norm = re.sub(r"[\s\-\+]+", " ", k.lower()).strip()
+        if k_norm == s_norm:
+            return v
     return None
-
 # ──────────────────────────────────────────────
 # LINE SHOPPING — BEST AVAILABLE PRICE
 # ──────────────────────────────────────────────
@@ -4077,12 +3922,10 @@ def get_best_available_price(event_id, market_key, player_norm, side):
         return best_price, best_book
     except Exception:
         return None, None
-
 # ──────────────────────────────────────────────
 # PROP LINE HISTORY DATABASE
 # ──────────────────────────────────────────────
 PROP_HISTORY_PATH = "prop_line_history.jsonl"
-
 def save_prop_line(player, market, line, price, book, event_id=None):
     """Append a prop line snapshot to JSONL history file."""
     try:
@@ -4095,7 +3938,6 @@ def save_prop_line(player, market, line, price, book, event_id=None):
             }) + "\n")
     except Exception:
         pass
-
 # ──────────────────────────────────────────────
 # [UPGRADE 10] OPENING LINE CAPTURE
 # ──────────────────────────────────────────────
@@ -4115,7 +3957,6 @@ def save_opening_line(player_norm, market_key, side, line, price):
                 json.dump(data, f)
     except Exception as ex:
         logging.warning(f"save_opening_line: {ex}")
-
 def get_opening_line(player_norm, market_key, side):
     """Return (opening_line, opening_price) or (None, None) if not recorded."""
     try:
@@ -4131,14 +3972,12 @@ def get_opening_line(player_norm, market_key, side):
     except Exception as ex:
         logging.warning(f"get_opening_line: {ex}")
     return None, None
-
 def clear_opening_lines():
     try:
         if os.path.exists(OPENING_LINES_PATH):
             os.remove(OPENING_LINES_PATH)
     except Exception:
         pass
-
 # ──────────────────────────────────────────────
 # WATCHLIST PERSISTENCE
 # ──────────────────────────────────────────────
@@ -4151,7 +3990,6 @@ def load_watchlist(uid):
     except Exception:
         pass
     return []
-
 def save_watchlist(uid, players):
     path = WATCHLIST_PATH_TPL.format(uid=re.sub(r"[^a-zA-Z0-9_-]", "_", uid or "default"))
     try:
@@ -4159,7 +3997,6 @@ def save_watchlist(uid, players):
             json.dump(list(players), f)
     except Exception:
         pass
-
 def load_prop_line_history(player=None, market=None, limit=500):
     """Load prop line history filtered by player/market."""
     try:
@@ -4180,7 +4017,6 @@ def load_prop_line_history(player=None, market=None, limit=500):
         return pd.DataFrame(rows[-limit:]) if rows else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
-
 # ──────────────────────────────────────────────
 # DISCORD / TELEGRAM ALERTS
 # ──────────────────────────────────────────────
@@ -4193,7 +4029,6 @@ def send_discord_alert(webhook_url, message):
         return True, None
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
-
 def send_telegram_alert(bot_token, chat_id, message):
     if not bot_token or not chat_id:
         return False, "Token/chat_id missing"
@@ -4207,7 +4042,6 @@ def send_telegram_alert(bot_token, chat_id, message):
         return True, None
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
-
 def format_edge_alert(leg):
     p_cal = leg.get("p_cal") or 0
     ev = (leg.get("ev_adj_pct") or (leg.get("ev_adj", 0) * 100 if leg.get("ev_adj") else 0))
@@ -4220,7 +4054,6 @@ def format_edge_alert(leg):
         f"**{leg.get('player','?')}** — {leg.get('market','?')} O{leg.get('line','?')}\n"
         f"P: {p_cal*100:.1f}% | EV: {ev:.1f}% | {leg.get('edge_cat','')}"
     )
-
 # ──────────────────────────────────────────────
 # [UPGRADE 23] ALERT DIGEST FORMATTER
 # ──────────────────────────────────────────────
@@ -4239,7 +4072,6 @@ def format_digest_message(edges, as_of=None):
             f"P: {p:.0f}% | EV: {ev:+.1f}% | {leg.get('edge_cat','')}"
         )
     return "\n".join(lines)
-
 # ──────────────────────────────────────────────
 # [UPGRADE 31] CLV LEADERBOARD
 # ──────────────────────────────────────────────
@@ -4279,7 +4111,6 @@ def compute_clv_leaderboard(history_df, top_n=20):
     df = pd.DataFrame(rows)
     df = df.sort_values("clv_price", ascending=False).head(top_n)
     return df.reset_index(drop=True)
-
 # ──────────────────────────────────────────────
 # [UPGRADE 32] PER-BOOK MARKET EFFICIENCY SCORE
 # ──────────────────────────────────────────────
@@ -4321,7 +4152,6 @@ def compute_book_efficiency(history_df):
     result["avg_ev_%"]   = (result["avg_ev"] * 100).round(2)
     result = result[result["bets"] >= 3].sort_values("hit_rate_%", ascending=False)
     return result[["book", "bets", "hit_rate_%", "clv_fav_%", "avg_ev_%"]].reset_index(drop=True)
-
 # ──────────────────────────────────────────────
 # [UPGRADE 34] BAYESIAN PRIOR UPDATE FROM HISTORY
 # ──────────────────────────────────────────────
@@ -4346,7 +4176,6 @@ def compute_history_based_priors(legs_df, position_bucket):
         adj = 1.0 + w_personal * (row["hit_rate"] - 0.50) * 0.25
         base[mkt] = base[mkt] * float(np.clip(adj, 0.88, 1.12))
     return base
-
 # ──────────────────────────────────────────────
 # KELLY PARLAY OPTIMIZER
 # ──────────────────────────────────────────────
@@ -4354,13 +4183,10 @@ def kelly_parlay_optimizer(legs, payout_mult, max_legs=4, bankroll=1000.0, frac_
     """Find best 2-N leg combos using PSD covariance matrix + Gaussian copula MC simulation."""
     from itertools import combinations
     import scipy.stats as _sc
-
     N_SIMS_PARLAY = 3000
-
     valid = [l for l in legs if l.get("gate_ok") and float(l.get("p_cal") or 0) > 0.50]
     if len(valid) < 2:
         return []
-
     # Pre-build full N×N correlation matrix once (avoid redundant pairwise calls in inner loop)
     nv = len(valid)
     full_corr = np.eye(nv)
@@ -4368,19 +4194,16 @@ def kelly_parlay_optimizer(legs, payout_mult, max_legs=4, bankroll=1000.0, frac_
         for _j in range(_i + 1, nv):
             c = float(estimate_player_correlation(valid[_i], valid[_j]) or 0.0)
             full_corr[_i, _j] = full_corr[_j, _i] = c
-
     # H-5 audit fix: derive seed from leg identities so different combos get different draws.
     # Hard-coded 42 caused identical noise patterns across all parlay simulations.
     _seed = hash(tuple(sorted(l.get("player","") + l.get("market","") for l in valid))) % (2**31)
     rng = np.random.default_rng(_seed)
     results = []
-
     for n in range(2, min(max_legs + 1, nv + 1)):
         for combo in combinations(range(nv), n):
             combo_legs = [valid[i] for i in combo]
             probs = np.array([float(l["p_cal"]) for l in combo_legs])
             naive_joint = float(np.prod(probs))
-
             # Extract n×n sub-matrix and make PSD via eigenvalue clipping
             sub_corr = full_corr[np.ix_(list(combo), list(combo))]
             evals, evecs = np.linalg.eigh(sub_corr)
@@ -4391,14 +4214,12 @@ def kelly_parlay_optimizer(legs, payout_mult, max_legs=4, bankroll=1000.0, frac_
             corr_psd = corr_psd / np.outer(_d, _d)
             np.fill_diagonal(corr_psd, 1.0)
             corr_psd = (corr_psd + corr_psd.T) / 2.0
-
             # Gaussian copula MC
             z = rng.multivariate_normal(np.zeros(n), corr_psd, N_SIMS_PARLAY)
             u = _sc.norm.cdf(z)
             hits = u < probs  # shape (N_SIMS_PARLAY, n)
             joint = float(hits.all(axis=1).mean())
             joint = float(np.clip(joint, 1e-6, 1.0))
-
             ev = payout_mult * joint - 1.0
             kelly_f = max(0.0, ev / (payout_mult - 1.0)) if payout_mult > 1 else 0.0
             stake = min(bankroll * frac_kelly * kelly_f, bankroll * 0.05)
@@ -4412,7 +4233,6 @@ def kelly_parlay_optimizer(legs, payout_mult, max_legs=4, bankroll=1000.0, frac_
                 "kelly_stake_$": round(stake, 2),
             })
     return sorted(results, key=lambda x: x["ev_%"], reverse=True)[:25]
-
 # ──────────────────────────────────────────────
 # MONTE CARLO GAME SIMULATION
 # ──────────────────────────────────────────────
@@ -4465,7 +4285,6 @@ def monte_carlo_game_sim(legs, n_sims=20000, payout_mult=3.0):
         }
     except Exception as e:
         return {"error": str(e)}
-
 # ──────────────────────────────────────────────
 # ROLLING BRIER SCORE
 # ──────────────────────────────────────────────
@@ -4488,7 +4307,6 @@ def compute_rolling_brier(legs_df, windows=(25, 50, 100)):
             series.append(float(np.mean((window_d["p_raw"].values.astype(float) - window_d["y"].values.astype(float))**2)))
         result["rolling_series"] = series
     return result
-
 # ──────────────────────────────────────────────
 # ──────────────────────────────────────────────
 # CACHE PRE-WARMER  (eliminates NBA API I/O from threads)
@@ -4504,11 +4322,9 @@ def pre_warm_scanner_caches(candidates, n_games):
     to_warm = [n for n in unique_names if n not in already_warm]
     if not to_warm:
         return set(unique_names)   # everything already cached
-
     # Bulk game logs + bulk position map (each = ONE API call for all players)
     _fetch_bulk_gamelogs()
     _ensure_pid_position_map()
-
     def _warm_one(name):
         try:
             pid = lookup_player_id(name)
@@ -4519,17 +4335,14 @@ def pre_warm_scanner_caches(candidates, n_games):
         except Exception:
             pass
         return None
-
     resolved = set()
     with ThreadPoolExecutor(max_workers=4) as ex:
         for result in ex.map(_warm_one, to_warm):
             if result:
                 resolved.add(result)
-
     already_warm.update(resolved)
     st.session_state["_prewarm_done"] = already_warm
     return resolved
-
 # ══════════════════════════════════════════════
 # v3.0 DEEP AUDIT UPGRADES — ADVANCED SIGNALS
 # Research-backed features targeting professional-grade edge:
@@ -4542,7 +4355,6 @@ def pre_warm_scanner_caches(candidates, n_games):
 # 7. Alt line EV comparison
 # 8. Middle opportunity detection
 # ══════════════════════════════════════════════
-
 # ──────────────────────────────────────────────
 # [v3.0] WIN/LOSS PERFORMANCE SPLIT
 # Sharp bettors know: stars play differently in W vs L.
@@ -4597,7 +4409,6 @@ def compute_win_loss_split(game_log_df, market, expected_win_prob=0.5):
         return factor, label, w_avg, l_avg
     except Exception:
         return 1.0, "N/A", None, None
-
 # ──────────────────────────────────────────────
 # [v3.0] CLUTCH PERFORMANCE FACTOR
 # Players with elite clutch stats see usage spike +20-30% in close games.
@@ -4658,7 +4469,6 @@ def get_clutch_performance_factor(player_id, market, spread_abs=None):
         return factor, label
     except Exception:
         return 1.0, "N/A"
-
 # ──────────────────────────────────────────────
 # [v3.0] QUANTIFIED DNP PROBABILITY SCORE
 # Converts binary DNP flag to a continuous probability (0.0-1.0).
@@ -4711,7 +4521,6 @@ def compute_dnp_probability(game_log_df, injury_status=None, n_games=10):
         return float(dnp_prob), label
     except Exception:
         return 0.05, "Minimal Risk"
-
 # ──────────────────────────────────────────────
 # [v3.0] PROJECTION CONFIDENCE INTERVAL
 # 80% CI gives bettors the realistic range of outcomes.
@@ -4734,7 +4543,6 @@ def compute_projection_ci(mu, sigma, half_factor=1.0):
         return float(lower), float(upper)
     except Exception:
         return None, None
-
 # ──────────────────────────────────────────────
 # [v3.0] FTA ALLOWED BY OPPONENT (FOUL-DRAWING FACTOR)
 # For FTA, FTM, Stocks props: opponent foul rate is critical.
@@ -4784,7 +4592,6 @@ def get_opponent_fta_rate_factor(opp_abbr, market):
         return factor, label
     except Exception:
         return 1.0, "Avg"
-
 # ──────────────────────────────────────────────
 # [AUDIT IMPROVEMENT] OPPONENT TRUE SHOOTING % FACTOR
 # True Shooting % (TS%) = PTS / (2 * (FGA + 0.44*FTA)) measures scoring efficiency.
@@ -4863,7 +4670,6 @@ def get_opponent_ts_pct_factor(opp_abbr, market):
         return factor, label
     except Exception:
         return 1.0, "Avg"
-
 # ──────────────────────────────────────────────
 # [RESEARCH IMPROVEMENT] OPPONENT eFG% FACTOR FOR 3PM/FGM PROPS
 # Effective Field Goal % (eFG%) = (FGM + 0.5*FG3M) / FGA weights 3-pointers
@@ -4938,7 +4744,6 @@ def get_opponent_efg_factor(opp_abbr, market):
         return factor, label
     except Exception:
         return 1.0, "Avg"
-
 # ──────────────────────────────────────────────
 # [AUDIT IMPROVEMENT] PLAYER FREE THROW RATE (FTr) TREND FACTOR
 # FTr = FTA / FGA measures how aggressively a player attacks the rim.
@@ -4989,7 +4794,6 @@ def compute_player_ftr_factor(game_log_df, market, n_recent=5, n_baseline=20):
         return factor, label
     except Exception:
         return 1.0, "Avg"
-
 # ──────────────────────────────────────────────
 # [v3.0] PLAYOFF IMPLICATIONS / TANKING FACTOR
 # Late-season context is one of the most underpriced signals in props.
@@ -5044,7 +4848,6 @@ def get_playoff_implications_factor(team_abbr, game_date, market):
         return float(factor), label
     except Exception:
         return 1.0, "Regular"
-
 # ──────────────────────────────────────────────
 # [v3.0] ALT LINE EV COMPARISON
 # Professional bettors always shop alt lines.
@@ -5086,7 +4889,6 @@ def compute_alt_line_ev(p_cal, price_decimal, line, step=0.5, n_steps=3, sigma=N
         return results
     except Exception:
         return []
-
 # ──────────────────────────────────────────────
 # [v3.0] MIDDLE / LINE SHOPPING DETECTOR
 # When books disagree on a player's line by >=1 unit,
@@ -5132,7 +4934,6 @@ def detect_middle_opportunity(player_name, market_key, event_id):
         return spread >= 1.0, min_line, max_line, round(mid_prob, 3), book_details
     except Exception:
         return False, None, None, None, []
-
 # MAIN PROJECTION ENGINE  [FIX 3: minutes filter]
 # ──────────────────────────────────────────────
 def compute_leg_projection(
@@ -5152,12 +4953,9 @@ def compute_leg_projection(
                 "proj":None,"p_over":None,"p_cal":None,"edge":None,
                 "team":None,"opp":None,"headshot":None,"errors":errors,
                 "player_id":None,"gate_ok":False,"gate_reason":"no player id"}
-
     gldf, gl_errs = fetch_player_gamelog(player_id=player_id, max_games=max(6, n_games+5))
     if gl_errs: errors.extend([f"NBA API: {m}" for m in gl_errs])
-
     gldf_n = gldf.head(n_games) if not gldf.empty else gldf
-
     # [FIX 3] Filter out DNP/garbage-time games (MIN < threshold)
     if not gldf_n.empty and "MIN" in gldf_n.columns:
         try:
@@ -5173,7 +4971,6 @@ def compute_leg_projection(
                     errors.append(f"Excluded {n_excluded} low-minute games (<{MIN_MINUTES_THRESHOLD} min)")
         except Exception:
             pass
-
     # ── Detect special market types ──────────────────────────────
     half_factor = HALF_FACTOR.get(market_name, 1.0)
     is_half_market = market_name in HALF_FACTOR
@@ -5183,9 +4980,7 @@ def compute_leg_projection(
     base_market = market_name
     if is_half_market:
         base_market = (market_name.replace("H1 ","").replace("H2 ","").replace("Q1 ",""))
-
     stat_series = compute_stat_from_gamelog(gldf_n, base_market) if not gldf_n.empty else pd.Series([], dtype=float)
-
     # [AUDIT FIX] For half/Q1 markets: try real per-period boxscore data.
     # If successful, stat_series is replaced with actual H1/H2/Q1 values so
     # CV, skewness, and bootstrap all operate on real half-game distributions.
@@ -5196,7 +4991,6 @@ def compute_leg_projection(
             stat_series = _hg_series
             half_factor = 1.0   # Real half-game data; no scaling needed anywhere
             errors.append(f"Real {market_name} split: {len(_hg_series.dropna())} games from boxscores")
-
     vol_cv, vol_label = compute_volatility(stat_series)
     stat_skew = compute_skewness(stat_series)
     # [AUDIT FIX] Skewness heuristic when n<4: market-type prior so gate isn't fully bypassed
@@ -5206,10 +5000,8 @@ def compute_leg_projection(
         elif base_market in ("Rebounds", "RA", "PR"):
             stat_skew = 0.25   # Mildly right-skewed (occasional bigs blowups)
     rest_mult, rest_days = compute_rest_factor(gldf, game_date)
-
     # [UPGRADE 2] Projected minutes + DNP risk
     proj_minutes, dnp_risk = compute_projected_minutes(gldf_n, n_games=n_games)
-
     # [AUDIT UPGRADE] Per-minute production ratio — strongest signal for injury-replacement props.
     # Compute baseline production/min; prod_mult applied post-shrinkage if proj_minutes diverges.
     _per_min_rate, _ = compute_per_minute_production(gldf_n, base_market if not is_dd_td else "Points", n_games=n_games)
@@ -5225,14 +5017,11 @@ def compute_leg_projection(
                 _hist_avg_minutes = float(_hist_active.mean())
         except Exception:
             pass
-
     # Usage rate signal
     usage_rate = compute_usage_rate(gldf_n, n_games=n_games)
-
     # [AUDIT FIX] B2B flag from rest_days already computed above — remove redundant
     # second call to compute_rest_factor which made the same API call twice.
     b2b_flag = (rest_days == 0)
-
     # Resolve team/opponent
     team_abbr, opp_abbr, is_home_resolved = None, None, is_home
     if not gldf_n.empty:
@@ -5245,12 +5034,10 @@ def compute_leg_projection(
                 pts = matchup.split(" @ ")
                 if len(pts)==2: team_abbr, opp_abbr = pts[0].strip(), pts[1].strip()
         except Exception: pass
-
     if team_abbr and not opp_abbr:
         try:
             opp_abbr, is_home_resolved = opponent_from_team_abbr(team_abbr, game_date)
         except Exception: pass
-
     if meta:
         try:
             home_abbr = map_team_name_to_abbr(meta.get("home_team","") or "")
@@ -5259,7 +5046,6 @@ def compute_leg_projection(
                 if team_abbr == home_abbr: opp_abbr, is_home_resolved = away_abbr, True
                 elif team_abbr == away_abbr: opp_abbr, is_home_resolved = home_abbr, False
         except Exception: pass
-
     # ── Auto key_teammate_out from injury map ─────────────────────
     auto_inj_triggered = False
     auto_inj_player = None
@@ -5274,12 +5060,10 @@ def compute_leg_projection(
                 auto_inj_triggered = True
                 auto_inj_player = op
                 break
-
     ha_mult = compute_home_away_factor(gldf_n, base_market, is_home_resolved)
     # [v4.0] Resolve position early so lineup boost can use pos_bucket
     _pos_str_early = get_player_position(player_name) or ""
     _pos_bucket_early = get_position_bucket(_pos_str_early)
-
     # [v4.0 UPGRADE] Lineup injury boost: now uses compute_lineup_injury_boost for precision.
     # Replaces flat 1.03-1.08 heuristic with usage-rate-scaled absorption model.
     _usage_boost = 1.0
@@ -5302,7 +5086,6 @@ def compute_leg_projection(
     if key_teammate_out:
         ctx_mult *= _usage_boost
     blowout_prob = estimate_blowout_risk(team_abbr, opp_abbr, spread_abs=None)
-
     # [UPGRADE NEW] Fetch game total + spread for accurate blowout risk and game-script context
     _game_total, _game_spread, _home_ml, _away_ml = None, None, None, None
     if meta and meta.get("event_id"):
@@ -5315,42 +5098,32 @@ def compute_leg_projection(
             blowout_prob = estimate_blowout_risk(team_abbr, opp_abbr, spread_abs=abs(float(_game_spread)))
         except Exception:
             pass
-
     # [UPGRADE NEW] Schedule fatigue (3-in-4, 4-in-6)
     _fatigue_mult, _fatigue_label = compute_schedule_fatigue(gldf, game_date)
-
     # [RESEARCH UPGRADE] Rolling 3-game minutes fatigue (CMU: most predictive signal)
     _rolling_min_avg, _rolling_min_mult, _rolling_min_label = compute_rolling_minutes_fatigue(gldf, n_recent=3)
     # Combine with schedule fatigue — take the more severe penalty
     if _rolling_min_mult < _fatigue_mult:
         _fatigue_mult = _rolling_min_mult
         _fatigue_label = _rolling_min_label if _fatigue_label == "Normal" else f"{_fatigue_label}+{_rolling_min_label}"
-
     # [RESEARCH UPGRADE] Both-teams-B2B suppressor
     _both_b2b, _both_b2b_mult = compute_both_teams_b2b(team_abbr, opp_abbr, b2b_flag, game_date)
-
     # [UPGRADE NEW] Opponent fatigue → defensive boost
     _opp_fatigue_mult, _opp_fatigue_label = get_opponent_schedule_fatigue(opp_abbr, game_date)
-
     # [UPGRADE NEW] Game-script multiplier from game total
     _game_script_mult = compute_game_script_mult(_game_total, _game_spread, base_market, team_abbr, opp_abbr,
                                                   is_home=is_home_resolved, game_spread=_game_spread)
-
     # [RESEARCH UPGRADE] Travel fatigue (cross-country B2B is worst case: ~5-7% penalty)
     _travel_mult, _travel_label = compute_travel_fatigue(team_abbr, gldf, game_date, b2b_flag)
-
     # [RESEARCH UPGRADE] L10 rolling DvP — computed after pos_bucket is resolved below
     _dvp_l10_mult, _dvp_l10_label = 1.0, "Avg"  # placeholder; overwritten after pos_bucket computed
-
     # Blowout risk trims expected minutes: high-blowout games see starters sit early.
     # Cap at 12% reduction (blowout_prob=0.80 → ×0.88) to avoid over-penalizing.
     if proj_minutes is not None and blowout_prob is not None and blowout_prob > 0.20:
         blowout_min_adj = 1.0 - min(0.12, (float(blowout_prob) - 0.20) * 0.20)
         proj_minutes = proj_minutes * blowout_min_adj
-
     pos_str = get_player_position(player_name) or ""
     pos_bucket = get_position_bucket(pos_str)
-
     # [AUDIT FIX] Apply position-specific half-game factor when real split data isn't available
     # [v5.0] Pass spread_abs for Voulgaris close-game H2 boost
     if is_half_market and half_factor != 1.0:
@@ -5360,26 +5133,19 @@ def compute_leg_projection(
         half_factor = get_half_factor(market_name, pos_bucket, spread_abs=_spread_for_half,
                                       game_total=_game_total)
         _orig_half_factor = half_factor
-
     # Positional defensive grade multiplier
     pos_def_mult = positional_def_multiplier(opp_abbr, pos_bucket, base_market)
-
     # Pace-adjusted stat series
     pace_adj_series = compute_pace_adjusted_series(stat_series, opp_abbr)
-
     # [UPGRADE 3] Opponent-specific historical factor
     opp_specific_factor, n_vs_opp = compute_opp_specific_factor(gldf_n, opp_abbr, base_market)
-
     # [UPGRADE 5] Hot / cold regime (uses full season log for broader z-score)
     hot_cold_label, hot_cold_z = compute_player_regime_hot_cold(stat_series)
-
     # [RESEARCH UPGRADE] L10 rolling DvP — resolve pos_bucket now that it's computed
     _dvp_l10_mult, _dvp_l10_label = get_dvp_rolling_l10(opp_abbr, pos_bucket, base_market)
-
     # [RESEARCH UPGRADE] Over-rate L10 + mean reversion signal
     _over_rate_l10, _reversion_signal, _reversion_label = compute_over_rate_and_mean_reversion(
         stat_series, float(line))
-
     # [v3.0] Win/Loss performance split
     _expected_win_prob = 0.5
     if _home_ml is not None and _away_ml is not None:
@@ -5394,40 +5160,32 @@ def compute_leg_projection(
             pass
     _wl_factor, _wl_label, _w_avg, _l_avg = compute_win_loss_split(
         gldf_n, base_market, expected_win_prob=_expected_win_prob)
-
     # [v3.0] Clutch performance factor (only for close games)
     _spread_abs_val = abs(float(_game_spread)) if _game_spread is not None else None
     _clutch_factor, _clutch_label = get_clutch_performance_factor(
         player_id, base_market, spread_abs=_spread_abs_val)
-
     # [v3.0] FTA opponent foul rate (for FTA/FTM/Stocks/Points props)
     _fta_factor, _fta_label = get_opponent_fta_rate_factor(opp_abbr, base_market)
-
     # [v3.0] Playoff implications / tanking factor (March-April only)
     _playoff_factor, _playoff_label = get_playoff_implications_factor(team_abbr, game_date, base_market)
-
     # [v3.0] Referee crew foul tendency (FTA/FTM/Stocks/Points — crew_chief passed as None;
     # callers may inject crew_chief_name via meta dict when schedule data is available)
     _crew_chief = None
     if meta:
         _crew_chief = meta.get("crew_chief") or meta.get("referee")
     _ref_factor, _ref_label, _ref_tier = get_referee_foul_factor(_crew_chief, base_market)
-
     # [v3.0] Team-specific HCA factor (VSiN-sourced margins override league avg 3.0)
     _hca_factor, _hca_label = get_team_hca_factor(team_abbr, is_home_resolved, base_market)
-
     # [AUDIT v5.1] Player shooting luck regression (SHAP top-3 signal for scoring props)
     # When TS% L5 significantly deviates from season baseline → regression expected.
     # Uses full gamelog (20 game baseline, 5 game recent window).
     _shoot_luck_mult, _shoot_luck_label = compute_shooting_luck_regression(
         gldf, base_market, n_recent=5, n_season=20)
-
     # [v3.0] Position-specific B2B extra penalty (PubMed 2020: Guards -0.8% extra, Bigs minimal)
     _pos_b2b_mult = 1.0
     if b2b_flag and pos_bucket:
         _pos_b2b_extra = POSITION_B2B_EXTRA_PENALTY.get(pos_bucket, POSITION_B2B_EXTRA_PENALTY["Unknown"])
         _pos_b2b_mult = float(np.clip(1.0 - _pos_b2b_extra, 0.97, 1.0))
-
     # [v3.0] DNP probability score (quantified, replaces binary flag for stake scaling)
     # Get player's injury status from injury map if available
     _inj_status_player = None
@@ -5441,7 +5199,6 @@ def compute_leg_projection(
                 break
     _dnp_prob_score, _dnp_prob_label = compute_dnp_probability(
         gldf_n, injury_status=_inj_status_player, n_games=n_games)
-
     # DD / TD: short-circuit to frequency-based probability
     if is_dd_td:
         prob_fn = compute_dd_prob if market_name == "Double Double" else compute_td_prob
@@ -5485,7 +5242,6 @@ def compute_leg_projection(
                 pass
         if p_over_raw is None:
             errors.append(f"Insufficient history (need >=4 games, have {len(stat_series.dropna())})")
-
     n_valid = int(stat_series.dropna().count())
     # [AUDIT FIX] Half-market with real boxscore data: scale positional prior by _orig_half_factor
     # so shrinkage operates in half-game units (not full-game units)
@@ -5502,21 +5258,16 @@ def compute_leg_projection(
         _custom_priors_session = st.session_state.get("_custom_priors")
         mu_shrunk = bayesian_shrink(mu_raw, n_valid, base_market, pos_bucket,
                                     custom_priors=_custom_priors_session) if mu_raw is not None else None
-
     # [AUDIT IMPROVEMENT] Opponent True Shooting % efficiency factor (SHAP top-signal for Points props)
     _ts_factor, _ts_label = get_opponent_ts_pct_factor(opp_abbr, base_market)
-
     # [RESEARCH IMPROVEMENT] Opponent eFG% factor for 3PM/FGM props (distinct from TS%)
     # TS% → scoring/FTA markets; eFG% → pure shooting volume markets (no double-counting)
     _efg_factor, _efg_label = get_opponent_efg_factor(opp_abbr, base_market)
-
     # [AUDIT IMPROVEMENT] Usage trend: L5 vs L20 usage (Wally Pipp / role-change signal)
     _usage_trend_mult, _usage_trend_label, _l5_usage, _l20_usage = compute_usage_trend(
         gldf_n, n_recent=5, n_baseline=20, market=base_market)
-
     # [AUDIT IMPROVEMENT] Player FTr trend: foul-drawing rate vs baseline (L5 vs L20)
     _ftr_factor, _ftr_label = compute_player_ftr_factor(gldf_n, base_market, n_recent=5, n_baseline=20)
-
     # [AUDIT v5.1] Per-minute production scaling: if proj_minutes significantly differs
     # from historical average, scale projection proportionally via per-minute rate.
     # This is the primary signal for injury-replacement props (CMU/EVAnalytics research).
@@ -5536,7 +5287,6 @@ def compute_leg_projection(
             _minutes_prod_mult = float(np.clip(_dampened_ratio, 0.70, 1.30))
             _dir = "+" if _min_ratio > 1.0 else ""
             _minutes_prod_label = f"Min Adj: proj {proj_minutes:.0f} vs hist {_hist_avg_minutes:.0f} ({_dir}{(_min_ratio-1)*100:.0f}%)"
-
     # Apply half factor and positional D to projection — include opp-specific factor + all new multipliers
     # [v3.0] Added: wl_factor, clutch_factor, fta_factor, playoff_factor, ref_factor, hca_factor, pos_b2b_mult
     # [AUDIT] Added: ts_factor (opp TS%), efg_factor (opp eFG%), usage_trend_mult (Wally Pipp), ftr_factor
@@ -5572,11 +5322,9 @@ def compute_leg_projection(
     else:
         proj_full = None
     proj = proj_full * half_factor if (proj_full is not None and is_half_market) else proj_full
-
     # [v3.0] Confidence interval for the projection
     _ci_lower, _ci_upper = compute_projection_ci(mu_shrunk, sigma, half_factor=half_factor)
     regime_label, regime_score = classify_regime(vol_cv, blowout_prob, ctx_mult)
-
     price_decimal = None
     try:
         if meta and meta.get("price") is not None:
@@ -5585,10 +5333,8 @@ def compute_leg_projection(
             price_decimal = 1.909  # Manual line: assume standard -110 so EV/gate compute properly
     except Exception: pass
     p_implied = implied_prob_from_decimal(price_decimal)
-
     # Determine side early for skewness gate
     side_str = (meta.get("side") if meta else "Over") or "Over"
-
     # [UPGRADE 6] Over/Under asymmetry: model the correct side independently
     _is_under = "under" in str(side_str).lower()
     p_model = (1.0 - p_over_raw if _is_under and p_over_raw is not None else p_over_raw)
@@ -5599,9 +5345,7 @@ def compute_leg_projection(
         p_raw = float(np.clip(w_eff*p_model + (1.0-w_eff)*p_implied, 1e-4, 1-1e-4))
     else:
         p_raw = p_model
-
     p_cal = p_raw
-
     # [AUDIT FIX] Mean reversion nudge — stored but NOT yet applied here.
     # The streak signal (applied later at line ~5475) also uses recent-game divergence.
     # Applying BOTH would double-count the regression signal (±0.06 instead of ±0.04).
@@ -5612,7 +5356,6 @@ def compute_leg_projection(
         _is_over_side = "under" not in str(side_str).lower()
         _rev_nudge = (_reversion_signal if _is_over_side else -_reversion_signal) if _reversion_signal != 0.0 else 0.0
         _combined_streak_reversion_nudge = _rev_nudge   # will be combined with streak nudge below
-
     ev_raw = ev_per_dollar(p_cal, price_decimal) if (p_cal is not None and price_decimal is not None) else None
     pen = volatility_penalty_factor(vol_cv)
     # [AUDIT FIX] Asymmetric vol penalty: adjust based on skew-side alignment
@@ -5637,7 +5380,6 @@ def compute_leg_projection(
         gate_reason = f"{_prev_reason} + {_chaotic_reason}" if _prev_reason else _chaotic_reason
         gate_ok = False
     if not gate_ok: ev_adj = None
-
     stake_dollars, stake_frac, stake_reason = 0.0, 0.0, "gated"
     # [AUDIT FIX] Minimum EV threshold: noise below 2% is not worth staking
     # [AUDIT FIX 2] Enforce daily/weekly loss stops before computing stake
@@ -5664,21 +5406,17 @@ def compute_leg_projection(
                 stake_dollars *= 0.50
                 stake_frac    *= 0.50
                 stake_reason  = "dnp_risk_half"
-
     mk_key = meta.get("market_key") if meta else ODDS_MARKETS.get(market_name,"")
     player_norm = normalize_name(player_name)
     mv_signal = get_line_movement_signal(player_norm, str(mk_key), float(line), side_str)
-
     sharp_div = {}
     if meta and meta.get("event_id"):
         try:
             sharp_div = sharp_divergence_alert(meta["event_id"], mk_key, player_norm, side_str, side_str) or {}
         except Exception: sharp_div = {}
-
     # [UPGRADE NEW] L3/L5/L10 trend convergence
     _trend_score, _trend_label, _trend_slope, _l3, _l5, _l10 = compute_trend_convergence(
         stat_series, float(line), side=side_str)
-
     # [v4.0 UPGRADE] Consecutive streak signal — combined with reversion nudge in single apply.
     # [AUDIT FIX] Using combined nudge prevents double-counting from reversion + streak signals.
     # Only the STRONGER of the two signals contributes beyond the base; capped at ±0.045 total.
@@ -5698,7 +5436,6 @@ def compute_leg_projection(
         # Recompute EV after combined nudge — this ev_adj is used for stake computation
         ev_raw = ev_per_dollar(p_cal, price_decimal) if (p_cal is not None and price_decimal is not None) else None
         ev_adj = float(ev_raw * pen) if (ev_raw is not None and gate_ok) else None
-
     # [UPGRADE NEW] Composite sharpness score
     _sharpness, _sharpness_components = compute_composite_sharpness(
         ev_adj=ev_adj, p_cal=p_cal, p_implied=p_implied,
@@ -5712,7 +5449,6 @@ def compute_leg_projection(
         wl_factor=_wl_factor, dnp_prob=_dnp_prob_score,
     )
     _sharpness_tier_label, _sharpness_tier_color = sharpness_tier(_sharpness)
-
     # [v5.0] Recompute stake with sharpness-aware Kelly now that _sharpness is known.
     # This replaces the initial stake (which had no sharpness info) with a more precise allocation.
     # Elite bets get up to 20% more; low-signal bets get 40%-75% of base Kelly fraction.
@@ -5730,14 +5466,12 @@ def compute_leg_projection(
             elif _dnp_prob_score >= 0.20 or (dnp_risk and float(proj_minutes or 30) < 5.0):
                 stake_dollars *= 0.50; stake_frac *= 0.50
                 stake_reason = "dnp_risk_half"
-
     # [v3.0] Alt line EV table and middle detection
     _alt_line_evs = compute_alt_line_ev(p_cal, price_decimal, line, sigma=sigma)
     _middle_exists, _middle_low, _middle_high, _middle_prob, _middle_books = (
         detect_middle_opportunity(player_name, mk_key, meta.get("event_id") if meta else None)
         if meta and meta.get("event_id") else (False, None, None, None, [])
     )
-
     return {
         "player":           player_name,
         "player_norm":      player_norm,
@@ -5914,7 +5648,6 @@ def compute_leg_projection(
         "hist_avg_minutes":  float(_hist_avg_minutes) if _hist_avg_minutes is not None else None,
         "errors":            errors,
     }
-
 # ──────────────────────────────────────────────
 # CALIBRATION ENGINE  [FIX 9: training range + OOD]
 # ──────────────────────────────────────────────
@@ -5967,7 +5700,6 @@ def _expand_history_legs(history_df):
             rows.append(row)
     df = pd.DataFrame(rows)
     return df[pd.to_numeric(df["p_raw"],errors="coerce").notna()].copy() if not df.empty else df
-
 # [FIX 9] Store training range in calibrator
 def fit_monotone_calibrator(df_legs, n_bins=12):
     if df_legs is None or df_legs.empty: return None
@@ -6001,7 +5733,6 @@ def fit_monotone_calibrator(df_legs, n_bins=12):
         "training_min": float(d["p_raw"].min()),
         "training_max": float(d["p_raw"].max()),
     }
-
 # [FIX 9] OOD detection in calibrator
 def apply_calibrator(p_raw, calib):
     if p_raw is None: return None
@@ -6018,7 +5749,6 @@ def apply_calibrator(p_raw, calib):
             return float(np.clip(p, 0.0, 1.0))
         return float(np.clip(np.interp(p, xs, ys), 0.0, 1.0))
     except: return float(np.clip(p, 0.0, 1.0))
-
 def recompute_pricing_fields(leg, calib):
     p_raw = leg.get("p_raw")
     p_cal = apply_calibrator(p_raw, calib)
@@ -6062,7 +5792,6 @@ def recompute_pricing_fields(leg, calib):
         leg["stake_frac"]=float(leg.get("stake_frac",0) or 0)
         leg["stake_reason"]=leg.get("stake_reason") or "gated"
     return leg
-
 # ──────────────────────────────────────────────
 # HISTORY PERSISTENCE  [FIX 15: no expiry]
 # ──────────────────────────────────────────────
@@ -6070,10 +5799,8 @@ def recompute_pricing_fields(leg, calib):
 # USER AUTHENTICATION SYSTEM
 # ──────────────────────────────────────────────
 AUTH_DB_PATH = "users_auth.json"
-
 def _hash_pw(pw: str) -> str:
     return hashlib.sha256(pw.strip().encode()).hexdigest()
-
 def _load_auth_db() -> dict:
     try:
         if os.path.exists(AUTH_DB_PATH):
@@ -6082,14 +5809,12 @@ def _load_auth_db() -> dict:
     except Exception:
         pass
     return {}
-
 def _save_auth_db(db: dict):
     try:
         with open(AUTH_DB_PATH, "w") as f:
             json.dump(db, f, indent=2)
     except Exception:
         pass
-
 def _register_user(username: str, password: str, email: str = "") -> tuple:
     username = username.strip().lower()
     if not username or len(username) < 3:
@@ -6108,7 +5833,6 @@ def _register_user(username: str, password: str, email: str = "") -> tuple:
     }
     _save_auth_db(db)
     return True, "Account created!"
-
 def _authenticate(username: str, password: str) -> tuple:
     username = username.strip().lower()
     db = _load_auth_db()
@@ -6117,14 +5841,11 @@ def _authenticate(username: str, password: str) -> tuple:
     if db[username]["pw_hash"] != _hash_pw(password):
         return False, "Invalid username or password."
     return True, "Login successful!"
-
 def _get_user_email(username: str) -> str:
     db = _load_auth_db()
     return db.get(username, {}).get("email", "")
-
 def user_state_path(uid): return f"user_state_{re.sub(r'[^a-zA-Z0-9_-]','_',uid or 'default')}.json"
 def history_path(uid):    return f"history_{re.sub(r'[^a-zA-Z0-9_-]','_',uid or 'default')}.csv"
-
 # [FIX 15] No TTL on user data - persists forever on disk
 def load_user_state(uid):
     fp = user_state_path(uid)
@@ -6133,19 +5854,16 @@ def load_user_state(uid):
             with open(fp) as f: return json.load(f) or {}
     except Exception: pass
     return {}
-
 def save_user_state(uid, state):
     try:
         with open(user_state_path(uid),"w") as f: json.dump(state or {}, f)
     except Exception: pass
-
 def load_history(uid):
     fp = history_path(uid)
     try:
         if os.path.exists(fp): return pd.read_csv(fp)
     except Exception: pass
     return pd.DataFrame()
-
 def compute_period_loss_pct(uid, bankroll, days=1):
     """Return net loss as a fraction of bankroll over the last `days` calendar days.
     Positive return = net loss. Returns 0.0 on any error."""
@@ -6169,7 +5887,6 @@ def compute_period_loss_pct(uid, bankroll, days=1):
         return max(0.0, -pnl / bankroll)
     except Exception:
         return 0.0
-
 def is_loss_stop_active(uid, bankroll):
     """Check daily and weekly loss stops. Returns (blocked: bool, reason: str)."""
     try:
@@ -6186,11 +5903,9 @@ def is_loss_stop_active(uid, bankroll):
     except Exception:
         pass
     return False, ""
-
 def append_history(uid, row):
     df = load_history(uid)
     pd.concat([df, pd.DataFrame([row])], ignore_index=True).to_csv(history_path(uid), index=False)
-
 # ============================================================
 # STREAMLIT UI
 # ============================================================
@@ -6200,7 +5915,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="auto"
 )
-
 # ─── FONTS + GLOBAL PREMIUM STYLES ───────────────────────────
 st.html("""
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -6240,7 +5954,6 @@ st.html("""
   --radius:   3px;
   --radius2:  6px;
 }
-
 /* ---------------------------------------------------
    BASE / APP SHELL
 --------------------------------------------------- */
@@ -6281,7 +5994,6 @@ st.html("""
   padding-bottom: 2rem !important;
   max-width: 1500px !important;
 }
-
 /* ---------------------------------------------------
    TAB BAR
 --------------------------------------------------- */
@@ -6317,7 +6029,6 @@ st.html("""
   padding-top: 1.2rem !important;
   background: transparent !important;
 }
-
 /* ---------------------------------------------------
    BUTTONS
 --------------------------------------------------- */
@@ -6345,7 +6056,6 @@ st.html("""
 .stButton > button:active {
   transform: translateY(0px) !important;
 }
-
 /* ---------------------------------------------------
    INPUTS
 --------------------------------------------------- */
@@ -6380,7 +6090,6 @@ st.html("""
   text-transform: uppercase !important;
   margin-bottom: 3px !important;
 }
-
 /* ---------------------------------------------------
    SLIDERS
 --------------------------------------------------- */
@@ -6394,7 +6103,6 @@ st.html("""
 [data-testid="stSlider"] [data-baseweb="slider"] > div {
   background: var(--border) !important;
 }
-
 /* ---------------------------------------------------
    DATAFRAMES / TABLES
 --------------------------------------------------- */
@@ -6431,7 +6139,6 @@ st.html("""
 .stDataFrame tbody tr:nth-child(even) td {
   background: rgba(0,0,0,0.15) !important;
 }
-
 /* ---------------------------------------------------
    METRICS
 --------------------------------------------------- */
@@ -6476,7 +6183,6 @@ st.html("""
   font-family: var(--font-mono) !important;
   font-size: 0.68rem !important;
 }
-
 /* ---------------------------------------------------
    ALERTS / NOTIFICATIONS
 --------------------------------------------------- */
@@ -6502,7 +6208,6 @@ st.html("""
   border-left: 3px solid var(--blue) !important;
   background: var(--blue-lo) !important;
 }
-
 /* ---------------------------------------------------
    EXPANDERS
 --------------------------------------------------- */
@@ -6525,7 +6230,6 @@ st.html("""
   color: var(--text) !important;
   background: rgba(255,255,255,0.02) !important;
 }
-
 /* ---------------------------------------------------
    CHECKBOXES & RADIO
 --------------------------------------------------- */
@@ -6540,7 +6244,6 @@ st.html("""
 [data-testid="stRadio"] input {
   accent-color: var(--green) !important;
 }
-
 /* ---------------------------------------------------
    SPINNER
 --------------------------------------------------- */
@@ -6550,7 +6253,6 @@ st.html("""
   color: var(--green) !important;
   letter-spacing: 0.1em !important;
 }
-
 /* ---------------------------------------------------
    CAPTIONS & MARKDOWN TEXT
 --------------------------------------------------- */
@@ -6571,7 +6273,6 @@ h1, h2, h3 {
   color: var(--text-hi) !important;
   letter-spacing: 0.04em !important;
 }
-
 /* ---------------------------------------------------
    SELECT SLIDER (RADIO BUTTONS)
 --------------------------------------------------- */
@@ -6590,7 +6291,6 @@ h1, h2, h3 {
   background: var(--green-lo) !important;
   color: var(--green) !important;
 }
-
 /* ---------------------------------------------------
    SCROLLBARS
 --------------------------------------------------- */
@@ -6598,7 +6298,6 @@ h1, h2, h3 {
 ::-webkit-scrollbar-track { background: var(--bg2); }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
-
 /* ---------------------------------------------------
    ANIMATIONS
 --------------------------------------------------- */
@@ -6620,7 +6319,6 @@ h1, h2, h3 {
 .fade-in {
   animation: fade-in 0.3s ease-out;
 }
-
 /* ---------------------------------------------------
    MULTISELECT
 --------------------------------------------------- */
@@ -6634,7 +6332,6 @@ h1, h2, h3 {
   background: var(--border2) !important;
   font-family: var(--font-mono) !important;
 }
-
 /* ---------------------------------------------------
    DATE INPUT
 --------------------------------------------------- */
@@ -6646,7 +6343,6 @@ h1, h2, h3 {
   font-size: 0.75rem !important;
   border-radius: var(--radius) !important;
 }
-
 /* ---------------------------------------------------
    TOP NAV BAR HIDE / STREAMLIT CHROME REMOVAL
 --------------------------------------------------- */
@@ -6688,7 +6384,6 @@ header > * { visibility: hidden; }
   width: 1.2rem !important;
   height: 1.2rem !important;
 }
-
 /* ---------------------------------------------------
    DIVIDERS
 --------------------------------------------------- */
@@ -6697,7 +6392,6 @@ hr {
   border-top: 1px solid var(--border) !important;
   margin: 0.8rem 0 !important;
 }
-
 /* ---------------------------------------------------
    SIDEBAR OVERRIDE
 --------------------------------------------------- */
@@ -6707,7 +6401,6 @@ section[data-testid="stSidebar"] {
 }
 </style></div>
 """)
-
 # ─── AUTH GATE ────────────────────────────────────────────────
 # ── Cookie-based session persistence ──────────────────────────
 _cookie_ctrl = CookieController(key="auth_cookie_ctrl")
@@ -6727,7 +6420,6 @@ if not st.session_state.get("_auth_user"):
                     st.session_state[_sk] = _saved[_sk]
             st.session_state["_active_user_id"] = _cookie_user
             st.rerun()
-
 if not st.session_state.get("_auth_user"):
     st.html("""
 <style>
@@ -6759,11 +6451,9 @@ if not st.session_state.get("_auth_user"):
 </div>
 </div>
 """)
-
     _auth_tab = st.radio("", ["Sign In", "Create Account"], horizontal=True,
                          label_visibility="collapsed",
                          key="_auth_tab_radio")
-
     col_l, col_c, col_r = st.columns([1, 2, 1])
     with col_c:
         if _auth_tab == "Sign In":
@@ -6832,9 +6522,7 @@ if not st.session_state.get("_auth_user"):
                             st.rerun()
                         else:
                             st.error(_msg)
-
     st.stop()
-
 # ── Authenticated: set user_id from auth session ──────────────
 _auth_username = st.session_state["_auth_user"]
 if st.session_state.get("user_id") != _auth_username:
@@ -6847,7 +6535,6 @@ if st.session_state.get("user_id") != _auth_username:
         if _sk in _saved_state:
             st.session_state[_sk] = _saved_state[_sk]
     st.session_state["_active_user_id"] = _auth_username
-
 # ─── MAIN HEADER ─────────────────────────────────────────────
 _now_str = datetime.utcnow().strftime("%b %d %Y  %H:%M UTC")
 _hdr = (
@@ -6907,7 +6594,6 @@ _hdr = (
     "</div>"
 )
 st.html(_hdr)
-
 # ─── CARD & UI HELPERS ────────────────────────────────────────
 def make_card(content_html, border_color="#112030", glow=False, accent_top=None):
     glow_css = f"box-shadow:0 0 28px {border_color}60,0 4px 16px rgba(0,0,0,0.4);" if glow else "box-shadow:0 2px 12px rgba(0,0,0,0.3);"
@@ -6919,7 +6605,6 @@ def make_card(content_html, border_color="#112030", glow=False, accent_top=None)
         f"font-family:'Fira Code',monospace;transition:all 0.2s;\">"
         f"{content_html}</div>"
     )
-
 def section_header(title, color="#3A5570", icon=""):
     return (
         f"<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;"
@@ -6930,13 +6615,11 @@ def section_header(title, color="#3A5570", icon=""):
         f"<div style='flex:1;height:1px;background:linear-gradient(90deg,{color}40,transparent);margin-left:0.5rem;'></div>"
         f"</div>"
     )
-
 def color_for_edge(cat):
     if cat == "Strong Edge": return "#00FFB2"
     if cat == "Solid Edge":  return "#00AAFF"
     if cat == "Lean Edge":   return "#FFB800"
     return "#3A5570"
-
 def prob_bar_html(p, line_pct=0.50, label=""):
     if p is None: return "<span style='color:#3A5570;font-size:0.72rem;'>—</span>"
     pct = int(round(p * 100))
@@ -6955,7 +6638,6 @@ def prob_bar_html(p, line_pct=0.50, label=""):
         f"border-radius:2px;transition:width 0.5s cubic-bezier(0.4,0,0.2,1);'></div>"
         f"</div></div>"
     )
-
 def regime_badge(label):
     cfg = {
         "Stable":  ("#00FFB2", "#00FFB215"),
@@ -6968,7 +6650,6 @@ def regime_badge(label):
         f"padding:2px 8px;border-radius:2px;font-size:0.58rem;letter-spacing:0.10em;"
         f"font-family:Chakra Petch,monospace;font-weight:600;'>{label.upper()}</span>"
     )
-
 def hot_cold_badge(label):
     cfg = {
         "Hot":     ("#FF6B35", "#FF6B3515"),
@@ -6981,7 +6662,6 @@ def hot_cold_badge(label):
         f"padding:2px 8px;border-radius:2px;font-size:0.58rem;letter-spacing:0.10em;"
         f"font-family:Chakra Petch,monospace;font-weight:600;'>{label.upper()}</span>"
     )
-
 def sharpness_badge(score, tier, color):
     """Render composite sharpness score badge."""
     if score is None or tier is None: return ""
@@ -6990,7 +6670,6 @@ def sharpness_badge(score, tier, color):
         f"padding:2px 8px;border-radius:2px;font-size:0.58rem;letter-spacing:0.08em;"
         f"font-family:Chakra Petch,monospace;font-weight:700;'>⚡ {tier} {score:.0f}</span>"
     )
-
 def trend_badge(label):
     """Render trend convergence badge (Strong Bull / Bull / Neutral / Bear / Strong Bear)."""
     cfg = {
@@ -7007,7 +6686,6 @@ def trend_badge(label):
         f"padding:2px 8px;border-radius:2px;font-size:0.58rem;letter-spacing:0.08em;"
         f"font-family:Chakra Petch,monospace;font-weight:600;'>TREND:{label.upper()}</span>"
     )
-
 def confidence_tier_color(p_cal):
     """Return border color based on calibrated probability confidence tier."""
     if p_cal is None: return "#1E2D3D"
@@ -7016,7 +6694,6 @@ def confidence_tier_color(p_cal):
     if p >= 0.58: return "#00AAFF"   # Blue — solid
     if p >= 0.52: return "#FFB800"   # Amber — moderate
     return "#FF3358"                  # Red — marginal
-
 def mv_badge(mv):
     if not mv or abs(mv.get("pips",0)) < 0.25: return ""
     pips = mv.get("pips",0)
@@ -7025,7 +6702,6 @@ def mv_badge(mv):
     else: col,icon = "#FFB800","MOVE"
     arrow = "UP" if pips > 0 else "DN"
     return f"<span style='color:{col};font-size:0.65rem;'>{icon} {arrow} {abs(pips):.1f}</span>"
-
 # ─── SIDEBAR CSS INJECTION ─────────────────────────────────────
 st.html("""
 <div style="display:none"><style>
@@ -7042,7 +6718,6 @@ st.html("""
 [data-testid="stSidebarContent"] {
     padding: 0 0.9rem 1rem 0.9rem !important;
 }
-
 /* ── Slider track & thumb ── */
 [data-testid="stSidebar"] [data-testid="stSlider"] > div > div > div {
     background: #0E1E30 !important;
@@ -7057,7 +6732,6 @@ st.html("""
 [data-testid="stSidebar"] [data-testid="stSlider"] [data-baseweb="slider"] > div:nth-child(3) {
     background: #00FFB2 !important;
 }
-
 /* ── Number input ── */
 [data-testid="stSidebar"] [data-testid="stNumberInput"] input {
     background: #080F1A !important;
@@ -7072,7 +6746,6 @@ st.html("""
     border: 1px solid #1A2F45 !important;
     color: #4A9EBF !important;
 }
-
 /* ── Text input ── */
 [data-testid="stSidebar"] [data-testid="stTextInput"] input {
     background: #080F1A !important;
@@ -7086,7 +6759,6 @@ st.html("""
     border-color: #00FFB255 !important;
     box-shadow: 0 0 0 1px #00FFB222 !important;
 }
-
 /* ── Checkbox ── */
 [data-testid="stSidebar"] [data-testid="stCheckbox"] label {
     font-family: 'Fira Code', monospace !important;
@@ -7097,7 +6769,6 @@ st.html("""
 [data-testid="stSidebar"] [data-testid="stCheckbox"] [data-testid="stCheckboxWidget"] {
     accent-color: #00FFB2 !important;
 }
-
 /* ── Slider label text ── */
 [data-testid="stSidebar"] [data-testid="stSlider"] label p,
 [data-testid="stSidebar"] [data-testid="stNumberInput"] label p,
@@ -7109,7 +6780,6 @@ st.html("""
     text-transform: uppercase !important;
     margin-bottom: 2px !important;
 }
-
 /* ── Slider value readout ── */
 [data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stSliderTickBarMin"],
 [data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stSliderTickBarMax"] {
@@ -7117,7 +6787,6 @@ st.html("""
     font-size: 0.60rem !important;
     color: #2A4060 !important;
 }
-
 /* ── Expander header ── */
 [data-testid="stSidebar"] [data-testid="stExpander"] summary {
     font-family: 'Chakra Petch', monospace !important;
@@ -7134,12 +6803,10 @@ st.html("""
     color: #8BA8BF !important;
     border-color: #1A2F45 !important;
 }
-
 /* ── Scrollbar ── */
 [data-testid="stSidebar"]::-webkit-scrollbar { width: 3px; }
 [data-testid="stSidebar"]::-webkit-scrollbar-track { background: #04080F; }
 [data-testid="stSidebar"]::-webkit-scrollbar-thumb { background: #1A2F45; border-radius: 2px; }
-
 /* ── Select box ── */
 [data-testid="stSidebar"] [data-testid="stSelectbox"] > div > div {
     background: #080F1A !important;
@@ -7150,10 +6817,8 @@ st.html("""
 }
 </style></div>
 """)
-
 # ─── SIDEBAR ──────────────────────────────────────────────────
 with st.sidebar:
-
     # ── BRAND HEADER ──────────────────────────────────────────
     st.markdown("""
 <div style='
@@ -7180,7 +6845,6 @@ with st.sidebar:
     </div>
 </div>
 """, unsafe_allow_html=True)
-
     # ── ACCOUNT ───────────────────────────────────────────────
     _sid_user = st.session_state.get("_auth_user", "")
     _sid_email = _get_user_email(_sid_user)
@@ -7195,15 +6859,12 @@ with st.sidebar:
     {f"<div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#3A6080;margin-top:2px;'>{_sid_email}</div>" if _sid_email else ""}
 </div>
 """, unsafe_allow_html=True)
-
     # Use authenticated username as user_id
     user_id = _sid_user
-
     # ── BANKROLL ──────────────────────────────────────────────
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;margin-bottom:0.4rem;'>
 ▸ BANKROLL</div>""", unsafe_allow_html=True)
-
     bankroll = st.number_input("Bankroll ($)", min_value=0.0,
         value=float(st.session_state.get("bankroll", 1000.0)), step=50.0)
     st.session_state["bankroll"] = float(bankroll)
@@ -7213,7 +6874,6 @@ color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;margin-bottom:0.4re
         _bs["bankroll"] = float(bankroll)
         save_user_state(user_id, _bs)
         st.session_state["_last_saved_bankroll"] = float(bankroll)
-
     _br_val = float(st.session_state.get("bankroll", 1000.0))
     st.markdown(f"""
 <div style='background:#04080F;border:1px solid #0E2840;border-radius:4px;
@@ -7224,7 +6884,6 @@ color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;margin-bottom:0.4re
                 font-weight:700;color:#00FFB2;'>${_br_val:,.2f}</div>
 </div>
 """, unsafe_allow_html=True)
-
     # ── AI STATUS ─────────────────────────────────────────────
     _ai_active = _get_anthropic_key()
     if _ai_active:
@@ -7247,11 +6906,9 @@ color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;margin-bottom:0.4re
     <div style='font-family:Fira Code,monospace;font-size:0.60rem;color:#2A4060;
                 letter-spacing:0.06em;'>CLAUDE AI  ·  OFFLINE</div>
 </div>""", unsafe_allow_html=True)
-
     st.markdown("""<div style='font-family:Fira Code,monospace;font-size:0.58rem;
 color:#2A5070;margin-bottom:0.6rem;'>→ Configure in <b style='color:#8BA8BF;'>SETTINGS</b> tab</div>""",
         unsafe_allow_html=True)
-
     # ── SIGN OUT ──────────────────────────────────────────────
     st.markdown("""<div style='margin-top:0.4rem;padding-top:0.6rem;
 border-top:1px solid #0E1E30;'></div>""", unsafe_allow_html=True)
@@ -7260,7 +6917,6 @@ border-top:1px solid #0E1E30;'></div>""", unsafe_allow_html=True)
         for _k in list(st.session_state.keys()):
             del st.session_state[_k]
         st.rerun()
-
     # ── FOOTER ────────────────────────────────────────────────
     st.markdown(f"""
 <div style='margin-top:1.5rem;padding-top:0.6rem;border-top:1px solid #080F1A;
@@ -7274,7 +6930,6 @@ border-top:1px solid #0E1E30;'></div>""", unsafe_allow_html=True)
     </div>
 </div>
 """, unsafe_allow_html=True)
-
 # ─── SESSION STATE INIT ────────────────────────────────────────
 # Initialize settings defaults so Settings tab doesn't need to be visited first
 _settings_defaults = {
@@ -7292,7 +6947,6 @@ _settings_defaults = {
 for _sk, _sv in _settings_defaults.items():
     if _sk not in st.session_state:
         st.session_state[_sk] = _sv
-
 # Load persisted PrizePicks cookies/JSON from disk so user never has to re-paste
 _pp_disk = load_pp_settings()
 if "pp_cookies" not in st.session_state:
@@ -7300,7 +6954,6 @@ if "pp_cookies" not in st.session_state:
     st.session_state["pp_relay_url"]     = _pp_disk.get("pp_relay_url", "")
     st.session_state["pp_auto_enabled"]  = _pp_disk.get("pp_auto_enabled", False)
     st.session_state["pp_auto_interval"] = _pp_disk.get("pp_auto_interval", 10)
-
 # Restore background auto-fetcher state if it was enabled last session
 if st.session_state.get("pp_auto_enabled"):
     set_pp_auto_fetch(
@@ -7317,27 +6970,22 @@ elif _pp_disk.get("pp_auto_enabled"):
         cookies=_pp_disk.get("pp_cookies", ""),
         relay_url=_pp_disk.get("pp_relay_url", ""),
     )
-
 for k in ["last_results","calibrator_map","scanner_offers","scanner_results"]:
     if k not in st.session_state: st.session_state[k] = None if k != "last_results" else []
-
 # Restore scanner results from disk if session state was just reset (server restart / WS drop)
 if st.session_state.get("scanner_results") is None:
     _disk_cache = _load_scanner_cache()
     if _disk_cache.get("scanner_results") is not None:
         for _ck, _cv in _disk_cache.items():
             st.session_state[_ck] = _cv
-
 # Restore alert dedup hashes from disk so re-alerts don't fire after session reset
 if "_scanner_alert_hashes" not in st.session_state:
     st.session_state["_scanner_alert_hashes"] = _load_alert_hashes()
-
 # First Basket is a binary market with no numeric line — exclude from MODEL tab selector.
 # All shooting volume markets (FGM/FGA/FTM/FTA/3PA) and specialty combos are now re-enabled;
 # they're supported via PP/UD direct lines even if Odds API has no matching market key.
 _MARKET_EXCLUDE_FROM_UI = {"First Basket", "Alt Points", "Alt Rebounds", "Alt Assists", "Alt 3PM"}
 MARKET_OPTIONS = [k for k in ODDS_MARKETS.keys() if k not in _MARKET_EXCLUDE_FROM_UI]
-
 def _daily_pnl(uid):
     h = load_history(uid)
     if h.empty: return 0.0
@@ -7348,14 +6996,12 @@ def _daily_pnl(uid):
         hits = (today_rows["result"]=="HIT").sum(); miss = (today_rows["result"]=="MISS").sum()
         return float(hits - miss)
     except: return 0.0
-
 def _check_loss_stops(uid, bankroll):
     pnl = _daily_pnl(uid)
     if bankroll > 0 and pnl < 0 and abs(pnl)/bankroll*100 > float(st.session_state.get("max_daily_loss",15)):
         st.error(f"DAILY LOSS STOP HIT ({abs(pnl)/bankroll*100:.1f}%). No new bets recommended today.")
         return True
     return False
-
 # ── Pull settings from session state for use in tab code ──────
 bankroll           = float(st.session_state.get("bankroll", 1000.0))
 n_games            = int(st.session_state.get("n_games", 10))
@@ -7367,10 +7013,8 @@ max_daily_loss     = int(st.session_state.get("max_daily_loss", 15))
 max_weekly_loss    = int(st.session_state.get("max_weekly_loss", 25))
 exclude_chaotic    = bool(st.session_state.get("exclude_chaotic", True))
 show_unders        = bool(st.session_state.get("show_unders", False))
-
 # ─── TABS ─────────────────────────────────────────────────────
 tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "INSIGHTS", "ALERTS", "SETTINGS"])
-
 # Consume staged scanner→model inputs before any widgets render (prevents StreamlitAPIException)
 for _si in range(1, 5):
     if f"_staged_pname_{_si}" in st.session_state:
@@ -7385,7 +7029,6 @@ for _si in range(1, 5):
         st.session_state[f"out_{_si}"]    = st.session_state.pop(f"_staged_out_{_si}")
 if "_staged_model_date" in st.session_state:
     st.session_state["model_date"] = st.session_state.pop("_staged_model_date")
-
 with tabs[0]:
     _loss_stop_hit = _check_loss_stops(user_id, bankroll)
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>CONFIGURE UP TO 4 LEGS</div>""", unsafe_allow_html=True)
@@ -7473,7 +7116,11 @@ with tabs[0]:
                     results = []
                     for f in futs:
                         try:
-                            results.append(f.result())
+                            results.append(f.result(timeout=60))
+                        except TimeoutError:
+                            results.append({"player": "Error", "market": "?", "line": 0.0,
+                                            "errors": ["thread timeout (≥60s)"],
+                                            "gate_ok": False, "gate_reason": "thread timeout"})
                         except Exception as _te:
                             results.append({"player": "Error", "market": "?", "line": 0.0,
                                             "errors": [f"thread error: {type(_te).__name__}: {_te}"],
@@ -7483,7 +7130,6 @@ with tabs[0]:
             st.session_state["last_results"] = results
             if warnings:
                 for w in warnings: st.warning(w)
-
     # [FIX 11] Log ALL evaluations (BET and PASS) for calibration
     st.markdown("<hr style='border-color:#1E2D3D;margin:1rem 0;'>", unsafe_allow_html=True)
     st.markdown("<span style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#4A607A;letter-spacing:0.12em;'>LOG THIS SLATE</span>", unsafe_allow_html=True)
@@ -7504,7 +7150,6 @@ with tabs[0]:
                     "result":result_val,"decision":decision,"notes":""
                 })
                 st.success(f"Logged ({decision})")
-
 with tabs[1]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>PROJECTION RESULTS & EDGE ANALYSIS</div>""", unsafe_allow_html=True)
     res = st.session_state.get("last_results") or []
@@ -7590,7 +7235,6 @@ with tabs[1]:
                 # [UPGRADE 20] Confidence-tier border overrides edge color
                 tier_border = confidence_tier_color(leg.get("p_cal"))
                 st.markdown(make_card(card_html, border_color=tier_border, glow=(leg.get("edge_cat") in ["Strong Edge","Solid Edge"])), unsafe_allow_html=True)
-
                 # [UPGRADE 19] Player card expander with per-game bar chart
                 with st.expander(f"Drill-down: {leg['player']}", expanded=False):
                     pid = leg.get("player_id")
@@ -7667,11 +7311,9 @@ with tabs[1]:
                         f"</div>",
                         unsafe_allow_html=True
                     )
-
                     # [v3.0] NEW SIGNALS SECTION
                     st.markdown("---")
                     st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#00FFB2;letter-spacing:0.18em;text-transform:uppercase;'>v3.0 Advanced Signals</div>", unsafe_allow_html=True)
-
                     _v3_cols = st.columns(3)
                     # W/L Split
                     _wl_lbl = leg.get("wl_label", "N/A")
@@ -7702,7 +7344,6 @@ with tabs[1]:
                         f"<div style='font-size:0.55rem;color:#3A5570;'>mult:{leg.get('playoff_factor',1.0):.3f}x</div>",
                         unsafe_allow_html=True
                     )
-
                     st.markdown("<div style='margin-top:0.5rem;'></div>", unsafe_allow_html=True)
                     _v3_cols2 = st.columns(3)
                     # DNP Probability
@@ -7736,7 +7377,6 @@ with tabs[1]:
                         f"<div style='font-size:0.55rem;color:#3A5570;'>mult:{leg.get('fta_factor',1.0):.3f}x</div>",
                         unsafe_allow_html=True
                     )
-
                     # [v3.0] Referee / HCA / Pos B2B row
                     _v3_cols3 = st.columns(3)
                     _ref_lbl = leg.get("ref_label", "N/A")
@@ -7766,7 +7406,6 @@ with tabs[1]:
                         f"<div style='font-size:0.55rem;color:#3A5570;'>mult:{_pb2b:.3f}x</div>",
                         unsafe_allow_html=True
                     )
-
                     # [AUDIT v5.1] Altitude + Shooting Luck row
                     _alt_m = float(leg.get("altitude_mult", 1.0) or 1.0)
                     _sl_m  = float(leg.get("shoot_luck_mult", 1.0) or 1.0)
@@ -7788,7 +7427,6 @@ with tabs[1]:
                             f"<div style='font-size:0.55rem;color:#3A5570;'>mult:{_sl_m:.3f}x</div>",
                             unsafe_allow_html=True
                         )
-
                     # Middle Opportunity Alert
                     if leg.get("middle_exists"):
                         _mid_lo = leg.get("middle_low")
@@ -7805,7 +7443,6 @@ with tabs[1]:
                             f"</div>",
                             unsafe_allow_html=True
                         )
-
                     # Alt Line EV Table
                     _alt_evs = leg.get("alt_line_evs", [])
                     if _alt_evs:
@@ -7825,7 +7462,6 @@ with tabs[1]:
                             )
                         _alt_html += "</div>"
                         st.markdown(_alt_html, unsafe_allow_html=True)
-
                 # 🤖 AI per-leg edge explanation
                 if _get_anthropic_key():
                     _ai_leg_key = f"_ai_edge_{i}_{leg.get('player','x').replace(' ','_')[:20]}"
@@ -7871,7 +7507,6 @@ with tabs[1]:
                             f"🤖 CLAUDE AI · EDGE ANALYSIS</span>{_ai_leg_txt}</div>",
                             unsafe_allow_html=True,
                         )
-
                 # [FEATURE] Under flip card — zero extra API calls, reuses p_cal from above
                 if bool(st.session_state.get("show_unders", False)):
                     _p_cal_u = leg.get("p_cal")
@@ -7905,7 +7540,6 @@ with tabs[1]:
 {f"<div style='margin-top:0.35rem;background:#00FFB218;border:1px solid #00FFB230;border-radius:2px;padding:0.25rem 0.5rem;font-size:0.63rem;color:#00FFB2;font-family:Fira Code,monospace;'>REC STAKE: ${_stake_u:.2f}</div>" if _stake_u > 0 else ""}
 </div>"""
                             st.markdown(_under_html, unsafe_allow_html=True)
-
         # Multi-leg combo
         if len(res) >= 2:
             st.markdown("<hr style='border-color:#1E2D3D;margin:1rem 0;'>", unsafe_allow_html=True)
@@ -7941,7 +7575,6 @@ with tabs[1]:
                 st.caption("scipy not available - joint MC skipped.")
             except Exception as e:
                 st.caption(f"Joint MC error: {type(e).__name__}: {e}")
-
         with st.expander("Raw Data Table", expanded=False):
             display_cols = ["player","market","line","proj","p_cal","p_implied","advantage",
                             "ev_pct","edge_cat","gate_ok","stake","volatility_label","volatility_cv",
@@ -7949,7 +7582,6 @@ with tabs[1]:
                             "usage_rate","pos_def_mult","half_factor","pace_adj"]
             disp_df = pd.DataFrame([{k:l.get(k) for k in display_cols} for l in res])
             st.dataframe(disp_df, use_container_width=True)
-
         # ── Parlay Optimizer ──────────────────────────────────
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>PARLAY OPTIMIZER</div>", unsafe_allow_html=True)
@@ -7964,7 +7596,6 @@ with tabs[1]:
                 st.dataframe(pd.DataFrame(combos), use_container_width=True)
             else:
                 st.warning("Need 2+ gated legs with P > 50% to generate combos.")
-
         # ── 🎰 DFS Entry Builder ─────────────────────────────────
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.72rem;color:#FFB800;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>🎰 DFS ENTRY BUILDER — PRIZEPICKS / UNDERDOG / SLEEPER</div>", unsafe_allow_html=True)
@@ -7978,7 +7609,6 @@ with tabs[1]:
         with dfs_c3:
             dfs_entry_type = st.radio("Entry type", ["Power Play", "Flex", "Best of both"],
                                       key="dfs_entry_type_radio", horizontal=True)
-
         # Show the platform's payout table inline
         _tbl = {"prizepicks": DFS_PP_PAYOUTS, "underdog": DFS_UD_PAYOUTS, "sleeper": DFS_SLEEPER_PAYOUTS}
         _pt = _tbl.get(dfs_platform, DFS_PP_PAYOUTS)
@@ -7986,7 +7616,6 @@ with tabs[1]:
         for _pi, (_n, _x) in enumerate(_pt.items()):
             _payout_cols[_pi].metric(f"{_n}-leg PP", f"{_x}x",
                                      help=f"Must hit all {_n} legs to win {_x}x your entry")
-
         if st.button("🎰 Find Best DFS Entries", use_container_width=True, key="dfs_optimizer_btn"):
             _gated = [l for l in res if float(l.get("p_cal") or 0) > 0.50]
             if len(_gated) < 2:
@@ -7998,7 +7627,6 @@ with tabs[1]:
                         n_sims=5000, bankroll=bankroll, frac_kelly=frac_kelly,
                     )
                 st.session_state["_dfs_entry_results"] = dfs_results
-
         _dfs_res = st.session_state.get("_dfs_entry_results")
         if _dfs_res:
             # Filter by entry type selection
@@ -8008,7 +7636,6 @@ with tabs[1]:
                 _dfs_show = [r for r in _dfs_res if r.get("rec_mode") == "Flex"]
             else:
                 _dfs_show = _dfs_res
-
             if not _dfs_show:
                 st.caption("No entries matched that filter — try 'Best of both'.")
             else:
@@ -8023,14 +7650,12 @@ with tabs[1]:
                     "rec_stake_$": "Rec Stake $"
                 })
                 st.dataframe(dfs_df, use_container_width=True, hide_index=True)
-
                 # Visual breakdown of top entry
                 _best = _dfs_show[0]
                 _pp_ev_val = _best.get("pp_ev_%")
                 _fl_ev_val = _best.get("flex_ev_%")
                 _pp_ev_num = _pp_ev_val if isinstance(_pp_ev_val, (int, float)) else 0
                 _fl_ev_num = _fl_ev_val if isinstance(_fl_ev_val, (int, float)) else 0
-
                 st.markdown(f"""
 <div style='background:linear-gradient(135deg,#FFB80018,#0D1B2A);border:1px solid #FFB80050;
 border-radius:6px;padding:0.9rem 1.1rem;margin-top:0.5rem;'>
@@ -8051,7 +7676,6 @@ letter-spacing:0.12em;margin-bottom:0.5rem;'>🎰 TOP {dfs_platform.upper()} ENT
 Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model probability above the 50% floor.
 </div>
 </div>""", unsafe_allow_html=True)
-
         # 🎯 AI Parlay Optimizer
         # [v3.0] AI DEEP DIVE — multi-signal comprehensive analysis
         if _get_anthropic_key() and len(res) >= 1:
@@ -8111,7 +7735,6 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                     f"🔬 CLAUDE AI · v3.0 DEEP DIVE</span>{_dd_html}</div>",
                     unsafe_allow_html=True,
                 )
-
         if _get_anthropic_key() and len(res) >= 2:
             st.markdown("<hr style='border-color:#1E2D3D;margin:0.5rem 0;'>", unsafe_allow_html=True)
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>🎯 AI PARLAY OPTIMIZER</div>", unsafe_allow_html=True)
@@ -8143,7 +7766,6 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                     f"🎯 CLAUDE AI · PARLAY OPTIMIZER</span>{_parlay_html}</div>",
                     unsafe_allow_html=True,
                 )
-
         # ── PrizePicks AI Helper ──────────────────────────────
         if _get_anthropic_key():
             st.markdown("<hr style='border-color:#1E2D3D;margin:0.5rem 0;'>", unsafe_allow_html=True)
@@ -8198,7 +7820,6 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                         f"🏆 CLAUDE AI · PRIZEPICKS HELPER</span>{_pp_html}</div>",
                         unsafe_allow_html=True,
                     )
-
         # ── Monte Carlo Simulation ────────────────────────────
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>MONTE CARLO GAME SIMULATION</div>", unsafe_allow_html=True)
@@ -8215,7 +7836,6 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                     ))
             elif mc and "error" in mc:
                 st.warning(f"MC error: {mc['error']}")
-
 # ─── LIVE SCANNER TAB [FIX 13: persistent] [FIX 14: week-ahead] ───
 with tabs[2]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>LIVE SCANNER - SWEEP ALL PLAYER PROPS FOR EDGES</div>""", unsafe_allow_html=True)
@@ -8239,7 +7859,6 @@ with tabs[2]:
     with sf2: min_adv  = st.slider("Min Advantage vs Implied", 0.00, 0.12, 0.02, 0.005)
     with sf3: min_ev   = st.slider("Min EV (adj)", -0.05, 0.25, 0.01, 0.005)
     max_rows = st.slider("Max Results", 10, 200, 60, 10)
-
     # ── Platform Lines (PP / UD) inline in scanner ──────────────────────
     with st.expander("📱 Platform Lines — PrizePicks / Underdog / Sleeper (scan against platform lines)", expanded=False):
         _plat_c1, _plat_c2, _plat_c3, _plat_c4 = st.columns(4)
@@ -8266,7 +7885,6 @@ with tabs[2]:
             _pp_loaded = st.session_state.get("pp_lines")
             if _pp_loaded is not None and not _pp_loaded.empty:
                 st.markdown(f"<div style='font-size:0.58rem;color:#00FFB2;'>✓ {len(_pp_loaded)} ready</div>", unsafe_allow_html=True)
-
         with _plat_c2:
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#FFB800;'>UNDERDOG</div>", unsafe_allow_html=True)
             if st.button("Fetch UD Lines", key="scanner_fetch_ud_btn", use_container_width=True):
@@ -8282,7 +7900,6 @@ with tabs[2]:
             _ud_loaded = st.session_state.get("ud_lines")
             if _ud_loaded is not None and not _ud_loaded.empty:
                 st.markdown(f"<div style='font-size:0.58rem;color:#FFB800;'>✓ {len(_ud_loaded)} ready</div>", unsafe_allow_html=True)
-
         with _plat_c3:
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#9B59F5;'>SLEEPER</div>", unsafe_allow_html=True)
             _sl_loaded_sc = st.session_state.get("sl_lines")
@@ -8290,7 +7907,6 @@ with tabs[2]:
                 st.markdown(f"<div style='font-size:0.58rem;color:#9B59F5;'>✓ {len(_sl_loaded_sc)} ready</div>", unsafe_allow_html=True)
             else:
                 st.caption("Import via Platforms → Sleeper tab")
-
         with _plat_c4:
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#4A607A;'>SCAN SOURCE</div>", unsafe_allow_html=True)
             _scan_source = st.radio(
@@ -8302,7 +7918,6 @@ with tabs[2]:
             )
             st.session_state["scan_source_idx"] = ["Odds API only","PP + UD only","All sources"].index(_scan_source)
             st.caption("PP/UD/Sleeper: 50% implied (no vig)  Odds API: from market price")
-
     # ── Last-fetch indicator + Force Refresh ──────────────────────
     _last_fetch_ts  = st.session_state.get("_scanner_lines_fetch_ts")
     _last_fetch_lbl = ""
@@ -8315,18 +7930,14 @@ with tabs[2]:
         else:
             _last_fetch_lbl = f"Lines fetched {_age_min//60}h {_age_min%60}m ago"
         _lines_stale = _age_sec > _LINES_CACHE_TTL   # stale after 2 hours
-
     fetch_col, refresh_col, scan_col = st.columns([3, 2, 3])
-
     if _last_fetch_ts and not _lines_stale:
         fetch_col.info(f"✓ {_last_fetch_lbl} (cached 2h)")
-
     _do_fetch = fetch_col.button(
         "Fetch Live Lines (Odds API)" if not _last_fetch_ts else "Re-fetch Lines",
         use_container_width=True,
         help="Lines are cached 2 hours to preserve API quota. Use Force Refresh to bypass.",
     )
-
     if refresh_col.button("Force Refresh", use_container_width=True,
                           help="Clears 2-hour cache and re-fetches from Odds API. Uses API credits."):
         odds_get_events.clear()
@@ -8335,7 +7946,6 @@ with tabs[2]:
         st.session_state.pop("_scanner_lines_fetch_ts", None)
         st.session_state.pop("scanner_offers", None)
         st.toast("Cache cleared — click Fetch Live Lines to refresh.")
-
     if _do_fetch:
         selected_keys = list(dict.fromkeys(ODDS_MARKETS.get(m) for m in markets_sel if ODDS_MARKETS.get(m)))
         if not selected_keys:
@@ -8379,7 +7989,6 @@ with tabs[2]:
                     # Specialty markets individually (each book may only carry a subset)
                     for sk in spec_keys:
                         market_batches.append([sk])
-
                     # Inform user about specialty market timing
                     _SPEC_TIMING_MARKETS = {
                         "H1 Points","H1 Rebounds","H1 Assists","H1 3PM","H1 PRA",
@@ -8394,10 +8003,8 @@ with tabs[2]:
                             "DraftKings/FanDuel **1–2 hours before tip-off**. If you see 0 lines, try "
                             "Force Refresh closer to game time. They are rarely available all day."
                         )
-
                     # Track per-specialty-market counts for debug output
                     _spec_market_counts: dict[str, int] = {m: 0 for m in _supported_sel if ODDS_MARKETS.get(m) in SPECIALTY_MARKET_KEYS}
-
                     for ev in evs:
                         eid = ev.get("id")
                         if not eid: continue
@@ -8450,7 +8057,6 @@ with tabs[2]:
                                 )
                             for _fe in _fetch_errors:
                                 st.caption(_fe)
-
     # ── Bulk game log loader (recommended before large scans) ──────
     bulk_loaded = _fetch_bulk_gamelogs() is not None
     _bulk_label = "✓ All Game Logs Loaded" if bulk_loaded else "Load All Game Logs (Recommended)"
@@ -8462,13 +8068,11 @@ with tabs[2]:
             st.success(f"Loaded {len(result):,} game log rows — scans are now near-instant.")
         else:
             st.warning("Bulk load failed — scanner will fall back to per-player fetches.")
-
     if scan_col.button("Run Scan", use_container_width=True):
         _scan_source = st.session_state.get("scan_source_radio", "Odds API only")
         df = st.session_state.get("scanner_offers")
         _use_odds_api = _scan_source in ("Odds API only", "All sources") and sportsbook2 != "prizepicks"
         _use_platforms = _scan_source in ("PP + UD only", "All sources") or sportsbook2 == "prizepicks"
-
         # Validate we have something to scan
         _odds_has_data = df is not None and not (hasattr(df, 'empty') and df.empty)
         _pp_has_data   = bool(st.session_state.get("pp_lines") is not None and not st.session_state["pp_lines"].empty)
@@ -8479,7 +8083,6 @@ with tabs[2]:
             st.warning("Load PrizePicks or Underdog lines first (expand 'Platform Lines' above).")
         else:
             candidates = []
-
             # ── Odds API candidates ────────────────────────────────────────
             if _use_odds_api and _odds_has_data:
                 df2 = df[df["side"].str.lower().isin(["over","o"])].copy()
@@ -8495,7 +8098,6 @@ with tabs[2]:
                             "price":r.get("price"),"book":r.get("book"),
                             "market_key":ODDS_MARKETS.get(mkt),"side":r.get("side","Over")}
                     candidates.append((pname, mkt, float(line), meta))
-
             # ── Platform candidates (PP + UD + Sleeper) ────────────────────
             if _use_platforms:
                 for _plat_store, _plat_label in [("pp_lines","prizepicks"), ("ud_lines","underdog"), ("sl_lines","sleeper")]:
@@ -8508,7 +8110,7 @@ with tabs[2]:
                         pname = (r.get("player") or "").strip()
                         stat_t = r.get("stat_type","")
                         mkt = map_platform_stat_to_market(stat_t)
-                        if not mkt or mkt not in markets_sel:
+                        if not mkt or mkt not in MARKET_OPTIONS:
                             continue
                         line = r.get("line")
                         if not pname or line is None or pd.isna(line):
@@ -8538,7 +8140,7 @@ with tabs[2]:
                     with st.spinner("Loading all NBA game logs (one-time ~20s)..."):
                         _fetch_bulk_gamelogs.clear()
                         bulk_ready = _fetch_bulk_gamelogs() is not None
-                _scan_workers = 50 if bulk_ready else 10
+                _scan_workers = min(32, len(candidates)) if bulk_ready else min(10, len(candidates))
                 if not bulk_ready:
                     st.warning(
                         f"Bulk game log load failed — scanning with {_scan_workers} workers "
@@ -8681,7 +8283,6 @@ with tabs[2]:
                 st.session_state["scanner_results"] = pd.DataFrame()
                 st.session_state["scanner_dropped"] = dropped
                 st.warning("No legs met threshold criteria.")
-
             # [FEATURE] Under scan: derive Under edges from cached computed legs (zero extra API calls)
             if bool(st.session_state.get("show_unders", False)) and all_computed_legs:
                 under_rows = []
@@ -8739,14 +8340,12 @@ with tabs[2]:
                 else:
                     st.session_state["scanner_under_results"] = pd.DataFrame()
                 _save_scanner_cache()  # re-save with under results included
-
     # [FIX 13] Always show last scanner results (persists across tab switches + server restarts)
     scanner_out = st.session_state.get("scanner_results")
     if scanner_out is not None and not scanner_out.empty:
         _scan_ts = st.session_state.get("scanner_scan_id", "")
         _ts_label = f" · scanned {_scan_ts}" if _scan_ts else ""
         st.markdown(f"<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.10em;margin-bottom:0.6rem;'>{len(scanner_out)} EDGES FOUND{_ts_label}</div>", unsafe_allow_html=True)
-
         # [UPGRADE 20] Color-code rows by confidence tier
         def _style_scanner_row(row):
             p = float(row.get("p_cal") or 0)
@@ -8755,13 +8354,11 @@ with tabs[2]:
             elif p >= 0.52: bg = "background-color:#FFB80010;"
             else:           bg = "background-color:#FF335810;"
             return [bg] * len(row)
-
         try:
             styled = scanner_out.style.apply(_style_scanner_row, axis=1)
             st.dataframe(styled, use_container_width=True)
         except Exception:
             st.dataframe(scanner_out, use_container_width=True)
-
         # 📊 AI Slate Briefing
         if _get_anthropic_key():
             _sl_btn_col, _sl_clear_col = st.columns([3, 1])
@@ -8795,7 +8392,6 @@ with tabs[2]:
                     f"📊 CLAUDE AI · SLATE BRIEFING</span>{_slate_html}</div>",
                     unsafe_allow_html=True,
                 )
-
         # [FEATURE] Under opportunities panel (shown when toggle is on)
         if bool(st.session_state.get("show_unders", False)):
             under_out = st.session_state.get("scanner_under_results")
@@ -8817,7 +8413,6 @@ with tabs[2]:
                     st.dataframe(under_out, use_container_width=True)
             elif under_out is not None:
                 st.caption("↓ No Under edges found meeting threshold criteria.")
-
         # ── SEND TO MODEL ────────────────────────────────────────────────
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
         st.markdown(
@@ -8875,7 +8470,6 @@ with tabs[2]:
                 st.session_state["_staged_sportsbook"] = sportsbook2
             st.session_state["_auto_run_model"] = True   # MODEL tab will detect and auto-run
             st.rerun()
-
         # [UPGRADE 21] One-click parlay builder from scanner results
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>ONE-CLICK PARLAY BUILDER</div>", unsafe_allow_html=True)
@@ -8919,7 +8513,6 @@ with tabs[2]:
                     "result": "Pending", "decision": "BET", "notes": "parlay-builder",
                 })
                 st.success(f"Logged {len(parlay_legs)}-leg parlay to history.")
-
         # [UPGRADE 35] Live Steam Check
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#FFB800;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>STEAM DETECTOR — CHECK LINE MOVES VS OPENING</div>", unsafe_allow_html=True)
@@ -8962,17 +8555,14 @@ with tabs[2]:
                     st.success(f"Steam alerts fired to Discord/Telegram.")
             else:
                 st.success("No significant line moves vs opening. Lines are stable.")
-
     scanner_dropped = st.session_state.get("scanner_dropped", [])
     if scanner_dropped:
         with st.expander(f"Excluded ({len(scanner_dropped)})", expanded=False):
             st.dataframe(pd.DataFrame(scanner_dropped).head(200), use_container_width=True)
-
 # ─── PLATFORMS TAB ─────────────────────────────────────────────
 with tabs[3]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>PLATFORMS — PRIZEPICKS / UNDERDOG / LINE SHOPPING</div>""", unsafe_allow_html=True)
     plat_tabs = st.tabs(["PrizePicks", "Underdog", "Sleeper", "Line History", "Best Available"])
-
     with plat_tabs[0]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>PRIZEPICKS NBA LINES</div>", unsafe_allow_html=True)
         # Show cookie status inline — saves user a trip to Alerts tab
@@ -8991,9 +8581,7 @@ with tabs[3]:
                     st.session_state["_pp_last_cookies_used"] = ""
                     st.success("Saved to disk — persists across restarts.")
                     st.rerun()
-
         pp_load_tab, pp_manual_tab = st.tabs(["Auto Fetch", "Manual Import"])
-
         with pp_load_tab:
             # ── Auto-refresh component (triggers rerun every N seconds) ──
             try:
@@ -9003,7 +8591,6 @@ with tabs[3]:
                     st_autorefresh(interval=_ar_interval_ms, key="pp_auto_rerun")
             except ImportError:
                 pass
-
             # ── Auto-fetch toggle ──
             _af_col1, _af_col2 = st.columns([2, 2])
             _auto_on = _af_col1.toggle(
@@ -9017,7 +8604,6 @@ with tabs[3]:
                 value=int(st.session_state.get("pp_auto_interval", 10)),
                 step=1, key="pp_auto_interval_input",
             )
-
             if _auto_on != st.session_state.get("pp_auto_enabled") or \
                int(_auto_min) != int(st.session_state.get("pp_auto_interval", 10)):
                 st.session_state["pp_auto_enabled"]  = _auto_on
@@ -9029,7 +8615,6 @@ with tabs[3]:
                     cookies=st.session_state.get("pp_cookies", ""),
                     relay_url=st.session_state.get("pp_relay_url", ""),
                 )
-
             # ── Relay URL (optional — for cloud deployments) ──
             with st.expander("Local Relay URL (optional, for Streamlit Cloud)", expanded=False):
                 st.caption(
@@ -9051,9 +8636,7 @@ with tabs[3]:
                         relay_url=_relay_new.strip(),
                     )
                     st.success("Relay URL saved.")
-
             st.markdown("---")
-
             # ── Status + manual fetch ──
             _auto_rows, _auto_age, _auto_err = get_pp_auto_lines()
             if _auto_rows:
@@ -9066,7 +8649,6 @@ with tabs[3]:
                         st.warning("Lines are >15 min old. Click Fetch Now to refresh.")
             elif _auto_err:
                 st.error(f"Auto-fetch error: {_auto_err}")
-
             if st.button("Fetch Now", use_container_width=True, key="pp_fetch_now_btn"):
                 with st.spinner("Fetching PrizePicks..."):
                     pp_lines, pp_err = fetch_prizepicks_lines()
@@ -9094,7 +8676,6 @@ with tabs[3]:
                             _s["ts"]   = time.time()
                             _s["err"]  = None
                         _save_pp_disk_cache(pp_lines)
-
         with pp_manual_tab:
             st.markdown("""<div style='font-size:0.68rem;color:#4A607A;margin-bottom:0.5rem;'>
             <b>How to get the JSON:</b> Open prizepicks.com → DevTools (F12) → Network tab → filter
@@ -9169,7 +8750,6 @@ with tabs[3]:
                             st.session_state["pp_cookies"] = pp_paste.strip()
                             save_pp_settings(pp_cookies=pp_paste.strip())
                             st.success("JSON saved — 'Fetch PP Lines' will use it automatically from now on.")
-
         pp_df = st.session_state.get("pp_lines")
         if pp_df is not None and not pp_df.empty:
             # Filter out alternate (goblin/demon) lines — their adjusted multipliers make
@@ -9200,7 +8780,7 @@ with tabs[3]:
                 if pp_candidates:
                     _inj_map = st.session_state.get("injury_team_map", {})
                     with st.spinner(f"Scanning {len(pp_candidates)} PrizePicks props..."):
-                        with ThreadPoolExecutor(max_workers=16) as ex:
+                        with ThreadPoolExecutor(max_workers=min(16, len(pp_candidates))) as ex:
                             futs_pp = [ex.submit(compute_leg_projection, pn, mk, ln, mt,
                                                  n_games=n_games, key_teammate_out=False,
                                                  bankroll=bankroll, frac_kelly=frac_kelly,
@@ -9212,7 +8792,9 @@ with tabs[3]:
                             pp_results = []
                             for fut in futs_pp:
                                 try:
-                                    pp_results.append(fut.result())
+                                    pp_results.append(fut.result(timeout=60))
+                                except TimeoutError:
+                                    pass
                                 except Exception as _e:
                                     pass
                     calib = st.session_state.get("calibrator_map")
@@ -9230,7 +8812,6 @@ with tabs[3]:
                         st.dataframe(pp_out.sort_values("ev_%", ascending=False), use_container_width=True)
                     else:
                         st.warning("No edges found vs PrizePicks lines.")
-
     with plat_tabs[1]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>UNDERDOG FANTASY NBA LINES</div>", unsafe_allow_html=True)
         _ud_ck = st.session_state.get("ud_cookies","")
@@ -9344,7 +8925,7 @@ with tabs[3]:
                 if ud_candidates:
                     _inj_map = st.session_state.get("injury_team_map", {})
                     with st.spinner(f"Scanning {len(ud_candidates)} Underdog props..."):
-                        with ThreadPoolExecutor(max_workers=16) as ex:
+                        with ThreadPoolExecutor(max_workers=min(16, len(ud_candidates))) as ex:
                             futs_ud = [ex.submit(compute_leg_projection, pn, mk, ln, mt,
                                                  n_games=n_games, key_teammate_out=False,
                                                  bankroll=bankroll, frac_kelly=frac_kelly,
@@ -9356,7 +8937,9 @@ with tabs[3]:
                             ud_results = []
                             for fut in futs_ud:
                                 try:
-                                    ud_results.append(fut.result())
+                                    ud_results.append(fut.result(timeout=60))
+                                except TimeoutError:
+                                    pass
                                 except Exception:
                                     pass
                     calib = st.session_state.get("calibrator_map")
@@ -9374,14 +8957,11 @@ with tabs[3]:
                         st.dataframe(ud_out.sort_values("ev_%", ascending=False), use_container_width=True)
                     else:
                         st.warning("No edges found vs Underdog lines.")
-
     with plat_tabs[2]:
         # ── SLEEPER FANTASY ─────────────────────────────────────
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#9B59F5;letter-spacing:0.12em;'>SLEEPER FANTASY NBA LINES</div>", unsafe_allow_html=True)
         st.caption("Sleeper Picks lines — paste your JSON export or upload CSV to sync with the scanner.")
-
         sl_auto_tab, sl_manual_tab = st.tabs(["Auto Fetch", "Manual Import"])
-
         with sl_auto_tab:
             st.info("Sleeper's picks API is not publicly documented. Use **Manual Import** to paste your lines, or export from the Sleeper app.")
             if st.button("Attempt Sleeper Fetch", key="sl_auto_fetch_btn"):
@@ -9412,7 +8992,6 @@ with tabs[3]:
                             pass
                 if not _sl_found:
                     st.error("Could not reach Sleeper API. Use Manual Import below.")
-
         with sl_manual_tab:
             sl_import_mode = st.radio("Import format", ["JSON paste", "CSV upload"], horizontal=True, key="sl_import_mode")
             if sl_import_mode == "JSON paste":
@@ -9479,11 +9058,9 @@ with tabs[3]:
                             st.warning(f"Could not map columns. Found: {list(_sl_csv.columns)}. Need: player, stat_type, line")
                     except Exception as e:
                         st.error(f"CSV error: {e}")
-
         _sl_loaded = st.session_state.get("sl_lines")
         if _sl_loaded is not None and not _sl_loaded.empty:
             st.markdown(f"<div style='font-size:0.62rem;color:#9B59F5;margin-top:4px;'>✓ {len(_sl_loaded)} Sleeper lines loaded — available in Scanner (select 'PP + UD only' or 'All sources')</div>", unsafe_allow_html=True)
-
     with plat_tabs[3]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>PROP LINE HISTORY</div>", unsafe_allow_html=True)
         ph_col1, ph_col2 = st.columns(2)
@@ -9501,7 +9078,6 @@ with tabs[3]:
             st.dataframe(ph_df, use_container_width=True)
             ph_csv = ph_df.to_csv(index=False)
             st.download_button("Export Line History CSV", ph_csv, "prop_line_history.csv", "text/csv")
-
     with plat_tabs[4]:
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.12em;'>BEST AVAILABLE LINE SHOPPING</div>", unsafe_allow_html=True)
         st.caption("Checks all available books for the highest price on any scanner result. Requires a valid Odds API key.")
@@ -9532,7 +9108,6 @@ with tabs[3]:
                     st.dataframe(pd.DataFrame(shop_rows), use_container_width=True)
                 else:
                     st.info("No scanner results to display.")
-
 # ─── HISTORY TAB [FIX 12: export button] ──────────────────────
 with tabs[4]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>BET HISTORY & CLV TRACKER</div>""", unsafe_allow_html=True)
@@ -9550,7 +9125,6 @@ with tabs[4]:
         hc2.metric("Parlay Wins", n_hit)
         hc3.metric("Parlay Losses", n_miss)
         hc4.metric("Pending", n_pend)
-
         # Per-leg accuracy (only legs with individual results logged)
         h_legs_df = _expand_history_legs(h)
         settled_legs_df = h_legs_df[h_legs_df["y"].notna()].copy() if not h_legs_df.empty else pd.DataFrame()
@@ -9565,16 +9139,13 @@ with tabs[4]:
             lc3.metric("Leg Misses", n_leg_miss)
         else:
             st.caption("Per-leg accuracy will appear once you mark individual leg results below.")
-
         st.dataframe(h, use_container_width=True)
-
         # [FIX 12] Export button
         csv_data = h.to_csv(index=False)
         _exp_col, _del_col = st.columns([2, 1])
         _exp_col.download_button("Export History CSV", data=csv_data,
                            file_name=f"history_{user_id}.csv", mime="text/csv",
                            use_container_width=True)
-
         # Delete individual bets or clear all
         with st.expander("🗑 Delete / Remove Entries", expanded=False):
             st.caption("Row numbers shown in the table above (0-indexed). Deletion is permanent.")
@@ -9612,9 +9183,7 @@ with tabs[4]:
                 if _ca2.button("Cancel", key="confirm_clear_no"):
                     st.session_state["confirm_clear_all"] = False
                     st.rerun()
-
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
-
         # ── Per-leg result update (fixes calibration skew for multi-leg bets) ──
         st.markdown("<span style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.10em;'>UPDATE PER-LEG RESULTS</span>", unsafe_allow_html=True)
         st.caption("For multi-leg bets, mark each leg individually so calibration uses accurate per-leg outcomes.")
@@ -9651,7 +9220,6 @@ with tabs[4]:
                 st.success("Leg results saved — calibration will now use individual leg outcomes.")
         else:
             st.caption("No legs found for this row.")
-
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
         uc1, uc2 = st.columns(2)
         with uc1:
@@ -9679,7 +9247,6 @@ with tabs[4]:
                         st.success("CLV updated")
                 except Exception as e:
                     st.error(f"CLV update failed: {e}")
-
 # ─── CALIBRATION TAB ─────────────────────────────────────────
 with tabs[5]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>CALIBRATION ENGINE</div>""", unsafe_allow_html=True)
@@ -9701,13 +9268,11 @@ with tabs[5]:
         cc2.metric("Actual Hit Rate", f"{hit_rate_cal*100:.1f}%")
         cc3.metric("Brier Score (raw)", f"{brier:.4f}")
         cc4.metric("Calibrator Fitted", "Yes" if st.session_state.get("calibrator_map") else "No")
-
         if "clv_line_fav" in settled_df.columns and settled_df["clv_line_fav"].notna().any():
             clv_line_rate = float(settled_df["clv_line_fav"].dropna().astype(int).mean())
             st.metric("CLV (line) favorable %", f"{clv_line_rate*100:.1f}%",
                       delta="Edge exists" if clv_line_rate > 0.52 else "No edge vs closing line",
                       delta_color="normal" if clv_line_rate > 0.52 else "inverse")
-
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>ROI BY MARKET</div>", unsafe_allow_html=True)
         if "market" in settled_df.columns:
@@ -9719,7 +9284,6 @@ with tabs[5]:
             mkt_grp["avg_ev_pct"] = (mkt_grp["avg_ev"]*100).round(2)
             mkt_grp = mkt_grp.sort_values("hit_rate_pct", ascending=False)
             st.dataframe(mkt_grp, use_container_width=True)
-
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>RELIABILITY TABLE (p_raw vs actual)</div>", unsafe_allow_html=True)
         n_bins = st.slider("Bins", 6, 20, 10)
@@ -9728,7 +9292,6 @@ with tabs[5]:
             p_mean=("p_raw","mean"), win_rate=("y","mean"), n=("y","size")).reset_index()
         rel["calibration_error"] = (rel["p_mean"] - rel["win_rate"]).abs().round(3)
         st.dataframe(rel, use_container_width=True)
-
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>FIT CALIBRATOR</div>", unsafe_allow_html=True)
         st.caption("Monotone isotonic calibration maps p_raw -> p_cal using your settled history.")
@@ -9740,7 +9303,6 @@ with tabs[5]:
             else:
                 st.session_state["calibrator_map"] = calib
                 st.success(f"Calibrator fitted on {calib.get('n','?')} legs (range: {calib.get('training_min',0):.2f}-{calib.get('training_max',1):.2f})")
-
         calib = st.session_state.get("calibrator_map")
         if calib:
             settled_df["p_cal_fit"] = settled_df["p_raw"].apply(lambda p: apply_calibrator(p, calib))
@@ -9750,13 +9312,11 @@ with tabs[5]:
                       delta_color="inverse")
             # [FIX 9] Show training range
             st.caption(f"Training range: [{calib.get('training_min',0):.3f}, {calib.get('training_max',1):.3f}]")
-
             settled_df["bin2"] = pd.cut(settled_df["p_cal_fit"], bins=n_bins, labels=False, include_lowest=True)
             rel2 = settled_df.groupby("bin2",dropna=True).agg(
                 p_mean=("p_cal_fit","mean"),win_rate=("y","mean"),n=("y","size")).reset_index()
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00AAFF;letter-spacing:0.12em;text-transform:uppercase;margin:0.6rem 0;'>POST-CALIBRATION RELIABILITY</div>", unsafe_allow_html=True)
             st.dataframe(rel2, use_container_width=True)
-
             st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#4A607A;'>POLICY AUDIT</div>", unsafe_allow_html=True)
             if hit_rate_cal < 0.48:
@@ -9767,7 +9327,6 @@ with tabs[5]:
                 st.info("Moderate hit rate. Continue collecting data, focus on CLV tracking.")
             if brier_cal > brier:
                 st.warning("Calibrator is WORSENING Brier score - needs more data. Reset to identity.")
-
     # ── Rolling Brier Score ────────────────────────────────────
     st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
     st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>ROLLING BRIER SCORE (TRAILING WINDOWS)</div>", unsafe_allow_html=True)
@@ -9785,15 +9344,12 @@ with tabs[5]:
             st.line_chart(series_df, use_container_width=True, height=150)
     else:
         st.caption("Need 10+ settled legs for rolling Brier.")
-
 # ─── INSIGHTS TAB (CLV leaderboard, book efficiency, prop breakdown, Bayesian priors) ───
 with tabs[6]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>INSIGHTS — EDGE ANALYTICS & INTELLIGENCE</div>""", unsafe_allow_html=True)
     h_ins = load_history(st.session_state.get("user_id","trader"))
     legs_ins = _expand_history_legs(h_ins)
-
     ins_tabs = st.tabs(["CLV Leaderboard", "Book Efficiency", "Prop Breakdown", "Bayesian Priors"])
-
     with ins_tabs[0]:
         # [UPGRADE 31] CLV Leaderboard
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;'>TOP CLOSING LINE VALUE PLAYS</div>", unsafe_allow_html=True)
@@ -9815,7 +9371,6 @@ with tabs[6]:
             st.dataframe(clv_lb, use_container_width=True)
             if not clv_pos.empty:
                 st.markdown("<div style='font-size:0.65rem;color:#00FFB2;margin-top:0.4rem;'>Positive CLV = model found real edge vs closing price. Keep targeting these players/markets.</div>", unsafe_allow_html=True)
-
     with ins_tabs[1]:
         # [UPGRADE 32] Book Efficiency Score
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;'>PER-BOOK MARKET EFFICIENCY</div>", unsafe_allow_html=True)
@@ -9828,7 +9383,6 @@ with tabs[6]:
             best_book = book_eff.iloc[0]["book"] if not book_eff.empty else None
             if best_book:
                 st.markdown(f"<div style='color:#00FFB2;font-size:0.68rem;margin-top:0.4rem;'>Best book by hit rate: <b>{best_book}</b> — prioritize this book when line shopping.</div>", unsafe_allow_html=True)
-
     with ins_tabs[2]:
         # [UPGRADE 33] Prop-type edge breakdown
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;'>EDGE BREAKDOWN BY MARKET TYPE</div>", unsafe_allow_html=True)
@@ -9859,7 +9413,6 @@ with tabs[6]:
                 worst_mkt = mkt_breakdown.iloc[-1]["market"] if len(mkt_breakdown) > 1 else None
                 if worst_mkt and mkt_breakdown.iloc[-1]["hit_%"] < 48:
                     st.markdown(f"<div style='color:#FF3358;font-size:0.68rem;'>Weakest market: <b>{worst_mkt}</b> ({mkt_breakdown.iloc[-1]['hit_%']:.1f}% hit rate). Consider avoiding.</div>", unsafe_allow_html=True)
-
     with ins_tabs[3]:
         # [UPGRADE 34] Bayesian Prior Update from history
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;'>BAYESIAN PRIOR UPDATE FROM YOUR HISTORY</div>", unsafe_allow_html=True)
@@ -9885,11 +9438,9 @@ with tabs[6]:
                 st.success(f"Updated {pos_for_prior} priors applied to this session. Model will use these for the next run.")
         else:
             st.info("Need 20+ settled legs to compute personalised prior updates.")
-
 # ─── ALERTS TAB ───────────────────────────────────────────────
 with tabs[7]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>ALERTS — DISCORD / TELEGRAM</div>""", unsafe_allow_html=True)
-
     # ── PrizePicks cookie auth ─────────────────────────────────
     with st.expander("PrizePicks Cookie Auth (bypasses 403 block)", expanded=False):
         st.markdown("""<div style='font-size:0.68rem;color:#4A607A;line-height:1.6;'>
@@ -9988,7 +9539,6 @@ with tabs[7]:
                 st.success("Digest sent to Telegram.") if ok else st.error(f"Telegram error: {err}")
             else:
                 st.warning("No Telegram bot configured.")
-
     st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
     st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#4A607A;letter-spacing:0.10em;'>INJURY REPORT</div>", unsafe_allow_html=True)
     if st.button("Fetch Today's Injury Report", use_container_width=True):
@@ -10016,7 +9566,6 @@ with tabs[7]:
     if cur_inj:
         n_out = sum(len(v) for v in cur_inj.values())
         st.caption(f"Auto-injury active: {n_out} OUT/DOUBTFUL players across {len(cur_inj)} teams")
-
     # [UPGRADE 9] Rotowire News Feed
     st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
     st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#FFB800;letter-spacing:0.10em;text-transform:uppercase;'>ROTOWIRE NBA NEWS — FAST INJURY INTEL</div>", unsafe_allow_html=True)
@@ -10049,15 +9598,12 @@ with tabs[7]:
             if not rw_wl.empty:
                 st.markdown("<div style='color:#FF3358;font-size:0.68rem;font-weight:600;margin-top:0.4rem;'>WATCHLIST ALERT — these players have Rotowire news:</div>", unsafe_allow_html=True)
                 st.dataframe(rw_wl, use_container_width=True)
-
 # ── SETTINGS TAB (tabs[8]) ──────────────────────────────────
 with tabs[8]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;
 color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;
 margin-bottom:1.2rem;'>ACCOUNT & ENGINE SETTINGS</div>""", unsafe_allow_html=True)
-
     _set_col1, _set_col2 = st.columns(2)
-
     with _set_col1:
         # ── ACCOUNT INFO ────────────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
@@ -10076,13 +9622,11 @@ margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #0E1E30;'>
     {f"<div style='font-family:Fira Code,monospace;font-size:0.62rem;color:#4A7090;margin-top:4px;'>{_acct_email}</div>" if _acct_email else ""}
 </div>
 """, unsafe_allow_html=True)
-
         # ── BANKROLL ─────────────────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
 margin-bottom:0.6rem;margin-top:0.8rem;padding-bottom:0.4rem;
 border-bottom:1px solid #0E1E30;'>▸ BANKROLL</div>""", unsafe_allow_html=True)
-
         _set_br = st.number_input("Bankroll ($)", min_value=0.0,
             value=float(st.session_state.get("bankroll", 1000.0)), step=50.0,
             key="settings_bankroll")
@@ -10090,68 +9634,55 @@ border-bottom:1px solid #0E1E30;'>▸ BANKROLL</div>""", unsafe_allow_html=True)
         _bs2 = load_user_state(user_id)
         _bs2["bankroll"] = float(_set_br)
         save_user_state(user_id, _bs2)
-
         # ── MODEL PARAMETERS ────────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
 margin-bottom:0.6rem;margin-top:0.8rem;padding-bottom:0.4rem;
 border-bottom:1px solid #0E1E30;'>▸ MODEL PARAMETERS</div>""", unsafe_allow_html=True)
-
         _mpw = st.slider("Model Weight vs Market", 0.0, 1.0,
             float(st.session_state.get("market_prior_weight", 0.65)), 0.05,
             help="1.0 = pure statistical model · 0.0 = pure market implied prob",
             key="settings_mpw")
         st.session_state["market_prior_weight"] = float(_mpw)
-
         _ng = st.slider("Sample Window (games)", 5, 30,
             int(st.session_state.get("n_games", 10)), key="settings_ng")
         st.session_state["n_games"] = _ng
-
         _fk = st.slider("Fractional Kelly", 0.0, 1.0,
             float(st.session_state.get("frac_kelly", 0.25)), 0.05, key="settings_fk")
         st.session_state["frac_kelly"] = _fk
-
         _pm = st.number_input("Parlay Payout (x)", min_value=1.0,
             value=float(st.session_state.get("payout_multi", 3.0)), step=0.1, key="settings_pm")
         st.session_state["payout_multi"] = _pm
-
         # ── FILTERS ──────────────────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
 margin-bottom:0.6rem;margin-top:0.8rem;padding-bottom:0.4rem;
 border-bottom:1px solid #0E1E30;'>▸ FILTERS</div>""", unsafe_allow_html=True)
-
         _exc = st.checkbox("Block Chaotic Regime",
             value=bool(st.session_state.get("exclude_chaotic", True)),
             help="Filters high-CV / blowout-risk environments",
             key="settings_exc")
         st.session_state["exclude_chaotic"] = bool(_exc)
-
         _su = st.checkbox("Show Under Opportunities",
             value=bool(st.session_state.get("show_unders", False)),
             help="Surface high-probability Unders alongside each leg",
             key="settings_su")
         st.session_state["show_unders"] = bool(_su)
-
     with _set_col2:
         # ── RISK CONTROLS ────────────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
 margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #0E1E30;'>
 ▸ RISK CONTROLS</div>""", unsafe_allow_html=True)
-
         _mrpb = st.slider("Max Bet Size (% Bankroll)", 0.0, 10.0,
             float(st.session_state.get("max_risk_per_bet", 3.0)), 0.5, key="settings_mrpb")
         st.session_state["max_risk_per_bet"] = float(_mrpb)
-
         _mdl = st.slider("Daily Loss Stop (%)", 0, 50,
             int(st.session_state.get("max_daily_loss", 15)), key="settings_mdl")
         st.session_state["max_daily_loss"] = _mdl
-
         _mwl = st.slider("Weekly Loss Stop (%)", 0, 50,
             int(st.session_state.get("max_weekly_loss", 25)), key="settings_mwl")
         st.session_state["max_weekly_loss"] = _mwl
-
         _rclr = "#FF3358" if _mrpb >= 7 else ("#FFB800" if _mrpb >= 4 else "#00FFB2")
         st.markdown(f"""
 <div style='background:#04080F;border:1px solid #0E1E30;border-radius:4px;
@@ -10173,13 +9704,11 @@ margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #0E1E30;'>
     </div>
 </div>
 """, unsafe_allow_html=True)
-
         # ── ODDS API ─────────────────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
 margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #0E1E30;'>
 ▸ ODDS API</div>""", unsafe_allow_html=True)
-
         _hdr_s = st.session_state.get("_odds_headers_last", {})
         _rem_s = _hdr_s.get("remaining", "?"); _used_s = _hdr_s.get("used", "?")
         try:
@@ -10209,13 +9738,11 @@ margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #0E1E30;'>
         _mrd = st.number_input("Max API requests/day", 1, 500,
             int(st.session_state.get("max_req_day", 100)), 10, key="settings_mrd")
         st.session_state["max_req_day"] = int(_mrd)
-
         # ── CLAUDE AI ────────────────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
 margin-top:0.8rem;margin-bottom:0.6rem;padding-bottom:0.4rem;
 border-bottom:1px solid #0E1E30;'>▸ CLAUDE AI ENGINE</div>""", unsafe_allow_html=True)
-
         _ai_key_s = _get_anthropic_key()
         if _ai_key_s:
             st.markdown("""
@@ -10230,7 +9757,6 @@ border-bottom:1px solid #0E1E30;'>▸ CLAUDE AI ENGINE</div>""", unsafe_allow_ht
 </div>""", unsafe_allow_html=True)
         else:
             st.info("Claude AI key not configured. Add ANTHROPIC_API_KEY to Streamlit secrets to enable AI for all users.")
-
         with st.expander("Override API Key (optional)", expanded=False):
             _ai_ov_stored = st.session_state.get("_anthropic_key_override", "")
             _ai_ov_input = st.text_input(
@@ -10249,13 +9775,11 @@ border-bottom:1px solid #0E1E30;'>▸ CLAUDE AI ENGINE</div>""", unsafe_allow_ht
                         st.session_state.pop(_k, None)
             elif _ai_ov_input and not os.environ.get("ANTHROPIC_API_KEY"):
                 os.environ["ANTHROPIC_API_KEY"] = _ai_ov_input
-
         # ── WATCHLIST ────────────────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
 margin-top:0.8rem;margin-bottom:0.6rem;padding-bottom:0.4rem;
 border-bottom:1px solid #0E1E30;'>▸ WATCHLIST</div>""", unsafe_allow_html=True)
-
         _wl_s = load_watchlist(st.session_state.get("user_id", "trader"))
         _wl_add_s = st.text_input("Add player to watchlist", placeholder="LeBron James",
                                    key="settings_wl_add")
@@ -10280,13 +9804,11 @@ border-bottom:1px solid #0E1E30;'>▸ WATCHLIST</div>""", unsafe_allow_html=True
             ])
             st.markdown(f"<div style='margin-top:0.4rem;'>{_wl_pills}</div>",
                         unsafe_allow_html=True)
-
     # ── SAVE SETTINGS NOTICE ─────────────────────────────────
     st.markdown("""<div style='margin-top:1rem;font-family:Fira Code,monospace;font-size:0.60rem;
 color:#2A5070;border-top:1px solid #0E1E30;padding-top:0.6rem;'>
 Settings are applied immediately and saved to your account.</div>""",
         unsafe_allow_html=True)
-
     # Save settings to user state
     _settings_to_save = {
         "market_prior_weight": st.session_state.get("market_prior_weight", 0.65),
@@ -10305,7 +9827,6 @@ Settings are applied immediately and saved to your account.</div>""",
     if any(_cur_saved.get(k) != v for k, v in _settings_to_save.items()):
         _cur_saved.update(_settings_to_save)
         save_user_state(st.session_state.get("user_id", "trader"), _cur_saved)
-
 # ── FOOTER ──────────────────────────────────────────────────
 st.markdown("""
 <div style='margin-top:2rem;padding-top:0.8rem;border-top:1px solid #1E2D3D;
