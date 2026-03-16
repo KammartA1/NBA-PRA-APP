@@ -2867,18 +2867,37 @@ def find_player_line_from_events(player_name, market_key, date_iso, book_choice)
             rr = next((x for x in rows if x.get("player_norm")==close[0]), None)
             if rr: return float(rr["line"]), rr, None
     return None, None, "Player/market not found in Odds API props"
+# Known major sportsbooks — shown as fallback when Odds API has no data for the date
+_FALLBACK_BOOKS = [
+    "draftkings", "fanduel", "betmgm", "caesars", "pointsbet",
+    "bet365", "betrivers", "unibet", "wynnbet", "barstool",
+]
+@st.cache_data(ttl=60*30, show_spinner=False)
 def get_sportsbook_choices(date_iso):
     evs, err = odds_get_events(date_iso)
-    if err or not evs: return ["consensus"], err
-    for ev in evs[:6]:
+    if err:
+        # API key missing or quota exceeded — return fallback with error
+        return ["consensus"] + _FALLBACK_BOOKS, err
+    if not evs:
+        # No games on this date — return fallback silently
+        return ["consensus"] + _FALLBACK_BOOKS, None
+    # Try multiple market keys so we find bookmakers even if one market isn't offered
+    _probe_markets = [
+        ODDS_MARKETS["Points"], ODDS_MARKETS["Rebounds"], ODDS_MARKETS["Assists"],
+        ODDS_MARKETS["PRA"],
+    ]
+    for ev in evs[:15]:
         eid = ev.get("id")
         if not eid: continue
-        odds, oerr = odds_get_event_odds(eid, (ODDS_MARKETS["Points"],))
-        if odds and not oerr:
-            books = sorted(list(dict.fromkeys(
-                b.get("key") for b in odds.get("bookmakers",[]) if b.get("key"))))
-            return ["consensus"] + books, None
-    return ["consensus"], None
+        for mk in _probe_markets:
+            odds, oerr = odds_get_event_odds(eid, (mk,))
+            if odds and not oerr:
+                books = sorted(list(dict.fromkeys(
+                    b.get("key") for b in odds.get("bookmakers", []) if b.get("key"))))
+                if books:
+                    return ["consensus"] + books, None
+    # Events exist but none returned bookmaker data — use fallback
+    return ["consensus"] + _FALLBACK_BOOKS, None
 # ──────────────────────────────────────────────
 # SHARP BOOK DIVERGENCE ALERT
 # ──────────────────────────────────────────────
@@ -7037,7 +7056,10 @@ with tabs[0]:
         scan_date = st.date_input("Lines Date", value=date.today(), key="model_date")
     with book_col:
         book_choices, book_err = get_sportsbook_choices(scan_date.isoformat())
-        if book_err: st.caption(book_err)
+        if book_err:
+            st.caption(f"⚠ Odds API: {book_err} — showing fallback books")
+        elif set(book_choices) <= ({"consensus"} | set(_FALLBACK_BOOKS)):
+            st.caption("ℹ No live odds for this date — showing default books")
         if "_staged_sportsbook" in st.session_state:
             _sb = st.session_state.pop("_staged_sportsbook")
             if _sb in book_choices:
@@ -7850,9 +7872,13 @@ with tabs[2]:
     with sc2:
         markets_sel = st.multiselect("Markets", options=MARKET_OPTIONS, default=["Points","Rebounds","Assists"])
     with sc3:
-        book_choices2, _ = get_sportsbook_choices(scan_start.isoformat())
+        book_choices2, _book_err2 = get_sportsbook_choices(scan_start.isoformat())
         if "prizepicks" not in book_choices2:
             book_choices2 = ["prizepicks"] + book_choices2
+        if _book_err2:
+            st.caption(f"⚠ Odds API: {_book_err2} — showing fallback books")
+        elif set(book_choices2) - {"prizepicks"} <= ({"consensus"} | set(_FALLBACK_BOOKS)):
+            st.caption("ℹ No live odds for this date — showing default books")
         sportsbook2 = st.selectbox("Book", options=["all"]+book_choices2, index=0)
     sf1, sf2, sf3 = st.columns(3)
     with sf1:
