@@ -3600,7 +3600,19 @@ def fetch_prizepicks_lines():
     if st.session_state.get("_pp_last_cookies_used") != cookies_str:
         _fetch_prizepicks_lines_cached.clear()
         st.session_state["_pp_last_cookies_used"] = cookies_str
-    return _fetch_prizepicks_lines_cached(cookies_str=cookies_str)
+    direct_rows, direct_err = _fetch_prizepicks_lines_cached(cookies_str=cookies_str)
+    if direct_rows:
+        return direct_rows, None
+    # ── 4. Scraper service DB fallback (no cookies needed) ──
+    db_rows, db_age, _ = _load_pp_from_scraper_db()
+    if db_rows:
+        _age_str = f" ({db_age // 60}m ago)" if db_age else ""
+        return db_rows, None
+    # ── 5. Disk cache fallback ──
+    disk_rows, disk_age = _load_pp_disk_cache(max_age_sec=3600)
+    if disk_rows:
+        return disk_rows, None
+    return [], direct_err
 # ──────────────────────────────────────────────
 # PP AUTO-FETCH BACKGROUND ENGINE
 # Runs a daemon thread that fetches PP lines on a configurable interval.
