@@ -1,0 +1,30 @@
+[Unit]
+Description=NBA PrizePicks Scraper Service
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/user/NBA-PRA-APP
+ExecStart=/home/user/NBA-PRA-APP/venv/bin/python -m services.prizepicks_scraper
+Restart=always
+RestartSec=30
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/home/user/NBA-PRA-APP/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nba-pp-scraper
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=25%
+
+[Install]
+WantedBy=multi-user.target

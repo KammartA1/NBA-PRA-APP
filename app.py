@@ -3705,8 +3705,55 @@ def set_pp_auto_fetch(enabled: bool, interval_sec: int = 600, cookies: str = "",
     if enabled:
         _ensure_pp_auto_thread()
         state["stop_evt"].set()  # poke thread to fetch immediately
+def _load_pp_from_scraper_db():
+    """Load latest lines from the PrizePicks scraper service SQLite database."""
+    try:
+        _db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "nba_prizepicks.db")
+        if not os.path.exists(_db_path):
+            return None, None, None
+        import sqlite3
+        conn = sqlite3.connect(_db_path, timeout=5)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT player_name, stat_type, line_score, start_time, odds_type "
+                    "FROM nba_prizepicks_lines WHERE is_latest = 1")
+        db_rows = cur.fetchall()
+        if not db_rows:
+            conn.close()
+            return None, None, None
+        # Get last pull time
+        cur.execute("SELECT last_success FROM scraper_status WHERE scraper_name='nba_prizepicks'")
+        status_row = cur.fetchone()
+        last_success = status_row["last_success"] if status_row else None
+        conn.close()
+        rows = []
+        for r in db_rows:
+            rows.append({
+                "player": r["player_name"],
+                "stat_type": r["stat_type"],
+                "line": r["line_score"],
+                "start_time": r["start_time"] or "",
+                "source": "prizepicks",
+                "odds_type": r["odds_type"] or "standard",
+            })
+        age = None
+        if last_success:
+            from datetime import datetime as _dt
+            try:
+                _ts = _dt.strptime(last_success, "%Y-%m-%d %H:%M:%S.%f")
+                age = int(time.time() - _ts.timestamp())
+            except Exception:
+                try:
+                    _ts = _dt.strptime(last_success, "%Y-%m-%d %H:%M:%S")
+                    age = int(time.time() - _ts.timestamp())
+                except Exception:
+                    pass
+        return rows, age, last_success
+    except Exception:
+        return None, None, None
+
 def get_pp_auto_lines():
-    """Return (rows, age_sec, err) from background state or disk cache."""
+    """Return (rows, age_sec, err) from background state, disk cache, or scraper DB."""
     state = _pp_auto_state()
     with state["lock"]:
         rows = list(state.get("rows", []))
@@ -3717,6 +3764,10 @@ def get_pp_auto_lines():
     disk_rows, disk_age = _load_pp_disk_cache(max_age_sec=3600)
     if disk_rows:
         return disk_rows, disk_age, err
+    # Fallback: check the scraper service's SQLite database
+    db_rows, db_age, _ = _load_pp_from_scraper_db()
+    if db_rows:
+        return db_rows, db_age, err
     return [], None, err
 # ──────────────────────────────────────────────
 # UNDERDOG INGESTION
@@ -8672,6 +8723,16 @@ with tabs[3]:
                     )
                     st.success("Relay URL saved.")
             st.markdown("---")
+            # ── Scraper service status ──
+            _scraper_rows, _scraper_age, _scraper_ts = _load_pp_from_scraper_db()
+            if _scraper_rows:
+                _scraper_min = (_scraper_age or 0) // 60
+                _sc_color = "#00FFB2" if _scraper_min < 45 else "#FFD700" if _scraper_min < 120 else "#FF3358"
+                st.markdown(
+                    f"<div style='font-size:0.65rem;color:{_sc_color};margin-bottom:6px;font-family:monospace;'>"
+                    f"SCRAPER SERVICE: {len(_scraper_rows)} lines · last pull {_scraper_min}m ago</div>",
+                    unsafe_allow_html=True
+                )
             # ── Status + manual fetch ──
             _auto_rows, _auto_age, _auto_err = get_pp_auto_lines()
             if _auto_rows:
