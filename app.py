@@ -3657,6 +3657,7 @@ def _fetch_prizepicks_lines_cached(cookies_str=""):
     return [], last_err or "No NBA props found — slate may not be posted yet"
 def fetch_prizepicks_lines():
     cookies_str = st.session_state.get("pp_cookies", "")
+    errors = []
     # ── 0. Scraper service DB (best: pp_scraper.py running as companion) ──
     db_rows, db_age, _ = _load_pp_from_scraper_db()
     if db_rows and db_age is not None and db_age < 1200:  # <20 min old
@@ -3672,7 +3673,28 @@ def fetch_prizepicks_lines():
         pass  # playwright not installed — skip
     except Exception as _pw_e:
         logging.warning(f"Playwright PP fetch failed: {_pw_e}")
-    # ── 2. Check relay URL (local proxy or ngrok tunnel) ──
+    # ── 2. Scraping proxy (residential IPs — bypasses datacenter IP block) ──
+    _psvc = st.session_state.get("pp_proxy_service", "").strip()
+    _pkey = st.session_state.get("pp_proxy_key", "").strip()
+    if _psvc and _pkey:
+        try:
+            rows, err = _fetch_pp_via_proxy(_psvc, _pkey)
+            if rows:
+                return rows, None
+            if err:
+                errors.append(f"Proxy: {err}")
+        except Exception as e:
+            errors.append(f"Proxy: {e}")
+    # ── 3. Browser-side fetch (user's browser = residential IP) ──
+    try:
+        rows, err = _fetch_pp_via_browser()
+        if rows:
+            return rows, None
+        if err:
+            errors.append(f"Browser: {err}")
+    except Exception as e:
+        errors.append(f"Browser: {e}")
+    # ── 4. Check relay URL (local proxy or ngrok tunnel) ──
     relay_url = st.session_state.get("pp_relay_url", "").strip()
     if relay_url:
         try:
@@ -3682,13 +3704,13 @@ def fetch_prizepicks_lines():
                 rows = data if isinstance(data, list) else data.get("rows", [])
                 if rows:
                     return rows, None
-        except Exception:
-            pass
-    # ── 3. Check background auto-fetcher state (recent in-memory result) ──
+        except Exception as e:
+            errors.append(f"Relay: {e}")
+    # ── 5. Check background auto-fetcher state (recent in-memory result) ──
     _auto_rows, _auto_age, _ = get_pp_auto_lines()
     if _auto_rows and _auto_age is not None and _auto_age < 900:
         return _auto_rows, None
-    # ── 4. Detect if user pasted a full PP JSON response into the cookies/JSON field ──
+    # ── 6. Detect if user pasted a full PP JSON response into the cookies/JSON field ──
     _stripped = cookies_str.strip() if cookies_str else ""
     if _stripped.startswith("{") and '"data"' in _stripped:
         try:
@@ -3761,6 +3783,90 @@ def _load_pp_from_scraper_db(max_age_sec: int = 1800):
         return rows, age, None
     except Exception as _e:
         return [], None, str(_e)
+# ── SCRAPING PROXY CONFIG ──────────────────────────────────────────────────
+_PROXY_SERVICES = {
+    "scraperapi": {
+        "url_tpl": "http://api.scraperapi.com?api_key={key}&url={url}&render=false",
+        "signup": "https://www.scraperapi.com/signup",
+        "free_tier": "5,000 req/month",
+    },
+    "scrapingbee": {
+        "url_tpl": "https://app.scrapingbee.com/api/v1/?api_key={key}&url={url}&render=false",
+        "signup": "https://www.scrapingbee.com/",
+        "free_tier": "1,000 req/month",
+    },
+    "zenrows": {
+        "url_tpl": "https://api.zenrows.com/v1/?apikey={key}&url={url}",
+        "signup": "https://www.zenrows.com/",
+        "free_tier": "1,000 req/month",
+    },
+}
+@st.cache_data(ttl=60*10, show_spinner=False)
+def _fetch_pp_via_proxy(proxy_service="scraperapi", proxy_key=""):
+    """Fetch PrizePicks via residential proxy. Bypasses PerimeterX IP block."""
+    if not proxy_key:
+        return [], "No proxy API key configured"
+    svc = _PROXY_SERVICES.get(proxy_service)
+    if not svc:
+        return [], f"Unknown proxy service: {proxy_service}"
+    all_rows, last_err = [], None
+    for single_stat in ("true", "false"):
+        target = f"https://api.prizepicks.com/projections?per_page=500&single_stat={single_stat}&league_id=7"
+        proxy_url = svc["url_tpl"].format(key=proxy_key, url=target)
+        try:
+            r = requests.get(proxy_url, timeout=30, headers={"Accept": "application/vnd.api+json"})
+            if r.status_code == 401:
+                return [], f"{proxy_service} API key invalid — check Settings → PP Connection"
+            if r.status_code == 429:
+                return [], f"{proxy_service} rate limited — free tier may be exhausted"
+            if not r.ok:
+                last_err = f"{proxy_service} HTTP {r.status_code}: {r.text[:200]}"
+                continue
+            rows = _parse_pp_response(r.json())
+            all_rows.extend(rows)
+        except Exception as e:
+            last_err = f"{proxy_service}: {type(e).__name__}: {e}"
+    if all_rows:
+        seen = set()
+        deduped = [r for r in all_rows if (r["player"], r["stat_type"]) not in seen and not seen.add((r["player"], r["stat_type"]))]
+        _save_pp_disk_cache(deduped)
+        return deduped, None
+    return [], last_err or "No NBA props found via proxy"
+def _fetch_pp_via_browser():
+    """Execute fetch() in the user's browser (residential IP — bypasses datacenter blocks)."""
+    try:
+        from streamlit_js_eval import streamlit_js_eval
+    except ImportError:
+        return [], "streamlit-js-eval not installed"
+    js_code = """
+await (async () => {
+  try {
+    const h = {'Accept':'application/vnd.api+json','Referer':'https://app.prizepicks.com/'};
+    const [r1,r2] = await Promise.all([
+      fetch('https://api.prizepicks.com/projections?per_page=500&single_stat=true&league_id=7', {headers:h}),
+      fetch('https://api.prizepicks.com/projections?per_page=500&single_stat=false&league_id=7', {headers:h})
+    ]);
+    if(!r1.ok&&!r2.ok) return JSON.stringify({error:'HTTP '+r1.status});
+    const [d1,d2] = await Promise.all([r1.ok?r1.json():{data:[],included:[]}, r2.ok?r2.json():{data:[],included:[]}]);
+    return JSON.stringify({data:[...(d1.data||[]),...(d2.data||[])],included:[...(d1.included||[]),...(d2.included||[])]});
+  } catch(e) { return JSON.stringify({error:e.message}); }
+})()
+"""
+    try:
+        raw = streamlit_js_eval(js_expressions=js_code, key="pp_browser_fetch")
+        if raw is None:
+            return [], None  # first render — JS hasn't executed yet
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        if isinstance(data, dict) and "error" in data:
+            return [], f"Browser: {data['error']}"
+        if isinstance(data, dict) and "data" in data:
+            rows = _parse_pp_response(data)
+            if rows:
+                _save_pp_disk_cache(rows)
+            return rows, None
+        return [], "Browser returned 0 NBA props"
+    except Exception as e:
+        return [], f"Browser fetch: {e}"
 # [AUDIT FIX] Module-level singleton for PP background fetcher state.
 # Previously _pp_auto_state() returned a new dict every call, breaking singleton semantics:
 # thread tracking, lock sharing, and stop_evt coordination all failed silently,
@@ -3771,6 +3877,8 @@ _PP_AUTO_STATE: dict = {
     "err": None,
     "cookies": "",
     "relay_url": "",
+    "proxy_service": "",
+    "proxy_key": "",
     "enabled": False,
     "interval": 600,
     "lock": threading.Lock(),
@@ -3842,7 +3950,7 @@ def _ensure_pp_auto_thread():
     t = threading.Thread(target=_pp_auto_loop, args=(state,), daemon=True, name="pp_auto_fetcher")
     state["thread"] = t
     t.start()
-def set_pp_auto_fetch(enabled: bool, interval_sec: int = 600, cookies: str = "", relay_url: str = ""):
+def set_pp_auto_fetch(enabled: bool, interval_sec: int = 600, cookies: str = "", relay_url: str = "", proxy_service: str = "", proxy_key: str = ""):
     """Enable/disable the background fetcher and trigger an immediate fetch."""
     state = _pp_auto_state()
     with state["lock"]:
@@ -3850,6 +3958,8 @@ def set_pp_auto_fetch(enabled: bool, interval_sec: int = 600, cookies: str = "",
         state["interval"] = max(60, interval_sec)
         state["cookies"] = cookies
         state["relay_url"] = relay_url
+        state["proxy_service"] = proxy_service
+        state["proxy_key"] = proxy_key
     if enabled:
         _ensure_pp_auto_thread()
         state["stop_evt"].set()  # poke thread to fetch immediately
