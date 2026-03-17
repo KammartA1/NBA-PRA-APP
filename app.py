@@ -3828,19 +3828,22 @@ def _load_pp_from_scraper_db(max_age_sec: int = 1800):
 # ── SCRAPING PROXY CONFIG ──────────────────────────────────────────────────
 _PROXY_SERVICES = {
     "scraperapi": {
-        "url_tpl": "http://api.scraperapi.com?api_key={key}&url={url}&render=false",
+        "url_tpl": "http://api.scraperapi.com?api_key={key}&url={url}&render=false&premium=true",
         "signup": "https://www.scraperapi.com/signup",
-        "free_tier": "5,000 req/month",
+        "free_tier": "5,000 credits/month (premium=10 credits/req → ~250 fetches)",
+        "credits_per_req": 10,
     },
     "scrapingbee": {
-        "url_tpl": "https://app.scrapingbee.com/api/v1/?api_key={key}&url={url}&render=false",
+        "url_tpl": "https://app.scrapingbee.com/api/v1/?api_key={key}&url={url}&render_js=false&premium_proxy=true",
         "signup": "https://www.scrapingbee.com/",
         "free_tier": "1,000 req/month",
+        "credits_per_req": 1,
     },
     "zenrows": {
-        "url_tpl": "https://api.zenrows.com/v1/?apikey={key}&url={url}",
+        "url_tpl": "https://api.zenrows.com/v1/?apikey={key}&url={url}&premium_proxy=true",
         "signup": "https://www.zenrows.com/",
         "free_tier": "1,000 req/month",
+        "credits_per_req": 1,
     },
 }
 @st.cache_data(ttl=60*10, show_spinner=False)
@@ -3865,7 +3868,21 @@ def _fetch_pp_via_proxy(proxy_service="scraperapi", proxy_key=""):
                     return [], f"{proxy_service} API key invalid — check Settings → PP Connection"
                 if r.status_code == 429:
                     return [], f"{proxy_service} rate limited — free tier may be exhausted"
-                if not r.ok:
+                # If 500 on ScraperAPI, retry with ultra_premium (protected domain escalation)
+                if r.status_code == 500 and proxy_service == "scraperapi":
+                    ultra_url = proxy_url.replace("premium=true", "ultra_premium=true")
+                    r = requests.get(ultra_url, timeout=75, headers={"Accept": "application/vnd.api+json"})
+                    if r.status_code == 401:
+                        return [], f"{proxy_service} API key invalid"
+                    if r.status_code == 429:
+                        return [], f"{proxy_service} rate limited — ultra_premium costs 75 credits/req"
+                    if not r.ok:
+                        last_err = (
+                            f"{proxy_service} HTTP {r.status_code} (tried premium + ultra_premium). "
+                            "PrizePicks may require a paid ScraperAPI plan, or try switching to ScrapingBee."
+                        )
+                        break
+                elif not r.ok:
                     last_err = f"{proxy_service} HTTP {r.status_code}: {r.text[:200]}"
                     break
                 rows = _parse_pp_response(r.json())
@@ -7474,7 +7491,7 @@ if "pp_cookies" not in st.session_state:
     st.session_state["pp_cookies"]       = _pp_disk.get("pp_cookies", "")
     st.session_state["pp_relay_url"]     = _pp_disk.get("pp_relay_url", "")
     st.session_state["pp_auto_enabled"]  = _pp_disk.get("pp_auto_enabled", False)
-    st.session_state["pp_auto_interval"] = _pp_disk.get("pp_auto_interval", 10)
+    st.session_state["pp_auto_interval"] = _pp_disk.get("pp_auto_interval", 30)
 if "pp_proxy_service" not in st.session_state:
     st.session_state["pp_proxy_service"] = _pp_disk.get("pp_proxy_service", "scraperapi")
 if "pp_proxy_key" not in st.session_state:
@@ -7488,7 +7505,7 @@ if "_odds_api_key_override" not in st.session_state:
 if st.session_state.get("pp_auto_enabled"):
     set_pp_auto_fetch(
         enabled=True,
-        interval_sec=int(st.session_state.get("pp_auto_interval", 10)) * 60,
+        interval_sec=int(st.session_state.get("pp_auto_interval", 30)) * 60,
         cookies=st.session_state.get("pp_cookies", ""),
         relay_url=st.session_state.get("pp_relay_url", ""),
     )
@@ -7496,7 +7513,7 @@ elif _pp_disk.get("pp_auto_enabled"):
     # Disk had it enabled — also restore
     set_pp_auto_fetch(
         enabled=True,
-        interval_sec=int(_pp_disk.get("pp_auto_interval", 10)) * 60,
+        interval_sec=int(_pp_disk.get("pp_auto_interval", 30)) * 60,
         cookies=_pp_disk.get("pp_cookies", ""),
         relay_url=_pp_disk.get("pp_relay_url", ""),
     )
@@ -8450,6 +8467,24 @@ with tabs[2]:
             _pp_loaded = st.session_state.get("pp_lines")
             if _pp_loaded is not None and not _pp_loaded.empty:
                 st.markdown(f"<div style='font-size:0.58rem;color:#00FFB2;'>✓ {len(_pp_loaded)} ready</div>", unsafe_allow_html=True)
+            _scanner_auto = st.toggle(
+                "Auto-refresh PP",
+                value=st.session_state.get("pp_auto_enabled", False),
+                key="scanner_pp_auto_toggle",
+                help=f"Fetches every {st.session_state.get('pp_auto_interval', 30)} min. Configure interval in Platforms tab.",
+            )
+            if _scanner_auto != st.session_state.get("pp_auto_enabled", False):
+                st.session_state["pp_auto_enabled"] = _scanner_auto
+                save_pp_settings(pp_auto_enabled=_scanner_auto)
+                set_pp_auto_fetch(
+                    enabled=_scanner_auto,
+                    interval_sec=int(st.session_state.get("pp_auto_interval", 30)) * 60,
+                    cookies=st.session_state.get("pp_cookies", ""),
+                    relay_url=st.session_state.get("pp_relay_url", ""),
+                    proxy_service=st.session_state.get("pp_proxy_service", ""),
+                    proxy_key=st.session_state.get("pp_proxy_key", ""),
+                )
+                st.rerun()
         with _plat_c2:
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#FFB800;'>UNDERDOG</div>", unsafe_allow_html=True)
             if st.button("Fetch UD Lines", key="scanner_fetch_ud_btn", use_container_width=True):
@@ -9214,26 +9249,71 @@ with tabs[3]:
             # ── Auto-refresh component (triggers rerun every N seconds) ──
             try:
                 from streamlit_autorefresh import st_autorefresh
-                _ar_interval_ms = int(st.session_state.get("pp_auto_interval", 10)) * 60 * 1000
+                _ar_interval_ms = int(st.session_state.get("pp_auto_interval", 30)) * 60 * 1000
                 if st.session_state.get("pp_auto_enabled"):
                     st_autorefresh(interval=_ar_interval_ms, key="pp_auto_rerun")
             except ImportError:
                 pass
-            # ── Auto-fetch toggle ──
-            _af_col1, _af_col2 = st.columns([2, 2])
+            # ── Auto-refresh toggle with credit-aware defaults ──
+            _af_col1, _af_col2, _af_col3 = st.columns([2, 2, 2])
+
             _auto_on = _af_col1.toggle(
                 "Auto-Refresh Lines",
                 value=st.session_state.get("pp_auto_enabled", False),
                 key="pp_auto_toggle",
-                help="Background thread fetches fresh lines automatically on the interval below.",
+                help="Background thread fetches fresh PP lines on a timer. Uses proxy credits each time.",
             )
+
+            # Smart default: 30 min for ScraperAPI premium (conserve credits), 10 min for others
+            _cur_proxy_svc = st.session_state.get("pp_proxy_service", "scraperapi")
+            _default_interval = 30 if _cur_proxy_svc == "scraperapi" else 10
+            _saved_interval = int(st.session_state.get("pp_auto_interval", _default_interval))
+
             _auto_min = _af_col2.number_input(
-                "Interval (minutes)", min_value=2, max_value=60,
-                value=int(st.session_state.get("pp_auto_interval", 10)),
-                step=1, key="pp_auto_interval_input",
+                "Interval (minutes)",
+                min_value=5,
+                max_value=120,
+                value=max(5, _saved_interval),
+                step=5,
+                key="pp_auto_interval_input",
+                help="How often to fetch fresh lines. ScraperAPI premium: 30+ min recommended.",
             )
-            if _auto_on != st.session_state.get("pp_auto_enabled") or \
-               int(_auto_min) != int(st.session_state.get("pp_auto_interval", 10)):
+
+            # Credit usage estimate
+            _svc_info = _PROXY_SERVICES.get(_cur_proxy_svc, {})
+            _creds_per = _svc_info.get("credits_per_req", 1)
+            _creds_per_fetch = _creds_per * 2  # 2 API calls per fetch (single_stat true + false)
+            _fetches_per_day = (24 * 60) / max(_auto_min, 1)
+            _daily_credits = _fetches_per_day * _creds_per_fetch
+            _monthly_credits = _daily_credits * 30
+
+            if _cur_proxy_svc == "scraperapi":
+                _budget = 5000
+            elif _cur_proxy_svc == "scrapingbee":
+                _budget = 1000
+            else:
+                _budget = 1000
+
+            _usage_pct = (_monthly_credits / _budget * 100) if _budget > 0 else 0
+            _usage_color = "#FF3358" if _usage_pct > 100 else ("#FFB800" if _usage_pct > 70 else "#00FFB2")
+            _status_label = "OVER BUDGET" if _usage_pct > 100 else ("TIGHT" if _usage_pct > 70 else "OK")
+
+            _af_col3.markdown(f"""
+<div style='background:#04080F;border:1px solid #0E1E30;border-radius:4px;padding:0.4rem 0.6rem;margin-top:0.3rem;'>
+<div style='font-family:Fira Code,monospace;font-size:0.52rem;color:#2A6080;'>CREDIT USAGE</div>
+<div style='font-family:Fira Code,monospace;font-size:0.72rem;color:{_usage_color};font-weight:600;'>{_daily_credits:.0f}/day · {_monthly_credits:.0f}/mo</div>
+<div style='font-family:Fira Code,monospace;font-size:0.50rem;color:{_usage_color};'>{_status_label} ({_usage_pct:.0f}% of {_budget:,} free)</div>
+</div>""", unsafe_allow_html=True)
+
+            if _auto_on and _usage_pct > 100:
+                st.warning(
+                    f"⚠ At {_auto_min}-min intervals, auto-refresh will use ~{_monthly_credits:.0f} "
+                    f"credits/month — exceeds your {_budget:,} free tier. "
+                    f"Increase interval to {int(max(30, _auto_min))}+ min or switch to ScrapingBee."
+                )
+
+            if (_auto_on != st.session_state.get("pp_auto_enabled") or
+               int(_auto_min) != int(st.session_state.get("pp_auto_interval", _default_interval))):
                 st.session_state["pp_auto_enabled"]  = _auto_on
                 st.session_state["pp_auto_interval"] = int(_auto_min)
                 save_pp_settings(pp_auto_enabled=_auto_on, pp_auto_interval=int(_auto_min))
@@ -9242,6 +9322,8 @@ with tabs[3]:
                     interval_sec=int(_auto_min) * 60,
                     cookies=st.session_state.get("pp_cookies", ""),
                     relay_url=st.session_state.get("pp_relay_url", ""),
+                    proxy_service=st.session_state.get("pp_proxy_service", ""),
+                    proxy_key=st.session_state.get("pp_proxy_key", ""),
                 )
             # ── Relay URL (optional — for cloud deployments) ──
             with st.expander("Local Relay URL (optional, for Streamlit Cloud)", expanded=False):
@@ -9259,7 +9341,7 @@ with tabs[3]:
                     save_pp_settings(pp_relay_url=_relay_new.strip())
                     set_pp_auto_fetch(
                         enabled=st.session_state.get("pp_auto_enabled", False),
-                        interval_sec=int(st.session_state.get("pp_auto_interval", 10)) * 60,
+                        interval_sec=int(st.session_state.get("pp_auto_interval", 30)) * 60,
                         cookies=st.session_state.get("pp_cookies", ""),
                         relay_url=_relay_new.strip(),
                     )
@@ -10408,7 +10490,9 @@ padding:0.4rem 0.7rem;display:flex;align-items:center;gap:0.5rem;margin-bottom:0
         with st.expander("Method ① Scraping Proxy (Recommended — free, works from any server)", expanded=not _pp_conn_ok):
             st.markdown("""<div style='font-family:Fira Code,monospace;font-size:0.60rem;color:#4A7090;'>
 Routes PP requests through residential IPs — bypasses the datacenter IP block permanently.
-<br>ScraperAPI free tier: 5,000 req/month (fetch every 8 min all month = $0).</div>""", unsafe_allow_html=True)
+<br><b>ScraperAPI free tier:</b> 5,000 credits/month. PrizePicks requires <b>premium mode</b> (10 credits/req) → ~250 fetches/month (~8/day).
+<br><b>Recommended:</b> Auto-refresh every 30 min or fetch manually before each scan.
+<br><b>ScrapingBee</b> is a good alternative if ScraperAPI quota runs out.</div>""", unsafe_allow_html=True)
             _proxy_svc_opts = list(_PROXY_SERVICES.keys())
             _cur_psvc = st.session_state.get("pp_proxy_service", "scraperapi")
             _psvc_idx = _proxy_svc_opts.index(_cur_psvc) if _cur_psvc in _proxy_svc_opts else 0
