@@ -175,13 +175,21 @@ async def fetch_with_playwright(headless: bool = True, timeout_ms: int = 35000) 
 
         try:
             log.info("Navigating to PrizePicks board...")
-            await page.goto(PP_BOARD_URL, wait_until="networkidle", timeout=timeout_ms)
+            try:
+                await page.goto(PP_BOARD_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception as _nav_e:
+                log.warning(f"Page navigation warning (continuing): {_nav_e}")
             await page.wait_for_timeout(5000)
 
             # If no API response yet, scroll to trigger lazy load
             if not captured_responses:
                 log.info("No API response yet — scrolling to trigger lazy load...")
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                try:
+                    await page.evaluate(
+                        "window.scrollTo(0, (document.body || document.documentElement).scrollHeight)"
+                    )
+                except Exception:
+                    pass
                 await page.wait_for_timeout(3000)
 
             # If still nothing, try clicking the NBA tab
@@ -195,23 +203,25 @@ async def fetch_with_playwright(headless: bool = True, timeout_ms: int = 35000) 
                 except Exception:
                     pass
 
-            # Also try fetching combo/specialty lines
-            if not captured_responses:
-                log.info("Trying direct API via page context...")
+            # Always try direct API fetch via page context (uses browser cookies/session)
+            log.info("Trying direct API via page context...")
+            for _league_id in (7, 2, 3):  # 7=NBA, 2=NFL, 3=MLB — try all, filter later
                 try:
-                    result = await page.evaluate("""
-                        async () => {
+                    result = await page.evaluate(f"""
+                        async () => {{
                             const r = await fetch(
-                                'https://api.prizepicks.com/projections?single_stat=true&per_page=500&league_id=7',
-                                { credentials: 'include' }
+                                'https://api.prizepicks.com/projections?single_stat=true&per_page=500&league_id={_league_id}',
+                                {{ credentials: 'include' }}
                             );
+                            if (!r.ok) return null;
                             return await r.json();
-                        }
+                        }}
                     """)
                     if isinstance(result, dict) and "data" in result:
                         captured_responses.append(result)
+                        log.info(f"Direct API league_id={_league_id}: got {len(result.get('data', []))} rows")
                 except Exception as e:
-                    log.warning(f"Inline fetch fallback failed: {e}")
+                    log.warning(f"Inline fetch league_id={_league_id} failed: {e}")
 
         except Exception as e:
             log.error(f"Navigation error: {e}")

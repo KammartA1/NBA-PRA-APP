@@ -3617,8 +3617,10 @@ def _pp_fetch_one(per_page, cookies_str, single_stat):
             )
         if r.status_code == 403:
             return [], (
-                "HTTP 403 — PerimeterX block. Fix: paste your PrizePicks browser "
-                "cookies into Settings → PrizePicks Cookies, then retry."
+                "HTTP 403 — PrizePicks blocks this server's IP (PerimeterX datacenter block). "
+                "Playwright/cookies cannot bypass an IP-level block. "
+                "Use **Manual Import** (paste JSON from your browser) or run **pp_relay.py** "
+                "on your local machine and enter the ngrok URL above."
             )
         if not r.ok:
             return [], f"HTTP {r.status_code}: {r.text[:300]}"
@@ -10023,13 +10025,13 @@ border-bottom:1px solid #0E1E30;'>▸ PRIZEPICKS AUTO-FETCH</div>""", unsafe_all
             pass
         if _pw_avail:
             st.markdown("""
-<div style='background:#00FFB208;border:1px solid #00FFB230;border-radius:3px;padding:0.4rem 0.7rem;'>
-    <span style='font-family:Fira Code,monospace;font-size:0.62rem;color:#00FFB2;'>
-        ✓ PLAYWRIGHT INSTALLED — auto-fetch enabled (no cookies needed)</span>
+<div style='background:#FFB20008;border:1px solid #FFB20030;border-radius:3px;padding:0.4rem 0.7rem;'>
+    <span style='font-family:Fira Code,monospace;font-size:0.62rem;color:#FFB200;'>
+        ⚠ PLAYWRIGHT INSTALLED — but PrizePicks blocks cloud server IPs at the network level.<br>
+        Playwright cannot bypass an IP block. Use Manual Import or pp_relay.py instead.</span>
 </div>""", unsafe_allow_html=True)
         else:
-            st.warning("**Playwright not installed** — PP lines require manual cookies.")
-            st.code("pip install playwright && playwright install chromium", language="bash")
+            st.warning("**Playwright not installed.** PP lines require Manual Import or pp_relay.py on a local machine.")
         with st.expander("Run scraper as background service (always-fresh lines)", expanded=False):
             st.code("python pp_scraper.py --interval 600", language="bash")
             st.caption("Fetches every 10 min, writes to shared DB. Faster than on-demand fetch.")
