@@ -3851,23 +3851,34 @@ def _fetch_pp_via_proxy(proxy_service="scraperapi", proxy_key=""):
     svc = _PROXY_SERVICES.get(proxy_service)
     if not svc:
         return [], f"Unknown proxy service: {proxy_service}"
+    from urllib.parse import quote_plus
     all_rows, last_err = [], None
     for single_stat in ("true", "false"):
         target = f"https://api.prizepicks.com/projections?per_page=500&single_stat={single_stat}&league_id=7"
-        proxy_url = svc["url_tpl"].format(key=proxy_key, url=target)
-        try:
-            r = requests.get(proxy_url, timeout=30, headers={"Accept": "application/vnd.api+json"})
-            if r.status_code == 401:
-                return [], f"{proxy_service} API key invalid — check Settings → PP Connection"
-            if r.status_code == 429:
-                return [], f"{proxy_service} rate limited — free tier may be exhausted"
-            if not r.ok:
-                last_err = f"{proxy_service} HTTP {r.status_code}: {r.text[:200]}"
-                continue
-            rows = _parse_pp_response(r.json())
-            all_rows.extend(rows)
-        except Exception as e:
-            last_err = f"{proxy_service}: {type(e).__name__}: {e}"
+        # URL-encode the target so its own & params aren't misread as proxy params
+        encoded_target = quote_plus(target)
+        proxy_url = svc["url_tpl"].format(key=proxy_key, url=encoded_target)
+        for attempt in range(2):  # retry once on timeout
+            try:
+                r = requests.get(proxy_url, timeout=75, headers={"Accept": "application/vnd.api+json"})
+                if r.status_code == 401:
+                    return [], f"{proxy_service} API key invalid — check Settings → PP Connection"
+                if r.status_code == 429:
+                    return [], f"{proxy_service} rate limited — free tier may be exhausted"
+                if not r.ok:
+                    last_err = f"{proxy_service} HTTP {r.status_code}: {r.text[:200]}"
+                    break
+                rows = _parse_pp_response(r.json())
+                all_rows.extend(rows)
+                break  # success
+            except requests.exceptions.Timeout:
+                if attempt == 0:
+                    last_err = f"{proxy_service}: timeout (retrying...)"
+                    continue
+                last_err = f"{proxy_service}: timed out after 75s — try again or use a different method"
+            except Exception as e:
+                last_err = f"{proxy_service}: {type(e).__name__}: {e}"
+                break
     if all_rows:
         seen = set()
         deduped = [r for r in all_rows if (r["player"], r["stat_type"]) not in seen and not seen.add((r["player"], r["stat_type"]))]
