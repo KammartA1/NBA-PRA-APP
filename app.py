@@ -3865,7 +3865,7 @@ _PROXY_SERVICES = {
         "credits_per_req": 10,
     },
     "scrapingbee": {
-        "url_tpl": "https://app.scrapingbee.com/api/v1/?api_key={key}&url={url}&render_js=false&premium_proxy=true",
+        "url_tpl": "https://app.scrapingbee.com/api/v1/?api_key={key}&url={url}&render_js=false&premium_proxy=true&forward_headers=true",
         "signup": "https://www.scrapingbee.com/",
         "free_tier": "1,000 req/month",
         "credits_per_req": 1,
@@ -3893,7 +3893,13 @@ def _fetch_pp_via_proxy(proxy_service="scraperapi", proxy_key=""):
         encoded_target = _url_quote(target, safe="")
         proxy_url = svc["url_tpl"].format(key=proxy_key, url=encoded_target)
         try:
-            r = requests.get(proxy_url, timeout=30, headers={"Accept": "application/vnd.api+json"})
+            r = requests.get(proxy_url, timeout=30, headers={
+                "Accept": "application/vnd.api+json",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://app.prizepicks.com/",
+                "Origin": "https://app.prizepicks.com",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            })
             if r.status_code == 401:
                 return [], f"{proxy_service} API key invalid — check Settings → PP Connection"
             if r.status_code == 429:
@@ -3901,7 +3907,13 @@ def _fetch_pp_via_proxy(proxy_service="scraperapi", proxy_key=""):
             # ScraperAPI 500 = protected domain → retry with ultra_premium
             if r.status_code == 500 and proxy_service == "scraperapi":
                 ultra_url = proxy_url.replace("premium=true", "ultra_premium=true")
-                r = requests.get(ultra_url, timeout=30, headers={"Accept": "application/vnd.api+json"})
+                r = requests.get(ultra_url, timeout=30, headers={
+                    "Accept": "application/vnd.api+json",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": "https://app.prizepicks.com/",
+                    "Origin": "https://app.prizepicks.com",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                })
                 if not r.ok:
                     last_err = (
                         f"{proxy_service} HTTP {r.status_code} (tried premium + ultra_premium). "
@@ -7518,7 +7530,7 @@ if "pp_cookies" not in st.session_state:
     st.session_state["pp_auto_enabled"]  = _pp_disk.get("pp_auto_enabled", False)
     st.session_state["pp_auto_interval"] = _pp_disk.get("pp_auto_interval", 30)
 if "pp_proxy_service" not in st.session_state:
-    st.session_state["pp_proxy_service"] = _pp_disk.get("pp_proxy_service", "scraperapi")
+    st.session_state["pp_proxy_service"] = _pp_disk.get("pp_proxy_service", "scrapingbee")
 if "pp_proxy_key" not in st.session_state:
     st.session_state["pp_proxy_key"] = _pp_disk.get("pp_proxy_key", "")
 if "_odds_api_key_override" not in st.session_state:
