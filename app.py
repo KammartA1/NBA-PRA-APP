@@ -3505,8 +3505,10 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
         if _type not in _PP_VALID_TYPES and not _has_fields:
             continue
         if league_filter:
-            league = str(attrs.get("league", "") or "")
-            if league and not _pp_league_is_nba(league):
+            league = str(attrs.get("league", "") or "").strip()
+            # Reject non-NBA leagues; also reject rows with NO league when filter is active
+            # (empty league = non-NBA sport that omitted the field)
+            if not league or not _pp_league_is_nba(league):
                 continue
         rels = proj.get("relationships", {}) or {}
         player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
@@ -3547,7 +3549,7 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """
     url = PRIZEPICKS_API
     params = {"per_page": str(per_page),
-              "single_stat": single_stat, "in_play": "false"}
+              "single_stat": single_stat, "in_play": "false", "league_id": "7"}
     # Full Chrome 120 headers — reduces bot-detection fingerprint
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
