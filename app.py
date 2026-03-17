@@ -14,6 +14,7 @@
 #   9. [FIX] Calibrator: min samples 80→40, adaptive bins
 # ============================================================
 import os, re, math, time, json, difflib, hashlib, logging, threading, html as _html
+from urllib.parse import quote as _url_quote
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from concurrent.futures import ThreadPoolExecutor
@@ -3635,10 +3636,9 @@ def _pp_fetch_one(per_page, cookies_str, single_stat):
             )
         if r.status_code == 403:
             return [], (
-                "HTTP 403 — PrizePicks blocks this server's IP (PerimeterX datacenter block). "
-                "Playwright/cookies cannot bypass an IP-level block. "
-                "Use **Manual Import** (paste JSON from your browser) or run **pp_relay.py** "
-                "on your local machine and enter the ngrok URL above."
+                "Direct API blocked (403 — expected on cloud servers). "
+                "Set up a **proxy** in Settings → PP Connection → Method ① "
+                "(free ScraperAPI or ScrapingBee). Or use **Manual Import**."
             )
         if not r.ok:
             return [], f"HTTP {r.status_code}: {r.text[:300]}"
@@ -3686,50 +3686,70 @@ def _save_pp_opening_lines(rows):
     except Exception:
         pass
 
-def fetch_prizepicks_lines():
-    cookies_str = st.session_state.get("pp_cookies", "")
-    errors = []
-    # ── 0. Scraper service DB (best: pp_scraper.py running as companion) ──
-    db_rows, db_age, _ = _load_pp_from_scraper_db()
-    if db_rows and db_age is not None and db_age < 1200:  # <20 min old
-        _save_pp_opening_lines(db_rows)
-        return db_rows, None
-    # ── 1. Playwright headless fetch (real browser, bypasses PerimeterX) ──
+def _save_pp_opening_lines_safe(rows):
+    """Save opening lines for PP props to enable steam detection. Silent failure."""
     try:
-        from pp_scraper import run_once, save_to_disk as _pp_save_disk
-        _pw_rows = run_once(headless=True)
-        if _pw_rows:
-            _pp_save_disk(_pw_rows)
-            _save_pp_opening_lines(_pw_rows)
-            return _pw_rows, None
-    except ImportError:
-        pass  # playwright not installed — skip
-    except Exception as _pw_e:
-        logging.warning(f"Playwright PP fetch failed: {_pw_e}")
-    # ── 2. Scraping proxy (residential IPs — bypasses datacenter IP block) ──
+        _save_pp_opening_lines(rows)
+    except Exception:
+        pass
+
+
+def fetch_prizepicks_lines():
+    """Unified PP fetch — cascading fallback:
+    1. Scraper DB  2. Proxy (ScraperAPI/ScrapingBee)  3. Playwright
+    4. Browser-side fetch  5. Relay URL  6. Auto-fetcher cache
+    7. Stored JSON  8. Direct API (403 on cloud — last resort)
+    """
+    errors = []
+    cookies_str = st.session_state.get("pp_cookies", "")
+
+    # ── 1. Scraper DB ──
+    db_rows, db_age, _ = _load_pp_from_scraper_db()
+    if db_rows and db_age is not None and db_age < 1200:
+        _save_pp_opening_lines_safe(db_rows)
+        return db_rows, None
+
+    # ── 2. Scraping proxy (MOST LIKELY TO WORK on Streamlit Cloud) ──
     _psvc = st.session_state.get("pp_proxy_service", "").strip()
     _pkey = st.session_state.get("pp_proxy_key", "").strip()
     if _psvc and _pkey:
         try:
             rows, err = _fetch_pp_via_proxy(_psvc, _pkey)
             if rows:
-                _save_pp_opening_lines(rows)
+                _save_pp_opening_lines_safe(rows)
                 return rows, None
             if err:
-                errors.append(f"Proxy: {err}")
+                errors.append(f"Proxy ({_psvc}): {err}")
         except Exception as e:
-            errors.append(f"Proxy: {e}")
-    # ── 3. Browser-side fetch (user's browser = residential IP) ──
+            errors.append(f"Proxy ({_psvc}): {type(e).__name__}: {e}")
+    else:
+        errors.append("Proxy: not configured (Settings → PP Connection → Method ①)")
+
+    # ── 3. Playwright headless fetch ──
+    try:
+        from pp_scraper import run_once, save_to_disk as _pp_save_disk
+        _pw_rows = run_once(headless=True)
+        if _pw_rows:
+            _pp_save_disk(_pw_rows)
+            _save_pp_opening_lines_safe(_pw_rows)
+            return _pw_rows, None
+    except ImportError:
+        pass
+    except Exception as _pw_e:
+        errors.append(f"Playwright: {_pw_e}")
+
+    # ── 4. Browser-side fetch ──
     try:
         rows, err = _fetch_pp_via_browser()
         if rows:
-            _save_pp_opening_lines(rows)
+            _save_pp_opening_lines_safe(rows)
             return rows, None
         if err:
             errors.append(f"Browser: {err}")
     except Exception as e:
         errors.append(f"Browser: {e}")
-    # ── 4. Check relay URL (local proxy or ngrok tunnel) ──
+
+    # ── 5. Relay URL ──
     relay_url = st.session_state.get("pp_relay_url", "").strip()
     if relay_url:
         try:
@@ -3738,35 +3758,46 @@ def fetch_prizepicks_lines():
                 data = r.json()
                 rows = data if isinstance(data, list) else data.get("rows", [])
                 if rows:
-                    _save_pp_opening_lines(rows)
+                    _save_pp_opening_lines_safe(rows)
                     return rows, None
         except Exception as e:
             errors.append(f"Relay: {e}")
-    # ── 5. Check background auto-fetcher state (recent in-memory result) ──
+
+    # ── 6. Background auto-fetcher cache ──
     _auto_rows, _auto_age, _ = get_pp_auto_lines()
     if _auto_rows and _auto_age is not None and _auto_age < 900:
-        _save_pp_opening_lines(_auto_rows)
         return _auto_rows, None
-    # ── 6. Detect if user pasted a full PP JSON response into the cookies/JSON field ──
+
+    # ── 7. Stored JSON (user pasted full PP response) ──
     _stripped = cookies_str.strip() if cookies_str else ""
     if _stripped.startswith("{") and '"data"' in _stripped:
         try:
             data = json.loads(_stripped)
             rows = _parse_pp_response_all(data)
             if rows:
-                _save_pp_opening_lines(rows)
+                _save_pp_opening_lines_safe(rows)
                 return rows, None
         except Exception as _je:
-            return [], f"Stored JSON parse error: {_je}"
-    # ── 5. Direct API call with cache ──
+            errors.append(f"Stored JSON: {_je}")
+
+    # ── 8. Direct API (ONLY works from residential IPs — 403 on cloud) ──
     if st.session_state.get("_pp_last_cookies_used") != cookies_str:
         _fetch_prizepicks_lines_cached.clear()
         st.session_state["_pp_last_cookies_used"] = cookies_str
     cached_rows, cached_err = _fetch_prizepicks_lines_cached(cookies_str=cookies_str)
-    if cached_rows and not cached_err:
-        _save_pp_disk_cache(cached_rows)
-        _save_pp_opening_lines(cached_rows)
-    return cached_rows, cached_err
+    if cached_rows:
+        _save_pp_opening_lines_safe(cached_rows)
+        return cached_rows, None
+    if cached_err:
+        if "403" in str(cached_err) and _pkey:
+            errors.append("Direct API: 403 (expected on cloud — proxy should handle this)")
+        else:
+            errors.append(f"Direct: {cached_err}")
+
+    # ── All methods failed — show ALL errors for diagnosis ──
+    if errors:
+        return [], " | ".join(errors[:4])
+    return [], "All PrizePicks fetch methods failed"
 # ──────────────────────────────────────────────
 # PP AUTO-FETCH BACKGROUND ENGINE
 # Runs a daemon thread that fetches PP lines on a configurable interval.
@@ -3846,56 +3877,50 @@ _PROXY_SERVICES = {
         "credits_per_req": 1,
     },
 }
-@st.cache_data(ttl=60*10, show_spinner=False)
+@st.cache_data(ttl=60*5, show_spinner=False)
 def _fetch_pp_via_proxy(proxy_service="scraperapi", proxy_key=""):
-    """Fetch PrizePicks via residential proxy. Bypasses PerimeterX IP block."""
+    """Fetch PrizePicks via residential proxy. Bypasses PerimeterX IP block.
+    URL-encodes the target so proxy services don't mangle query params."""
     if not proxy_key:
         return [], "No proxy API key configured"
     svc = _PROXY_SERVICES.get(proxy_service)
     if not svc:
         return [], f"Unknown proxy service: {proxy_service}"
-    from urllib.parse import quote_plus
     all_rows, last_err = [], None
     for single_stat in ("true", "false"):
         target = f"https://api.prizepicks.com/projections?per_page=500&single_stat={single_stat}&league_id=7"
-        # URL-encode the target so its own & params aren't misread as proxy params
-        encoded_target = quote_plus(target)
+        # URL-encode the ENTIRE target so ? and & aren't parsed as proxy params
+        encoded_target = _url_quote(target, safe="")
         proxy_url = svc["url_tpl"].format(key=proxy_key, url=encoded_target)
-        for attempt in range(2):  # retry once on timeout
-            try:
-                r = requests.get(proxy_url, timeout=75, headers={"Accept": "application/vnd.api+json"})
-                if r.status_code == 401:
-                    return [], f"{proxy_service} API key invalid — check Settings → PP Connection"
-                if r.status_code == 429:
-                    return [], f"{proxy_service} rate limited — free tier may be exhausted"
-                # If 500 on ScraperAPI, retry with ultra_premium (protected domain escalation)
-                if r.status_code == 500 and proxy_service == "scraperapi":
-                    ultra_url = proxy_url.replace("premium=true", "ultra_premium=true")
-                    r = requests.get(ultra_url, timeout=75, headers={"Accept": "application/vnd.api+json"})
-                    if r.status_code == 401:
-                        return [], f"{proxy_service} API key invalid"
-                    if r.status_code == 429:
-                        return [], f"{proxy_service} rate limited — ultra_premium costs 75 credits/req"
-                    if not r.ok:
-                        last_err = (
-                            f"{proxy_service} HTTP {r.status_code} (tried premium + ultra_premium). "
-                            "PrizePicks may require a paid ScraperAPI plan, or try switching to ScrapingBee."
-                        )
-                        break
-                elif not r.ok:
-                    last_err = f"{proxy_service} HTTP {r.status_code}: {r.text[:200]}"
-                    break
-                rows = _parse_pp_response(r.json())
-                all_rows.extend(rows)
-                break  # success
-            except requests.exceptions.Timeout:
-                if attempt == 0:
-                    last_err = f"{proxy_service}: timeout (retrying...)"
+        try:
+            r = requests.get(proxy_url, timeout=30, headers={"Accept": "application/vnd.api+json"})
+            if r.status_code == 401:
+                return [], f"{proxy_service} API key invalid — check Settings → PP Connection"
+            if r.status_code == 429:
+                return [], f"{proxy_service} rate limited — free tier may be exhausted this month"
+            # ScraperAPI 500 = protected domain → retry with ultra_premium
+            if r.status_code == 500 and proxy_service == "scraperapi":
+                ultra_url = proxy_url.replace("premium=true", "ultra_premium=true")
+                r = requests.get(ultra_url, timeout=30, headers={"Accept": "application/vnd.api+json"})
+                if not r.ok:
+                    last_err = (
+                        f"{proxy_service} HTTP {r.status_code} (tried premium + ultra_premium). "
+                        "Try switching to ScrapingBee in Settings."
+                    )
                     continue
-                last_err = f"{proxy_service}: timed out after 75s — try again or use a different method"
-            except Exception as e:
-                last_err = f"{proxy_service}: {type(e).__name__}: {e}"
-                break
+            elif not r.ok:
+                last_err = f"{proxy_service} HTTP {r.status_code}: {r.text[:300]}"
+                continue
+            # Parse response — check we got JSON, not an HTML error page
+            try:
+                data = r.json()
+            except Exception:
+                last_err = f"{proxy_service}: response is not JSON (likely HTML error page). Check API key."
+                continue
+            rows = _parse_pp_response(data)
+            all_rows.extend(rows)
+        except Exception as e:
+            last_err = f"{proxy_service}: {type(e).__name__}: {e}"
     if all_rows:
         seen = set()
         deduped = [r for r in all_rows if (r["player"], r["stat_type"]) not in seen and not seen.add((r["player"], r["stat_type"]))]
