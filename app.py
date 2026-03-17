@@ -8438,59 +8438,57 @@ with tabs[2]:
                         all_computed_legs.append((pname, mkt, float(line), meta, leg))
                         if not leg.get("gate_ok"):
                             dropped.append({"player":pname,"market":mkt,"reason":leg.get("gate_reason","gated")}); continue
-                            # [AUDIT FIX] Use p_cal exclusively after recompute_pricing_fields;
-                            # p_over fallback could use uncalibrated bootstrap prob which bypasses isotonic correction
-                            pc = leg.get("p_cal")
-                            if pc is None:
-                                dropped.append({"player":pname,"market":mkt,"reason":"p_cal None (calibration failed)"}); continue
-                            pc = float(pc)
-                            pi = leg.get("p_implied")
-                            ev = leg.get("ev_adj")
-                            if pi is None or ev is None:
-                                dropped.append({"player":pname,"market":mkt,"reason":"no price/EV"}); continue
-                            adv = pc - float(pi)
-                            if pc < min_prob: dropped.append({"player":pname,"market":mkt,"reason":f"p_cal<{min_prob:.2f}"}); continue
-                            if adv < min_adv: dropped.append({"player":pname,"market":mkt,"reason":f"adv<{min_adv:.3f}"}); continue
-                            if float(ev) < min_ev: dropped.append({"player":pname,"market":mkt,"reason":f"ev<{min_ev:.3f}"}); continue
-                            mv = leg.get("line_movement") or {}
-                            inj_flag = ("🏥 " + (leg.get("auto_inj_player") or "").title()
-                                        if leg.get("auto_inj") else "")
-                            _src_badge = {"prizepicks": "PP", "underdog": "UD"}.get(
-                                str(meta.get("book","")).lower(), meta.get("book","") or "odds"
-                            )
-                            out_rows.append({
-                                "side": "Over",           # [AUDIT FIX] explicit side for schema parity with Under rows
-                                "src": _src_badge,        # PP / UD / book name
-                                "player":pname,"market":mkt,"line":line,
-                                "p_cal":round(pc,3),"p_implied":round(float(pi),3),
-                                "advantage":round(adv,3),"ev_adj_pct":round(float(ev)*100,2),
-                                "proj":safe_round(leg.get("proj")),
-                                "edge_cat":leg.get("edge_cat",""),"regime":leg.get("regime",""),
-                                "hot_cold":leg.get("hot_cold","Average"),
-                                "team":leg.get("team",""),"opp":leg.get("opp",""),
-                                "b2b": "B2B" if leg.get("b2b") else "",
-                                "dnp_risk": "DNP?" if leg.get("dnp_risk") else "",
-                                "vol_cv":safe_round(leg.get("volatility_cv")),
-                                "rest_d":int(leg.get("rest_days",2)),       # [AUDIT FIX] explicit int
-                                "line_mv":mv.get("direction","--"),
-                                "mv_pips":float(mv.get("pips",0.0)),        # [AUDIT FIX] explicit float
-                                "steam": "STEAM" if mv.get("steam") else ("FADE" if mv.get("fade") else ""),
-                                "stake_$":round(leg.get("stake",0),2),
-                                "n_games":int(leg.get("n_games_used",0)),   # [AUDIT FIX] explicit int
-                                "inj_boost": inj_flag,
-                                "min_proj": safe_round(leg.get("proj_minutes"),0),
-                                # DFS columns — edge above the 50% flat floor
-                                "pp_edge_%": round((pc - 0.50) * 100, 1),
-                                "pp_2leg_ev_%": round((DFS_PP_PAYOUTS[2] * pc**2 - 1.0) * 100, 1),
-                                # [UPGRADE NEW] composite sharpness + trend signals
-                                "sharp": safe_round(leg.get("sharpness_score"), 0),
-                                "sharp_tier": leg.get("sharpness_tier", ""),
-                                "trend": leg.get("trend_label", ""),
-                                "fatigue": leg.get("fatigue_label", "Normal"),
-                                "game_tot": safe_round(leg.get("game_total"), 0),
-                                "l3": safe_round(leg.get("l3_avg"), 1),
-                                "l5": safe_round(leg.get("l5_avg"), 1),
-                            })
+                        # Use p_cal exclusively after recompute_pricing_fields;
+                        # p_over fallback could use uncalibrated bootstrap prob which bypasses isotonic correction
+                        pc = leg.get("p_cal")
+                        if pc is None:
+                            dropped.append({"player":pname,"market":mkt,"reason":"p_cal None (calibration failed)"}); continue
+                        pc = float(pc)
+                        pi = leg.get("p_implied")
+                        ev = leg.get("ev_adj")
+                        if pi is None or ev is None:
+                            dropped.append({"player":pname,"market":mkt,"reason":"no price/EV"}); continue
+                        adv = pc - float(pi)
+                        if pc < min_prob: dropped.append({"player":pname,"market":mkt,"reason":f"p_cal<{min_prob:.2f}"}); continue
+                        if adv < min_adv: dropped.append({"player":pname,"market":mkt,"reason":f"adv<{min_adv:.3f}"}); continue
+                        if float(ev) < min_ev: dropped.append({"player":pname,"market":mkt,"reason":f"ev<{min_ev:.3f}"}); continue
+                        mv = leg.get("line_movement") or {}
+                        inj_flag = ("🏥 " + (leg.get("auto_inj_player") or "").title()
+                                    if leg.get("auto_inj") else "")
+                        _src_badge = {"prizepicks": "PP", "underdog": "UD"}.get(
+                            str(meta.get("book","")).lower(), meta.get("book","") or "odds"
+                        )
+                        out_rows.append({
+                            "side": "Over",
+                            "src": _src_badge,
+                            "player":pname,"market":mkt,"line":line,
+                            "p_cal":round(pc,3),"p_implied":round(float(pi),3),
+                            "advantage":round(adv,3),"ev_adj_pct":round(float(ev)*100,2),
+                            "proj":safe_round(leg.get("proj")),
+                            "edge_cat":leg.get("edge_cat",""),"regime":leg.get("regime",""),
+                            "hot_cold":leg.get("hot_cold","Average"),
+                            "team":leg.get("team",""),"opp":leg.get("opp",""),
+                            "b2b": "B2B" if leg.get("b2b") else "",
+                            "dnp_risk": "DNP?" if leg.get("dnp_risk") else "",
+                            "vol_cv":safe_round(leg.get("volatility_cv")),
+                            "rest_d":int(leg.get("rest_days",2)),
+                            "line_mv":mv.get("direction","--"),
+                            "mv_pips":float(mv.get("pips",0.0)),
+                            "steam": "STEAM" if mv.get("steam") else ("FADE" if mv.get("fade") else ""),
+                            "stake_$":round(leg.get("stake",0),2),
+                            "n_games":int(leg.get("n_games_used",0)),
+                            "inj_boost": inj_flag,
+                            "min_proj": safe_round(leg.get("proj_minutes"),0),
+                            "pp_edge_%": round((pc - 0.50) * 100, 1),
+                            "pp_2leg_ev_%": round((DFS_PP_PAYOUTS[2] * pc**2 - 1.0) * 100, 1),
+                            "sharp": safe_round(leg.get("sharpness_score"), 0),
+                            "sharp_tier": leg.get("sharpness_tier", ""),
+                            "trend": leg.get("trend_label", ""),
+                            "fatigue": leg.get("fatigue_label", "Normal"),
+                            "game_tot": safe_round(leg.get("game_total"), 0),
+                            "l3": safe_round(leg.get("l3_avg"), 1),
+                            "l5": safe_round(leg.get("l5_avg"), 1),
+                        })
             out_df = pd.DataFrame(out_rows)
             if not out_df.empty:
                 # [UPGRADE NEW] Sort by composite sharpness score (when available), then by EV as tiebreaker
