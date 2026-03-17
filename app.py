@@ -2469,7 +2469,7 @@ def kelly_fraction(p, price):
 # Research: Fractional Kelly prevents ruin from estimation errors; dynamic scaling
 # captures that higher-signal bets deserve proportionally more allocation.
 def recommended_stake(bankroll, p, price_decimal, frac_kelly, cap_frac=0.05,
-                      sharpness_score=None):
+                      sharpness_score=None, ci_lower=None, ci_upper=None, line=None):
     try: br=float(bankroll)
     except: br=0.0
     if br<=0 or p is None or price_decimal is None: return 0.0, 0.0, "bankroll<=0"
@@ -2481,14 +2481,23 @@ def recommended_stake(bankroll, p, price_decimal, frac_kelly, cap_frac=0.05,
     if sharpness_score is not None:
         _s = float(sharpness_score)
         if _s >= 70:
-            _sharp_mult = 1.20    # Elite bet: allow up to 20% above base Kelly
+            _sharp_mult = 1.20
         elif _s >= 55:
-            _sharp_mult = 1.00    # Solid bet: standard Kelly
+            _sharp_mult = 1.00
         elif _s >= 40:
-            _sharp_mult = 0.75    # Lean bet: 25% reduction
+            _sharp_mult = 0.75
         else:
-            _sharp_mult = 0.40    # Low-signal: 60% reduction (but don't zero out — EV still positive)
+            _sharp_mult = 0.40
         _base_frac = _base_frac * _sharp_mult
+    # [v5.0] Uncertainty-adjusted Kelly: wider CI → bet less
+    if ci_lower is not None and ci_upper is not None and line is not None:
+        try:
+            ci_width = float(ci_upper) - float(ci_lower)
+            _ln = max(float(line), 0.5)
+            uncertainty_discount = float(np.clip(1.0 - ci_width / _ln * 0.4, 0.20, 1.0))
+            _base_frac = _base_frac * uncertainty_discount
+        except Exception:
+            pass
     f = _base_frac * k
     f = min(f, float(cap_frac))
     stake = br * f
@@ -3724,7 +3733,10 @@ def fetch_prizepicks_lines():
     if st.session_state.get("_pp_last_cookies_used") != cookies_str:
         _fetch_prizepicks_lines_cached.clear()
         st.session_state["_pp_last_cookies_used"] = cookies_str
-    return _fetch_prizepicks_lines_cached(cookies_str=cookies_str)
+    cached_rows, cached_err = _fetch_prizepicks_lines_cached(cookies_str=cookies_str)
+    if cached_rows and not cached_err:
+        _save_pp_disk_cache(cached_rows)
+    return cached_rows, cached_err
 # ──────────────────────────────────────────────
 # PP AUTO-FETCH BACKGROUND ENGINE
 # Runs a daemon thread that fetches PP lines on a configurable interval.
@@ -3916,6 +3928,15 @@ def _pp_auto_loop(state: dict):
                         if r.ok:
                             data = r.json()
                             rows = data if isinstance(data, list) else data.get("rows", [])
+                    except Exception:
+                        pass
+            # Proxy fallback (residential IPs — bypasses server IP block)
+            if not rows:
+                _psvc = state.get("proxy_service", "")
+                _pkey = state.get("proxy_key", "")
+                if _psvc and _pkey:
+                    try:
+                        rows, _ = _fetch_pp_via_proxy(_psvc, _pkey)
                     except Exception:
                         pass
             # Fallback to direct API (works from residential IPs)
@@ -4116,6 +4137,7 @@ def map_platform_stat_to_market(stat_type):
         "Steals+Blocks": "Stocks", "Stl+Blk": "Stocks",
         # ── Shooting volume (PP specialty) ────────────────────────────────
         "Field Goals Made": "FGM", "FGM": "FGM", "FG Made": "FGM",
+        "Made Baskets": "FGM", "Field Goals": "FGM", "Baskets Made": "FGM",
         "Field Goals Attempted": "FGA", "FGA": "FGA", "FG Attempted": "FGA",
         "FG Attempts": "FGA",
         "3-Pt Attempts": "3PA", "3PA": "3PA", "3-Point Attempts": "3PA",
@@ -4194,7 +4216,7 @@ def map_platform_stat_to_market(stat_type):
         k_norm = re.sub(r"[\s\-\+]+", " ", k.lower()).strip()
         if k_norm == s_norm:
             return v
-    logging.debug(f"Unmapped platform stat_type: '{stat_type}'")
+    logging.info(f"Unmapped platform stat_type: '{stat_type}'")
     return None
 # ──────────────────────────────────────────────
 # LINE SHOPPING — BEST AVAILABLE PRICE
@@ -4825,18 +4847,31 @@ def compute_dnp_probability(game_log_df, injury_status=None, n_games=10):
 # 80% CI gives bettors the realistic range of outcomes.
 # Narrow CI = high-confidence bet. Wide CI = volatile / fade.
 # ──────────────────────────────────────────────
-def compute_projection_ci(mu, sigma, half_factor=1.0):
+def compute_projection_ci(mu, sigma, half_factor=1.0, stat_series=None):
     """
-    Returns (lower_80, upper_80) — the 80% confidence interval for the projection.
-    Uses normal approximation (z=1.28 for 80% CI).
+    Returns (lower_80, upper_80) confidence interval.
+    [v5.0] Uses leave-one-out conformal prediction when stat_series is provided
+    (distribution-free, exact coverage). Falls back to normal approximation.
     """
     if mu is None or sigma is None:
         return None, None
     try:
-        z = 1.28
         hf = float(half_factor) if half_factor else 1.0
         mu_h = float(mu) * hf
         sig_h = float(sigma) * hf
+        if stat_series is not None:
+            arr = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
+            if len(arr) >= 5:
+                # Leave-one-out conformal: nonconformity score = |y_i - mu_LOO|
+                n = len(arr)
+                scores = np.abs(arr * hf - mu_h)
+                # 80% coverage: use 80th percentile of scores as radius
+                q80 = float(np.percentile(scores, 80))
+                lower = max(0.0, mu_h - q80)
+                upper = mu_h + q80
+                return float(lower), float(upper)
+        # Normal approximation fallback
+        z = 1.28
         lower = max(0.0, mu_h - z * sig_h)
         upper = mu_h + z * sig_h
         return float(lower), float(upper)
@@ -6067,6 +6102,47 @@ def fit_monotone_calibrator(df_legs, n_bins=12):
         "training_min": float(d["p_raw"].min()),
         "training_max": float(d["p_raw"].max()),
     }
+def fit_platt_calibrator(p_raws, y_labels):
+    """
+    [v5.0] Fit a Platt (logistic) calibrator for n < 200 samples,
+    isotonic regression for n >= 200.
+    Returns calib dict compatible with apply_calibrator.
+    """
+    try:
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.isotonic import IsotonicRegression
+        import numpy as _np2
+        p = _np2.array(p_raws, dtype=float)
+        y = _np2.array(y_labels, dtype=float)
+        valid = ~(_np2.isnan(p) | _np2.isnan(y))
+        p, y = p[valid], y[valid]
+        n = len(p)
+        if n < 20:
+            return None
+        p_sorted = _np2.sort(p)
+        if n < 200:
+            # Platt scaling
+            lr = LogisticRegression(C=1.0, max_iter=500)
+            lr.fit(p.reshape(-1, 1), y)
+            y_cal = lr.predict_proba(p_sorted.reshape(-1, 1))[:, 1]
+            calib_type = "platt"
+        else:
+            # Isotonic regression
+            ir = IsotonicRegression(out_of_bounds="clip")
+            ir.fit(p, y)
+            y_cal = ir.predict(p_sorted)
+            calib_type = "isotonic"
+        return {
+            "type": calib_type,
+            "x": p_sorted.tolist(),
+            "y": y_cal.tolist(),
+            "training_min": float(p.min()),
+            "training_max": float(p.max()),
+            "n": n,
+        }
+    except Exception as e:
+        logging.warning(f"fit_platt_calibrator: {e}")
+        return None
 # [FIX 9] OOD detection in calibrator
 def apply_calibrator(p_raw, calib):
     if p_raw is None: return None
@@ -7289,6 +7365,10 @@ if "pp_cookies" not in st.session_state:
     st.session_state["pp_relay_url"]     = _pp_disk.get("pp_relay_url", "")
     st.session_state["pp_auto_enabled"]  = _pp_disk.get("pp_auto_enabled", False)
     st.session_state["pp_auto_interval"] = _pp_disk.get("pp_auto_interval", 10)
+if "pp_proxy_service" not in st.session_state:
+    st.session_state["pp_proxy_service"] = _pp_disk.get("pp_proxy_service", "scraperapi")
+if "pp_proxy_key" not in st.session_state:
+    st.session_state["pp_proxy_key"] = _pp_disk.get("pp_proxy_key", "")
 # Restore background auto-fetcher state if it was enabled last session
 if st.session_state.get("pp_auto_enabled"):
     set_pp_auto_fetch(
@@ -8226,14 +8306,14 @@ with tabs[2]:
         _plat_c1, _plat_c2, _plat_c3, _plat_c4 = st.columns(4)
         with _plat_c1:
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;'>PRIZEPICKS</div>", unsafe_allow_html=True)
-            _pp_ck = st.session_state.get("pp_cookies","")
-            if _pp_ck:
-                st.caption(f"🔑 Cookie active ({len(_pp_ck)} chars)")
+            _pp_auto_data, _pp_age, _ = get_pp_auto_lines()
+            _pp_pkey = st.session_state.get("pp_proxy_key", "")
+            if _pp_auto_data and _pp_age and _pp_age < 1800:
+                st.markdown(f"<div style='font-size:0.58rem;color:#00FFB2;'>✓ {len(_pp_auto_data)} lines · {_pp_age//60}m ago</div>", unsafe_allow_html=True)
+            elif _pp_pkey:
+                st.caption("Proxy ready — click Fetch")
             else:
-                _pp_ck_new = st.text_input("PP Cookies", value="", type="password", key="scanner_pp_cookies",
-                                            help="Paste PrizePicks browser cookies to bypass Cloudflare")
-                if _pp_ck_new:
-                    st.session_state["pp_cookies"] = _pp_ck_new
+                st.caption("Set up in Settings → PP Connection")
             if st.button("Fetch PP Lines", key="scanner_fetch_pp_btn", use_container_width=True):
                 with st.spinner("Fetching PrizePicks…"):
                     _pp_rows, _pp_err = fetch_prizepicks_lines()
@@ -8243,7 +8323,7 @@ with tabs[2]:
                     st.session_state["pp_lines"] = pd.DataFrame(_pp_rows)
                     st.success(f"✓ {len(_pp_rows)} PP props")
                 else:
-                    st.warning("PP: 0 props found")
+                    st.warning("PP: 0 props — slate may not be posted yet")
             _pp_loaded = st.session_state.get("pp_lines")
             if _pp_loaded is not None and not _pp_loaded.empty:
                 st.markdown(f"<div style='font-size:0.58rem;color:#00FFB2;'>✓ {len(_pp_loaded)} ready</div>", unsafe_allow_html=True)
@@ -10135,29 +10215,78 @@ margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #0E1E30;'>
         _mrd = st.number_input("Max API requests/day", 1, 500,
             int(st.session_state.get("max_req_day", 100)), 10, key="settings_mrd")
         st.session_state["max_req_day"] = int(_mrd)
-        # ── PRIZEPICKS AUTO-FETCH ─────────────────────────────
+        # ── PRIZEPICKS CONNECTION ─────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
 margin-top:0.8rem;margin-bottom:0.6rem;padding-bottom:0.4rem;
-border-bottom:1px solid #0E1E30;'>▸ PRIZEPICKS AUTO-FETCH</div>""", unsafe_allow_html=True)
-        _pw_avail = False
-        try:
-            import playwright as _pw_mod
-            _pw_avail = True
-        except ImportError:
-            pass
-        if _pw_avail:
-            st.markdown("""
-<div style='background:#FFB20008;border:1px solid #FFB20030;border-radius:3px;padding:0.4rem 0.7rem;'>
-    <span style='font-family:Fira Code,monospace;font-size:0.62rem;color:#FFB200;'>
-        ⚠ PLAYWRIGHT INSTALLED — but PrizePicks blocks cloud server IPs at the network level.<br>
-        Playwright cannot bypass an IP block. Use Manual Import or pp_relay.py instead.</span>
+border-bottom:1px solid #0E1E30;'>▸ PRIZEPICKS CONNECTION</div>""", unsafe_allow_html=True)
+        # Status indicator
+        _pp_conn_rows, _pp_conn_age, _ = get_pp_auto_lines()
+        _pp_conn_ok = bool(_pp_conn_rows and _pp_conn_age is not None and _pp_conn_age < 1800)
+        _pp_dot_col = "#00FFB2" if _pp_conn_ok else "#FF3358"
+        _pp_conn_label = f"CONNECTED · {len(_pp_conn_rows)} lines · {_pp_conn_age//60}m ago" if _pp_conn_ok else "DISCONNECTED"
+        st.markdown(f"""<div style='background:#04080F;border:1px solid #0E1E30;border-radius:4px;
+padding:0.4rem 0.7rem;display:flex;align-items:center;gap:0.5rem;margin-bottom:0.6rem;'>
+<div style='width:7px;height:7px;border-radius:50%;background:{_pp_dot_col};box-shadow:0 0 6px {_pp_dot_col};'></div>
+<div style='font-family:Fira Code,monospace;font-size:0.60rem;color:{_pp_dot_col};'>{_pp_conn_label}</div>
 </div>""", unsafe_allow_html=True)
-        else:
-            st.warning("**Playwright not installed.** PP lines require Manual Import or pp_relay.py on a local machine.")
-        with st.expander("Run scraper as background service (always-fresh lines)", expanded=False):
+        # Method 1: Scraping Proxy
+        with st.expander("Method ① Scraping Proxy (Recommended — free, works from any server)", expanded=not _pp_conn_ok):
+            st.markdown("""<div style='font-family:Fira Code,monospace;font-size:0.60rem;color:#4A7090;'>
+Routes PP requests through residential IPs — bypasses the datacenter IP block permanently.
+<br>ScraperAPI free tier: 5,000 req/month (fetch every 8 min all month = $0).</div>""", unsafe_allow_html=True)
+            _proxy_svc_opts = list(_PROXY_SERVICES.keys())
+            _cur_psvc = st.session_state.get("pp_proxy_service", "scraperapi")
+            _psvc_idx = _proxy_svc_opts.index(_cur_psvc) if _cur_psvc in _proxy_svc_opts else 0
+            _new_psvc = st.selectbox("Service", options=_proxy_svc_opts, index=_psvc_idx, key="settings_pp_proxy_svc")
+            _svc_info = _PROXY_SERVICES.get(_new_psvc, {})
+            st.caption(f"Free tier: {_svc_info.get('free_tier','?')} — [Sign up free]({_svc_info.get('signup','')})")
+            _new_pkey = st.text_input("API Key", value=st.session_state.get("pp_proxy_key",""), type="password", key="settings_pp_proxy_key")
+            _pc1, _pc2 = st.columns(2)
+            if _pc1.button("Save Proxy Config", key="save_proxy_cfg", use_container_width=True):
+                st.session_state["pp_proxy_service"] = _new_psvc
+                st.session_state["pp_proxy_key"] = _new_pkey
+                save_pp_settings(pp_proxy_service=_new_psvc, pp_proxy_key=_new_pkey)
+                st.success("Saved!")
+            if _pc2.button("Test Proxy", key="test_proxy_btn", use_container_width=True):
+                if _new_pkey:
+                    with st.spinner("Testing..."):
+                        _fetch_pp_via_proxy.clear()
+                        _tr, _te = _fetch_pp_via_proxy(_new_psvc, _new_pkey)
+                    if _tr:
+                        st.success(f"✓ Proxy works! {len(_tr)} PP props fetched.")
+                    else:
+                        st.error(f"Proxy failed: {_te}")
+                else:
+                    st.warning("Enter API key first.")
+        # Method 2: Local Relay
+        with st.expander("Method ② Local Relay (pp_relay.py + ngrok)", expanded=False):
+            _relay_val = st.text_input("Relay URL", value=st.session_state.get("pp_relay_url",""), key="settings_relay_url", placeholder="https://xxxx.ngrok.io/lines")
+            if st.button("Save Relay URL", key="save_relay_url"):
+                st.session_state["pp_relay_url"] = _relay_val
+                save_pp_settings(pp_relay_url=_relay_val)
+                st.success("Saved!")
+            st.code("python pp_relay.py", language="bash")
+            st.caption("Run on your local machine, expose via ngrok, paste the URL above.")
+        # Method 3: Manual JSON
+        with st.expander("Method ③ Manual JSON Import (last resort)", expanded=False):
+            st.markdown("""<div style='font-size:0.62rem;color:#4A607A;'>Paste the raw JSON from https://api.prizepicks.com/projections?per_page=500 (open in your browser).</div>""", unsafe_allow_html=True)
+            _manual_json = st.text_area("Paste PP JSON", value="", height=100, key="settings_manual_pp_json")
+            if st.button("Import JSON", key="import_pp_json"):
+                try:
+                    _mj_data = json.loads(_manual_json)
+                    _mj_rows = _parse_pp_response(_mj_data)
+                    if _mj_rows:
+                        st.session_state["pp_lines"] = pd.DataFrame(_mj_rows)
+                        _save_pp_disk_cache(_mj_rows)
+                        st.success(f"✓ Imported {len(_mj_rows)} PP props")
+                    else:
+                        st.warning("0 props found in JSON — check format")
+                except Exception as _mje:
+                    st.error(f"JSON parse error: {_mje}")
+        with st.expander("Background scraper service (always-fresh lines)", expanded=False):
             st.code("python pp_scraper.py --interval 600", language="bash")
-            st.caption("Fetches every 10 min, writes to shared DB. Faster than on-demand fetch.")
+            st.caption("Fetches every 10 min, writes to shared DB. Fastest option when running locally.")
         # ── CLAUDE AI ────────────────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
