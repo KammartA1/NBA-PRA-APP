@@ -3671,12 +3671,26 @@ def _fetch_prizepicks_lines_cached(cookies_str=""):
     if all_rows:
         return all_rows, None
     return [], last_err or "No NBA props found — slate may not be posted yet"
+def _save_pp_opening_lines(rows):
+    """Save opening lines for PP/UD props to enable steam detection."""
+    try:
+        for row in rows:
+            pn = normalize_name(row.get("player", ""))
+            mkt = map_platform_stat_to_market(row.get("stat_type", ""))
+            if mkt:
+                mk_key = ODDS_MARKETS.get(mkt, "")
+                if mk_key:
+                    save_opening_line(pn, mk_key, "Over", row.get("line", 0), None)
+    except Exception:
+        pass
+
 def fetch_prizepicks_lines():
     cookies_str = st.session_state.get("pp_cookies", "")
     errors = []
     # ── 0. Scraper service DB (best: pp_scraper.py running as companion) ──
     db_rows, db_age, _ = _load_pp_from_scraper_db()
     if db_rows and db_age is not None and db_age < 1200:  # <20 min old
+        _save_pp_opening_lines(db_rows)
         return db_rows, None
     # ── 1. Playwright headless fetch (real browser, bypasses PerimeterX) ──
     try:
@@ -3684,6 +3698,7 @@ def fetch_prizepicks_lines():
         _pw_rows = run_once(headless=True)
         if _pw_rows:
             _pp_save_disk(_pw_rows)
+            _save_pp_opening_lines(_pw_rows)
             return _pw_rows, None
     except ImportError:
         pass  # playwright not installed — skip
@@ -3696,6 +3711,7 @@ def fetch_prizepicks_lines():
         try:
             rows, err = _fetch_pp_via_proxy(_psvc, _pkey)
             if rows:
+                _save_pp_opening_lines(rows)
                 return rows, None
             if err:
                 errors.append(f"Proxy: {err}")
@@ -3705,6 +3721,7 @@ def fetch_prizepicks_lines():
     try:
         rows, err = _fetch_pp_via_browser()
         if rows:
+            _save_pp_opening_lines(rows)
             return rows, None
         if err:
             errors.append(f"Browser: {err}")
@@ -3719,12 +3736,14 @@ def fetch_prizepicks_lines():
                 data = r.json()
                 rows = data if isinstance(data, list) else data.get("rows", [])
                 if rows:
+                    _save_pp_opening_lines(rows)
                     return rows, None
         except Exception as e:
             errors.append(f"Relay: {e}")
     # ── 5. Check background auto-fetcher state (recent in-memory result) ──
     _auto_rows, _auto_age, _ = get_pp_auto_lines()
     if _auto_rows and _auto_age is not None and _auto_age < 900:
+        _save_pp_opening_lines(_auto_rows)
         return _auto_rows, None
     # ── 6. Detect if user pasted a full PP JSON response into the cookies/JSON field ──
     _stripped = cookies_str.strip() if cookies_str else ""
@@ -3733,6 +3752,7 @@ def fetch_prizepicks_lines():
             data = json.loads(_stripped)
             rows = _parse_pp_response_all(data)
             if rows:
+                _save_pp_opening_lines(rows)
                 return rows, None
         except Exception as _je:
             return [], f"Stored JSON parse error: {_je}"
@@ -3743,6 +3763,7 @@ def fetch_prizepicks_lines():
     cached_rows, cached_err = _fetch_prizepicks_lines_cached(cookies_str=cookies_str)
     if cached_rows and not cached_err:
         _save_pp_disk_cache(cached_rows)
+        _save_pp_opening_lines(cached_rows)
     return cached_rows, cached_err
 # ──────────────────────────────────────────────
 # PP AUTO-FETCH BACKGROUND ENGINE
@@ -4101,7 +4122,10 @@ def fetch_underdog_lines():
     if st.session_state.get("_ud_last_cookies_used") != cookies_str:
         _fetch_underdog_lines_cached.clear()
         st.session_state["_ud_last_cookies_used"] = cookies_str
-    return _fetch_underdog_lines_cached(cookies_str=cookies_str)
+    rows, err = _fetch_underdog_lines_cached(cookies_str=cookies_str)
+    if rows and not err:
+        _save_pp_opening_lines(rows)
+    return rows, err
 def map_platform_stat_to_market(stat_type):
     """Map PrizePicks/Underdog stat label to internal market name.
     Handles all known PP API stat_type strings including combo, specialty,
@@ -4165,24 +4189,52 @@ def map_platform_stat_to_market(stat_type):
         "H1 Points": "H1 Points", "1H Points": "H1 Points",
         "1st Half Points": "H1 Points", "First Half Points": "H1 Points",
         "H1 Pts": "H1 Points", "1H Pts": "H1 Points",
+        "1st Half Pts": "H1 Points", "First Half Pts": "H1 Points",
+        "Pts 1st Half": "H1 Points", "Points 1st Half": "H1 Points",
+        "NBA 1H Points": "H1 Points",
         "H1 Rebounds": "H1 Rebounds", "1H Rebounds": "H1 Rebounds",
         "1st Half Rebounds": "H1 Rebounds", "H1 Reb": "H1 Rebounds",
+        "1st Half Reb": "H1 Rebounds", "First Half Reb": "H1 Rebounds",
+        "Reb 1st Half": "H1 Rebounds", "Rebounds 1st Half": "H1 Rebounds",
+        "First Half Rebounds": "H1 Rebounds",
         "H1 Assists": "H1 Assists", "1H Assists": "H1 Assists",
         "1st Half Assists": "H1 Assists", "H1 Ast": "H1 Assists",
+        "1st Half Ast": "H1 Assists", "First Half Ast": "H1 Assists",
+        "Ast 1st Half": "H1 Assists", "Assists 1st Half": "H1 Assists",
+        "First Half Assists": "H1 Assists",
         "H1 3PM": "H1 3PM", "1H 3PM": "H1 3PM",
         "1st Half 3-Pointers Made": "H1 3PM", "H1 3-Pointers Made": "H1 3PM",
+        "1st Half 3PM": "H1 3PM", "First Half 3PM": "H1 3PM",
+        "1st Half 3-PT Made": "H1 3PM", "3PM 1st Half": "H1 3PM",
+        "1st Half Three Pointers Made": "H1 3PM", "First Half 3-Pointers Made": "H1 3PM",
         "H1 PRA": "H1 PRA", "1H PRA": "H1 PRA",
         "1st Half PRA": "H1 PRA", "H1 Pts+Reb+Ast": "H1 PRA",
+        "1st Half Pts+Reb+Ast": "H1 PRA", "First Half PRA": "H1 PRA",
+        "1H Pts+Reb+Ast": "H1 PRA",
         # ── 2nd Half ──────────────────────────────────────────────────────
         "H2 Points": "H2 Points", "2H Points": "H2 Points",
         "2nd Half Points": "H2 Points", "Second Half Points": "H2 Points",
         "H2 Pts": "H2 Points", "2H Pts": "H2 Points",
+        "2nd Half Pts": "H2 Points", "Second Half Pts": "H2 Points",
+        "Pts 2nd Half": "H2 Points", "Points 2nd Half": "H2 Points",
+        "NBA 2H Points": "H2 Points",
         "H2 Rebounds": "H2 Rebounds", "2H Rebounds": "H2 Rebounds",
         "2nd Half Rebounds": "H2 Rebounds", "H2 Reb": "H2 Rebounds",
+        "2nd Half Reb": "H2 Rebounds", "Second Half Reb": "H2 Rebounds",
+        "Reb 2nd Half": "H2 Rebounds", "Rebounds 2nd Half": "H2 Rebounds",
+        "Second Half Rebounds": "H2 Rebounds",
         "H2 Assists": "H2 Assists", "2H Assists": "H2 Assists",
         "2nd Half Assists": "H2 Assists", "H2 Ast": "H2 Assists",
+        "2nd Half Ast": "H2 Assists", "Second Half Ast": "H2 Assists",
+        "Ast 2nd Half": "H2 Assists", "Assists 2nd Half": "H2 Assists",
+        "Second Half Assists": "H2 Assists",
+        "H2 3PM": "H2 3PM", "2H 3PM": "H2 3PM",
+        "2nd Half 3PM": "H2 3PM", "Second Half 3PM": "H2 3PM",
+        "2nd Half 3-Pointers Made": "H2 3PM",
         "H2 PRA": "H2 PRA", "2H PRA": "H2 PRA",
         "2nd Half PRA": "H2 PRA", "H2 Pts+Reb+Ast": "H2 PRA",
+        "2nd Half Pts+Reb+Ast": "H2 PRA", "Second Half PRA": "H2 PRA",
+        "2H Pts+Reb+Ast": "H2 PRA",
         # H1/H2 shooting volume
         "H1 FGM": "H1 FGM", "1H FGM": "H1 FGM", "1st Half FGM": "H1 FGM",
         "1st Half Field Goals Made": "H1 FGM",
@@ -4203,10 +4255,14 @@ def map_platform_stat_to_market(stat_type):
         # ── 1st Quarter ───────────────────────────────────────────────────
         "Q1 Points": "Q1 Points", "1Q Points": "Q1 Points",
         "1st Quarter Points": "Q1 Points", "Q1 Pts": "Q1 Points",
+        "1st Quarter Pts": "Q1 Points", "Pts 1st Quarter": "Q1 Points",
+        "Points 1st Quarter": "Q1 Points",
         "Q1 Rebounds": "Q1 Rebounds", "1Q Rebounds": "Q1 Rebounds",
         "1st Quarter Rebounds": "Q1 Rebounds", "Q1 Reb": "Q1 Rebounds",
+        "1st Quarter Reb": "Q1 Rebounds", "Rebounds 1st Quarter": "Q1 Rebounds",
         "Q1 Assists": "Q1 Assists", "1Q Assists": "Q1 Assists",
         "1st Quarter Assists": "Q1 Assists", "Q1 Ast": "Q1 Assists",
+        "1st Quarter Ast": "Q1 Assists", "Assists 1st Quarter": "Q1 Assists",
         # ── Minutes ───────────────────────────────────────────────────────
         "Minutes": "Minutes", "Min": "Minutes",
         "Minutes Played": "Minutes", "Mins": "Minutes",
@@ -4223,6 +4279,36 @@ def map_platform_stat_to_market(stat_type):
         k_norm = re.sub(r"[\s\-\+]+", " ", k.lower()).strip()
         if k_norm == s_norm:
             return v
+    # ── Regex fallback for half/quarter variants ────────────────────────
+    # Catches any remaining PP/UD format: "1st Half X", "X 1st Half", "1H X", etc.
+    _s_upper = s.upper().strip()
+    _HALF_PREFIXES = [
+        (r'(?:1ST\s*HALF|FIRST\s*HALF|1H|H1)\s+(.+)',  "H1"),
+        (r'(.+?)\s+(?:1ST\s*HALF|FIRST\s*HALF|1H)',    "H1"),
+        (r'(?:2ND\s*HALF|SECOND\s*HALF|2H|H2)\s+(.+)', "H2"),
+        (r'(.+?)\s+(?:2ND\s*HALF|SECOND\s*HALF|2H)',   "H2"),
+        (r'(?:1ST\s*QUARTER|FIRST\s*QUARTER|1Q|Q1)\s+(.+)', "Q1"),
+        (r'(.+?)\s+(?:1ST\s*QUARTER|FIRST\s*QUARTER|1Q)', "Q1"),
+    ]
+    # Base stat → canonical market map (full-game only)
+    _BASE_MAP = {
+        "POINTS": "Points", "PTS": "Points",
+        "REBOUNDS": "Rebounds", "REB": "Rebounds", "REBS": "Rebounds",
+        "ASSISTS": "Assists", "AST": "Assists",
+        "3PM": "3PM", "3-PT MADE": "3PM", "3PT MADE": "3PM",
+        "THREE POINTERS MADE": "3PM", "3 POINTERS MADE": "3PM",
+        "PRA": "PRA", "PTS+REB+AST": "PRA", "POINTS+REBOUNDS+ASSISTS": "PRA",
+    }
+    for _pat, _prefix in _HALF_PREFIXES:
+        _m = re.match(_pat, _s_upper)
+        if _m:
+            _inner = _m.group(1).strip()
+            _base_mkt = _BASE_MAP.get(_inner)
+            if _base_mkt:
+                _result = f"{_prefix} {_base_mkt}"
+                if _result in STAT_FIELDS:
+                    logging.info(f"Regex-matched '{stat_type}' → '{_result}'")
+                    return _result
     logging.info(f"Unmapped platform stat_type: '{stat_type}'")
     return None
 # ──────────────────────────────────────────────
@@ -5570,6 +5656,10 @@ def compute_leg_projection(
             _bootstrap_line = float(line)
             # NOTE: _orig_half_factor still holds original value for Bayesian prior scaling
             half_factor = 1.0   # proj_full is now in half-game units; no re-scale needed
+            errors.append(
+                f"[H-FIX] {market_name}: series_mean={float(_bootstrap_series.mean()):.1f}, "
+                f"line={_bootstrap_line:.1f}, hf_used={_orig_half_factor:.3f}"
+            )
         else:
             _bootstrap_series = pace_adj_series
             _bootstrap_line = float(line)
@@ -8280,19 +8370,27 @@ with tabs[2]:
     with sc2:
         _qb1, _qb2, _qb3, _qb4 = st.columns(4)
         if _qb1.button("Core", key="qs_core", use_container_width=True):
-            st.session_state["_qs_markets"] = ["Points","Rebounds","Assists","3PM","PRA","PR","PA","RA"]
+            st.session_state["scanner_markets_sel"] = ["Points","Rebounds","Assists","3PM","PRA","PR","PA","RA"]
             st.rerun()
         if _qb2.button("+Halves", key="qs_half", use_container_width=True):
-            st.session_state["_qs_markets"] = ["Points","Rebounds","Assists","3PM","PRA",
-                "H1 Points","H1 Rebounds","H1 Assists","H1 PRA","H2 Points","H2 PRA","Q1 Points"]
+            st.session_state["scanner_markets_sel"] = [
+                "Points","Rebounds","Assists","3PM","PRA",
+                "H1 Points","H1 Rebounds","H1 Assists","H1 3PM","H1 PRA",
+                "H2 Points","H2 Rebounds","H2 Assists","H2 PRA",
+                "Q1 Points",
+            ]
             st.rerun()
         if _qb3.button("+Shoot", key="qs_shoot", use_container_width=True):
-            st.session_state["_qs_markets"] = ["Points","Rebounds","Assists","3PM","PRA","FGM","FGA","FTM","FTA","3PA","Blocks","Steals"]
+            st.session_state["scanner_markets_sel"] = [
+                "Points","Rebounds","Assists","3PM","PRA",
+                "FGM","FGA","FTM","FTA","3PA","Blocks","Steals",
+            ]
             st.rerun()
         if _qb4.button("ALL", key="qs_all", use_container_width=True):
-            st.session_state["_qs_markets"] = list(MARKET_OPTIONS)
+            st.session_state["scanner_markets_sel"] = list(MARKET_OPTIONS)
             st.rerun()
-        _qs_default = st.session_state.get("_qs_markets", ["Points","Rebounds","Assists","3PM","PRA"])
+        # Default: use whatever is in session state (buttons write directly to widget key)
+        _qs_default = st.session_state.get("scanner_markets_sel", ["Points","Rebounds","Assists","3PM","PRA"])
         markets_sel = st.multiselect("Markets", options=MARKET_OPTIONS, default=_qs_default, key="scanner_markets_sel")
     with sc3:
         book_choices2, _book_err2 = get_sportsbook_choices(scan_start.isoformat())
@@ -8451,7 +8549,7 @@ with tabs[2]:
                         "Double Double","Triple Double","Fantasy Score",
                     }
                     _sel_spec_timing = [m for m in markets_sel if m in _SPEC_TIMING_MARKETS]
-                    if _sel_spec_timing and sportsbook2 not in ("prizepicks", "underdog", "sleeper"):
+                    if _sel_spec_timing and _scan_source not in ("PP + UD only",) and sportsbook2 not in ("prizepicks", "underdog", "sleeper"):
                         st.info(
                             f"**{', '.join(_sel_spec_timing)}** — these specialty markets typically open on "
                             "DraftKings/FanDuel **1–2 hours before tip-off**. If you see 0 lines, try "
@@ -8467,7 +8565,18 @@ with tabs[2]:
                             regions = "us,us2,eu,uk" if any(k in SPECIALTY_MARKET_KEYS for k in batch_keys) else REGION_US
                             odds, oerr = odds_get_event_odds(eid, tuple(batch_keys), regions=regions)
                             if oerr:
-                                _fetch_errors.append(f"{','.join(batch_keys)}: {oerr}")
+                                # H1/H2/Q1 markets commonly return errors pre-tip — expected, not alarming
+                                _is_half_batch = any(k in batch_keys for k in [
+                                    "player_points_q1q2", "player_rebounds_q1q2", "player_assists_q1q2",
+                                    "player_threes_q1q2", "player_points_rebounds_assists_q1q2",
+                                    "player_points_q3q4", "player_rebounds_q3q4", "player_assists_q3q4",
+                                    "player_points_rebounds_assists_q3q4",
+                                    "player_points_q1", "player_rebounds_q1", "player_assists_q1",
+                                ])
+                                if _is_half_batch:
+                                    _fetch_errors.append(f"H1/H2/Q1 ({','.join(batch_keys)}): {oerr} [EXPECTED — opens 1-2h pre-tip; use PP/UD for all-day H1/H2 lines]")
+                                else:
+                                    _fetch_errors.append(f"{','.join(batch_keys)}: {oerr}")
                                 continue
                             if not odds: continue
                             _is_spec_batch = any(k in SPECIALTY_MARKET_KEYS for k in batch_keys)
@@ -8554,6 +8663,8 @@ with tabs[2]:
                             "market_key":ODDS_MARKETS.get(mkt),"side":r.get("side","Over")}
                     candidates.append((pname, mkt, float(line), meta))
             # ── Platform candidates (PP + UD + Sleeper) ────────────────────
+            _unmapped_stats = set()   # Track stat_types with no mapping
+            _half_candidate_count = 0  # Count H1/H2/Q1 candidates built
             if _use_platforms:
                 for _plat_store, _plat_label in [("pp_lines","prizepicks"), ("ud_lines","underdog"), ("sl_lines","sleeper")]:
                     if sportsbook2 == "prizepicks" and _plat_label != "prizepicks":
@@ -8565,7 +8676,10 @@ with tabs[2]:
                         pname = (r.get("player") or "").strip()
                         stat_t = r.get("stat_type","")
                         mkt = map_platform_stat_to_market(stat_t)
-                        if not mkt or mkt not in MARKET_OPTIONS:
+                        if not mkt:
+                            _unmapped_stats.add(stat_t)
+                            continue
+                        if mkt not in MARKET_OPTIONS:
                             continue
                         if mkt not in markets_sel:
                             continue
@@ -8591,6 +8705,26 @@ with tabs[2]:
                             "market_key": ODDS_MARKETS.get(mkt), "side": "Over",
                         }
                         candidates.append((pname, mkt, float(line), meta))
+                        if any(h in mkt for h in ("H1", "H2", "Q1")):
+                            _half_candidate_count += 1
+            # ── Diagnostics: unmapped stats + half-game candidate count ─────
+            if _unmapped_stats:
+                _unmapped_display = sorted(_unmapped_stats)[:12]
+                st.caption(
+                    f"⚠ {len(_unmapped_stats)} unmapped PP/UD stat type(s): "
+                    f"{', '.join(_unmapped_display)}"
+                    f"{'...' if len(_unmapped_stats) > 12 else ''}"
+                )
+            _selected_half = [m for m in markets_sel if any(h in m for h in ("H1", "H2", "Q1"))]
+            if _selected_half:
+                if _half_candidate_count > 0:
+                    st.caption(f"📊 {_half_candidate_count} half/quarter candidates from platform lines")
+                else:
+                    st.warning(
+                        f"0 half/quarter candidates found for {', '.join(_selected_half)}. "
+                        "Check: (1) PP/UD lines are loaded, (2) today's slate includes H1/H2 props, "
+                        "(3) look at the unmapped stats above for PP's exact stat_type strings."
+                    )
             out_rows, dropped = [], []
             all_computed_legs = []  # [FEATURE] Stores all computed legs for Under scan
             if candidates:
@@ -9252,6 +9386,21 @@ with tabs[3]:
             if pp_filter:
                 display_df = pp_df_std[pp_df_std["player"].str.strip().str.contains(pp_filter.strip(), case=False, na=False)]
             st.dataframe(display_df, use_container_width=True)
+            # ── Stat-type mapping diagnostic ──────────────────────────────
+            if not display_df.empty and "stat_type" in display_df.columns:
+                _all_types = sorted(display_df["stat_type"].dropna().unique().tolist())
+                _half_types = [t for t in _all_types if any(h in t.lower() for h in
+                    ["half", "1h", "2h", "h1", "h2", "1st", "2nd", "quarter", "q1", "1q"])]
+                if _half_types:
+                    st.caption(f"📊 PP half/quarter stat_types found: {', '.join(_half_types)}")
+                else:
+                    st.caption("ℹ No half/quarter stat_types in current PP data — slate may not include them yet.")
+                _mapped_count = sum(1 for _st in _all_types if map_platform_stat_to_market(_st))
+                _unmapped_types = [_st for _st in _all_types if not map_platform_stat_to_market(_st)]
+                if _unmapped_types:
+                    with st.expander(f"⚠ {len(_unmapped_types)} unmapped stat types (click to see)", expanded=False):
+                        st.write(_unmapped_types)
+                st.caption(f"Mapped: {_mapped_count}/{len(_all_types)} stat types")
             if st.button("Scan PrizePicks vs Model", use_container_width=True):
                 pp_candidates = []
                 _pp_meta_base = {"event_id": None, "home_team": "", "away_team": "",
