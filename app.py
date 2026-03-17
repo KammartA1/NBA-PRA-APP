@@ -2732,6 +2732,13 @@ def compute_game_script_mult(game_total, spread_abs, market, team_abbr, opp_abbr
 # ODDS API  [FIX 7: retry on 429]
 # ──────────────────────────────────────────────
 def odds_api_key():
+    # 1. session state override (entered in Settings)
+    _ss_key = st.session_state.get("_odds_api_key_override","")
+    if _ss_key: return _ss_key
+    # 2. saved settings file
+    _saved = load_pp_settings().get("odds_api_key","")
+    if _saved: return _saved
+    # 3. Streamlit secrets / env
     return (st.secrets.get("ODDS_API_KEY","") if hasattr(st,"secrets") else "") or os.getenv("ODDS_API_KEY","")
 # [FIX 7] Retry with exponential backoff on 429
 def http_get_json(url, params, timeout=25):
@@ -7369,6 +7376,11 @@ if "pp_proxy_service" not in st.session_state:
     st.session_state["pp_proxy_service"] = _pp_disk.get("pp_proxy_service", "scraperapi")
 if "pp_proxy_key" not in st.session_state:
     st.session_state["pp_proxy_key"] = _pp_disk.get("pp_proxy_key", "")
+if "_odds_api_key_override" not in st.session_state:
+    _saved_odds_key = _pp_disk.get("odds_api_key", "")
+    st.session_state["_odds_api_key_override"] = _saved_odds_key
+    if _saved_odds_key:
+        os.environ["ODDS_API_KEY"] = _saved_odds_key
 # Restore background auto-fetcher state if it was enabled last session
 if st.session_state.get("pp_auto_enabled"):
     set_pp_auto_fetch(
@@ -10287,6 +10299,40 @@ Routes PP requests through residential IPs — bypasses the datacenter IP block 
         with st.expander("Background scraper service (always-fresh lines)", expanded=False):
             st.code("python pp_scraper.py --interval 600", language="bash")
             st.caption("Fetches every 10 min, writes to shared DB. Fastest option when running locally.")
+        # ── ODDS API ─────────────────────────────────────────
+        st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-top:0.8rem;margin-bottom:0.6rem;padding-bottom:0.4rem;
+border-bottom:1px solid #0E1E30;'>▸ ODDS API</div>""", unsafe_allow_html=True)
+        _odds_stored = st.session_state.get("_odds_api_key_override", "") or load_pp_settings().get("odds_api_key","")
+        if _odds_stored:
+            st.markdown("""
+<div style='background:linear-gradient(90deg,#00FFB208,transparent);
+            border:1px solid #00FFB230;border-radius:3px;
+            padding:0.4rem 0.7rem;display:flex;align-items:center;gap:0.5rem;
+            margin-bottom:0.5rem;'>
+    <div style='width:6px;height:6px;border-radius:50%;background:#00FFB2;
+                box-shadow:0 0 6px #00FFB2;'></div>
+    <div style='font-family:Fira Code,monospace;font-size:0.62rem;color:#00FFB2;'>
+        ODDS API KEY ACTIVE</div>
+</div>""", unsafe_allow_html=True)
+        else:
+            st.info("No Odds API key configured — live line shopping and book price comparisons will be unavailable.")
+        with st.expander("Set Odds API Key", expanded=not bool(_odds_stored)):
+            _odds_input = st.text_input(
+                "The Odds API Key",
+                value=_odds_stored,
+                type="password",
+                help="Get your key at the-odds-api.com",
+                key="settings_odds_key_input"
+            )
+            if st.button("Save Odds API Key", key="save_odds_api_key_btn"):
+                _odds_val = _odds_input.strip()
+                st.session_state["_odds_api_key_override"] = _odds_val
+                os.environ["ODDS_API_KEY"] = _odds_val
+                save_pp_settings(odds_api_key=_odds_val)
+                st.success("✓ Odds API key saved" if _odds_val else "✓ Odds API key cleared")
+                st.rerun()
         # ── CLAUDE AI ────────────────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
