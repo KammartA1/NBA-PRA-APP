@@ -8345,6 +8345,7 @@ with tabs[2]:
                     mkt   = (r.get("market") or "").strip()
                     line  = r.get("line")
                     if not pname or pd.isna(line) or not mkt: continue
+                    if mkt not in markets_sel: continue
                     meta = {"event_id":r.get("event_id"),"home_team":r.get("home_team"),
                             "away_team":r.get("away_team"),"commence_time":r.get("commence_time"),
                             "price":r.get("price"),"book":r.get("book"),
@@ -8599,6 +8600,18 @@ with tabs[2]:
                         "n_games": int(_leg.get("n_games_used", 0)),
                         "inj_boost": "🏥 " + (_leg.get("auto_inj_player") or "").title() if _leg.get("auto_inj") else "",
                         "min_proj": safe_round(_leg.get("proj_minutes"), 0),
+                        "src": {"prizepicks": "PP", "underdog": "UD"}.get(
+                            str(_mt.get("book", "")).lower(), _mt.get("book", "") or "odds"
+                        ),
+                        "pp_edge_%": round((_p_under - 0.50) * 100, 1),
+                        "pp_2leg_ev_%": round((DFS_PP_PAYOUTS[2] * _p_under**2 - 1.0) * 100, 1),
+                        "sharp": safe_round(_leg.get("sharpness_score"), 0),
+                        "sharp_tier": _leg.get("sharpness_tier", ""),
+                        "trend": _leg.get("trend_label", ""),
+                        "fatigue": _leg.get("fatigue_label", "Normal"),
+                        "game_tot": safe_round(_leg.get("game_total"), 0),
+                        "l3": safe_round(_leg.get("l3_avg"), 1),
+                        "l5": safe_round(_leg.get("l5_avg"), 1),
                     })
                 if under_rows:
                     under_df = pd.DataFrame(under_rows).sort_values("ev_adj_pct", ascending=False)
