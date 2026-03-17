@@ -3550,7 +3550,7 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """
     url = PRIZEPICKS_API
     params = {"per_page": str(per_page),
-              "single_stat": single_stat, "in_play": "false", "league_id": "7"}
+              "single_stat": single_stat, "in_play": "false"}
     # Full Chrome 120 headers — reduces bot-detection fingerprint
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -3888,7 +3888,7 @@ def _fetch_pp_via_proxy(proxy_service="scraperapi", proxy_key=""):
         return [], f"Unknown proxy service: {proxy_service}"
     all_rows, last_err = [], None
     for single_stat in ("true", "false"):
-        target = f"https://api.prizepicks.com/projections?per_page=500&single_stat={single_stat}&league_id=7"
+        target = f"https://api.prizepicks.com/projections?per_page=500&single_stat={single_stat}&in_play=false"
         # URL-encode the ENTIRE target so ? and & aren't parsed as proxy params
         encoded_target = _url_quote(target, safe="")
         proxy_url = svc["url_tpl"].format(key=proxy_key, url=encoded_target)
@@ -3938,8 +3938,8 @@ await (async () => {
   try {
     const h = {'Accept':'application/vnd.api+json','Referer':'https://app.prizepicks.com/'};
     const [r1,r2] = await Promise.all([
-      fetch('https://api.prizepicks.com/projections?per_page=500&single_stat=true&league_id=7', {headers:h}),
-      fetch('https://api.prizepicks.com/projections?per_page=500&single_stat=false&league_id=7', {headers:h})
+      fetch('https://api.prizepicks.com/projections?per_page=500&single_stat=true&in_play=false', {headers:h}),
+      fetch('https://api.prizepicks.com/projections?per_page=500&single_stat=false&in_play=false', {headers:h})
     ]);
     if(!r1.ok&&!r2.ok) return JSON.stringify({error:'HTTP '+r1.status});
     const [d1,d2] = await Promise.all([r1.ok?r1.json():{data:[],included:[]}, r2.ok?r2.json():{data:[],included:[]}]);
