@@ -430,10 +430,12 @@ ODDS_MARKETS = {
     "3PA":             "player_three_point_field_goals_attempted",
     "FTM":             "player_free_throws_made",
     "FTA":             "player_free_throws_attempted",
+    # Minutes (PP specialty — no Odds API key; PP/UD/Sleeper source only)
+    "Minutes":         "player_minutes",
 }
 # Markets with no confirmed Odds API key — available via PP/UD/Sleeper only.
 # These will be skipped during Odds API fetches and the user will be warned.
-ODDS_API_UNSUPPORTED_MARKETS = {"FGA", "3PA", "FTM", "FTA"}
+ODDS_API_UNSUPPORTED_MARKETS = {"FGA", "3PA", "FTM", "FTA", "Minutes"}
 # ──────────────────────────────────────────────
 # DFS PLATFORM PAYOUT STRUCTURES
 # PrizePicks / Underdog / Sleeper use identical or similar payout tables.
@@ -606,16 +608,26 @@ STAT_FIELDS = {
     "Steals":          "STL",
     "Turnovers":       "TOV",
     "Stocks":          ("BLK","STL"),
+    # Minutes (PP specialty — requires special parse in compute_stat_from_gamelog)
+    "Minutes":         "MIN",
     # Half markets map to full-game fields (adjusted via HALF_FACTOR)
     "H1 Points":       "PTS",
     "H1 Rebounds":     "REB",
     "H1 Assists":      "AST",
     "H1 3PM":          "FG3M",
     "H1 PRA":          ("PTS","REB","AST"),
+    "H1 FGM":          "FGM",
+    "H1 FGA":          "FGA",
+    "H1 FTM":          "FTM",
+    "H1 FTA":          "FTA",
     "H2 Points":       "PTS",
     "H2 Rebounds":     "REB",
     "H2 Assists":      "AST",
     "H2 PRA":          ("PTS","REB","AST"),
+    "H2 FGM":          "FGM",
+    "H2 FGA":          "FGA",
+    "H2 FTM":          "FTM",
+    "H2 FTA":          "FTA",
     # 1Q markets map to full-game fields (adjusted via Q1_FACTOR)
     "Q1 Points":       "PTS",
     "Q1 Rebounds":     "REB",
@@ -1205,6 +1217,18 @@ def bayesian_shrink(observed_mu, n_obs, market, position_bucket, custom_priors=N
 # STAT SERIES COMPUTATION
 # ──────────────────────────────────────────────
 def compute_stat_from_gamelog(df, market):
+    # Minutes: parse "MM:SS" strings to decimal minutes
+    if market == "Minutes":
+        try:
+            def _parse_min(v):
+                v = str(v)
+                if ":" in v:
+                    parts = v.split(":")
+                    return float(parts[0]) + float(parts[1]) / 60.0
+                return safe_float(v, default=0.0)
+            return df["MIN"].apply(_parse_min) if "MIN" in df.columns else pd.Series([], dtype=float)
+        except Exception:
+            return pd.Series([], dtype=float)
     # [UPGRADE] Fantasy Score: weighted DraftKings formula
     if market == "Fantasy Score":
         try:
@@ -1996,6 +2020,67 @@ def passes_volatility_gate(cv, ev_raw, skew=None, bet_type="Over"):
             if v > tightened and (ev_f is None or ev_f < 0.08):
                 return False, f"CV>{tightened:.2f} (pos-skew+Under tightened, needs EV>=8%)"
     return True, ""
+# ──────────────────────────────────────────────
+# FANO FACTOR VOLATILITY GATE (v5.0)
+# Uses variance/mean (Fano factor) for count stats rather than CV.
+# CV fails for count stats because σ² ∝ μ for Poisson/NegBin distributions.
+# ──────────────────────────────────────────────
+def passes_volatility_gate_v2(stat_series, ev_raw, market, skew=None, bet_type="Over"):
+    """Fano-factor gate for count stats; standard CV gate for continuous stats."""
+    arr = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
+    if len(arr) < 4:
+        return False, "insufficient data"
+    if market in NEGBINOM_MARKETS:
+        mu = arr.mean()
+        if mu < 0.3:
+            return False, f"mean too low ({mu:.1f})"
+        var = arr.var(ddof=1) if len(arr) > 1 else 0.0
+        fano = var / max(mu, 0.01)
+        ev_f = float(ev_raw) if ev_raw is not None else None
+        if fano > 3.5 and (ev_f is None or ev_f < 0.10):
+            return False, f"Fano={fano:.1f} extreme, needs EV>=10%"
+        if fano > 2.5 and (ev_f is None or ev_f < 0.06):
+            return False, f"Fano={fano:.1f} high, needs EV>=6%"
+        return True, ""
+    else:
+        cv = float(arr.std(ddof=1) / arr.mean()) if arr.mean() != 0 else None
+        return passes_volatility_gate(cv, ev_raw, skew=skew, bet_type=bet_type)
+# ──────────────────────────────────────────────
+# KDE PROBABILITY ESTIMATOR (v5.0)
+# Gaussian KDE for continuous stats (Points, PRA, Fantasy Score).
+# Outperforms bootstrap for large samples on continuous distributions.
+# ──────────────────────────────────────────────
+KDE_MARKETS = frozenset({
+    "Points", "PRA", "PR", "PA", "Fantasy Score",
+    "H1 Points", "H2 Points", "Q1 Points",
+})
+def kde_prob_over(stat_series, line, market="default", min_n=8):
+    """Gaussian KDE probability estimate with exponential recency weighting."""
+    try:
+        from scipy.stats import gaussian_kde
+    except ImportError:
+        return None, None, None
+    x = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
+    if x.size < min_n:
+        return None, None, None
+    lam = LAMBDA_DECAY_BY_STAT.get(market, 0.88)
+    w = np.array([lam ** i for i in range(x.size)], dtype=float)
+    w /= w.sum()
+    mu_w = float(np.average(x, weights=w))
+    var_w = float(np.average((x - mu_w) ** 2, weights=w))
+    sigma_w = max(1e-9, np.sqrt(var_w))
+    n_eff = 1.0 / np.sum(w ** 2)
+    bw = 1.06 * sigma_w * max(n_eff, 1.0) ** (-1 / 5)
+    reps = np.maximum(np.round(w * 1000).astype(int), 1)
+    x_rep = np.repeat(x, reps)
+    if len(x_rep) < 5:
+        return None, mu_w, sigma_w
+    try:
+        kde = gaussian_kde(x_rep, bw_method=max(bw / max(x_rep.std(ddof=1), 1e-6), 0.05))
+        p_over = float(kde.integrate_box_1d(float(line), float(line) + 10 * sigma_w))
+        return float(np.clip(p_over, 1e-4, 1 - 1e-4)), mu_w, sigma_w
+    except Exception:
+        return None, mu_w, sigma_w
 # ──────────────────────────────────────────────
 # BOOTSTRAP WITH PER-PLAYER NOISE
 # ──────────────────────────────────────────────
@@ -3570,7 +3655,22 @@ def _fetch_prizepicks_lines_cached(cookies_str=""):
     return [], last_err or "No NBA props found — slate may not be posted yet"
 def fetch_prizepicks_lines():
     cookies_str = st.session_state.get("pp_cookies", "")
-    # ── 0. Check relay URL first (local relay script or ngrok tunnel) ──
+    # ── 0. Scraper service DB (best: pp_scraper.py running as companion) ──
+    db_rows, db_age, _ = _load_pp_from_scraper_db()
+    if db_rows and db_age is not None and db_age < 1200:  # <20 min old
+        return db_rows, None
+    # ── 1. Playwright headless fetch (real browser, bypasses PerimeterX) ──
+    try:
+        from pp_scraper import run_once, save_to_disk as _pp_save_disk
+        _pw_rows = run_once(headless=True)
+        if _pw_rows:
+            _pp_save_disk(_pw_rows)
+            return _pw_rows, None
+    except ImportError:
+        pass  # playwright not installed — skip
+    except Exception as _pw_e:
+        logging.warning(f"Playwright PP fetch failed: {_pw_e}")
+    # ── 2. Check relay URL (local proxy or ngrok tunnel) ──
     relay_url = st.session_state.get("pp_relay_url", "").strip()
     if relay_url:
         try:
@@ -3581,12 +3681,12 @@ def fetch_prizepicks_lines():
                 if rows:
                     return rows, None
         except Exception:
-            pass  # relay unavailable — fall through to direct API
-    # ── 1. Check background auto-fetcher state (recent in-memory result) ──
+            pass
+    # ── 3. Check background auto-fetcher state (recent in-memory result) ──
     _auto_rows, _auto_age, _ = get_pp_auto_lines()
     if _auto_rows and _auto_age is not None and _auto_age < 900:
         return _auto_rows, None
-    # ── 2. Detect if user pasted a full PP JSON response into the cookies/JSON field ──
+    # ── 4. Detect if user pasted a full PP JSON response into the cookies/JSON field ──
     _stripped = cookies_str.strip() if cookies_str else ""
     if _stripped.startswith("{") and '"data"' in _stripped:
         try:
@@ -3596,7 +3696,7 @@ def fetch_prizepicks_lines():
                 return rows, None
         except Exception as _je:
             return [], f"Stored JSON parse error: {_je}"
-    # ── 3. Direct API call with cache ──
+    # ── 5. Direct API call with cache ──
     if st.session_state.get("_pp_last_cookies_used") != cookies_str:
         _fetch_prizepicks_lines_cached.clear()
         st.session_state["_pp_last_cookies_used"] = cookies_str
@@ -3623,6 +3723,42 @@ def _load_pp_disk_cache(max_age_sec: int = 1800):
     except Exception:
         pass
     return None, None
+_PP_SCRAPER_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "nba_prizepicks.db")
+def _load_pp_from_scraper_db(max_age_sec: int = 1800):
+    """Load latest PP lines from pp_scraper.py SQLite DB. Returns (rows, age_sec, err)."""
+    try:
+        import sqlite3 as _sqlite3
+        if not os.path.exists(_PP_SCRAPER_DB):
+            return [], None, "scraper DB not found"
+        conn = _sqlite3.connect(_PP_SCRAPER_DB)
+        cur = conn.execute(
+            "SELECT player_name, stat_type, line_score, start_time, odds_type, fetched_at "
+            "FROM nba_prizepicks_lines WHERE is_latest = 1"
+        )
+        rows_raw = cur.fetchall()
+        ts_row = conn.execute(
+            "SELECT last_success FROM scraper_status WHERE scraper_name = 'nba_prizepicks'"
+        ).fetchone()
+        conn.close()
+        if not rows_raw:
+            return [], None, "no rows in scraper DB"
+        if ts_row:
+            from datetime import datetime as _dt, timezone as _tz
+            try:
+                _ts = _dt.strptime(ts_row[0], "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=_tz.utc)
+                age = int(time.time() - _ts.timestamp())
+            except Exception:
+                age = 0
+        else:
+            age = 0
+        rows = [
+            {"player": r[0], "stat_type": r[1], "line": r[2],
+             "start_time": r[3], "odds_type": r[4] or "standard"}
+            for r in rows_raw
+        ]
+        return rows, age, None
+    except Exception as _e:
+        return [], None, str(_e)
 # [AUDIT FIX] Module-level singleton for PP background fetcher state.
 # Previously _pp_auto_state() returned a new dict every call, breaking singleton semantics:
 # thread tracking, lock sharing, and stop_evt coordination all failed silently,
@@ -3651,24 +3787,34 @@ def _pp_auto_loop(state: dict):
         if not state.get("enabled"):
             continue
         try:
-            relay_url = state.get("relay_url", "").strip()
             rows: list = []
-            if relay_url:
-                try:
-                    r = requests.get(relay_url, timeout=10)
-                    if r.ok:
-                        data = r.json()
-                        rows = data if isinstance(data, list) else data.get("rows", [])
-                except Exception:
-                    pass
+            err = None
+            # Try Playwright first (real browser, bypasses PerimeterX)
+            try:
+                from pp_scraper import run_once as _pw_run, save_to_disk as _pw_save
+                rows = _pw_run(headless=True)
+                if rows:
+                    _pw_save(rows)
+            except Exception:
+                pass
+            # Fallback to relay URL
+            if not rows:
+                relay_url = state.get("relay_url", "").strip()
+                if relay_url:
+                    try:
+                        r = requests.get(relay_url, timeout=10)
+                        if r.ok:
+                            data = r.json()
+                            rows = data if isinstance(data, list) else data.get("rows", [])
+                    except Exception:
+                        pass
+            # Fallback to direct API (works from residential IPs)
             if not rows:
                 cookies_str = state.get("cookies", "")
                 rows_s, err_s = _pp_fetch_one(500, cookies_str, "true")
                 rows_c, _     = _pp_fetch_one(500, cookies_str, "false")
                 rows = (rows_s or []) + (rows_c or [])
                 err = err_s if not rows else None
-            else:
-                err = None
             with state["lock"]:
                 if rows:
                     seen: set = set()
@@ -3896,6 +4042,23 @@ def map_platform_stat_to_market(stat_type):
         "2nd Half Assists": "H2 Assists", "H2 Ast": "H2 Assists",
         "H2 PRA": "H2 PRA", "2H PRA": "H2 PRA",
         "2nd Half PRA": "H2 PRA", "H2 Pts+Reb+Ast": "H2 PRA",
+        # H1/H2 shooting volume
+        "H1 FGM": "H1 FGM", "1H FGM": "H1 FGM", "1st Half FGM": "H1 FGM",
+        "1st Half Field Goals Made": "H1 FGM",
+        "H1 FGA": "H1 FGA", "1H FGA": "H1 FGA", "1st Half FGA": "H1 FGA",
+        "1st Half Field Goals Attempted": "H1 FGA",
+        "H1 FTM": "H1 FTM", "1H FTM": "H1 FTM", "1st Half FTM": "H1 FTM",
+        "1st Half Free Throws Made": "H1 FTM",
+        "H1 FTA": "H1 FTA", "1H FTA": "H1 FTA", "1st Half FTA": "H1 FTA",
+        "1st Half Free Throws Attempted": "H1 FTA",
+        "H2 FGM": "H2 FGM", "2H FGM": "H2 FGM", "2nd Half FGM": "H2 FGM",
+        "2nd Half Field Goals Made": "H2 FGM",
+        "H2 FGA": "H2 FGA", "2H FGA": "H2 FGA", "2nd Half FGA": "H2 FGA",
+        "2nd Half Field Goals Attempted": "H2 FGA",
+        "H2 FTM": "H2 FTM", "2H FTM": "H2 FTM", "2nd Half FTM": "H2 FTM",
+        "2nd Half Free Throws Made": "H2 FTM",
+        "H2 FTA": "H2 FTA", "2H FTA": "H2 FTA", "2nd Half FTA": "H2 FTA",
+        "2nd Half Free Throws Attempted": "H2 FTA",
         # ── 1st Quarter ───────────────────────────────────────────────────
         "Q1 Points": "Q1 Points", "1Q Points": "Q1 Points",
         "1st Quarter Points": "Q1 Points", "Q1 Pts": "Q1 Points",
@@ -3903,6 +4066,10 @@ def map_platform_stat_to_market(stat_type):
         "1st Quarter Rebounds": "Q1 Rebounds", "Q1 Reb": "Q1 Rebounds",
         "Q1 Assists": "Q1 Assists", "1Q Assists": "Q1 Assists",
         "1st Quarter Assists": "Q1 Assists", "Q1 Ast": "Q1 Assists",
+        # ── Minutes ───────────────────────────────────────────────────────
+        "Minutes": "Minutes", "Min": "Minutes",
+        "Minutes Played": "Minutes", "Mins": "Minutes",
+        "Player Minutes": "Minutes", "Total Minutes": "Minutes",
     }
     s = str(stat_type).strip()
     s_lower = s.lower()
@@ -3915,6 +4082,7 @@ def map_platform_stat_to_market(stat_type):
         k_norm = re.sub(r"[\s\-\+]+", " ", k.lower()).strip()
         if k_norm == s_norm:
             return v
+    logging.debug(f"Unmapped platform stat_type: '{stat_type}'")
     return None
 # ──────────────────────────────────────────────
 # LINE SHOPPING — BEST AVAILABLE PRICE
@@ -4962,6 +5130,8 @@ def compute_leg_projection(
     market_prior_weight=0.65, exclude_chaotic=True,
     game_date=None, is_home=None,
     injury_team_map=None,   # {team_abbr_upper: [player_name_lower, ...]} for OUT/DOUBTFUL players
+    skip_halfgame_boxscores=False,   # True for scanner (saves ~2s per candidate)
+    skip_expensive_signals=False,    # True for scanner (saves ~7 API calls per candidate)
 ):
     errors = []
     game_date = game_date or date.today()
@@ -5004,7 +5174,7 @@ def compute_leg_projection(
     # If successful, stat_series is replaced with actual H1/H2/Q1 values so
     # CV, skewness, and bootstrap all operate on real half-game distributions.
     _orig_half_factor = half_factor   # save for Bayesian prior scaling below
-    if is_half_market and player_id:
+    if is_half_market and player_id and not skip_halfgame_boxscores:
         _hg_series = fetch_player_halfgame_log(player_id, gldf_n, market_name, n_games=n_games)
         if _hg_series is not None and len(_hg_series.dropna()) >= 3:
             stat_series = _hg_series
@@ -5181,12 +5351,21 @@ def compute_leg_projection(
         gldf_n, base_market, expected_win_prob=_expected_win_prob)
     # [v3.0] Clutch performance factor (only for close games)
     _spread_abs_val = abs(float(_game_spread)) if _game_spread is not None else None
-    _clutch_factor, _clutch_label = get_clutch_performance_factor(
-        player_id, base_market, spread_abs=_spread_abs_val)
+    if skip_expensive_signals:
+        _clutch_factor, _clutch_label = 1.0, "Skipped"
+    else:
+        _clutch_factor, _clutch_label = get_clutch_performance_factor(
+            player_id, base_market, spread_abs=_spread_abs_val)
     # [v3.0] FTA opponent foul rate (for FTA/FTM/Stocks/Points props)
-    _fta_factor, _fta_label = get_opponent_fta_rate_factor(opp_abbr, base_market)
+    if skip_expensive_signals:
+        _fta_factor, _fta_label = 1.0, "Skipped"
+    else:
+        _fta_factor, _fta_label = get_opponent_fta_rate_factor(opp_abbr, base_market)
     # [v3.0] Playoff implications / tanking factor (March-April only)
-    _playoff_factor, _playoff_label = get_playoff_implications_factor(team_abbr, game_date, base_market)
+    if skip_expensive_signals:
+        _playoff_factor, _playoff_label = 1.0, "Skipped"
+    else:
+        _playoff_factor, _playoff_label = get_playoff_implications_factor(team_abbr, game_date, base_market)
     # [v3.0] Referee crew foul tendency (FTA/FTM/Stocks/Points — crew_chief passed as None;
     # callers may inject crew_chief_name via meta dict when schedule data is available)
     _crew_chief = None
@@ -5228,26 +5407,36 @@ def compute_leg_projection(
         if p_over_raw is None:
             errors.append("Insufficient history for DD/TD probability.")
     else:
-        # For half markets: convert line to equivalent full-game threshold
-        effective_line = float(line) / half_factor if is_half_market and half_factor > 0 else float(line)
+        # [v5.0 FIX] For half markets WITHOUT real boxscore data: scale stat SERIES DOWN
+        # by half_factor, then bootstrap against the ACTUAL line (not line/half_factor).
+        # The old approach (effective_line = line/0.52 = 24.04) made bootstrap vs full-game
+        # series return ~50% for any half-game prop — systematically killing H1/H2 edges.
+        if is_half_market and half_factor != 1.0:
+            _bootstrap_series = pace_adj_series * half_factor
+            _bootstrap_line = float(line)
+            # NOTE: _orig_half_factor still holds original value for Bayesian prior scaling
+            half_factor = 1.0   # proj_full is now in half-game units; no re-scale needed
+        else:
+            _bootstrap_series = pace_adj_series
+            _bootstrap_line = float(line)
         # [UPGRADE 4] Pass market for stat-specific λ decay
         p_over_raw, mu_raw, sigma = bootstrap_prob_over(
-            pace_adj_series, effective_line, cv_override=vol_cv, market=base_market
+            _bootstrap_series, _bootstrap_line, cv_override=vol_cv, market=base_market
         )
         # [v5.0] Negative Binomial blend for count stats (overdispersed integer distributions)
         # NegBin is theoretically superior for 3PM, Assists, Rebounds, Blocks, Steals.
         # We blend 65% NegBin + 35% bootstrap when conditions are met (n>=6, overdispersed).
         # This gives us better probability estimates for sharp-edge identification on count props.
-        if base_market in NEGBINOM_MARKETS and len(pace_adj_series.dropna()) >= 6:
+        if base_market in NEGBINOM_MARKETS and len(_bootstrap_series.dropna()) >= 6:
             try:
                 _nb_p, _nb_mu, _nb_sigma = negbinom_prob_over(
-                    pace_adj_series, effective_line, market=base_market)
+                    _bootstrap_series, _bootstrap_line, market=base_market)
                 if _nb_p is not None and p_over_raw is not None:
                     # Blend: weight NegBin more heavily for larger samples (better r estimate).
                     # [AUDIT FIX] Raised cap from 0.70 → 0.82; increased slope.
                     # At n=6 (just enough), NegBin r-estimate is noisy → 50% blend.
                     # At n=15+, r-estimate is stable → up to 82% NegBin (clearly superior for counts).
-                    _n_valid_nb = len(pace_adj_series.dropna())
+                    _n_valid_nb = len(_bootstrap_series.dropna())
                     _nb_weight = float(np.clip(0.45 + (_n_valid_nb - 6) * 0.05, 0.45, 0.82))
                     p_over_raw = float(_nb_weight * _nb_p + (1.0 - _nb_weight) * p_over_raw)
                     if _nb_mu is not None:
@@ -5261,6 +5450,16 @@ def compute_leg_projection(
                 pass
         if p_over_raw is None:
             errors.append(f"Insufficient history (need >=4 games, have {len(stat_series.dropna())})")
+        # [v5.0] KDE blend for continuous stats (Points, PRA, etc.) — blends at 50% weight
+        if base_market in KDE_MARKETS and len(_bootstrap_series.dropna()) >= 8:
+            try:
+                _kde_p, _kde_mu, _kde_sigma = kde_prob_over(_bootstrap_series, _bootstrap_line, market=base_market)
+                if _kde_p is not None and p_over_raw is not None:
+                    p_over_raw = float(0.50 * _kde_p + 0.50 * p_over_raw)
+                    if _kde_mu is not None and mu_raw is not None:
+                        mu_raw = float(0.50 * _kde_mu + 0.50 * mu_raw)
+            except Exception:
+                pass
     n_valid = int(stat_series.dropna().count())
     # [AUDIT FIX] Half-market with real boxscore data: scale positional prior by _orig_half_factor
     # so shrinkage operates in half-game units (not full-game units)
@@ -5278,10 +5477,14 @@ def compute_leg_projection(
         mu_shrunk = bayesian_shrink(mu_raw, n_valid, base_market, pos_bucket,
                                     custom_priors=_custom_priors_session) if mu_raw is not None else None
     # [AUDIT IMPROVEMENT] Opponent True Shooting % efficiency factor (SHAP top-signal for Points props)
-    _ts_factor, _ts_label = get_opponent_ts_pct_factor(opp_abbr, base_market)
-    # [RESEARCH IMPROVEMENT] Opponent eFG% factor for 3PM/FGM props (distinct from TS%)
-    # TS% → scoring/FTA markets; eFG% → pure shooting volume markets (no double-counting)
-    _efg_factor, _efg_label = get_opponent_efg_factor(opp_abbr, base_market)
+    if skip_expensive_signals:
+        _ts_factor, _ts_label = 1.0, "Skipped"
+        _efg_factor, _efg_label = 1.0, "Skipped"
+    else:
+        _ts_factor, _ts_label = get_opponent_ts_pct_factor(opp_abbr, base_market)
+        # [RESEARCH IMPROVEMENT] Opponent eFG% factor for 3PM/FGM props (distinct from TS%)
+        # TS% → scoring/FTA markets; eFG% → pure shooting volume markets (no double-counting)
+        _efg_factor, _efg_label = get_opponent_efg_factor(opp_abbr, base_market)
     # [AUDIT IMPROVEMENT] Usage trend: L5 vs L20 usage (Wally Pipp / role-change signal)
     _usage_trend_mult, _usage_trend_label, _l5_usage, _l20_usage = compute_usage_trend(
         gldf_n, n_recent=5, n_baseline=20, market=base_market)
@@ -5390,8 +5593,8 @@ def compute_leg_projection(
         elif _skew_hurts:
             pen = pen * 0.88             # Skew opposed to our side: tighten penalty by 12%
     ev_adj = float(ev_raw * pen) if ev_raw is not None else None
-    # [FIX 5] Pass skewness to volatility gate
-    gate_ok, gate_reason = passes_volatility_gate(vol_cv, ev_raw, skew=stat_skew, bet_type=side_str)
+    # [v5.0] Use Fano-factor gate for count stats; CV gate for continuous stats
+    gate_ok, gate_reason = passes_volatility_gate_v2(stat_series, ev_raw, base_market, skew=stat_skew, bet_type=side_str)
     if exclude_chaotic and regime_label=="Chaotic":
         # [AUDIT FIX] Preserve original gate_reason alongside chaotic reason for diagnostic clarity
         _prev_reason = gate_reason if not gate_ok else ""
@@ -5429,7 +5632,7 @@ def compute_leg_projection(
     player_norm = normalize_name(player_name)
     mv_signal = get_line_movement_signal(player_norm, str(mk_key), float(line), side_str)
     sharp_div = {}
-    if meta and meta.get("event_id"):
+    if not skip_expensive_signals and meta and meta.get("event_id"):
         try:
             sharp_div = sharp_divergence_alert(meta["event_id"], mk_key, player_norm, side_str, side_str) or {}
         except Exception: sharp_div = {}
@@ -5936,6 +6139,7 @@ st.set_page_config(
 )
 # ─── FONTS + GLOBAL PREMIUM STYLES ───────────────────────────
 st.html("""
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Fira+Code:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <div style="display:none"><style>
@@ -7870,7 +8074,22 @@ with tabs[2]:
         if scan_days > 0:
             st.caption(f"Scanning {scan_start.isoformat()} to {scan_end.isoformat()}")
     with sc2:
-        markets_sel = st.multiselect("Markets", options=MARKET_OPTIONS, default=["Points","Rebounds","Assists"])
+        _qb1, _qb2, _qb3, _qb4 = st.columns(4)
+        if _qb1.button("Core", key="qs_core", use_container_width=True):
+            st.session_state["_qs_markets"] = ["Points","Rebounds","Assists","3PM","PRA","PR","PA","RA"]
+            st.rerun()
+        if _qb2.button("+Halves", key="qs_half", use_container_width=True):
+            st.session_state["_qs_markets"] = ["Points","Rebounds","Assists","3PM","PRA",
+                "H1 Points","H1 Rebounds","H1 Assists","H1 PRA","H2 Points","H2 PRA","Q1 Points"]
+            st.rerun()
+        if _qb3.button("+Shoot", key="qs_shoot", use_container_width=True):
+            st.session_state["_qs_markets"] = ["Points","Rebounds","Assists","3PM","PRA","FGM","FGA","FTM","FTA","3PA","Blocks","Steals"]
+            st.rerun()
+        if _qb4.button("ALL", key="qs_all", use_container_width=True):
+            st.session_state["_qs_markets"] = list(MARKET_OPTIONS)
+            st.rerun()
+        _qs_default = st.session_state.get("_qs_markets", ["Points","Rebounds","Assists","3PM","PRA"])
+        markets_sel = st.multiselect("Markets", options=MARKET_OPTIONS, default=_qs_default, key="scanner_markets_sel")
     with sc3:
         book_choices2, _book_err2 = get_sportsbook_choices(scan_start.isoformat())
         if "prizepicks" not in book_choices2:
@@ -8028,11 +8247,11 @@ with tabs[2]:
                         "Double Double","Triple Double","Fantasy Score",
                     }
                     _sel_spec_timing = [m for m in markets_sel if m in _SPEC_TIMING_MARKETS]
-                    if _sel_spec_timing:
+                    if _sel_spec_timing and sportsbook2 not in ("prizepicks", "underdog", "sleeper"):
                         st.info(
                             f"**{', '.join(_sel_spec_timing)}** — these specialty markets typically open on "
                             "DraftKings/FanDuel **1–2 hours before tip-off**. If you see 0 lines, try "
-                            "Force Refresh closer to game time. They are rarely available all day."
+                            "Force Refresh closer to game time. PP/UD may have them all day."
                         )
                     # Track per-specialty-market counts for debug output
                     _spec_market_counts: dict[str, int] = {m: 0 for m in _supported_sel if ODDS_MARKETS.get(m) in SPECIALTY_MARKET_KEYS}
@@ -8143,6 +8362,8 @@ with tabs[2]:
                         mkt = map_platform_stat_to_market(stat_t)
                         if not mkt or mkt not in MARKET_OPTIONS:
                             continue
+                        if mkt not in markets_sel:
+                            continue
                         line = r.get("line")
                         if not pname or line is None or pd.isna(line):
                             continue
@@ -8175,38 +8396,48 @@ with tabs[2]:
                     with st.spinner("Loading all NBA game logs (one-time ~20s)..."):
                         _fetch_bulk_gamelogs.clear()
                         bulk_ready = _fetch_bulk_gamelogs() is not None
+                # Pre-warm player caches before launching threads
+                with st.spinner(f"Pre-warming caches for {len(candidates)} candidates..."):
+                    pre_warm_scanner_caches(candidates, n_games)
                 _scan_workers = min(32, len(candidates)) if bulk_ready else min(10, len(candidates))
                 if not bulk_ready:
                     st.warning(
                         f"Bulk game log load failed — scanning with {_scan_workers} workers "
                         f"(individual NBA API calls). Click **Load All Game Logs** above for faster scans."
                     )
+                from concurrent.futures import as_completed as _as_completed
                 with st.spinner(f"Scanning {len(candidates)} candidates ({_scan_workers} workers)..."):
                     with ThreadPoolExecutor(max_workers=_scan_workers) as ex:
-                        futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
-                                          n_games=n_games, key_teammate_out=False,
-                                          bankroll=bankroll, frac_kelly=frac_kelly,
-                                          max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
-                                          market_prior_weight=market_prior_weight,
-                                          exclude_chaotic=bool(exclude_chaotic),
-                                          game_date=scan_start,
-                                          injury_team_map=_inj_map)
-                                for pname, mkt, line, meta in candidates]
-                        for (pname, mkt, line, meta), fut in zip(candidates, futs):
+                        _fut_map = {
+                            ex.submit(compute_leg_projection, pname, mkt, line, meta,
+                                      n_games=n_games, key_teammate_out=False,
+                                      bankroll=bankroll, frac_kelly=frac_kelly,
+                                      max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
+                                      market_prior_weight=market_prior_weight,
+                                      exclude_chaotic=bool(exclude_chaotic),
+                                      game_date=scan_start,
+                                      injury_team_map=_inj_map,
+                                      skip_expensive_signals=True,
+                                      skip_halfgame_boxscores=True): (pname, mkt, line, meta)
+                            for pname, mkt, line, meta in candidates
+                        }
+                        _completed_legs = []
+                        for _fut in _as_completed(_fut_map):
+                            _pname, _mkt, _line, _meta = _fut_map[_fut]
                             try:
-                                # [AUDIT FIX] No-timeout result() blocks UI forever on NBA API hang
-                                leg = fut.result(timeout=60)
+                                _leg = _fut.result(timeout=60)
+                                _completed_legs.append((_pname, _mkt, _line, _meta, _leg))
                             except TimeoutError:
-                                dropped.append({"player": pname, "market": mkt, "reason": "thread timeout (NBA API ≥60s)"})
-                                continue
+                                dropped.append({"player": _pname, "market": _mkt, "reason": "thread timeout (NBA API ≥60s)"})
                             except Exception as _te:
-                                dropped.append({"player": pname, "market": mkt, "reason": f"thread error: {type(_te).__name__}: {_te}"})
-                                continue
-                            leg = recompute_pricing_fields(leg, st.session_state.get("calibrator_map"))
-                            # [FEATURE] Capture every computed leg for Under scan (before gate filter)
-                            all_computed_legs.append((pname, mkt, float(line), meta, leg))
-                            if not leg.get("gate_ok"):
-                                dropped.append({"player":pname,"market":mkt,"reason":leg.get("gate_reason","gated")}); continue
+                                dropped.append({"player": _pname, "market": _mkt, "reason": f"thread error: {type(_te).__name__}: {_te}"})
+                    # Process all results in one batch (prevents flooding mobile WebSocket)
+                    for pname, mkt, line, meta, leg in _completed_legs:
+                        leg = recompute_pricing_fields(leg, st.session_state.get("calibrator_map"))
+                        # [FEATURE] Capture every computed leg for Under scan (before gate filter)
+                        all_computed_legs.append((pname, mkt, float(line), meta, leg))
+                        if not leg.get("gate_ok"):
+                            dropped.append({"player":pname,"market":mkt,"reason":leg.get("gate_reason","gated")}); continue
                             # [AUDIT FIX] Use p_cal exclusively after recompute_pricing_fields;
                             # p_over fallback could use uncalibrated bootstrap prob which bypasses isotonic correction
                             pc = leg.get("p_cal")
@@ -9781,6 +10012,29 @@ margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #0E1E30;'>
         _mrd = st.number_input("Max API requests/day", 1, 500,
             int(st.session_state.get("max_req_day", 100)), 10, key="settings_mrd")
         st.session_state["max_req_day"] = int(_mrd)
+        # ── PRIZEPICKS AUTO-FETCH ─────────────────────────────
+        st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
+color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
+margin-top:0.8rem;margin-bottom:0.6rem;padding-bottom:0.4rem;
+border-bottom:1px solid #0E1E30;'>▸ PRIZEPICKS AUTO-FETCH</div>""", unsafe_allow_html=True)
+        _pw_avail = False
+        try:
+            import playwright as _pw_mod
+            _pw_avail = True
+        except ImportError:
+            pass
+        if _pw_avail:
+            st.markdown("""
+<div style='background:#00FFB208;border:1px solid #00FFB230;border-radius:3px;padding:0.4rem 0.7rem;'>
+    <span style='font-family:Fira Code,monospace;font-size:0.62rem;color:#00FFB2;'>
+        ✓ PLAYWRIGHT INSTALLED — auto-fetch enabled (no cookies needed)</span>
+</div>""", unsafe_allow_html=True)
+        else:
+            st.warning("**Playwright not installed** — PP lines require manual cookies.")
+            st.code("pip install playwright && playwright install chromium", language="bash")
+        with st.expander("Run scraper as background service (always-fresh lines)", expanded=False):
+            st.code("python pp_scraper.py --interval 600", language="bash")
+            st.caption("Fetches every 10 min, writes to shared DB. Faster than on-demand fetch.")
         # ── CLAUDE AI ────────────────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
