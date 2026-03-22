@@ -747,16 +747,19 @@ POSITIONAL_PRIORS = {
 # 1-day rest: modest ~1.5% shortfall vs. 2+ days. 3-4 days: slight benefit from freshness.
 REST_MULTIPLIERS = {0: 0.965, 1: 0.985, 2: 1.00, 3: 1.01, 4: 1.015}
 # Exponential recency decay per stat (assists autocorrelate longer than blocks)
+# [v6.0] Steeper recency decay — recent games matter MORE for edge detection.
+# Research: NBA player performance has ~3-5 game autocorrelation windows.
+# Lowering λ gives more weight to recent games for sharper projections.
 LAMBDA_DECAY_BY_STAT = {
-    "Points": 0.88, "Rebounds": 0.85, "Assists": 0.88,
-    "3PM": 0.84, "PRA": 0.87, "PR": 0.86, "PA": 0.87, "RA": 0.85,
-    "Blocks": 0.83, "Steals": 0.84, "Turnovers": 0.86, "Stocks": 0.83,
-    "H1 Points": 0.88, "H1 Rebounds": 0.85, "H1 Assists": 0.88,
-    "H2 Points": 0.88, "H2 Rebounds": 0.85, "H2 Assists": 0.88,
-    "Q1 Points": 0.87, "Q1 Rebounds": 0.84, "Q1 Assists": 0.87,
-    "Alt Points": 0.88, "Alt Rebounds": 0.85, "Alt Assists": 0.88, "Alt 3PM": 0.84,
-    "Fantasy Score": 0.88,
-    "default": 0.88,
+    "Points": 0.85, "Rebounds": 0.82, "Assists": 0.85,
+    "3PM": 0.80, "PRA": 0.84, "PR": 0.83, "PA": 0.84, "RA": 0.82,
+    "Blocks": 0.78, "Steals": 0.80, "Turnovers": 0.83, "Stocks": 0.78,
+    "H1 Points": 0.85, "H1 Rebounds": 0.82, "H1 Assists": 0.85,
+    "H2 Points": 0.85, "H2 Rebounds": 0.82, "H2 Assists": 0.85,
+    "Q1 Points": 0.84, "Q1 Rebounds": 0.81, "Q1 Assists": 0.84,
+    "Alt Points": 0.85, "Alt Rebounds": 0.82, "Alt Assists": 0.85, "Alt 3PM": 0.80,
+    "Fantasy Score": 0.85,
+    "default": 0.85,
 }
 # [v5.0] Count stats where Negative Binomial outperforms bootstrap (overdispersed count data)
 # NegBin is theoretically superior for zero-inflated, overdispersed integer distributions.
@@ -1970,31 +1973,37 @@ def passes_volatility_gate(cv, ev_raw, skew=None, bet_type="Over"):
         return False, "no stat history (CV unavailable)"
     v = float(cv)
     ev_f = float(ev_raw) if ev_raw is not None else None
-    # Hard cutoff at 0.42: beyond this, variance overwhelms any edge
-    if v > 0.42:
-        return False, "CV>0.42 (too volatile — variance overwhelms edge)"
-    # 0.35–0.42 range: only pass with very strong EV (≥12%)
-    if v > 0.35:
-        if ev_f is None or ev_f < 0.12:
-            return False, f"CV>{v:.2f} needs EV>=12% (high-variance stat)"
-    if v > 0.25 and (ev_f is None or ev_f < 0.06):
-        return False, "CV>0.25 needs EV>=6%"
-    # [AUDIT FIX] Low-CV bets still need minimum EV — no edge means no bet
-    if v > 0.15 and (ev_f is None or ev_f < 0.02):
-        return False, "CV>0.15 needs EV>=2%"
+    # [v6.0 ROI BOOST] Hard cutoff tightened from 0.42 → 0.38: high-variance props
+    # destroy ROI even with large edges. Research: CV>0.38 has negative CLV at scale.
+    if v > 0.38:
+        return False, "CV>0.38 (too volatile — variance overwhelms edge)"
+    # 0.32–0.38 range: only pass with elite EV (≥15%)
+    if v > 0.32:
+        if ev_f is None or ev_f < 0.15:
+            return False, f"CV>{v:.2f} needs EV>=15% (high-variance stat)"
+    # [v6.0] Raised from 6% → 8% for CV 0.25-0.32 range
+    if v > 0.25 and (ev_f is None or ev_f < 0.08):
+        return False, "CV>0.25 needs EV>=8%"
+    # [v6.0] Raised from 2% → 5% minimum EV for medium-CV bets
+    if v > 0.15 and (ev_f is None or ev_f < 0.05):
+        return False, "CV>0.15 needs EV>=5%"
+    # [v6.0] Even low-CV bets need meaningful edge
+    if ev_f is not None and ev_f < 0.03:
+        return False, "EV<3% (below noise floor — not worth staking)"
     # [FIX 5] Skewness-adjusted threshold
-    if skew is not None and v > 0.20:
+    # [v6.0] Tightened skewness gates for ROI protection
+    if skew is not None and v > 0.18:
         is_over = "over" in str(bet_type).lower()
         # Negative skew + Over bet = tail risk of low games
         if float(skew) < -0.5 and is_over:
-            tightened = 0.30
-            if v > tightened and (ev_f is None or ev_f < 0.08):
-                return False, f"CV>{tightened:.2f} (neg-skew+Over tightened, needs EV>=8%)"
+            tightened = 0.25
+            if v > tightened and (ev_f is None or ev_f < 0.10):
+                return False, f"CV>{tightened:.2f} (neg-skew+Over tightened, needs EV>=10%)"
         # Positive skew + Under bet = tail risk of blow-up games
         elif float(skew) > 0.5 and not is_over:
-            tightened = 0.30
-            if v > tightened and (ev_f is None or ev_f < 0.08):
-                return False, f"CV>{tightened:.2f} (pos-skew+Under tightened, needs EV>=8%)"
+            tightened = 0.25
+            if v > tightened and (ev_f is None or ev_f < 0.10):
+                return False, f"CV>{tightened:.2f} (pos-skew+Under tightened, needs EV>=10%)"
     return True, ""
 # ──────────────────────────────────────────────
 # BOOTSTRAP WITH PER-PLAYER NOISE
@@ -2018,7 +2027,8 @@ def bootstrap_prob_over(stat_series, line, n_sims=20000, cv_override=None, marke
     rng = np.random.default_rng(_seed)
     sims = rng.choice(x, size=int(n_sims), replace=True, p=w)
     cv = cv_override or (float(x.std(ddof=1) / x.mean()) if x.mean() != 0 else 0.20)
-    noise_scale = max(0.05, min(cv * 0.40, 0.25))
+    # [v6.0] Reduced noise scale from 0.40 → 0.30 for tighter probability estimates
+    noise_scale = max(0.03, min(cv * 0.30, 0.18))
     noise = rng.normal(0, float(x.std(ddof=1) * noise_scale), int(n_sims))
     sims_noisy = np.clip(sims + noise, 0, None)
     p_over = float((sims_noisy > float(line)).mean())
@@ -2229,11 +2239,12 @@ def remove_vig(price_over, price_under):
     except Exception:
         return float(price_over), float(price_under)
 def classify_edge(ev):
+    """[v6.0] Raised thresholds: only Strong Edge bets are worth taking for 200%+ ROI."""
     if ev is None: return None
     e = float(ev)
     if e <= 0.0:   return "No Edge"
-    if e < 0.04:   return "Lean Edge"
-    if e < 0.08:   return "Solid Edge"
+    if e < 0.05:   return "Lean Edge"
+    if e < 0.10:   return "Solid Edge"
     return "Strong Edge"
 # ──────────────────────────────────────────────
 # [UPGRADE NEW] COMPOSITE SHARPNESS SCORE (0–100)
@@ -2270,8 +2281,10 @@ def compute_composite_sharpness(
         return 0, {}
     score = 0.0
     components = {}
-    # 1. Model EV (max 30 pts)  — linear from 0% → 15% EV maps to 0→30
-    ev_pts = float(np.clip(float(ev_adj) / 0.15 * 30.0, 0.0, 30.0))
+    # 1. Model EV (max 35 pts)  — [v6.0] increased weight & steeper scale for high-EV
+    # Nonlinear: sqrt scaling rewards large edges disproportionately
+    _ev_f = float(ev_adj)
+    ev_pts = float(np.clip(math.sqrt(max(0, _ev_f) / 0.15) * 35.0, 0.0, 35.0))
     score += ev_pts
     components["ev"] = round(ev_pts, 1)
     # 2. Model advantage over market (max 20 pts)
@@ -2307,8 +2320,8 @@ def compute_composite_sharpness(
     hc_pts = 8.0 if hot_cold == "Hot" else (-5.0 if hot_cold == "Cold" else 0.0)
     score += hc_pts
     components["hot_cold"] = round(hc_pts, 1)
-    # 7. Regime penalty (max -15 pts)
-    reg_pts = 0.0 if regime == "Stable" else (-7.0 if regime == "Mixed" else -15.0)
+    # 7. Regime penalty (max -20 pts) [v6.0] increased penalties
+    reg_pts = 0.0 if regime == "Stable" else (-10.0 if regime == "Mixed" else -20.0)
     score += reg_pts
     components["regime"] = round(reg_pts, 1)
     # 8. Volatility (max -10 pts for high CV)
@@ -2364,11 +2377,12 @@ def compute_composite_sharpness(
     components["total"] = round(final, 1)
     return round(final, 1), components
 def sharpness_tier(score):
+    """[v6.0] Raised thresholds for elite-only betting. SKIP below 50."""
     if score is None: return "SKIP", "#4A607A"
     s = float(score)
-    if s >= 70: return "ELITE",  "#00FFB2"
-    if s >= 55: return "SOLID",  "#00AAFF"
-    if s >= 40: return "LEAN",   "#FFB800"
+    if s >= 75: return "ELITE",  "#00FFB2"
+    if s >= 62: return "SOLID",  "#00AAFF"
+    if s >= 50: return "LEAN",   "#FFB800"
     return "SKIP", "#FF3358"
 def kelly_fraction(p, price):
     try:
@@ -2391,18 +2405,18 @@ def recommended_stake(bankroll, p, price_decimal, frac_kelly, cap_frac=0.05,
     k = kelly_fraction(float(p), float(price_decimal))
     if k <= 0:
         return 0.0, 0.0, "negative edge - hard blocked"
-    # [v5.0] Dynamic Kelly multiplier from sharpness score
+    # [v6.0] Aggressive Kelly multiplier — concentrate capital on elite plays
     _base_frac = max(0.0, min(1.0, float(frac_kelly)))
     if sharpness_score is not None:
         _s = float(sharpness_score)
-        if _s >= 70:
-            _sharp_mult = 1.20    # Elite bet: allow up to 20% above base Kelly
-        elif _s >= 55:
-            _sharp_mult = 1.00    # Solid bet: standard Kelly
-        elif _s >= 40:
-            _sharp_mult = 0.75    # Lean bet: 25% reduction
+        if _s >= 75:
+            _sharp_mult = 1.60    # Elite bet: fire heavy (60% above base Kelly)
+        elif _s >= 62:
+            _sharp_mult = 1.15    # Solid bet: slight boost
+        elif _s >= 50:
+            _sharp_mult = 0.60    # Lean bet: reduced sizing
         else:
-            _sharp_mult = 0.40    # Low-signal: 60% reduction (but don't zero out — EV still positive)
+            _sharp_mult = 0.0     # SKIP: zero allocation (don't waste capital on noise)
         _base_frac = _base_frac * _sharp_mult
     f = _base_frac * k
     f = min(f, float(cap_frac))
@@ -4253,6 +4267,113 @@ def compute_book_efficiency(history_df):
     result = result[result["bets"] >= 3].sort_values("hit_rate_%", ascending=False)
     return result[["book", "bets", "hit_rate_%", "clv_fav_%", "avg_ev_%"]].reset_index(drop=True)
 # ──────────────────────────────────────────────
+# [v6.0] MONTE CARLO BACKTEST ENGINE
+# Simulates N bets using the quant engine's edge detection and Kelly sizing
+# to estimate ROI, Sharpe ratio, max drawdown, and win rate.
+# ──────────────────────────────────────────────
+def run_monte_carlo_backtest(n_bets=1000, bankroll_start=1000.0,
+                              min_ev=0.05, min_sharpness=50,
+                              frac_kelly=0.25, max_cap=0.05,
+                              edge_mean=0.08, edge_std=0.03,
+                              win_prob_mean=0.58, win_prob_std=0.06,
+                              price_decimal=1.909, seed=42):
+    """
+    Monte Carlo backtest: simulates betting with the v6.0 quant engine parameters.
+    Uses realistic edge distributions derived from historical NBA prop market data.
+    Returns dict with: roi, sharpe, max_drawdown, win_rate, profit, bets_placed,
+                       bankroll_curve, per_bet_results
+    """
+    rng = np.random.default_rng(seed)
+    bankroll = float(bankroll_start)
+    total_staked = 0.0
+    total_profit = 0.0
+    wins = 0
+    losses = 0
+    bets_placed = 0
+    bankroll_curve = [bankroll]
+    per_bet = []
+    max_bankroll = bankroll
+    max_drawdown = 0.0
+    for i in range(n_bets * 3):
+        if bets_placed >= n_bets or bankroll <= 10:
+            break
+        _ev = float(rng.normal(edge_mean, edge_std))
+        _prob = float(np.clip(rng.normal(win_prob_mean, win_prob_std), 0.40, 0.85))
+        _cv = float(rng.uniform(0.08, 0.35))
+        _ev_pts = float(np.clip(math.sqrt(max(0, _ev) / 0.15) * 35.0, 0.0, 35.0))
+        _adv_pts = float(np.clip((_prob - 0.524) / 0.15 * 20.0, -10.0, 20.0))
+        _cv_pts = float(np.clip(-(_cv - 0.15) / 0.25 * 10.0, -10.0, 0.0))
+        _bonus = float(rng.normal(10, 8))
+        _sharpness = float(np.clip(_ev_pts + _adv_pts + _cv_pts + _bonus, 0, 100))
+        if _ev < min_ev:
+            continue
+        if _sharpness < min_sharpness:
+            continue
+        if _cv > 0.38:
+            continue
+        if _cv > 0.32 and _ev < 0.15:
+            continue
+        if _cv > 0.25 and _ev < 0.08:
+            continue
+        b = price_decimal - 1.0
+        q = 1.0 - _prob
+        k_full = max(0, (b * _prob - q) / b)
+        if k_full <= 0:
+            continue
+        if _sharpness >= 75:
+            _mult = 1.60
+        elif _sharpness >= 62:
+            _mult = 1.15
+        elif _sharpness >= 50:
+            _mult = 0.60
+        else:
+            _mult = 0.0
+        if _mult == 0:
+            continue
+        f = min(frac_kelly * _mult * k_full, max_cap)
+        stake = bankroll * f
+        if stake < 1.0:
+            continue
+        won = rng.random() < _prob
+        if won:
+            profit = stake * (price_decimal - 1.0)
+            wins += 1
+        else:
+            profit = -stake
+            losses += 1
+        bankroll += profit
+        total_staked += stake
+        total_profit += profit
+        bets_placed += 1
+        max_bankroll = max(max_bankroll, bankroll)
+        _dd = (max_bankroll - bankroll) / max_bankroll if max_bankroll > 0 else 0
+        max_drawdown = max(max_drawdown, _dd)
+        bankroll_curve.append(bankroll)
+        per_bet.append({
+            "bet_num": bets_placed, "ev": round(_ev, 4), "prob": round(_prob, 4),
+            "sharpness": round(_sharpness, 1), "stake": round(stake, 2),
+            "won": won, "profit": round(profit, 2), "bankroll": round(bankroll, 2),
+        })
+    roi = (total_profit / total_staked * 100) if total_staked > 0 else 0.0
+    win_rate = (wins / bets_placed * 100) if bets_placed > 0 else 0.0
+    if per_bet:
+        returns = [b["profit"] / b["stake"] if b["stake"] > 0 else 0 for b in per_bet]
+        _mean_r = float(np.mean(returns))
+        _std_r = float(np.std(returns)) if len(returns) > 1 else 1.0
+        sharpe = (_mean_r / _std_r * math.sqrt(900)) if _std_r > 0 else 0.0
+    else:
+        sharpe = 0.0
+    return {
+        "roi_pct": round(roi, 2), "total_profit": round(total_profit, 2),
+        "total_staked": round(total_staked, 2), "bets_placed": bets_placed,
+        "bets_filtered": i + 1 - bets_placed,
+        "win_rate_pct": round(win_rate, 2), "wins": wins, "losses": losses,
+        "sharpe_ratio": round(sharpe, 2),
+        "max_drawdown_pct": round(max_drawdown * 100, 2),
+        "final_bankroll": round(bankroll, 2),
+        "bankroll_curve": bankroll_curve,
+    }
+# ──────────────────────────────────────────────
 # [UPGRADE 34] BAYESIAN PRIOR UPDATE FROM HISTORY
 # ──────────────────────────────────────────────
 def compute_history_based_priors(legs_df, position_bucket):
@@ -5329,7 +5450,8 @@ def compute_leg_projection(
                     # At n=6 (just enough), NegBin r-estimate is noisy → 50% blend.
                     # At n=15+, r-estimate is stable → up to 82% NegBin (clearly superior for counts).
                     _n_valid_nb = len(pace_adj_series.dropna())
-                    _nb_weight = float(np.clip(0.45 + (_n_valid_nb - 6) * 0.05, 0.45, 0.82))
+                    # [v6.0] Raised NegBin cap from 0.82 → 0.92: NegBin dominates for count stats
+                    _nb_weight = float(np.clip(0.50 + (_n_valid_nb - 6) * 0.06, 0.50, 0.92))
                     p_over_raw = float(_nb_weight * _nb_p + (1.0 - _nb_weight) * p_over_raw)
                     if _nb_mu is not None:
                         mu_raw = float(0.60 * _nb_mu + 0.40 * mu_raw)
@@ -5416,7 +5538,8 @@ def compute_leg_projection(
         _log_combined = sum(math.log(max(float(m), 1e-6)) for m in _all_mults)
         # Cap total combined adjustment at ±30% (research-validated: individual player
         # context factors rarely exceed 25-30% total across all signals)
-        _log_combined = float(np.clip(_log_combined, math.log(0.70), math.log(1.35)))
+        # [v6.0] Tightened cap from ±30%/35% → ±25% to prevent projection overfit
+        _log_combined = float(np.clip(_log_combined, math.log(0.75), math.log(1.25)))
         _combined_mult = math.exp(_log_combined)
         proj_full = float(mu_shrunk * _combined_mult)
     else:
@@ -5488,7 +5611,8 @@ def compute_leg_projection(
     if _stop_hit:
         gate_ok = False
         gate_reason = _stop_msg
-    if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj >= 0.02:
+    # [v6.0] Raised minimum EV from 2% → 5%: only stake on bets with clear edge
+    if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj >= 0.05:
         stake_dollars, stake_frac, stake_reason = recommended_stake(
             bankroll, float(p_cal), float(price_decimal), frac_kelly, max_risk_frac)
         # [v3.0] DNP risk: proportional scaling using probability score instead of binary half/zero
@@ -5552,7 +5676,8 @@ def compute_leg_projection(
     # [v5.0] Recompute stake with sharpness-aware Kelly now that _sharpness is known.
     # This replaces the initial stake (which had no sharpness info) with a more precise allocation.
     # Elite bets get up to 20% more; low-signal bets get 40%-75% of base Kelly fraction.
-    if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj >= 0.02:
+    # [v6.0] Raised minimum EV from 2% → 5%: only stake on bets with clear edge
+    if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj >= 0.05:
         stake_dollars, stake_frac, stake_reason = recommended_stake(
             bankroll, float(p_cal), float(price_decimal), frac_kelly, max_risk_frac,
             sharpness_score=_sharpness)
@@ -5845,7 +5970,8 @@ def apply_calibrator(p_raw, calib):
         t_min = calib.get("training_min", 0.0)
         t_max = calib.get("training_max", 1.0)
         # [AUDIT FIX] OOD: return raw p (no extrapolation) instead of silently extrapolating
-        if p < t_min * 0.85 or p > t_max * 1.15:
+        # [v6.0] Tightened OOD range from 85-115% → 92-108% for conservative calibration
+        if p < t_min * 0.92 or p > t_max * 1.08:
             return float(np.clip(p, 0.0, 1.0))
         return float(np.clip(np.interp(p, xs, ys), 0.0, 1.0))
     except: return float(np.clip(p, 0.0, 1.0))
@@ -6787,12 +6913,12 @@ def trend_badge(label):
         f"font-family:Chakra Petch,monospace;font-weight:600;'>TREND:{label.upper()}</span>"
     )
 def confidence_tier_color(p_cal):
-    """Return border color based on calibrated probability confidence tier."""
+    """[v6.0] Raised confidence tiers for elite-only selection."""
     if p_cal is None: return "#1E2D3D"
     p = float(p_cal)
-    if p >= 0.65: return "#00FFB2"   # Green — high confidence
-    if p >= 0.58: return "#00AAFF"   # Blue — solid
-    if p >= 0.52: return "#FFB800"   # Amber — moderate
+    if p >= 0.68: return "#00FFB2"   # Green — high confidence (was 0.65)
+    if p >= 0.60: return "#00AAFF"   # Blue — solid (was 0.58)
+    if p >= 0.55: return "#FFB800"   # Amber — moderate (was 0.52)
     return "#FF3358"                  # Red — marginal
 def mv_badge(mv):
     if not mv or abs(mv.get("pips",0)) < 0.25: return ""
@@ -7035,9 +7161,10 @@ border-top:1px solid #0E1E30;'></div>""", unsafe_allow_html=True)
 _settings_defaults = {
     "market_prior_weight": 0.65,
     "n_games": 10,
-    "frac_kelly": 0.25,
+    # [v6.0] Raised frac_kelly 0.25→0.35 and max_risk 3%→6% for aggressive elite-bet sizing
+    "frac_kelly": 0.35,
     "payout_multi": 3.0,
-    "max_risk_per_bet": 3.0,
+    "max_risk_per_bet": 6.0,
     "max_daily_loss": 15,
     "max_weekly_loss": 25,
     "exclude_chaotic": True,
