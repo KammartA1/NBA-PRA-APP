@@ -7235,7 +7235,8 @@ max_weekly_loss    = int(st.session_state.get("max_weekly_loss", 25))
 exclude_chaotic    = bool(st.session_state.get("exclude_chaotic", True))
 show_unders        = bool(st.session_state.get("show_unders", False))
 # ─── TABS ─────────────────────────────────────────────────────
-tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "INSIGHTS", "ALERTS", "SETTINGS"])
+tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "INSIGHTS", "ALERTS", "SETTINGS",
+                 "EDGE MONITOR", "KILL SWITCH", "CAPITAL", "MARKET REACTION", "GOVERNANCE", "ADVERSARIAL", "VERDICT"])
 # Consume staged scanner→model inputs before any widgets render (prevents StreamlitAPIException)
 for _si in range(1, 5):
     if f"_staged_pname_{_si}" in st.session_state:
@@ -10082,6 +10083,56 @@ Settings are applied immediately and saved to your account.</div>""",
     if any(_cur_saved.get(k) != v for k, v in _settings_to_save.items()):
         _cur_saved.update(_settings_to_save)
         save_user_state(st.session_state.get("user_id", "trader"), _cur_saved)
+# ── NEW QUANT TABS (delegated to streamlit_app/pages modules) ────────────
+with tabs[9]:
+    try:
+        from streamlit_app.pages.edge_monitor_tab import render as _render_edge_monitor
+        _render_edge_monitor()
+    except Exception as _e:
+        st.error(f"Edge Monitor failed to load: {_e}")
+
+with tabs[10]:
+    try:
+        from streamlit_app.pages.kill_switch_tab import render as _render_kill_switch
+        _render_kill_switch()
+    except Exception as _e:
+        st.error(f"Kill Switch failed to load: {_e}")
+
+with tabs[11]:
+    try:
+        from streamlit_app.pages.capital_tab import render as _render_capital
+        _render_capital()
+    except Exception as _e:
+        st.error(f"Capital failed to load: {_e}")
+
+with tabs[12]:
+    try:
+        from streamlit_app.pages.market_reaction_tab import render as _render_market_reaction
+        _render_market_reaction()
+    except Exception as _e:
+        st.error(f"Market Reaction failed to load: {_e}")
+
+with tabs[13]:
+    try:
+        from streamlit_app.pages.governance_tab import render as _render_governance
+        _render_governance()
+    except Exception as _e:
+        st.error(f"Governance failed to load: {_e}")
+
+with tabs[14]:
+    try:
+        from streamlit_app.pages.adversarial_tab import render as _render_adversarial
+        _render_adversarial()
+    except Exception as _e:
+        st.error(f"Adversarial failed to load: {_e}")
+
+with tabs[15]:
+    try:
+        from streamlit_app.pages.verdict_tab import render as _render_verdict
+        _render_verdict()
+    except Exception as _e:
+        st.error(f"Verdict failed to load: {_e}")
+
 # ── FOOTER ──────────────────────────────────────────────────
 st.markdown("""
 <div style='margin-top:2rem;padding-top:0.8rem;border-top:1px solid #1E2D3D;

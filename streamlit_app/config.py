@@ -26,13 +26,21 @@ TAB_NAMES = [
     "CALIBRATION",
     "INSIGHTS",
     "ALERTS",
+    "SETTINGS",
+    "EDGE MONITOR",
+    "KILL SWITCH",
+    "CAPITAL",
+    "MARKET REACTION",
+    "GOVERNANCE",
+    "ADVERSARIAL",
+    "VERDICT",
+    # Legacy aspirational tabs (not yet wired):
     "QUANT SYSTEM",
     "CLV SYSTEM",
     "DATA QUALITY",
     "EDGE SOURCES",
     "EDGE DECOMP",
     "EDGE ATTRIBUTION",
-    "SETTINGS",
 ]
 
 # ---------------------------------------------------------------------------
