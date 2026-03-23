@@ -23,6 +23,15 @@ import requests
 import streamlit as st
 from streamlit_cookies_controller import CookieController
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
+
+# ── Quant System v1.0 Integration ──
+try:
+    from quant_system.engine import QuantEngine
+    from quant_system.core.types import Sport, BetType, SystemState
+    from quant_system.risk.kelly_adaptive import KellyConfig
+    _QUANT_AVAILABLE = True
+except ImportError:
+    _QUANT_AVAILABLE = False
 # ──────────────────────────────────────────────
 # CLAUDE AI INTEGRATION
 # ──────────────────────────────────────────────
@@ -7235,7 +7244,7 @@ max_weekly_loss    = int(st.session_state.get("max_weekly_loss", 25))
 exclude_chaotic    = bool(st.session_state.get("exclude_chaotic", True))
 show_unders        = bool(st.session_state.get("show_unders", False))
 # ─── TABS ─────────────────────────────────────────────────────
-tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "INSIGHTS", "ALERTS", "SETTINGS"])
+tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "INSIGHTS", "ALERTS", "QUANT SYSTEM", "SETTINGS"])
 # Consume staged scanner→model inputs before any widgets render (prevents StreamlitAPIException)
 for _si in range(1, 5):
     if f"_staged_pname_{_si}" in st.session_state:
@@ -9853,8 +9862,206 @@ with tabs[7]:
             if not rw_wl.empty:
                 st.markdown("<div style='color:#FF3358;font-size:0.68rem;font-weight:600;margin-top:0.4rem;'>WATCHLIST ALERT — these players have Rotowire news:</div>", unsafe_allow_html=True)
                 st.dataframe(rw_wl, use_container_width=True)
-# ── SETTINGS TAB (tabs[8]) ──────────────────────────────────
+# ── QUANT SYSTEM TAB (tabs[8]) ──────────────────────────────
 with tabs[8]:
+    if _QUANT_AVAILABLE:
+        def _get_nba_quant_engine():
+            """Get or create NBA QuantEngine in session state."""
+            if "_nba_quant_engine" not in st.session_state:
+                _br = float(st.session_state.get("bankroll", 1000.0))
+                _db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "quant_system.db")
+                os.makedirs(os.path.dirname(_db), exist_ok=True)
+                st.session_state["_nba_quant_engine"] = QuantEngine(
+                    sport=Sport.NBA, initial_bankroll=_br,
+                    kelly_config=KellyConfig(base_fraction=0.10, max_single_bet_pct=0.03, min_edge_to_bet=0.04),
+                    db_path=_db,
+                )
+            return st.session_state["_nba_quant_engine"]
+
+        _qe = _get_nba_quant_engine()
+        _q_health = _qe.health_check()
+        _q_state = _qe.edge_validator.get_current_state()
+        _sc = {"active": "#00FFB2", "reduced": "#FFB800", "suspended": "#FF3358", "killed": "#FF0000"}
+        _q_col = _sc.get(_q_state.value, "#4A607A")
+
+        st.markdown(f"""<div style='background:#060D18;border:1px solid #0E1E30;border-radius:6px;
+            padding:12px 18px;margin-bottom:16px;border-left:4px solid {_q_col};'>
+            <div style='display:flex;justify-content:space-between;align-items:center;'>
+                <div>
+                    <div style='font-family:Fira Code,monospace;font-size:0.6rem;color:#4A607A;letter-spacing:0.1em;'>SYSTEM STATE</div>
+                    <div style='font-family:Chakra Petch,monospace;font-size:1.3rem;font-weight:700;color:{_q_col};'>{_q_state.value.upper()}</div>
+                </div>
+                <div style='font-family:Fira Code,monospace;font-size:0.68rem;color:#4A607A;text-align:right;'>{_q_health}</div>
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+        _qs_tabs = st.tabs(["Dashboard", "Bet Logger", "CLV Tracker", "Risk & Sizing", "Backtest"])
+
+        # ── Dashboard ──
+        with _qs_tabs[0]:
+            st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#2A5070;
+                letter-spacing:0.18em;text-transform:uppercase;margin-bottom:0.8rem;'>SYSTEM OVERVIEW</div>""", unsafe_allow_html=True)
+            try:
+                _qr = _qe.dashboard_report()
+                _br_d = _qr.get("bankroll", {})
+                _bs_d = _qr.get("bet_summary", {})
+                _r1, _r2, _r3, _r4 = st.columns(4)
+                with _r1: st.metric("Bankroll", f"${_br_d.get('current', 1000):,.0f}")
+                with _r2: st.metric("Drawdown", f"{_br_d.get('drawdown_pct', 0):.1f}%")
+                with _r3: st.metric("Total Bets", _bs_d.get("total_bets", 0))
+                with _r4: st.metric("Win Rate", f"{_bs_d.get('win_rate', 0)*100:.1f}%")
+
+                _clv_d = _qr.get("clv", {})
+                st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#2A5070;
+                    letter-spacing:0.18em;text-transform:uppercase;margin:1rem 0 0.6rem;'>CLV PERFORMANCE</div>""", unsafe_allow_html=True)
+                _cc1, _cc2, _cc3, _cc4 = st.columns(4)
+                for _ci, (_ck, _ccol) in enumerate(zip(["clv_50", "clv_100", "clv_250", "clv_500"], [_cc1, _cc2, _cc3, _cc4])):
+                    _cd = _clv_d.get(_ck, {})
+                    _cents = _cd.get("avg_clv_cents", 0)
+                    _cn = _cd.get("n_bets", 0)
+                    _clr = "#00FFB2" if _cents > 0 else "#FF3358"
+                    with _ccol:
+                        st.markdown(f"""<div style='background:#060D18;border:1px solid #0E1E30;border-radius:4px;padding:8px;text-align:center;'>
+                            <div style='font-family:Fira Code,monospace;font-size:0.55rem;color:#4A607A;'>{_ck.replace('clv_','Last ')} bets</div>
+                            <div style='font-family:Chakra Petch,monospace;font-size:1.2rem;font-weight:700;color:{_clr};'>{_cents:+.1f}c</div>
+                            <div style='font-family:Fira Code,monospace;font-size:0.5rem;color:#2A5070;'>n={_cn}</div>
+                        </div>""", unsafe_allow_html=True)
+
+                # P&L Curve
+                import plotly.graph_objects as go
+                _pnl_c = _qr.get("pnl_curve", [])
+                if len(_pnl_c) > 1:
+                    _pdf = pd.DataFrame(_pnl_c)
+                    _fig = go.Figure()
+                    _fig.add_trace(go.Scatter(x=_pdf["bet_num"], y=_pdf["bankroll"], mode="lines",
+                        line=dict(color="#00FFB2", width=2), fill="tozeroy", fillcolor="rgba(0,255,178,0.05)"))
+                    _fig.update_layout(template="plotly_dark", height=250, margin=dict(l=40,r=20,t=10,b=30),
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        xaxis_title="Bet #", yaxis_title="Bankroll ($)")
+                    st.plotly_chart(_fig, use_container_width=True)
+
+                # Edge warnings
+                _edge_d = _qr.get("edge", {})
+                for _w in _edge_d.get("warnings", []): st.warning(_w)
+                for _a in _edge_d.get("actions", []): st.error(f"Action: {_a}")
+
+            except Exception as _e:
+                st.info(f"Dashboard will populate as bets are logged. ({_e})")
+
+        # ── Bet Logger ──
+        with _qs_tabs[1]:
+            st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#2A5070;
+                letter-spacing:0.18em;text-transform:uppercase;margin-bottom:0.8rem;'>LOG BETS THROUGH QUANT ENGINE</div>""", unsafe_allow_html=True)
+
+            with st.expander("Log New Bet", expanded=True):
+                _lc1, _lc2, _lc3 = st.columns(3)
+                with _lc1:
+                    _lp = st.text_input("Player", key="nqs_player")
+                    _ls = st.selectbox("Market", ["Points", "Rebounds", "Assists", "PRA", "Fantasy", "Threes", "Steals", "Blocks", "Turnovers"], key="nqs_stat")
+                with _lc2:
+                    _ld = st.selectbox("Direction", ["over", "under"], key="nqs_dir")
+                    _ll = st.number_input("Line", value=22.5, step=0.5, key="nqs_line")
+                with _lc3:
+                    _lmp = st.number_input("Model Prob", 0.40, 0.95, 0.58, 0.01, key="nqs_prob")
+                    _lpr = st.number_input("Projection", 0.0, 100.0, 25.0, 0.5, key="nqs_proj")
+                    _lstd = st.number_input("Std Dev", 0.1, 30.0, 5.0, 0.5, key="nqs_std")
+
+                if st.button("Evaluate & Place", key="nqs_place"):
+                    if _lp:
+                        _dec = _qe.evaluate_bet(
+                            player=_lp, bet_type=BetType.OVER if _ld == "over" else BetType.UNDER,
+                            stat_type=_ls.lower(), line=_ll, direction=_ld,
+                            model_prob=_lmp, model_projection=_lpr, model_std=_lstd, odds_american=-110,
+                        )
+                        if _dec["approved"]:
+                            _bid = _qe.place_bet(_dec)
+                            st.success(f"BET PLACED: {_bid} | {_lp} {_ld.upper()} {_ls} @ {_ll} | ${_dec['stake']:.2f} | Edge: {(_lmp - _dec['market_prob'])*100:.1f}%")
+                        else:
+                            st.error(f"REJECTED: {_dec['rejection_reason']}")
+
+            # Pending bets
+            _pend = _qe.bet_logger.get_pending_bets()
+            if _pend:
+                st.markdown(f"**Pending ({len(_pend)})**")
+                for _b in _pend:
+                    _p1, _p2, _p3 = st.columns([4, 1, 1])
+                    with _p1: st.write(f"{_b['player']} {_b['direction'].upper()} {_b['stat_type']} @ {_b['line']} — ${_b['stake']:.2f}")
+                    with _p2:
+                        _act = st.number_input("Result", key=f"nres_{_b['bet_id']}", value=0.0, step=0.5)
+                    with _p3:
+                        if st.button("Settle", key=f"nset_{_b['bet_id']}"):
+                            _sr = _qe.settle_bet(_b["bet_id"], actual_result=_act)
+                            st.success(f"{'WON' if _sr['won'] else 'LOST'} | ${_sr['pnl']:+.2f}")
+                            st.rerun()
+
+            # Recent settled
+            _set = _qe.bet_logger.get_settled_bets(limit=30)
+            if _set:
+                st.markdown(f"**Recent Settled ({len(_set)})**")
+                _sdf = pd.DataFrame(_set)[["timestamp", "player", "direction", "stat_type", "line", "stake", "edge", "status", "pnl"]]
+                _sdf["edge"] = (_sdf["edge"] * 100).round(1).astype(str) + "%"
+                _sdf["pnl"] = _sdf["pnl"].apply(lambda x: f"${x:+.2f}")
+                st.dataframe(_sdf, use_container_width=True, hide_index=True)
+
+        # ── CLV Tracker ──
+        with _qs_tabs[2]:
+            st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#2A5070;
+                letter-spacing:0.18em;text-transform:uppercase;margin-bottom:0.8rem;'>CLV — #1 PROFITABILITY PREDICTOR</div>""", unsafe_allow_html=True)
+            _clv_s = _qe.clv_tracker.clv_summary()
+            for _wk in ["clv_50", "clv_100", "clv_250", "clv_500"]:
+                _d = _clv_s.get(_wk, {})
+                if _d.get("n_bets", 0) > 0:
+                    _c = _d["avg_clv_cents"]
+                    _col = "#00FFB2" if _c > 0 else "#FF3358"
+                    st.markdown(f"""<div style='background:#060D18;border:1px solid #0E1E30;border-radius:4px;
+                        padding:8px 14px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;'>
+                        <span style='font-family:Fira Code,monospace;font-size:0.65rem;color:#4A607A;'>{_wk.replace('clv_','Last ')} bets (n={_d["n_bets"]})</span>
+                        <span style='font-family:Chakra Petch,monospace;font-size:1rem;font-weight:700;color:{_col};'>{_c:+.2f}c</span>
+                        <span style='font-family:Fira Code,monospace;font-size:0.55rem;color:#2A5070;'>beat: {_d.get("beat_close_pct",0)*100:.0f}% | {_d.get("trend","")}</span>
+                    </div>""", unsafe_allow_html=True)
+
+        # ── Risk & Sizing ──
+        with _qs_tabs[3]:
+            st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#2A5070;
+                letter-spacing:0.18em;text-transform:uppercase;margin-bottom:0.8rem;'>RISK MANAGEMENT & CIRCUIT BREAKERS</div>""", unsafe_allow_html=True)
+            _rs = _qe.bankroll_mgr.get_risk_state()
+            _rm1, _rm2, _rm3 = st.columns(3)
+            with _rm1: st.metric("Kelly Multiplier", f"{_rs.kelly_multiplier:.2f}")
+            with _rm2: st.metric("Max Single Bet", f"${_rs.max_single_bet:.2f}")
+            with _rm3: st.metric("Daily Loss Left", f"${_rs.daily_loss_remaining:.2f}")
+
+            _bk = _qe.failure_protection.check_all(_rs)
+            for _bn in _bk["breakers_clear"]:
+                st.success(f"{_bn}: CLEAR")
+            for _bn in _bk["breakers_triggered"]:
+                st.error(f"{_bn}: TRIGGERED — {_bk['details'][_bn].get('message', '')}")
+
+        # ── Backtest ──
+        with _qs_tabs[4]:
+            st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#2A5070;
+                letter-spacing:0.18em;text-transform:uppercase;margin-bottom:0.8rem;'>MONTE CARLO BANKROLL SIMULATION</div>""", unsafe_allow_html=True)
+            _mc1, _mc2 = st.columns(2)
+            with _mc1:
+                _me = st.slider("Avg Edge %", 0.0, 15.0, 5.0, 0.5, key="nqs_mc_edge")
+                _mw = st.slider("Win Rate %", 45.0, 70.0, 55.0, 1.0, key="nqs_mc_wr")
+            with _mc2:
+                _mo = st.number_input("Avg Odds", 1.5, 3.0, 1.91, 0.01, key="nqs_mc_odds")
+                _ms = st.slider("Stake %", 0.5, 5.0, 2.0, 0.5, key="nqs_mc_stake")
+
+            if st.button("Run 10K Paths", key="nqs_run_mc"):
+                from quant_system.backtest.mc_bankroll import BankrollSimulator, MCConfig
+                _sim = BankrollSimulator(MCConfig(n_bets_per_path=500, initial_bankroll=float(st.session_state.get("bankroll", 1000))))
+                _mcr = _sim.simulate(avg_edge=_me/100, avg_odds_decimal=_mo, avg_stake_pct=_ms/100, win_rate=_mw/100)
+                _mr1, _mr2, _mr3, _mr4 = st.columns(4)
+                with _mr1: st.metric("Ruin Prob", f"{_mcr['ruin_probability']:.1%}")
+                with _mr2: st.metric("Median Final", f"${_mcr['median_final']:,.0f}")
+                with _mr3: st.metric("Profitable", f"{_mcr['paths_profitable']:.0%}")
+                with _mr4: st.metric("5th Pctile", f"${_mcr['p5_final']:,.0f}")
+    else:
+        st.warning("Quant System not available. Install the quant_system package.")
+
+# ── SETTINGS TAB (tabs[9]) ──────────────────────────────────
+with tabs[9]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;
 color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;
 margin-bottom:1.2rem;'>ACCOUNT & ENGINE SETTINGS</div>""", unsafe_allow_html=True)
