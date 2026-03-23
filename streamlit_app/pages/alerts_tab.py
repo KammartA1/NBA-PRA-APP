@@ -219,8 +219,8 @@ def _render_news_feed() -> None:
                     f"color:#4A607A;margin-top:2px;'>{description[:200]}</div>"
                     f"<div style='font-family:{FONT_MONO};font-size:0.50rem;"
                     f"color:#2A4060;margin-top:2px;'>{published[:16]}"
-                    f"{'  |  <a href=\"' + link + '\" target=\"_blank\" style=\"color:#00AAFF;\">Read more</a>' if link else ''}"
-                    f"</div></div>",
+                    + ('  |  <a href="' + link + '" target="_blank" style="color:#00AAFF;">Read more</a>' if link else '') +
+                    "</div></div>",
                     unsafe_allow_html=True,
                 )
         else:

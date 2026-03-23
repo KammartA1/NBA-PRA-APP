@@ -12,3 +12,4 @@ streamlit-cookies-controller>=0.0.4
 streamlit-autorefresh>=0.0.1
 SQLAlchemy>=2.0.0
 APScheduler>=3.10.0
+python-dotenv>=1.0.0

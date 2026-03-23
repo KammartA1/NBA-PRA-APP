@@ -24,7 +24,7 @@ def _ensure_imports():
     global _app
     if _app is not None:
         return
-    import app as _app_module
+    import nba_engine as _app_module
     _app = _app_module
 
 
