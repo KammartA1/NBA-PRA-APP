@@ -1,8 +1,6 @@
 """
-NBA Quant Engine — Refactored Entry Point
-============================================
-Alias for app.py. Both files use the same refactored architecture.
-
+NBA Prop Alpha Engine — Alias for app.py
+==========================================
 Usage:
     streamlit run app_refactored.py
 """
