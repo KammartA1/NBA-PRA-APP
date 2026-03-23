@@ -27,6 +27,7 @@ TAB_NAMES = [
     "INSIGHTS",
     "ALERTS",
     "QUANT SYSTEM",
+    "CLV SYSTEM",
     "SETTINGS",
 ]
 

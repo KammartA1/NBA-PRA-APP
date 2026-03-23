@@ -75,6 +75,7 @@ from streamlit_app.pages import (
     insights_tab,
     alerts_tab,
     quant_tab,
+    clv_tab,
     settings_tab,
 )
 
@@ -108,6 +109,9 @@ with tabs[8]:
     quant_tab.render()
 
 with tabs[9]:
+    clv_tab.render()
+
+with tabs[10]:
     settings_tab.render()
 
 # ── 6. Footer ──────────────────────────────────────────────────────────────
