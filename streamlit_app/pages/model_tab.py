@@ -234,7 +234,7 @@ def _get_book_choices(scan_date) -> list[str]:
     fallback = ["consensus", "fanduel", "draftkings", "betmgm", "bet365",
                 "pointsbet", "caesars", "prizepicks"]
     try:
-        import app as _app
+        import nba_engine as _app
         choices, err = _app.get_sportsbook_choices(scan_date.isoformat())
         if choices:
             return choices

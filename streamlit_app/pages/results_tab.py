@@ -156,7 +156,7 @@ def _display_signal_cards(results: list[dict]) -> None:
 def _get_ai_analysis(leg: dict) -> str | None:
     """Call AI to explain a leg.  Uses cached version from app.py if available."""
     try:
-        import app as _app
+        import nba_engine as _app
         return _app.ai_explain_edge(
             player=leg.get("player", ""),
             market=leg.get("market", ""),

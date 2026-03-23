@@ -76,8 +76,8 @@ def scan_all_books(
     -------
     list[dict] – opportunities sorted by composite sharpness + EV
     """
-    # Lazy imports to avoid circular dependency
-    import app as _app
+    # Import computation engine (separated from Streamlit frontend)
+    import nba_engine as _app
 
     settings = settings or {}
     game_date = game_date or date.today()
