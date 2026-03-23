@@ -66,64 +66,34 @@ except Exception as e:
 # ── Inject design system CSS ────────────────────────────────────────────────
 st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 
-# ── Navigation ──────────────────────────────────────────────────────────────
-NAV_PAGES = {
-    "COMMAND CENTER": "command_center",
-    "SIGNALS": "signals",
-    "PERFORMANCE": "performance",
-    "HISTORY": "history",
-}
-
-# Sidebar navigation — thin, icon-driven
-with st.sidebar:
-    st.markdown("""
-    <div style='padding:16px 8px;border-bottom:1px solid #2A2A2E;margin-bottom:16px;'>
-        <div style='font-family:JetBrains Mono,monospace;font-size:11px;
-                    color:#8B8B96;letter-spacing:0.15em;text-transform:uppercase;'>
-            NBA PROP</div>
-        <div style='font-family:JetBrains Mono,monospace;font-size:16px;
-                    font-weight:700;color:#E8E8EC;letter-spacing:0.05em;
-                    margin-top:4px;'>
-            ALPHA ENGINE</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    selected = st.radio(
-        "NAV",
-        list(NAV_PAGES.keys()),
-        index=0,
-        label_visibility="collapsed",
-        key="nav_page",
-    )
-
-    st.markdown("""
-    <div style='margin-top:32px;padding-top:16px;border-top:1px solid #2A2A2E;'>
-        <div style='font-family:JetBrains Mono,monospace;font-size:10px;
-                    color:#8B8B96;letter-spacing:0.1em;'>
-            v5.0 TERMINAL</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# ── Render selected page ────────────────────────────────────────────────────
+# ── Navigation (visible top tabs) ──────────────────────────────────────────
 from streamlit_app.pages import command_center, signals_page, performance_page, history_page
 
-page_map = {
-    "command_center": command_center.render,
-    "signals": signals_page.render,
-    "performance": performance_page.render,
-    "history": history_page.render,
-}
+tab_cmd, tab_sig, tab_perf, tab_hist = st.tabs([
+    "COMMAND CENTER",
+    "SIGNALS",
+    "PERFORMANCE",
+    "HISTORY",
+])
 
-page_key = NAV_PAGES[selected]
-try:
-    page_map[page_key]()
-except Exception as e:
-    st.markdown(f"""
-    <div style='padding:32px;text-align:center;'>
-        <div style='font-family:JetBrains Mono,monospace;font-size:13px;
-                    color:#FF4757;margin-bottom:8px;'>PAGE ERROR</div>
-        <div style='font-family:IBM Plex Sans,sans-serif;font-size:11px;
-                    color:#8B8B96;'>{str(e)}</div>
-    </div>
-    """, unsafe_allow_html=True)
-    logging.getLogger(__name__).exception("Page render error: %s", page_key)
+_tab_pages = [
+    (tab_cmd, command_center),
+    (tab_sig, signals_page),
+    (tab_perf, performance_page),
+    (tab_hist, history_page),
+]
+
+for tab, module in _tab_pages:
+    with tab:
+        try:
+            module.render()
+        except Exception as e:
+            st.markdown(f"""
+            <div style='padding:32px;text-align:center;'>
+                <div style='font-family:JetBrains Mono,monospace;font-size:13px;
+                            color:#FF4757;margin-bottom:8px;'>PAGE ERROR</div>
+                <div style='font-family:IBM Plex Sans,sans-serif;font-size:11px;
+                            color:#8B8B96;'>{str(e)}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            logging.getLogger(__name__).exception("Page render error")
