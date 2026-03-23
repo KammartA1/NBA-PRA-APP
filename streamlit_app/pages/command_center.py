@@ -32,7 +32,7 @@ def render():
     worker_statuses = data.get("worker_statuses", [])
     todays_signals = data.get("todays_signals", [])
     exposure = data.get("exposure", {})
-    system_state = data.get("system_state", "UNKNOWN")
+    system_state = data.get("system_state", "ACTIVE")
     model_version = data.get("model_version", "N/A")
     data_quality_score = data.get("data_quality_score", 0.0)
     simulation_status = data.get("simulation_status", "UNKNOWN")

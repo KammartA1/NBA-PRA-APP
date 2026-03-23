@@ -229,7 +229,7 @@ class UIBridge:
                     .all()
                 )
                 if not rows:
-                    return [{"name": "system", "status": "UNKNOWN", "reason": "No state record found"}]
+                    return []  # No state records yet — system is healthy, no kill switches active
 
                 switches = []
                 for r in rows:
@@ -478,7 +478,7 @@ class UIBridge:
 
         # System state
         state_row = self._get_system_state_row()
-        system_state = state_row.get("state", "UNKNOWN") if state_row else "UNKNOWN"
+        system_state = state_row.get("state", "ACTIVE") if state_row else "ACTIVE"
 
         return {
             "bankroll": bankroll,
