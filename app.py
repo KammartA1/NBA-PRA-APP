@@ -30,8 +30,10 @@ try:
     from quant_system.core.types import Sport, BetType, SystemState
     from quant_system.risk.kelly_adaptive import KellyConfig
     _QUANT_AVAILABLE = True
-except ImportError:
+    _QUANT_ERROR = ""
+except Exception as _qe_err:
     _QUANT_AVAILABLE = False
+    _QUANT_ERROR = str(_qe_err)
 # ──────────────────────────────────────────────
 # CLAUDE AI INTEGRATION
 # ──────────────────────────────────────────────
@@ -10058,7 +10060,8 @@ with tabs[8]:
                 with _mr3: st.metric("Profitable", f"{_mcr['paths_profitable']:.0%}")
                 with _mr4: st.metric("5th Pctile", f"${_mcr['p5_final']:,.0f}")
     else:
-        st.warning("Quant System not available. Install the quant_system package.")
+        st.warning(f"Quant System not available: {_QUANT_ERROR}")
+        st.info("Ensure the quant_system/ directory is in the repo root and SQLAlchemy is in requirements.txt.")
 
 # ── SETTINGS TAB (tabs[9]) ──────────────────────────────────
 with tabs[9]:

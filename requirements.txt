@@ -10,3 +10,4 @@ cloudscraper>=1.2.71
 anthropic>=0.45.0
 streamlit-cookies-controller>=0.0.4
 streamlit-autorefresh>=0.0.1
+SQLAlchemy>=2.0.0
