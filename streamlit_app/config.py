@@ -29,6 +29,7 @@ TAB_NAMES = [
     "QUANT SYSTEM",
     "CLV SYSTEM",
     "DATA QUALITY",
+    "EDGE SOURCES",
     "SETTINGS",
 ]
 
