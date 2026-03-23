@@ -16,7 +16,7 @@ PAGE_CONFIG: dict = {
     "page_title": "NBA Prop Alpha Engine",
     "page_icon": ":basketball:",
     "layout": "wide",
-    "initial_sidebar_state": "collapsed",
+    "initial_sidebar_state": "expanded",
 }
 
 # ---------------------------------------------------------------------------
