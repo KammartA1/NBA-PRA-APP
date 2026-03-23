@@ -10,5 +10,6 @@ from __future__ import annotations
 
 from edge_analysis.source_registry import SourceRegistry
 from edge_analysis.edge_sources import EdgeSourceCatalog
+from edge_analysis.attribution import EdgeAttributionEngine
 
-__all__ = ["SourceRegistry", "EdgeSourceCatalog"]
+__all__ = ["SourceRegistry", "EdgeSourceCatalog", "EdgeAttributionEngine"]

@@ -31,6 +31,7 @@ TAB_NAMES = [
     "DATA QUALITY",
     "EDGE SOURCES",
     "EDGE DECOMP",
+    "EDGE ATTRIBUTION",
     "SETTINGS",
 ]
 
