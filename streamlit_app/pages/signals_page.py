@@ -36,23 +36,6 @@ def _action_badge(edge_pct: float) -> str:
 
 def _build_signals_table(signals: list[dict]) -> str:
     """Build the full HTML signals table."""
-    header_row = (
-        "<tr>"
-        "<th>Time</th>"
-        "<th>Player</th>"
-        "<th>Event</th>"
-        "<th>Market</th>"
-        "<th>Line</th>"
-        "<th>Model Prob</th>"
-        "<th>Market Prob</th>"
-        "<th>Edge %</th>"
-        "<th>CLV Exp</th>"
-        "<th>Confidence</th>"
-        "<th>Stake</th>"
-        "<th>Action</th>"
-        "</tr>"
-    )
-
     body_rows = []
     for i, s in enumerate(signals):
         bg = COLORS["surface"] if i % 2 == 0 else COLORS["bg"]
@@ -101,49 +84,22 @@ def _build_signals_table(signals: list[dict]) -> str:
         )
         body_rows.append(row)
 
+    th_style = (
+        f"font-family:'IBM Plex Sans',sans-serif;font-size:11px;font-weight:600;"
+        f"color:{COLORS['text_secondary']};text-transform:uppercase;letter-spacing:0.04em;"
+        f"text-align:left;padding:10px 12px;height:40px;border-bottom:1px solid {COLORS['border']};"
+    )
+
+    headers = ["Time", "Player", "Event", "Market", "Line", "Model Prob",
+               "Market Prob", "Edge %", "CLV Exp", "Confidence", "Stake", "Action"]
+    header_cells = "".join(f'<th style="{th_style}">{h}</th>' for h in headers)
+
     return (
         f'<div style="overflow-x:auto;">'
         f'<table style="width:100%;border-collapse:collapse;border:1px solid {COLORS["border"]};'
         f'border-radius:8px;overflow:hidden;">'
         f'<thead style="background-color:{COLORS["surface_elevated"]};">'
-        f'<tr>'
-        f'<th style="font-family:\'IBM Plex Sans\',sans-serif;font-size:11px;font-weight:600;'
-        f'color:{COLORS["text_secondary"]};text-transform:uppercase;letter-spacing:0.04em;'
-        f'text-align:left;padding:10px 12px;height:40px;border-bottom:1px solid {COLORS["border"]};">Time</th>'
-        f'<th style="font-family:\'IBM Plex Sans\',sans-serif;font-size:11px;font-weight:600;'
-        f'color:{COLORS["text_secondary"]};text-transform:uppercase;letter-spacing:0.04em;'
-        f'text-align:left;padding:10px 12px;height:40px;border-bottom:1px solid {COLORS["border"]};">Player</th>'
-        f'<th style="font-family:\'IBM Plex Sans\',sans-serif;font-size:11px;font-weight:600;'
-        f'color:{COLORS["text_secondary"]};text-transform:uppercase;letter-spacing:0.04em;'
-        f'text-align:left;padding:10px 12px;height:40px;border-bottom:1px solid {COLORS["border"]};">Event</th>'
-        f'<th style="font-family:\'IBM Plex Sans\',sans-serif;font-size:11px;font-weight:600;'
-        f'color:{COLORS["text_secondary"]};text-transform:uppercase;letter-spacing:0.04em;'
-        f'text-align:left;padding:10px 12px;height:40px;border-bottom:1px solid {COLORS["border"]};">Market</th>'
-        f'<th style="font-family:\'IBM Plex Sans\',sans-serif;font-size:11px;font-weight:600;'
-        f'color:{COLORS["text_secondary"]};text-transform:uppercase;letter-spacing:0.04em;'
-        f'text-align:left;padding:10px 12px;height:40px;border-bottom:1px solid {COLORS["border"]};">Line</th>'
-        f'<th style="font-family:\'IBM Plex Sans\',sans-serif;font-size:11px;font-weight:600;'
-        f'color:{COLORS["text_secondary"]};text-transform:uppercase;letter-spacing:0.04em;'
-        f'text-align:left;padding:10px 12px;height:40px;border-bottom:1px solid {COLORS["border"]};">Model Prob</th>'
-        f'<th style="font-family:\'IBM Plex Sans\',sans-serif;font-size:11px;font-weight:600;'
-        f'color:{COLORS["text_secondary"]};text-transform:uppercase;letter-spacing:0.04em;'
-        f'text-align:left;padding:10px 12px;height:40px;border-bottom:1px solid {COLORS["border"]};">Market Prob</th>'
-        f'<th style="font-family:\'IBM Plex Sans\',sans-serif;font-size:11px;font-weight:600;'
-        f'color:{COLORS["text_secondary"]};text-transform:uppercase;letter-spacing:0.04em;'
-        f'text-align:left;padding:10px 12px;height:40px;border-bottom:1px solid {COLORS["border"]};">Edge %</th>'
-        f'<th style="font-family:\'IBM Plex Sans\',sans-serif;font-size:11px;font-weight:600;'
-        f'color:{COLORS["text_secondary"]};text-transform:uppercase;letter-spacing:0.04em;'
-        f'text-align:left;padding:10px 12px;height:40px;border-bottom:1px solid {COLORS["border"]};">CLV Exp</th>'
-        f'<th style="font-family:\'IBM Plex Sans\',sans-serif;font-size:11px;font-weight:600;'
-        f'color:{COLORS["text_secondary"]};text-transform:uppercase;letter-spacing:0.04em;'
-        f'text-align:left;padding:10px 12px;height:40px;border-bottom:1px solid {COLORS["border"]};">Confidence</th>'
-        f'<th style="font-family:\'IBM Plex Sans\',sans-serif;font-size:11px;font-weight:600;'
-        f'color:{COLORS["text_secondary"]};text-transform:uppercase;letter-spacing:0.04em;'
-        f'text-align:left;padding:10px 12px;height:40px;border-bottom:1px solid {COLORS["border"]};">Stake</th>'
-        f'<th style="font-family:\'IBM Plex Sans\',sans-serif;font-size:11px;font-weight:600;'
-        f'color:{COLORS["text_secondary"]};text-transform:uppercase;letter-spacing:0.04em;'
-        f'text-align:left;padding:10px 12px;height:40px;border-bottom:1px solid {COLORS["border"]};">Action</th>'
-        f'</tr></thead>'
+        f'<tr>{header_cells}</tr></thead>'
         f'<tbody>{"".join(body_rows)}</tbody>'
         f'</table></div>'
     )
@@ -168,7 +124,7 @@ def render():
             "MARKET",
             ["All", "Points", "Rebounds", "Assists", "PRA", "3PM",
              "Steals", "Blocks", "Pts+Reb", "Pts+Ast", "Reb+Ast",
-             "Double-Double", "Turnovers"],
+             "Double-Double", "Fantasy Score"],
             index=0,
             key="signals_market_filter",
         )
@@ -216,7 +172,7 @@ def render():
     if not signals:
         st.markdown(
             f'<div style="text-align:center;padding:80px 0;color:{COLORS["text_secondary"]};'
-            f'font-family:\'IBM Plex Sans\',sans-serif;font-size:13px;">'
+            f"font-family:'IBM Plex Sans',sans-serif;font-size:13px;\">"
             f'No signals available. Waiting for next worker run.</div>',
             unsafe_allow_html=True,
         )

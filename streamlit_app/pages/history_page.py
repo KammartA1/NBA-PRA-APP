@@ -1,5 +1,6 @@
 """
-PAGE 4: HISTORY — Bloomberg Terminal-style bet history with filters and export.
+PAGE 4: HISTORY -- Bloomberg Terminal-style bet history with filters and export
+for the NBA Prop Alpha Engine.
 """
 
 import streamlit as st
@@ -61,6 +62,14 @@ def _mono(val, fmt="{}"):
     )
 
 
+# NBA-specific market options for the filter dropdown
+NBA_MARKET_OPTIONS = [
+    "All", "Points", "Rebounds", "Assists", "PRA", "3PM",
+    "Steals", "Blocks", "Pts+Reb", "Pts+Ast", "Reb+Ast",
+    "Double-Double", "Fantasy Score",
+]
+
+
 def render():
     """Render the History page."""
     bridge = UIBridge()
@@ -96,15 +105,10 @@ def render():
             key="history_result_filter",
         )
 
-    # Collect unique markets for filter options
-    all_markets = sorted(
-        {_safe_str(r.get("market")) for r in raw_data if r.get("market")}
-    )
     with f3:
-        market_options = ["All"] + all_markets
         market_filter = st.selectbox(
             "Market",
-            market_options,
+            NBA_MARKET_OPTIONS,
             key="history_market_filter",
         )
 
@@ -153,7 +157,7 @@ def render():
     if market_filter != "All":
         filtered = [
             r for r in filtered
-            if _safe_str(r.get("market")) == market_filter
+            if _safe_str(r.get("market")).upper() == market_filter.upper()
         ]
 
     # Confidence filter
@@ -185,7 +189,7 @@ def render():
         st.download_button(
             label="EXPORT CSV",
             data=csv_data,
-            file_name="bet_history.csv",
+            file_name="nba_bet_history.csv",
             mime="text/csv",
             key="history_export_csv",
         )

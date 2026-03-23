@@ -1,7 +1,8 @@
 """
 streamlit_app/pages/performance_page.py
 =======================================
-PAGE 3: PERFORMANCE — Bloomberg Terminal-style performance dashboard.
+PAGE 3: PERFORMANCE -- Bloomberg Terminal-style performance dashboard
+for the NBA Prop Alpha Engine.
 
 Four charts in a 2x2 grid:
   - CLV Over Time
@@ -292,7 +293,7 @@ def render() -> None:
         )
 
     # -------------------------------------------------------------------
-    # 2x2 Chart Grid — Top Row
+    # 2x2 Chart Grid -- Top Row
     # -------------------------------------------------------------------
     top_left, top_right = st.columns(2)
 
@@ -313,7 +314,7 @@ def render() -> None:
         st.plotly_chart(fig_roi, use_container_width=True, config=_CHART_CONFIG)
 
     # -------------------------------------------------------------------
-    # 2x2 Chart Grid — Bottom Row
+    # 2x2 Chart Grid -- Bottom Row
     # -------------------------------------------------------------------
     bot_left, bot_right = st.columns(2)
 
