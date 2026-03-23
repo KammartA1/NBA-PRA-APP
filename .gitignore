@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 NBA_QUANT_ENGINE_v2.1.py
 .streamlit/secrets.toml
+data/quant_system.db
+*.db
