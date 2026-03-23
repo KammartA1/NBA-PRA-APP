@@ -3453,7 +3453,8 @@ def _parse_pp_response_all(data):
     return _parse_pp_response(data, league_filter=None)
 def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """Make one PrizePicks API request.
-    Tries curl_cffi (Chrome TLS impersonation) → cloudscraper → plain requests.
+    Uses multi-browser curl_cffi impersonation (matching GOLFAPP's proven approach),
+    then ScraperAPI proxy, then direct request.
     Returns (response_object_or_None, error_str_or_None).
     single_stat='true'  → standard stats (Points, Rebounds, etc.)
     single_stat='false' → combo/specialty stats (PRA, Pts+Reb, Fantasy Score, etc.)
@@ -3461,67 +3462,48 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     url = PRIZEPICKS_API
     params = {"per_page": str(per_page),
               "single_stat": single_stat, "in_play": "false"}
-    # Full Chrome 120 headers — reduces bot-detection fingerprint
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/vnd.api+json",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
         "Referer": "https://app.prizepicks.com/",
         "Origin": "https://app.prizepicks.com",
-        "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-site",
-        "Connection": "keep-alive",
-        "DNT": "1",
     }
+    data = None
+    resp_obj = None
+
     # Parse optional cookie string from user settings
-    # Guard: if the stored value is actually a JSON response (user pasted JSON into cookies field),
-    # skip it here — fetch_prizepicks_lines() handles that case before calling _pp_request.
     cookie_dict = {}
     if cookies_str and not cookies_str.strip().startswith("{"):
         for part in cookies_str.split(";"):
             part = part.strip()
             if "=" in part:
                 k, v = part.split("=", 1)
-                # Sanitize: HTTP cookie headers must be latin-1 safe
                 k = k.strip().encode("latin-1", errors="ignore").decode("latin-1")
                 v = v.strip().encode("latin-1", errors="ignore").decode("latin-1")
                 if k:
                     cookie_dict[k] = v
-    # ── Attempt 1: curl_cffi Chrome TLS impersonation (bypasses PerimeterX) ──
+
+    # ── Method 1: curl_cffi with multi-browser impersonation (proven in GOLFAPP) ──
     try:
         from curl_cffi import requests as cffi_requests
-        r = cffi_requests.get(
-            url, params=params, headers=headers,
-            cookies=cookie_dict or None,
-            impersonate="chrome120",
-            timeout=25,
-        )
-        if r.status_code not in (403, 429):
-            return r, None
+        for browser in ("edge101", "safari17_0", "chrome124", "chrome120"):
+            try:
+                r = cffi_requests.get(
+                    url, params=params, headers=headers,
+                    cookies=cookie_dict or None,
+                    impersonate=browser,
+                    timeout=25,
+                )
+                if r.ok:
+                    resp_obj = r
+                    break
+            except Exception:
+                continue
+        if resp_obj is not None:
+            return resp_obj, None
     except ImportError:
         pass
-    except Exception:
-        pass
-    # ── Attempt 2: cloudscraper (handles Cloudflare JS challenges) ──
-    try:
-        import cloudscraper
-        scraper = cloudscraper.create_scraper(
-            browser={"browser": "chrome", "platform": "windows", "mobile": False}
-        )
-        r = scraper.get(url, params=params, headers=headers,
-                        cookies=cookie_dict or None, timeout=25)
-        if r.status_code not in (403, 429):
-            return r, None
-    except ImportError:
-        pass
-    except Exception:
-        pass
-    # ── Attempt 3: ScraperAPI proxy (bypasses PerimeterX on cloud IPs) ──
+
+    # ── Method 2: ScraperAPI proxy (bypasses PerimeterX on cloud IPs) ──
     scraper_key = ""
     try:
         scraper_key = st.secrets.get("SCRAPER_API_KEY", "") or os.environ.get("SCRAPER_API_KEY", "")
@@ -3535,40 +3517,55 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                 params={"api_key": scraper_key, "url": full_url, "render": "false"},
                 timeout=30,
             )
-            if r.status_code not in (403, 429):
+            if r.ok:
                 return r, None
         except Exception:
             pass
-    # ── Attempt 4: plain requests (works locally, often blocked on cloud IPs) ──
+
+    # ── Method 3: cloudscraper (handles Cloudflare JS challenges) ──
     try:
-        r = requests.get(url, params=params, headers=headers,
-                         cookies=cookie_dict or None, timeout=20)
-        return r, None
+        import cloudscraper
+        scraper = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "mobile": False}
+        )
+        r = scraper.get(url, params=params, headers={
+            **headers,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }, cookies=cookie_dict or None, timeout=25)
+        if r.ok:
+            return r, None
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # ── Method 4: Direct request (works from residential IPs) ──
+    try:
+        r = requests.get(url, params=params, headers={
+            **headers,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }, cookies=cookie_dict or None, timeout=20)
+        if r.ok:
+            return r, None
+        return None, f"HTTP {r.status_code}"
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 def _pp_fetch_one(per_page, cookies_str, single_stat):
-    """Fetch one PP request with retry on 429. Returns (rows, error)."""
+    """Fetch one PP request with retry. Returns (rows, error)."""
     for attempt in range(3):
         r, err = _pp_request(per_page=per_page, cookies_str=cookies_str, single_stat=single_stat)
         if err:
-            return [], err
-        if r is None:
-            return [], "No response from PrizePicks"
-        if r.status_code == 429:
             if attempt < 2:
                 time.sleep(2 ** (attempt + 1))
                 continue
-            return [], (
-                "PrizePicks rate-limited (429) — Streamlit Cloud IP is throttled. "
-                "Wait 60s and retry, or run the app locally."
-            )
-        if r.status_code == 403:
-            return [], (
-                "HTTP 403 — PerimeterX block. Fix: paste your PrizePicks browser "
-                "cookies into Settings → PrizePicks Cookies, then retry."
-            )
-        if not r.ok:
-            return [], f"HTTP {r.status_code}: {r.text[:300]}"
+            return [], err
+        if r is None:
+            if attempt < 2:
+                time.sleep(2 ** (attempt + 1))
+                continue
+            return [], "No response from PrizePicks"
         try:
             rows = _parse_pp_response(r.json())
         except Exception as e:
@@ -3586,10 +3583,7 @@ def _fetch_prizepicks_lines_cached(cookies_str=""):
             rows, err = _pp_fetch_one(per_page, cookies_str, single_stat)
             if err:
                 last_err = err
-                # Hard errors (403/429/network) — abort entirely
-                if any(x in err for x in ("403", "429", "rate-limited", "PerimeterX")):
-                    return [], err
-                break  # soft error — try next single_stat value
+                break  # try next single_stat value
             for row in rows:
                 key = (row["player"], row["stat_type"])
                 if key not in seen:
