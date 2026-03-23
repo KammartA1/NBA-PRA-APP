@@ -28,6 +28,7 @@ TAB_NAMES = [
     "ALERTS",
     "QUANT SYSTEM",
     "CLV SYSTEM",
+    "DATA QUALITY",
     "SETTINGS",
 ]
 

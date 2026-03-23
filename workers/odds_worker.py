@@ -656,6 +656,14 @@ class OddsWorker(BaseWorker):
                     sa["move"], sa.get("minutes_elapsed", 0),
                 )
 
+        # Run post-ingestion data quality audit (non-blocking)
+        audit_result = {}
+        try:
+            from workers.data_audit_worker import run_post_ingestion_audit
+            audit_result = run_post_ingestion_audit()
+        except Exception as exc:
+            self.logger.warning("Post-ingestion audit skipped: %s", exc)
+
         return {
             "ok": True,
             "lines_stored": stored_count,
@@ -664,6 +672,7 @@ class OddsWorker(BaseWorker):
             "new_events": new_events,
             "sharp_alerts": len(sharp_alerts),
             "errors": errors if errors else None,
+            "audit_score": audit_result.get("composite_score"),
         }
 
 
