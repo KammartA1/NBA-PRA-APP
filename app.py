@@ -78,6 +78,7 @@ from streamlit_app.pages import (
     clv_tab,
     data_quality_tab,
     edge_sources_tab,
+    edge_decomposition_tab,
     settings_tab,
 )
 
@@ -120,6 +121,9 @@ with tabs[11]:
     edge_sources_tab.render()
 
 with tabs[12]:
+    edge_decomposition_tab.render()
+
+with tabs[13]:
     settings_tab.render()
 
 # ── 6. Footer ──────────────────────────────────────────────────────────────

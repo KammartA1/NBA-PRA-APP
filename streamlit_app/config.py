@@ -30,6 +30,7 @@ TAB_NAMES = [
     "CLV SYSTEM",
     "DATA QUALITY",
     "EDGE SOURCES",
+    "EDGE DECOMP",
     "SETTINGS",
 ]
 
