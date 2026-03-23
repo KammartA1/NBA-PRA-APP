@@ -5456,6 +5456,82 @@ def compute_leg_projection(
                     p_over_raw, mu_raw, sigma = _nb_p, _nb_mu, _nb_sigma
             except Exception:
                 pass
+        # --- Game Simulation Engine (probability overlay) ---
+        # Possession-level simulation captures fatigue, fouls, blowout risk, and game-script
+        # effects that bootstrap/NegBin cannot model.  Blend sim_prob into p_over_raw.
+        sim_prob = None
+        sim_mean = None
+        sim_std  = None
+        try:
+            from simulation.game_engine import GameEngine
+            from simulation.config import SimulationConfig
+            from simulation.player_state import PlayerProfile as SimPlayerProfile
+            # Map model market name → simulation stat key
+            _SIM_STAT_MAP = {
+                "Points": "points", "Rebounds": "rebounds", "Assists": "assists",
+                "3PM": "three_pm", "PRA": "pra", "PR": "pr", "PA": "pa", "RA": "ra",
+                "Blocks": "blocks", "Steals": "steals", "Turnovers": "turnovers",
+                "FGM": "fgm", "FGA": "fga", "FTM": "ftm", "FTA": "fta",
+            }
+            _sim_stat = _SIM_STAT_MAP.get(base_market)
+            if _sim_stat and mu_raw is not None and sigma is not None and sigma > 0:
+                # Build a simplified player profile from model data
+                _sim_usage = float(usage_rate) if usage_rate else 0.20
+                _sim_pos = pos_str if pos_str in ("PG","SG","SF","PF","C") else "SF"
+                _sim_rest = int(rest_days) if rest_days is not None else 1
+                _sim_pid = str(player_id or "target_player")
+                _sim_profile = SimPlayerProfile(
+                    name=player_name,
+                    player_id=_sim_pid,
+                    position=_sim_pos,
+                    rest_days=_sim_rest,
+                    usage_rate=float(np.clip(_sim_usage, 0.08, 0.38)),
+                    is_starter=True,
+                    rotation_order=0,
+                )
+                # Quick 500-sim run with speed-optimized config
+                _sim_cfg = SimulationConfig(
+                    default_simulations=500,
+                    random_seed=int(hashlib.md5(f"{player_name}_{base_market}_{line}".encode()).hexdigest()[:8], 16) % (2**31),
+                )
+                _sim_home_pace = 100.0
+                _sim_away_pace = 100.0
+                if opp_abbr:
+                    _opp_ctx = TEAM_CTX.get(str(opp_abbr).upper(), {})
+                    if isinstance(_opp_ctx, dict):
+                        _sim_away_pace = float(_opp_ctx.get("pace", 100.0))
+                if team_abbr:
+                    _team_ctx = TEAM_CTX.get(str(team_abbr).upper(), {})
+                    if isinstance(_team_ctx, dict):
+                        _sim_home_pace = float(_team_ctx.get("pace", 100.0))
+                _sim_spread = float(_game_spread) if _game_spread is not None else 0.0
+                _sim_engine = GameEngine(
+                    config=_sim_cfg,
+                    home_profiles=[_sim_profile] + GameEngine._default_roster(True)[1:],
+                    away_profiles=GameEngine._default_roster(False),
+                    home_name=str(team_abbr or "HOME"),
+                    away_name=str(opp_abbr or "AWAY"),
+                    home_pace=_sim_home_pace if is_home_resolved else _sim_away_pace,
+                    away_pace=_sim_away_pace if is_home_resolved else _sim_home_pace,
+                    pre_game_spread=_sim_spread,
+                )
+                _sim_output = _sim_engine.run_simulation(n=500)
+                _sim_dist = _sim_output.get_player_dist(_sim_pid, _sim_stat)
+                if _sim_dist is not None:
+                    sim_prob = _sim_dist.prob_over(float(effective_line))
+                    sim_mean = _sim_dist.mean
+                    sim_std  = _sim_dist.std
+                    # Blend: 70% bootstrap/NegBin + 30% simulation
+                    if p_over_raw is not None and sim_prob is not None:
+                        p_over_raw = float(0.70 * p_over_raw + 0.30 * sim_prob)
+                        errors.append(f"Sim blend: sim_p={sim_prob:.3f}, sim_mu={sim_mean:.1f}, sim_std={sim_std:.1f} (500 sims)")
+                    elif sim_prob is not None:
+                        p_over_raw = sim_prob
+                        errors.append(f"Sim-only: sim_p={sim_prob:.3f} (bootstrap unavailable)")
+        except ImportError:
+            pass  # simulation package not installed
+        except Exception as _sim_err:
+            errors.append(f"Sim engine skipped: {type(_sim_err).__name__}")
         if p_over_raw is None:
             errors.append(f"Insufficient history (need >=4 games, have {len(stat_series.dropna())})")
     n_valid = int(stat_series.dropna().count())
@@ -5865,6 +5941,10 @@ def compute_leg_projection(
         "minutes_prod_mult": float(_minutes_prod_mult),
         "minutes_prod_label": _minutes_prod_label,
         "hist_avg_minutes":  float(_hist_avg_minutes) if _hist_avg_minutes is not None else None,
+        # [UNIFIED] Game simulation overlay
+        "sim_prob":          float(sim_prob) if sim_prob is not None else None,
+        "sim_mean":          float(sim_mean) if sim_mean is not None else None,
+        "sim_std":           float(sim_std) if sim_std is not None else None,
         "errors":            errors,
     }
 # ──────────────────────────────────────────────
@@ -7253,6 +7333,90 @@ if "_staged_model_date" in st.session_state:
     st.session_state["model_date"] = st.session_state.pop("_staged_model_date")
 with tabs[0]:
     _loss_stop_hit = _check_loss_stops(user_id, bankroll)
+    # ── [UNIFIED] Real-time System Status Dashboard ──
+    try:
+        _dash_cols = st.columns(4)
+        # System Status (from kill switch — use cached or compute)
+        _ks_cached = st.session_state.get("_ks_status")
+        if _ks_cached is None:
+            try:
+                from services.kill_switch import KillSwitch
+                _ks_init = KillSwitch(sport="NBA")
+                _ks_cached = _ks_init.check_all(
+                    bankroll=bankroll,
+                    peak_bankroll=float(st.session_state.get("peak_bankroll", bankroll)),
+                )
+                st.session_state["_ks_status"] = _ks_cached
+            except Exception:
+                _ks_cached = None
+        if _ks_cached:
+            _d_sev = getattr(_ks_cached, "severity", "clear")
+            _d_col = "#00FFB2" if _d_sev == "clear" else ("#FFB800" if _d_sev == "reduced" else "#FF3358")
+            _d_lbl = "ACTIVE" if _d_sev == "clear" else ("REDUCED" if _d_sev == "reduced" else "HALTED")
+            _d_nbets = getattr(_ks_cached, "total_bets_analyzed", 0)
+            _dash_cols[0].markdown(
+                f"<div style='text-align:center;padding:0.35rem 0.3rem;background:{_d_col}10;border:1px solid {_d_col}35;border-radius:4px;'>"
+                f"<div style='font-size:0.50rem;color:#4A607A;letter-spacing:0.14em;font-family:Chakra Petch,monospace;'>SYSTEM</div>"
+                f"<div style='font-size:0.90rem;color:{_d_col};font-weight:700;font-family:Fira Code,monospace;'>{_d_lbl}</div>"
+                f"<div style='font-size:0.46rem;color:#3A5570;'>{_d_nbets} bets analyzed</div>"
+                f"</div>", unsafe_allow_html=True)
+        else:
+            _dash_cols[0].markdown(
+                "<div style='text-align:center;padding:0.35rem 0.3rem;background:#4A607A10;border:1px solid #4A607A35;border-radius:4px;'>"
+                "<div style='font-size:0.50rem;color:#4A607A;letter-spacing:0.14em;font-family:Chakra Petch,monospace;'>SYSTEM</div>"
+                "<div style='font-size:0.90rem;color:#00FFB2;font-weight:700;font-family:Fira Code,monospace;'>ACTIVE</div>"
+                "<div style='font-size:0.46rem;color:#3A5570;'>No history yet</div>"
+                "</div>", unsafe_allow_html=True)
+        # Edge Health
+        _em_cached = st.session_state.get("_edge_snapshot")
+        if _em_cached is not None:
+            _e_clv = getattr(_em_cached, "clv_50_avg", 0.0)
+            _e_beat = getattr(_em_cached, "clv_beat_rate", 0.5)
+            _e_col = "#00FFB2" if _e_clv > 0 else ("#FFB800" if _e_clv > -1 else "#FF3358")
+            _dash_cols[1].markdown(
+                f"<div style='text-align:center;padding:0.35rem 0.3rem;background:{_e_col}10;border:1px solid {_e_col}35;border-radius:4px;'>"
+                f"<div style='font-size:0.50rem;color:#4A607A;letter-spacing:0.14em;font-family:Chakra Petch,monospace;'>EDGE HEALTH</div>"
+                f"<div style='font-size:0.90rem;color:{_e_col};font-weight:700;font-family:Fira Code,monospace;'>{_e_clv:+.1f}c</div>"
+                f"<div style='font-size:0.46rem;color:#3A5570;'>Beat rate: {_e_beat*100:.0f}%</div>"
+                f"</div>", unsafe_allow_html=True)
+        else:
+            _dash_cols[1].markdown(
+                "<div style='text-align:center;padding:0.35rem 0.3rem;background:#4A607A10;border:1px solid #4A607A35;border-radius:4px;'>"
+                "<div style='font-size:0.50rem;color:#4A607A;letter-spacing:0.14em;font-family:Chakra Petch,monospace;'>EDGE HEALTH</div>"
+                "<div style='font-size:0.90rem;color:#4A607A;font-weight:700;font-family:Fira Code,monospace;'>--</div>"
+                "<div style='font-size:0.46rem;color:#3A5570;'>Run model to check</div>"
+                "</div>", unsafe_allow_html=True)
+        # CLV Trend
+        if _em_cached is not None:
+            _c_roi = getattr(_em_cached, "roi_total_pct", 0.0)
+            _c_wr = getattr(_em_cached, "win_rate", 0.5)
+            _c_col = "#00FFB2" if _c_roi > 0 else "#FF3358"
+            _dash_cols[2].markdown(
+                f"<div style='text-align:center;padding:0.35rem 0.3rem;background:{_c_col}10;border:1px solid {_c_col}35;border-radius:4px;'>"
+                f"<div style='font-size:0.50rem;color:#4A607A;letter-spacing:0.14em;font-family:Chakra Petch,monospace;'>CLV TREND</div>"
+                f"<div style='font-size:0.90rem;color:{_c_col};font-weight:700;font-family:Fira Code,monospace;'>{_c_roi:+.1f}%</div>"
+                f"<div style='font-size:0.46rem;color:#3A5570;'>WR: {_c_wr*100:.0f}%</div>"
+                f"</div>", unsafe_allow_html=True)
+        else:
+            _dash_cols[2].markdown(
+                "<div style='text-align:center;padding:0.35rem 0.3rem;background:#4A607A10;border:1px solid #4A607A35;border-radius:4px;'>"
+                "<div style='font-size:0.50rem;color:#4A607A;letter-spacing:0.14em;font-family:Chakra Petch,monospace;'>CLV TREND</div>"
+                "<div style='font-size:0.90rem;color:#4A607A;font-weight:700;font-family:Fira Code,monospace;'>--</div>"
+                "<div style='font-size:0.46rem;color:#3A5570;'>No settled bets</div>"
+                "</div>", unsafe_allow_html=True)
+        # Bankroll
+        _br_col = "#00FFB2" if bankroll > 0 else "#FF3358"
+        _peak_br = float(st.session_state.get("peak_bankroll", bankroll))
+        _dd_pct = (((_peak_br - bankroll) / _peak_br) * 100) if _peak_br > 0 else 0.0
+        _dd_col = "#00FFB2" if _dd_pct < 10 else ("#FFB800" if _dd_pct < 20 else "#FF3358")
+        _dash_cols[3].markdown(
+            f"<div style='text-align:center;padding:0.35rem 0.3rem;background:{_br_col}10;border:1px solid {_br_col}35;border-radius:4px;'>"
+            f"<div style='font-size:0.50rem;color:#4A607A;letter-spacing:0.14em;font-family:Chakra Petch,monospace;'>BANKROLL</div>"
+            f"<div style='font-size:0.90rem;color:{_br_col};font-weight:700;font-family:Fira Code,monospace;'>${bankroll:,.0f}</div>"
+            f"<div style='font-size:0.46rem;color:{_dd_col};'>DD: {_dd_pct:.1f}%</div>"
+            f"</div>", unsafe_allow_html=True)
+    except Exception:
+        pass  # Dashboard is non-critical; never block the MODEL tab
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>CONFIGURE UP TO 4 LEGS</div>""", unsafe_allow_html=True)
     date_col, book_col = st.columns([2,2])
     with date_col:
@@ -7353,6 +7517,51 @@ with tabs[0]:
             calib = st.session_state.get("calibrator_map")
             results = [recompute_pricing_fields(dict(leg), calib) for leg in results]
             st.session_state["last_results"] = results
+            # ── [UNIFIED] Auto-CLV: log opening lines to database ──
+            try:
+                from database.connection import session_scope
+                from database.models import LineMovement
+                _clv_ts = datetime.now().strftime("%H:%M:%S")
+                with session_scope() as _clv_sess:
+                    for _leg in results:
+                        if _leg.get("player") and _leg.get("line") is not None:
+                            _clv_sess.add(LineMovement(
+                                sport="NBA",
+                                event=f"{_leg.get('team','?')} vs {_leg.get('opp','?')}",
+                                market=_leg.get("market"),
+                                book=_leg.get("book") or "model",
+                                player=_leg.get("player"),
+                                line=float(_leg.get("line")),
+                                odds=int(_leg.get("price_decimal", 1.909) * 100) if _leg.get("price_decimal") else -110,
+                                is_opening=True,
+                                is_closing=False,
+                            ))
+                st.session_state["_clv_logged_ts"] = _clv_ts
+            except Exception as _clv_err:
+                logging.warning("Auto-CLV logging failed: %s", _clv_err)
+            # ── [UNIFIED] Auto-kill-switch check ──
+            try:
+                from services.kill_switch import KillSwitch
+                _ks = KillSwitch(sport="NBA")
+                _ks_status = _ks.check_all(
+                    bankroll=bankroll,
+                    peak_bankroll=float(st.session_state.get("peak_bankroll", bankroll)),
+                )
+                st.session_state["_ks_status"] = _ks_status
+                if _ks_status.severity == "halted":
+                    st.error(f"KILL SWITCH TRIGGERED: {_ks_status.halt_reason}")
+                elif _ks_status.severity == "reduced":
+                    st.warning(f"SYSTEM REDUCED: {_ks_status.halt_reason} — using 50% Kelly")
+            except Exception as _ks_err:
+                logging.warning("Kill switch check failed: %s", _ks_err)
+            # ── [UNIFIED] Auto-edge monitoring snapshot ──
+            try:
+                from services.edge_monitor import DailyEdgeMetrics
+                _em = DailyEdgeMetrics(sport="NBA")
+                _em_snap = _em.compute()
+                st.session_state["_edge_snapshot"] = _em_snap
+            except Exception as _em_err:
+                logging.warning("Edge monitor snapshot failed: %s", _em_err)
             if warnings:
                 for w in warnings: st.warning(w)
     # [FIX 11] Log ALL evaluations (BET and PASS) for calibration
@@ -7389,6 +7598,98 @@ with tabs[1]:
         m2c.metric("Passed Gate", n_gated)
         m3c.metric("Positive EV", n_edge)
         m4c.metric("Total Rec. Stake", f"${total_stake:.2f}")
+        # ── [UNIFIED] System Status + Kill Switch + CLV + Edge Health ──
+        try:
+            _ks_status_res = st.session_state.get("_ks_status")
+            _clv_logged_ts = st.session_state.get("_clv_logged_ts")
+            _edge_snapshot  = st.session_state.get("_edge_snapshot")
+            _status_cols = st.columns(4)
+            # Kill Switch Badge
+            if _ks_status_res is not None:
+                _ks_sev = getattr(_ks_status_res, "severity", "clear")
+                _ks_color = "#00FFB2" if _ks_sev == "clear" else ("#FFB800" if _ks_sev == "reduced" else "#FF3358")
+                _ks_label = "ACTIVE" if _ks_sev == "clear" else ("REDUCED" if _ks_sev == "reduced" else "HALTED")
+                _ks_kelly = getattr(_ks_status_res, "recommended_kelly_mult", 1.0)
+                _status_cols[0].markdown(
+                    f"<div style='text-align:center;padding:0.3rem;background:{_ks_color}12;border:1px solid {_ks_color}40;border-radius:4px;'>"
+                    f"<div style='font-size:0.52rem;color:#4A607A;letter-spacing:0.12em;font-family:Chakra Petch,monospace;'>SYSTEM STATUS</div>"
+                    f"<div style='font-size:0.85rem;color:{_ks_color};font-weight:700;font-family:Fira Code,monospace;'>{_ks_label}</div>"
+                    f"<div style='font-size:0.50rem;color:#3A5570;'>Kelly mult: {_ks_kelly:.1f}x</div>"
+                    f"</div>", unsafe_allow_html=True)
+            else:
+                _status_cols[0].markdown(
+                    "<div style='text-align:center;padding:0.3rem;background:#4A607A12;border:1px solid #4A607A40;border-radius:4px;'>"
+                    "<div style='font-size:0.52rem;color:#4A607A;letter-spacing:0.12em;font-family:Chakra Petch,monospace;'>SYSTEM STATUS</div>"
+                    "<div style='font-size:0.85rem;color:#4A607A;font-weight:700;font-family:Fira Code,monospace;'>N/A</div>"
+                    "</div>", unsafe_allow_html=True)
+            # CLV Tracking Status
+            if _clv_logged_ts:
+                _status_cols[1].markdown(
+                    f"<div style='text-align:center;padding:0.3rem;background:#00AAFF12;border:1px solid #00AAFF40;border-radius:4px;'>"
+                    f"<div style='font-size:0.52rem;color:#4A607A;letter-spacing:0.12em;font-family:Chakra Petch,monospace;'>CLV TRACKING</div>"
+                    f"<div style='font-size:0.72rem;color:#00AAFF;font-weight:600;font-family:Fira Code,monospace;'>LOGGED</div>"
+                    f"<div style='font-size:0.50rem;color:#3A5570;'>{_clv_logged_ts}</div>"
+                    f"</div>", unsafe_allow_html=True)
+            else:
+                _status_cols[1].markdown(
+                    "<div style='text-align:center;padding:0.3rem;background:#4A607A12;border:1px solid #4A607A40;border-radius:4px;'>"
+                    "<div style='font-size:0.52rem;color:#4A607A;letter-spacing:0.12em;font-family:Chakra Petch,monospace;'>CLV TRACKING</div>"
+                    "<div style='font-size:0.72rem;color:#4A607A;font-weight:600;font-family:Fira Code,monospace;'>PENDING</div>"
+                    "</div>", unsafe_allow_html=True)
+            # Edge Health
+            if _edge_snapshot is not None:
+                _em_clv = getattr(_edge_snapshot, "clv_50_avg", 0.0)
+                _em_roi = getattr(_edge_snapshot, "roi_50_pct", 0.0)
+                _em_col = "#00FFB2" if _em_clv > 0 else "#FF3358"
+                _status_cols[2].markdown(
+                    f"<div style='text-align:center;padding:0.3rem;background:{_em_col}12;border:1px solid {_em_col}40;border-radius:4px;'>"
+                    f"<div style='font-size:0.52rem;color:#4A607A;letter-spacing:0.12em;font-family:Chakra Petch,monospace;'>EDGE HEALTH</div>"
+                    f"<div style='font-size:0.72rem;color:{_em_col};font-weight:600;font-family:Fira Code,monospace;'>CLV: {_em_clv:+.2f}c</div>"
+                    f"<div style='font-size:0.50rem;color:#3A5570;'>ROI-50: {_em_roi:+.1f}%</div>"
+                    f"</div>", unsafe_allow_html=True)
+            else:
+                _status_cols[2].markdown(
+                    "<div style='text-align:center;padding:0.3rem;background:#4A607A12;border:1px solid #4A607A40;border-radius:4px;'>"
+                    "<div style='font-size:0.52rem;color:#4A607A;letter-spacing:0.12em;font-family:Chakra Petch,monospace;'>EDGE HEALTH</div>"
+                    "<div style='font-size:0.72rem;color:#4A607A;font-weight:600;font-family:Fira Code,monospace;'>NO DATA</div>"
+                    "</div>", unsafe_allow_html=True)
+            # Simulation Engine Status
+            _n_sim_legs = sum(1 for l in res if l.get("sim_prob") is not None)
+            _sim_col = "#00FFB2" if _n_sim_legs > 0 else "#4A607A"
+            _status_cols[3].markdown(
+                f"<div style='text-align:center;padding:0.3rem;background:{_sim_col}12;border:1px solid {_sim_col}40;border-radius:4px;'>"
+                f"<div style='font-size:0.52rem;color:#4A607A;letter-spacing:0.12em;font-family:Chakra Petch,monospace;'>SIM ENGINE</div>"
+                f"<div style='font-size:0.72rem;color:{_sim_col};font-weight:600;font-family:Fira Code,monospace;'>{_n_sim_legs}/{len(res)} BLENDED</div>"
+                f"<div style='font-size:0.50rem;color:#3A5570;'>500 sims/leg</div>"
+                f"</div>", unsafe_allow_html=True)
+        except Exception:
+            pass
+        # ── [UNIFIED] Unified Verdict Banner ──
+        try:
+            _ks_sev_v = getattr(st.session_state.get("_ks_status"), "severity", "clear") if st.session_state.get("_ks_status") else "clear"
+            _verdict_parts = []
+            if _ks_sev_v == "halted":
+                _verdict_parts.append("SYSTEM HALTED — no bets recommended")
+            elif _ks_sev_v == "reduced":
+                _verdict_parts.append("REDUCED MODE — half Kelly")
+            if n_edge > 0 and _ks_sev_v != "halted":
+                _best_ev = max((l.get("ev_adj") or 0) for l in res)
+                _verdict_parts.append(f"{n_edge} edge{'s' if n_edge > 1 else ''} found (best {_best_ev*100:+.1f}%)")
+            elif n_edge == 0:
+                _verdict_parts.append("No actionable edges detected")
+            _n_sim_active = sum(1 for l in res if l.get("sim_prob") is not None)
+            if _n_sim_active > 0:
+                _verdict_parts.append(f"Sim-confirmed on {_n_sim_active} leg{'s' if _n_sim_active > 1 else ''}")
+            _verdict_color = "#FF3358" if _ks_sev_v == "halted" else ("#FFB800" if _ks_sev_v == "reduced" or n_edge == 0 else "#00FFB2")
+            _verdict_text = " | ".join(_verdict_parts) if _verdict_parts else "System ready"
+            st.markdown(
+                f"<div style='margin:0.5rem 0;padding:0.5rem 1rem;background:{_verdict_color}10;border:1px solid {_verdict_color}40;"
+                f"border-radius:4px;font-family:Chakra Petch,monospace;font-size:0.68rem;color:{_verdict_color};"
+                f"letter-spacing:0.06em;text-align:center;'>"
+                f"UNIFIED VERDICT: {_verdict_text}</div>",
+                unsafe_allow_html=True)
+        except Exception:
+            pass
         st.markdown("")
         cols = st.columns(min(4, len(res)))
         for i, leg in enumerate(res):
@@ -7450,6 +7751,41 @@ with tabs[1]:
   CV={f"{leg['volatility_cv']:.2f}" if leg.get("volatility_cv") else "--"} | N={n_used} games<br>
   Shrunk mu: {f"{leg['mu_shrunk']:.1f}" if leg.get("mu_shrunk") else "--"} | Trend: L3={f"{leg['l3_avg']:.1f}" if leg.get("l3_avg") else "--"}/L5={f"{leg['l5_avg']:.1f}" if leg.get("l5_avg") else "--"}/L10={f"{leg['l10_avg']:.1f}" if leg.get("l10_avg") else "--"}
 </div>"""
+                # [UNIFIED] Simulation overlay
+                _sp = leg.get("sim_prob")
+                _sm = leg.get("sim_mean")
+                _ss = leg.get("sim_std")
+                if _sp is not None:
+                    _sp_col = "#00FFB2" if _sp > 0.55 else ("#FFB800" if _sp > 0.45 else "#FF3358")
+                    card_html += (
+                        f"<div style='margin-top:0.45rem;background:#00AAFF08;border:1px solid #00AAFF25;border-radius:3px;padding:0.3rem 0.5rem;'>"
+                        f"<div style='font-size:0.52rem;color:#00AAFF;letter-spacing:0.10em;font-family:Chakra Petch,monospace;'>SIM ENGINE (500 POSS-LEVEL SIMS)</div>"
+                        f"<div style='display:flex;justify-content:space-between;margin-top:0.15rem;'>"
+                        f"<span style='font-size:0.62rem;color:#4A607A;'>P(over):</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:{_sp_col};font-weight:600;'>{_sp*100:.1f}%</span>"
+                        f"<span style='font-size:0.62rem;color:#4A607A;'>Mean:</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:#EEF4FF;'>{_sm:.1f}</span>"
+                        f"<span style='font-size:0.62rem;color:#4A607A;'>Std:</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:#EEF4FF;'>{_ss:.1f}</span>"
+                        f"</div></div>"
+                    )
+                # [UNIFIED] Edge decomposition mini-summary
+                _edge_sources = []
+                if (leg.get("ev_adj") or 0) > 0.01:
+                    _model_prob = leg.get("p_model")
+                    _imp_prob = leg.get("p_implied")
+                    if _model_prob and _imp_prob and _model_prob > _imp_prob:
+                        _edge_sources.append(f"Model edge: {(_model_prob - _imp_prob)*100:+.1f}pp")
+                    if _sp is not None and _imp_prob and _sp > _imp_prob:
+                        _edge_sources.append(f"Sim confirm: {(_sp - _imp_prob)*100:+.1f}pp")
+                    if leg.get("trend_label","Neutral") not in ("Neutral","Flat"):
+                        _edge_sources.append(f"Trend: {leg.get('trend_label','')}")
+                    if leg.get("hot_cold","Average") != "Average":
+                        _edge_sources.append(f"Form: {leg.get('hot_cold','')}")
+                    if leg.get("opp_fatigue_label","Normal") != "Normal":
+                        _edge_sources.append(f"Opp tired: {leg.get('opp_fatigue_label','')}")
+                if _edge_sources:
+                    card_html += (
+                        f"<div style='margin-top:0.3rem;font-size:0.56rem;color:#4A607A;'>"
+                        f"Edge sources: <span style='color:#B8D0EC;'>{' | '.join(_edge_sources[:4])}</span></div>"
+                    )
                 stake = safe_float(leg.get("stake"))
                 if stake > 0:
                     card_html += f"<div style='margin-top:0.6rem;background:#00FFB218;border:1px solid #00FFB230;border-radius:2px;padding:0.4rem 0.6rem;font-size:0.72rem;color:#00FFB2;font-family:Fira Code,monospace;'>REC STAKE: ${stake:.2f} ({leg.get('stake_frac',0)*100:.1f}% BR)</div>"
