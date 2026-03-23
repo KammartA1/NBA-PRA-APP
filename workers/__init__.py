@@ -37,6 +37,7 @@ from workers.signal_worker import SignalWorker
 from workers.closing_worker import ClosingWorker
 from workers.model_worker import ModelWorker
 from workers.report_worker import ReportWorker
+from workers.stats_worker import StatsWorker
 
 __all__ = [
     "BaseWorker",
@@ -45,6 +46,7 @@ __all__ = [
     "ClosingWorker",
     "ModelWorker",
     "ReportWorker",
+    "StatsWorker",
     "run_all",
     "main",
 ]

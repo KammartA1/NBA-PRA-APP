@@ -83,6 +83,13 @@ def _build_worker_configs() -> List[Dict[str, Any]]:
             # Report worker runs daily at 4 AM ET (9 AM UTC, or 8 AM during EDT)
             "cron": {"hour": 9, "minute": 0},
         },
+        {
+            "name": "stats_worker",
+            "interval": int(os.environ.get("STATS_INTERVAL", "86400")),
+            "factory": "workers.stats_worker.StatsWorker",
+            # Stats worker runs daily at 6 AM ET (10 AM UTC) — ingests rosters, schedules
+            "cron": {"hour": 10, "minute": 0},
+        },
     ]
 
 
