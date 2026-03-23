@@ -81,7 +81,7 @@ Model flags: {errors_str or 'None'}
 [v4.0 signals if available in data: consecutive streak pattern, implied team total context, lineup injury absorption boost, streak reversion signal]
 Write a 3-4 sentence analysis covering: (1) why the model projects this outcome with trend, streak, and sharpness context, (2) key risk factors including fatigue/schedule/lineup changes, (3) one-line bet verdict with conviction level. Be specific, confident, and quantitative. No bullet points."""
         with client.messages.stream(
-            model="claude-haiku-4-5-20241022",
+            model="claude-haiku-4-5",
             max_tokens=200,
             messages=[{"role": "user", "content": prompt}]
         ) as stream:
@@ -107,7 +107,7 @@ Write a structured briefing covering:
 5. **One-Liner Summary** — Today's overall slate quality (1-2 sentences)
 Be specific with player names, lines, and percentages. Write like a quant fund's morning brief. Max 350 words."""
         with client.messages.stream(
-            model="claude-sonnet-4-5-20241022",
+            model="claude-sonnet-4-5",
             max_tokens=500,
             messages=[{"role": "user", "content": prompt}]
         ) as stream:
@@ -139,7 +139,7 @@ For each entry combination, analyze:
 4. **Final Recommendation** — Pick ONE specific entry: the combo, the mode (Power Play or Flex), and the stake. Be decisive and quantitative.
 Write in concise bullet format, max 250 words. Reference specific player names and percentages."""
         with client.messages.stream(
-            model="claude-sonnet-4-5-20241022",
+            model="claude-sonnet-4-5",
             max_tokens=450,
             messages=[{"role": "user", "content": prompt}]
         ) as stream:
@@ -181,7 +181,7 @@ If any middle opportunities detected, explain the exact strategy: which books, w
 1-2 sentences on optimal entry: which leg(s) to fire at full Kelly vs reduced Kelly vs pass.
 Be specific, brutal, and quantitative. Max 450 words."""
         with client.messages.stream(
-            model="claude-sonnet-4-5-20241022",
+            model="claude-sonnet-4-5",
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}]
         ) as stream:
@@ -207,7 +207,7 @@ For each recommended parlay:
 - Rate: ⭐⭐⭐ (Best), ⭐⭐ (Good), ⭐ (Speculative)
 Suggest 2-3 parlay combinations. Be concise and quantitative. Max 300 words."""
         with client.messages.stream(
-            model="claude-sonnet-4-5-20241022",
+            model="claude-sonnet-4-5",
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}]
         ) as stream:
