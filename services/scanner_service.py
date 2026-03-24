@@ -325,44 +325,59 @@ def _build_odds_api_candidates(app, markets, book, game_date) -> list[tuple]:
 
         specialty_keys = getattr(app, "SPECIALTY_MARKET_KEYS", set())
 
+        # [PERF] Batch market keys into 1-2 API calls per event instead of N separate calls.
+        # Standard markets are batched in groups of 6; specialty markets individually.
+        std_keys  = [(m, mk) for m, mk in market_keys if mk not in specialty_keys]
+        spec_keys = [(m, mk) for m, mk in market_keys if mk in specialty_keys]
+        BATCH_SIZE = 6
+        batches = []  # list of [(market_name, api_key), ...]
+        for i in range(0, len(std_keys), BATCH_SIZE):
+            batches.append(std_keys[i:i+BATCH_SIZE])
+        for sk in spec_keys:
+            batches.append([sk])
+
+        import pandas as pd
+
         for ev in evs:
             eid = ev.get("id")
             if not eid:
                 continue
 
-            for market_name, market_key in market_keys:
-                regions = "us,us2,eu,uk" if market_key in specialty_keys else "us"
-                odds, oerr = app.odds_get_event_odds(eid, (market_key,), regions=regions)
+            for batch in batches:
+                batch_api_keys = [mk for _, mk in batch]
+                is_spec = any(mk in specialty_keys for _, mk in batch)
+                regions = "us,us2,eu,uk" if is_spec else "us"
+                odds, oerr = app.odds_get_event_odds(eid, tuple(batch_api_keys), regions=regions)
                 if oerr or not odds:
                     continue
 
-                book_filter = None if book in ("all", "prizepicks") else book
-                parsed, _ = app._parse_player_prop_outcomes(odds, market_key, book_filter=book_filter)
+                for market_name, market_key in batch:
+                    book_filter = None if (is_spec or book in ("all", "prizepicks")) else book
+                    parsed, _ = app._parse_player_prop_outcomes(odds, market_key, book_filter=book_filter)
 
-                for r in parsed:
-                    side = str(r.get("side", "")).lower()
-                    if side not in ("over", "o"):
-                        continue
-                    pname = (r.get("player") or "").strip()
-                    line_val = r.get("line")
-                    if not pname or line_val is None:
-                        continue
+                    for r in parsed:
+                        side = str(r.get("side", "")).lower()
+                        if side not in ("over", "o"):
+                            continue
+                        pname = (r.get("player") or "").strip()
+                        line_val = r.get("line")
+                        if not pname or line_val is None:
+                            continue
 
-                    import pandas as pd
-                    if pd.isna(line_val):
-                        continue
+                        if pd.isna(line_val):
+                            continue
 
-                    meta = {
-                        "event_id": r.get("event_id"),
-                        "home_team": r.get("home_team"),
-                        "away_team": r.get("away_team"),
-                        "commence_time": r.get("commence_time"),
-                        "price": r.get("price"),
-                        "book": r.get("book"),
-                        "market_key": market_key,
-                        "side": r.get("side", "Over"),
-                    }
-                    candidates.append((pname, market_name, float(line_val), meta))
+                        meta = {
+                            "event_id": r.get("event_id"),
+                            "home_team": r.get("home_team"),
+                            "away_team": r.get("away_team"),
+                            "commence_time": r.get("commence_time"),
+                            "price": r.get("price"),
+                            "book": r.get("book"),
+                            "market_key": market_key,
+                            "side": r.get("side", "Over"),
+                        }
+                        candidates.append((pname, market_name, float(line_val), meta))
 
     except Exception as exc:
         log.error("_build_odds_api_candidates failed: %s", exc)
