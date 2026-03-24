@@ -5178,11 +5178,35 @@ def detect_middle_opportunity(player_name, market_key, event_id):
     except Exception:
         return False, None, None, None, []
 # ──────────────────────────────────────────────
-# [v7.0] POSSESSION-LEVEL SIMULATION P(OVER) — 60/40 SIM/BOOTSTRAP ENSEMBLE
+# [v7.0] POSSESSION-LEVEL SIMULATION P(OVER) — 80/20 SIM/BOOTSTRAP ENSEMBLE
 # ──────────────────────────────────────────────
 _SIM_N_SIMS = 3000       # simulation count (raised from 500 to 3000 for tighter distributions)
-_SIM_BLEND_WEIGHT = 0.60  # simulation weight in ensemble (60% sim, 40% bootstrap)
-_BOOTSTRAP_BLEND_WEIGHT = 0.40  # bootstrap weight in ensemble
+_SIM_BLEND_WEIGHT = 0.80  # simulation weight in ensemble (80% sim, 20% bootstrap)
+_BOOTSTRAP_BLEND_WEIGHT = 0.20  # bootstrap weight in ensemble
+
+# ──────────────────────────────────────────────
+# [v7.1] IN-MEMORY SIM CACHE — survives ThreadPoolExecutor workers, shared across legs
+# ──────────────────────────────────────────────
+import threading as _sim_threading
+_SIM_CACHE_LOCK = _sim_threading.Lock()
+_SIM_CACHE: dict[str, dict] = {}  # key: "player_id|team|opp|home|spread" → sim result
+_SIM_CACHE_MAX = 200  # evict oldest entries beyond this
+
+def _sim_cache_key(player_id: str, team_abbr: str, opp_abbr: str, is_home: bool, spread: float) -> str:
+    return f"{player_id}|{team_abbr}|{opp_abbr}|{is_home}|{spread:.1f}"
+
+def _sim_cache_get(key: str) -> dict | None:
+    with _SIM_CACHE_LOCK:
+        return _SIM_CACHE.get(key)
+
+def _sim_cache_put(key: str, value: dict) -> None:
+    with _SIM_CACHE_LOCK:
+        _SIM_CACHE[key] = value
+        # Simple eviction: drop oldest entries if over limit
+        if len(_SIM_CACHE) > _SIM_CACHE_MAX:
+            oldest_keys = list(_SIM_CACHE.keys())[:len(_SIM_CACHE) - _SIM_CACHE_MAX]
+            for k in oldest_keys:
+                _SIM_CACHE.pop(k, None)
 
 @st.cache_data(ttl=60*30, show_spinner=False)
 def _run_player_simulation(
@@ -5201,9 +5225,16 @@ def _run_player_simulation(
 
     Returns a dict: {stat_key: {"p_over_at_line": {line_str: p}, "mean": float, "std": float}}
     Returns empty dict on failure.
+
+    Two-tier cache: in-memory dict (survives ThreadPoolExecutor) + Streamlit @cache_data.
     """
     if not _SIM_AVAILABLE:
         return {}
+    # Check in-memory cache first (thread-safe, survives parallel workers)
+    _cache_k = _sim_cache_key(str(player_id), team_abbr, opp_abbr, is_home, game_spread)
+    cached = _sim_cache_get(_cache_k)
+    if cached is not None:
+        return cached
     try:
         gamelog_df = pd.read_json(gamelog_json) if gamelog_json else pd.DataFrame()
     except Exception:
@@ -5261,6 +5292,8 @@ def _run_player_simulation(
                 "std": float(dist.std),
                 "values": dist.values.tolist(),
             }
+        # Store in thread-safe in-memory cache for parallel workers
+        _sim_cache_put(_cache_k, result)
         return result
     except Exception:
         return {}
@@ -5626,7 +5659,7 @@ def compute_leg_projection(
                 if _sim_p is not None:
                     _sim_p_over = _sim_p
                     _sim_mu = _sim_result.get(_sim_stat_key, {}).get("mean")
-                    # Blend: 60% simulation + 40% bootstrap (sim models game dynamics;
+                    # Blend: 80% simulation + 20% bootstrap (sim models game dynamics;
                     # bootstrap captures recent form and stat-specific variance)
                     _bootstrap_p = p_over_raw
                     p_over_raw = float(
