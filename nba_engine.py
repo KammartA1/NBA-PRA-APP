@@ -5286,6 +5286,7 @@ def compute_leg_projection(
     market_prior_weight=0.65, exclude_chaotic=True,
     game_date=None, is_home=None,
     injury_team_map=None,   # {team_abbr_upper: [player_name_lower, ...]} for OUT/DOUBTFUL players
+    scan_mode=False,        # skip simulation & line-movement I/O for fast scanning
 ):
     errors = []
     game_date = game_date or date.today()
@@ -5595,7 +5596,7 @@ def compute_leg_projection(
     _sim_p_over = None
     _sim_mu = None
     _sim_used = False
-    if _SIM_AVAILABLE and team_abbr and opp_abbr and p_over_raw is not None:
+    if _SIM_AVAILABLE and team_abbr and opp_abbr and p_over_raw is not None and not scan_mode:
         try:
             # Determine simulation stat key: half markets map directly to h1_/h2_ keys
             if is_half_market and _SIM_AVAILABLE:
@@ -5814,7 +5815,10 @@ def compute_leg_projection(
                 stake_reason  = "dnp_risk_half"
     mk_key = meta.get("market_key") if meta else ODDS_MARKETS.get(market_name,"")
     player_norm = normalize_name(player_name)
-    mv_signal = get_line_movement_signal(player_norm, str(mk_key), float(line), side_str)
+    if scan_mode:
+        mv_signal = {"direction": "FLAT", "pips": 0.0, "steam": False, "fade": False, "msg": "", "opening": float(line)}
+    else:
+        mv_signal = get_line_movement_signal(player_norm, str(mk_key), float(line), side_str)
     sharp_div = {}
     if meta and meta.get("event_id"):
         try:

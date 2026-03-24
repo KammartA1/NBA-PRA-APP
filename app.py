@@ -8764,7 +8764,8 @@ with tabs[2]:
                                       market_prior_weight=market_prior_weight,
                                       exclude_chaotic=bool(exclude_chaotic),
                                       game_date=scan_start,
-                                      injury_team_map=_inj_map)
+                                      injury_team_map=_inj_map,
+                                      scan_mode=True)
                             for pname, mkt, line, meta in candidates]
                     for (pname, mkt, line, meta), fut in zip(candidates, futs):
                         _scan_done_count += 1
@@ -8775,9 +8776,9 @@ with tabs[2]:
                             )
                         try:
                             # [AUDIT FIX] No-timeout result() blocks UI forever on NBA API hang
-                            leg = fut.result(timeout=60)
+                            leg = fut.result(timeout=30)
                         except TimeoutError:
-                            dropped.append({"player": pname, "market": mkt, "reason": "thread timeout (NBA API ≥60s)"})
+                            dropped.append({"player": pname, "market": mkt, "reason": "thread timeout (NBA API ≥30s)"})
                             continue
                         except Exception as _te:
                             dropped.append({"player": pname, "market": mkt, "reason": f"thread error: {type(_te).__name__}: {_te}"})
@@ -8811,6 +8812,11 @@ with tabs[2]:
                             "side": "Over",           # [AUDIT FIX] explicit side for schema parity with Under rows
                             "src": _src_badge,        # PP / UD / book name
                             "player":pname,"market":mkt,"line":line,
+                            "player_norm": normalize_name(pname),
+                            "market_key": leg.get("market_key", ODDS_MARKETS.get(mkt, "")),
+                            "event_id": leg.get("event_id") or (meta.get("event_id") if meta else None),
+                            "price_decimal": leg.get("price_decimal"),
+                            "book": leg.get("book") or (meta.get("book") if meta else None),
                             "p_cal":round(pc,3),"p_implied":round(float(pi),3),
                             "advantage":round(adv,3),"ev_adj_pct":round(float(ev)*100,2),
                             "proj":safe_round(leg.get("proj")),
@@ -8876,6 +8882,23 @@ with tabs[2]:
                 st.session_state["scanner_dropped"] = dropped
                 st.session_state["scanner_scan_id"] = _scan_id
                 _save_scanner_cache()  # persist to disk — survives server restarts / WS drops
+                # ── Auto-CLV: Store scan results for closing line comparison ──
+                if out_rows:
+                    _clv_scan_snapshot = []
+                    for _clv_row in out_rows:
+                        _clv_scan_snapshot.append({
+                            "player": _clv_row.get("player"),
+                            "player_norm": normalize_name(_clv_row.get("player", "")),
+                            "market": _clv_row.get("market"),
+                            "market_key": _clv_row.get("market_key") or ODDS_MARKETS.get(_clv_row.get("market", ""), ""),
+                            "line": _clv_row.get("line"),
+                            "price_decimal": _clv_row.get("price_decimal"),
+                            "side": _clv_row.get("side", "Over"),
+                            "event_id": _clv_row.get("event_id"),
+                            "book": _clv_row.get("book"),
+                            "timestamp": _now_iso(),
+                        })
+                    st.session_state["clv_active_scan"] = _clv_scan_snapshot
                 # Auto-send Discord/Telegram alerts for strong edges
                 _dw = st.session_state.get("discord_webhook","")
                 _tt = st.session_state.get("tg_token","")
@@ -9187,6 +9210,55 @@ with tabs[2]:
                     st.success(f"Steam alerts fired to Discord/Telegram.")
             else:
                 st.success("No significant line moves vs opening. Lines are stable.")
+    # ── Auto CLV Tracking ──────────────────────────────────────────
+    _active_scan = st.session_state.get("clv_active_scan", [])
+    if _active_scan:
+        with st.expander(f"Auto-CLV Tracker ({len(_active_scan)} bets tracked)", expanded=False):
+            st.markdown(
+                "<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#00FFB2;"
+                "letter-spacing:0.10em;margin-bottom:0.5rem;'>"
+                "Opening lines captured automatically. Current lines fetched live.</div>",
+                unsafe_allow_html=True,
+            )
+            clv_rows = []
+            for _clv_bet in _active_scan:
+                _open_line, _open_price = get_opening_line(
+                    _clv_bet.get("player_norm", ""),
+                    _clv_bet.get("market_key", ""),
+                    _clv_bet.get("side", "Over"),
+                )
+                if _open_line is not None:
+                    _current = float(_clv_bet.get("line") or _open_line)
+                    _move = _current - float(_open_line)
+                    _side_lc = (_clv_bet.get("side") or "Over").lower()
+                    _favorable = (_move > 0 and "under" in _side_lc) or (_move < 0 and "over" in _side_lc)
+                    clv_rows.append({
+                        "Player": _clv_bet.get("player", ""),
+                        "Market": _clv_bet.get("market", ""),
+                        "Side": _clv_bet.get("side", ""),
+                        "Open Line": f"{float(_open_line):.1f}",
+                        "Current": f"{_current:.1f}",
+                        "CLV": f"{_move:+.1f}",
+                        "Status": "Favorable" if _favorable else ("Neutral" if _move == 0 else "Unfavorable"),
+                    })
+            if clv_rows:
+                st.dataframe(pd.DataFrame(clv_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No opening lines captured yet. Run a scan first.")
+            if st.button("Refresh CLV (re-fetch closing lines)", key="auto_clv_refresh"):
+                if _active_scan:
+                    _updated_scan = []
+                    for _clv_bet in _active_scan:
+                        try:
+                            _cl_line, _cl_price, _cl_book, _cl_err = fetch_latest_market_for_leg(_clv_bet)
+                            if _cl_line is not None:
+                                _clv_bet["line"] = _cl_line
+                                _clv_bet["price_decimal"] = _cl_price
+                        except Exception:
+                            pass
+                        _updated_scan.append(_clv_bet)
+                    st.session_state["clv_active_scan"] = _updated_scan
+                st.rerun()
     scanner_dropped = st.session_state.get("scanner_dropped", [])
     if scanner_dropped:
         with st.expander(f"Excluded ({len(scanner_dropped)})", expanded=False):
