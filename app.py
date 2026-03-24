@@ -8764,7 +8764,8 @@ with tabs[2]:
                                       market_prior_weight=market_prior_weight,
                                       exclude_chaotic=bool(exclude_chaotic),
                                       game_date=scan_start,
-                                      injury_team_map=_inj_map)
+                                      injury_team_map=_inj_map,
+                                      scan_mode=True)
                             for pname, mkt, line, meta in candidates]
                     for (pname, mkt, line, meta), fut in zip(candidates, futs):
                         _scan_done_count += 1
@@ -8775,9 +8776,9 @@ with tabs[2]:
                             )
                         try:
                             # [AUDIT FIX] No-timeout result() blocks UI forever on NBA API hang
-                            leg = fut.result(timeout=60)
+                            leg = fut.result(timeout=30)
                         except TimeoutError:
-                            dropped.append({"player": pname, "market": mkt, "reason": "thread timeout (NBA API ≥60s)"})
+                            dropped.append({"player": pname, "market": mkt, "reason": "thread timeout (NBA API ≥30s)"})
                             continue
                         except Exception as _te:
                             dropped.append({"player": pname, "market": mkt, "reason": f"thread error: {type(_te).__name__}: {_te}"})
@@ -8811,6 +8812,11 @@ with tabs[2]:
                             "side": "Over",           # [AUDIT FIX] explicit side for schema parity with Under rows
                             "src": _src_badge,        # PP / UD / book name
                             "player":pname,"market":mkt,"line":line,
+                            "player_norm": normalize_name(pname),
+                            "market_key": leg.get("market_key", ODDS_MARKETS.get(mkt, "")),
+                            "event_id": leg.get("event_id") or (meta.get("event_id") if meta else None),
+                            "price_decimal": leg.get("price_decimal"),
+                            "book": leg.get("book") or (meta.get("book") if meta else None),
                             "p_cal":round(pc,3),"p_implied":round(float(pi),3),
                             "advantage":round(adv,3),"ev_adj_pct":round(float(ev)*100,2),
                             "proj":safe_round(leg.get("proj")),
@@ -8853,10 +8859,100 @@ with tabs[2]:
                             _scan_sources.add({"pp_lines":"PrizePicks","ud_lines":"Underdog","sl_lines":"Sleeper"}.get(_ps, _ps))
                 _scan_markets = set(m for _, m, _, _ in candidates)
                 st.info(
-                    f"Scanned {len(candidates)} candidates across {len(_scan_markets)} markets "
+                    f"Pass 1 (bootstrap): Scanned {len(candidates)} candidates across {len(_scan_markets)} markets "
                     f"from {', '.join(_scan_sources) if _scan_sources else 'unknown'} "
                     f"in {_scan_elapsed:.1f}s — {len(out_rows)} edges, {len(dropped)} dropped"
                 )
+                # ── PASS 2: Re-run edges through full sim ensemble (scan_mode=False) ──
+                # Check if simulation module is available
+                try:
+                    from simulation.game_engine import GameEngine as _p2_check
+                    _p2_sim_ok = True
+                except ImportError:
+                    _p2_sim_ok = False
+                if out_rows and _p2_sim_ok:
+                    _pass2_candidates = []
+                    for _r in out_rows:
+                        # Find matching original candidate to get meta
+                        for _pn, _mk, _ln, _mt in candidates:
+                            if _pn == _r["player"] and _mk == _r["market"] and float(_ln) == float(_r["line"]):
+                                _pass2_candidates.append((_pn, _mk, _ln, _mt))
+                                break
+                    if _pass2_candidates:
+                        _p2_t0 = time.time()
+                        _p2_progress = st.progress(0, text=f"Pass 2: Sim-enhancing {len(_pass2_candidates)} edges...")
+                        _p2_workers = min(8, len(_pass2_candidates))
+                        _p2_done = 0
+                        with ThreadPoolExecutor(max_workers=_p2_workers) as ex:
+                            _p2_futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
+                                                  n_games=n_games, key_teammate_out=False,
+                                                  bankroll=bankroll, frac_kelly=frac_kelly,
+                                                  max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
+                                                  market_prior_weight=market_prior_weight,
+                                                  exclude_chaotic=bool(exclude_chaotic),
+                                                  game_date=scan_start,
+                                                  injury_team_map=_inj_map,
+                                                  scan_mode=False)
+                                        for pname, mkt, line, meta in _pass2_candidates]
+                            _p2_upgraded = 0
+                            for (_pn, _mk, _ln, _mt), fut in zip(_pass2_candidates, _p2_futs):
+                                _p2_done += 1
+                                _p2_progress.progress(
+                                    min(_p2_done / len(_pass2_candidates), 1.0),
+                                    text=f"Pass 2: Sim-enhancing... {_p2_done}/{len(_pass2_candidates)}"
+                                )
+                                try:
+                                    _p2_leg = fut.result(timeout=45)
+                                except Exception:
+                                    continue
+                                _p2_leg = recompute_pricing_fields(_p2_leg, st.session_state.get("calibrator_map"))
+                                if not _p2_leg.get("gate_ok"):
+                                    # Sim re-evaluation gated this leg — remove from out_rows
+                                    out_rows = [r for r in out_rows if not (r["player"] == _pn and r["market"] == _mk and float(r["line"]) == float(_ln))]
+                                    dropped.append({"player": _pn, "market": _mk, "reason": f"gated on sim pass: {_p2_leg.get('gate_reason','')}"})
+                                    continue
+                                # Update the existing out_row with sim-enhanced values
+                                _p2_pc = _p2_leg.get("p_cal")
+                                if _p2_pc is None:
+                                    continue
+                                _p2_pc = float(_p2_pc)
+                                _p2_pi = _p2_leg.get("p_implied")
+                                _p2_ev = _p2_leg.get("ev_adj")
+                                if _p2_pi is None or _p2_ev is None:
+                                    continue
+                                _p2_adv = _p2_pc - float(_p2_pi)
+                                # Find and update matching row
+                                for _row in out_rows:
+                                    if _row["player"] == _pn and _row["market"] == _mk and float(_row["line"]) == float(_ln):
+                                        _row["p_cal"] = round(_p2_pc, 3)
+                                        _row["advantage"] = round(_p2_adv, 3)
+                                        _row["ev_adj_pct"] = round(float(_p2_ev) * 100, 2)
+                                        _row["proj"] = safe_round(_p2_leg.get("proj"))
+                                        _row["edge_cat"] = _p2_leg.get("edge_cat", "")
+                                        _row["regime"] = _p2_leg.get("regime", "")
+                                        _row["sharp"] = safe_round(_p2_leg.get("sharpness_score"), 0)
+                                        _row["sharp_tier"] = _p2_leg.get("sharpness_tier", "")
+                                        _row["trend"] = _p2_leg.get("trend_label", "")
+                                        _row["fatigue"] = _p2_leg.get("fatigue_label", "Normal")
+                                        _row["stake_$"] = round(_p2_leg.get("stake", 0), 2)
+                                        _row["pp_edge_%"] = round((_p2_pc - 0.50) * 100, 1)
+                                        _row["pp_2leg_ev_%"] = round((DFS_PP_PAYOUTS[2] * _p2_pc**2 - 1.0) * 100, 1)
+                                        _p2_upgraded += 1
+                                        break
+                        _p2_progress.empty()
+                        _p2_elapsed = time.time() - _p2_t0
+                        # Re-filter: sim pass may have shifted EV/advantage below thresholds
+                        _pre_filter_count = len(out_rows)
+                        out_rows = [r for r in out_rows
+                                    if float(r.get("p_cal", 0)) >= min_prob
+                                    and float(r.get("advantage", 0)) >= min_adv
+                                    and float(r.get("ev_adj_pct", 0)) / 100.0 >= min_ev]
+                        _p2_filtered = _pre_filter_count - len(out_rows)
+                        st.success(
+                            f"Pass 2 (sim ensemble): {_p2_upgraded} legs upgraded with MC possession sim "
+                            f"in {_p2_elapsed:.1f}s"
+                            + (f" ({_p2_filtered} dropped below threshold)" if _p2_filtered else "")
+                        )
             out_df = pd.DataFrame(out_rows)
             if not out_df.empty:
                 # [UPGRADE NEW] Sort by composite sharpness score (when available), then by EV as tiebreaker
@@ -8876,6 +8972,23 @@ with tabs[2]:
                 st.session_state["scanner_dropped"] = dropped
                 st.session_state["scanner_scan_id"] = _scan_id
                 _save_scanner_cache()  # persist to disk — survives server restarts / WS drops
+                # ── Auto-CLV: Store scan results for closing line comparison ──
+                if out_rows:
+                    _clv_scan_snapshot = []
+                    for _clv_row in out_rows:
+                        _clv_scan_snapshot.append({
+                            "player": _clv_row.get("player"),
+                            "player_norm": normalize_name(_clv_row.get("player", "")),
+                            "market": _clv_row.get("market"),
+                            "market_key": _clv_row.get("market_key") or ODDS_MARKETS.get(_clv_row.get("market", ""), ""),
+                            "line": _clv_row.get("line"),
+                            "price_decimal": _clv_row.get("price_decimal"),
+                            "side": _clv_row.get("side", "Over"),
+                            "event_id": _clv_row.get("event_id"),
+                            "book": _clv_row.get("book"),
+                            "timestamp": _now_iso(),
+                        })
+                    st.session_state["clv_active_scan"] = _clv_scan_snapshot
                 # Auto-send Discord/Telegram alerts for strong edges
                 _dw = st.session_state.get("discord_webhook","")
                 _tt = st.session_state.get("tg_token","")
@@ -9187,6 +9300,55 @@ with tabs[2]:
                     st.success(f"Steam alerts fired to Discord/Telegram.")
             else:
                 st.success("No significant line moves vs opening. Lines are stable.")
+    # ── Auto CLV Tracking ──────────────────────────────────────────
+    _active_scan = st.session_state.get("clv_active_scan", [])
+    if _active_scan:
+        with st.expander(f"Auto-CLV Tracker ({len(_active_scan)} bets tracked)", expanded=False):
+            st.markdown(
+                "<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#00FFB2;"
+                "letter-spacing:0.10em;margin-bottom:0.5rem;'>"
+                "Opening lines captured automatically. Current lines fetched live.</div>",
+                unsafe_allow_html=True,
+            )
+            clv_rows = []
+            for _clv_bet in _active_scan:
+                _open_line, _open_price = get_opening_line(
+                    _clv_bet.get("player_norm", ""),
+                    _clv_bet.get("market_key", ""),
+                    _clv_bet.get("side", "Over"),
+                )
+                if _open_line is not None:
+                    _current = float(_clv_bet.get("line") or _open_line)
+                    _move = _current - float(_open_line)
+                    _side_lc = (_clv_bet.get("side") or "Over").lower()
+                    _favorable = (_move > 0 and "under" in _side_lc) or (_move < 0 and "over" in _side_lc)
+                    clv_rows.append({
+                        "Player": _clv_bet.get("player", ""),
+                        "Market": _clv_bet.get("market", ""),
+                        "Side": _clv_bet.get("side", ""),
+                        "Open Line": f"{float(_open_line):.1f}",
+                        "Current": f"{_current:.1f}",
+                        "CLV": f"{_move:+.1f}",
+                        "Status": "Favorable" if _favorable else ("Neutral" if _move == 0 else "Unfavorable"),
+                    })
+            if clv_rows:
+                st.dataframe(pd.DataFrame(clv_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No opening lines captured yet. Run a scan first.")
+            if st.button("Refresh CLV (re-fetch closing lines)", key="auto_clv_refresh"):
+                if _active_scan:
+                    _updated_scan = []
+                    for _clv_bet in _active_scan:
+                        try:
+                            _cl_line, _cl_price, _cl_book, _cl_err = fetch_latest_market_for_leg(_clv_bet)
+                            if _cl_line is not None:
+                                _clv_bet["line"] = _cl_line
+                                _clv_bet["price_decimal"] = _cl_price
+                        except Exception:
+                            pass
+                        _updated_scan.append(_clv_bet)
+                    st.session_state["clv_active_scan"] = _updated_scan
+                st.rerun()
     scanner_dropped = st.session_state.get("scanner_dropped", [])
     if scanner_dropped:
         with st.expander(f"Excluded ({len(scanner_dropped)})", expanded=False):

@@ -132,6 +132,23 @@ def _display_signal_cards(results: list[dict]) -> None:
             c4.metric("Stake", f"${leg.get('stake', 0):.2f}")
             c5.metric("Sharpness", f"{_safe(leg.get('sharpness_score'), 0)}")
 
+            # Engine / simulation info row
+            sim_used = leg.get("sim_used", False)
+            if sim_used:
+                _sw = leg.get("sim_blend_weight", 0.80)
+                _sn = leg.get("sim_n_sims", 3000)
+                _engine_label = f"MC Possession Sim ({_sn:,} runs, {_sw:.0%} weight)"
+                _engine_color = COLOR_PRIMARY
+            else:
+                _engine_label = "Bootstrap Only (no sim available)"
+                _engine_color = COLOR_WARNING
+            st.markdown(
+                f"<div style='font-size:0.62rem;color:{_engine_color};"
+                f"font-family:{FONT_MONO};margin-bottom:0.3rem;'>"
+                f"ENGINE: {_engine_label}</div>",
+                unsafe_allow_html=True,
+            )
+
             # Trend / context row
             tc1, tc2, tc3, tc4 = st.columns(4)
             tc1.caption(f"Trend: {leg.get('trend_label', '--')}")
