@@ -3407,9 +3407,12 @@ PRIZEPICKS_API = "https://api.prizepicks.com/projections"
 _PP_NBA_LEAGUE_PREFIXES = ("NBA",)  # matches "NBA", "NBA 1Q", "NBA 1H", "NBA 2H", "NBA_1Q", etc.
 
 def _pp_league_is_nba(league_str: str) -> bool:
-    """Return True if the league string is any NBA variant from PrizePicks API."""
-    s = re.sub(r"[\s_\-\(\)]+", " ", str(league_str or "").upper()).strip()
-    return any(s == p or s.startswith(p + " ") or s.startswith(p + "_") for p in _PP_NBA_LEAGUE_PREFIXES)
+    """Return True if the league string is any NBA variant from PrizePicks API.
+    Handles: 'NBA', 'NBA1H', 'NBA1Q', 'NBA 1H', 'NBA_2H', 'NBA (1H)', etc.
+    Excludes: 'WNBASZN', 'NBB', 'AUSNBL' — must start with exactly 'NBA'.
+    """
+    s = re.sub(r"[\s_\-\(\)]+", "", str(league_str or "").upper()).strip()
+    return s == "NBA" or (s.startswith("NBA") and len(s) > 3 and s[3:4].isdigit())
 
 def _pp_league_half_prefix(league_str: str) -> str:
     """Return 'H1 ', 'H2 ', 'Q1 ' etc. if the league indicates a period, else ''."""
@@ -3425,10 +3428,16 @@ def _pp_league_half_prefix(league_str: str) -> str:
 def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")):
     """Parse PrizePicks JSON response into list of prop dicts.
     Pass league_filter=None to accept all leagues (e.g. when user pastes full-site JSON).
-    Uses fuzzy NBA league matching so "NBA (1H)", "NBA_1Q", "NBA2H" etc. all pass.
+    Uses fuzzy NBA league matching so "NBA1H", "NBA1Q", "NBA2H" etc. all pass.
+    Resolves league from relationships → included (not from attributes.league which is empty).
     """
     _PP_VALID_TYPES = {"projection", "new_player_projection", "boardprojection"}
     included = {item["id"]: item for item in data.get("included", []) if isinstance(item, dict) and "id" in item}
+    # Build league ID → name map from included items
+    _league_name_map = {}
+    for _iid, _item in included.items():
+        if _item.get("type") == "league":
+            _league_name_map[_iid] = (_item.get("attributes", {}) or {}).get("name", "")
     rows = []
     for proj in data.get("data", []):
         if not isinstance(proj, dict):
@@ -3439,11 +3448,16 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
         _has_fields = bool(attrs.get("stat_type") and attrs.get("line_score") is not None)
         if _type not in _PP_VALID_TYPES and not _has_fields:
             continue
-        if league_filter:
-            league = str(attrs.get("league", "") or "")
-            if league and not _pp_league_is_nba(league):
-                continue
         rels = proj.get("relationships", {}) or {}
+        # Resolve league from relationships → included (PP stores league as a relationship, not attribute)
+        _league_rel = (rels.get("league", {}).get("data", {}) or {}).get("id")
+        league = _league_name_map.get(_league_rel, "") if _league_rel else ""
+        # Fallback: check attributes.league (older API format or pasted JSON)
+        if not league:
+            league = str(attrs.get("league", "") or "")
+        if league_filter:
+            if not league or not _pp_league_is_nba(league):
+                continue
         player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
         if not player_id:
             player_id = (rels.get("player", {}).get("data", {}) or {}).get("id")
@@ -3459,10 +3473,9 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
             odds_type = {1: "goblin", 2: "standard", 3: "demon"}.get(int(rank_val), "")
         if player_name and stat_type and line_score is not None:
             try:
-                # If league indicates a half/quarter (e.g. "NBA 1H"), prefix the stat_type
-                # so "Points" under "NBA 1H" becomes "H1 Points" for correct market mapping.
-                league_raw = str(attrs.get("league", "") or "")
-                _half_pfx = _pp_league_half_prefix(league_raw)
+                # If league indicates a half/quarter (e.g. "NBA1H"), prefix the stat_type
+                # so "Points" under "NBA1H" becomes "H1 Points" for correct market mapping.
+                _half_pfx = _pp_league_half_prefix(league)
                 effective_stat = stat_type
                 if _half_pfx and not stat_type.upper().startswith(("H1","H2","1H","2H","Q1","1Q")):
                     effective_stat = _half_pfx + stat_type
@@ -3473,7 +3486,7 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
                     "start_time": attrs.get("start_time", ""),
                     "source": "prizepicks",
                     "odds_type": odds_type or "standard",
-                    "league": league_raw,
+                    "league": league,
                 })
             except (TypeError, ValueError):
                 pass
@@ -5521,9 +5534,9 @@ def compute_leg_projection(
                     is_starter=True,
                     rotation_order=0,
                 )
-                # Quick 500-sim run with speed-optimized config
+                # Production-grade sim: 3000 possessions for stable convergence
                 _sim_cfg = SimulationConfig(
-                    default_simulations=500,
+                    default_simulations=3000,
                     random_seed=int(hashlib.md5(f"{player_name}_{base_market}_{line}".encode()).hexdigest()[:8], 16) % (2**31),
                 )
                 _sim_home_pace = 100.0
@@ -5547,16 +5560,16 @@ def compute_leg_projection(
                     away_pace=_sim_away_pace if is_home_resolved else _sim_home_pace,
                     pre_game_spread=_sim_spread,
                 )
-                _sim_output = _sim_engine.run_simulation(n=500)
+                _sim_output = _sim_engine.run_simulation(n=3000)
                 _sim_dist = _sim_output.get_player_dist(_sim_pid, _sim_stat)
                 if _sim_dist is not None:
                     sim_prob = _sim_dist.prob_over(float(effective_line))
                     sim_mean = _sim_dist.mean
                     sim_std  = _sim_dist.std
-                    # Blend: 70% bootstrap/NegBin + 30% simulation
+                    # Blend: 80% simulation + 20% bootstrap (sim-dominant ensemble)
                     if p_over_raw is not None and sim_prob is not None:
-                        p_over_raw = float(0.70 * p_over_raw + 0.30 * sim_prob)
-                        errors.append(f"Sim blend: sim_p={sim_prob:.3f}, sim_mu={sim_mean:.1f}, sim_std={sim_std:.1f} (500 sims)")
+                        p_over_raw = float(0.80 * sim_prob + 0.20 * p_over_raw)
+                        errors.append(f"Sim blend: sim_p={sim_prob:.3f}, sim_mu={sim_mean:.1f}, sim_std={sim_std:.1f} (3000 sims)")
                     elif sim_prob is not None:
                         p_over_raw = sim_prob
                         errors.append(f"Sim-only: sim_p={sim_prob:.3f} (bootstrap unavailable)")
@@ -8486,6 +8499,14 @@ with tabs[2]:
                 elif _pp_rows:
                     st.session_state["pp_lines"] = pd.DataFrame(_pp_rows)
                     st.success(f"✓ {len(_pp_rows)} PP props")
+                    # Debug: show unique stat_types so we can verify H1/H2 mapping
+                    _pp_stat_types = sorted(set(r.get("stat_type","") for r in _pp_rows if r.get("stat_type")))
+                    _pp_mapped = {s: map_platform_stat_to_market(s) for s in _pp_stat_types}
+                    _pp_unmapped = [s for s, m in _pp_mapped.items() if m is None]
+                    with st.expander(f"PP stat_types ({len(_pp_stat_types)} unique)", expanded=False):
+                        st.write({s: m or "⚠ UNMAPPED" for s, m in _pp_mapped.items()})
+                        if _pp_unmapped:
+                            st.warning(f"Unmapped stat_types: {_pp_unmapped}")
                 else:
                     st.warning("PP: 0 props found")
             _pp_loaded = st.session_state.get("pp_lines")
@@ -8738,6 +8759,9 @@ with tabs[2]:
                         stat_t = r.get("stat_type","")
                         mkt = map_platform_stat_to_market(stat_t)
                         if not mkt or mkt not in MARKET_OPTIONS:
+                            continue
+                        # Filter by user's market selection
+                        if mkt not in markets_sel:
                             continue
                         line = r.get("line")
                         if not pname or line is None or pd.isna(line):
@@ -9106,7 +9130,8 @@ with tabs[2]:
                             game_date=scan_start,
                             injury_team_map=_inj_map,
                             scan_mode=False)  # Full sim ensemble
-                    except Exception:
+                    except Exception as _se_err:
+                        _se_dropped_idx.append(_se_idx)
                         continue
                     _se_leg = recompute_pricing_fields(_se_leg, st.session_state.get("calibrator_map"))
                     _se_pc = _se_leg.get("p_cal")
@@ -9137,6 +9162,9 @@ with tabs[2]:
                     scanner_out.at[_se_idx, "mv_pips"] = float((_se_leg.get("line_movement") or {}).get("pips", 0.0))
                     _mv = _se_leg.get("line_movement") or {}
                     scanner_out.at[_se_idx, "steam"] = "STEAM" if _mv.get("steam") else ("FADE" if _mv.get("fade") else "")
+                    # Mark as sim-enhanced with the sim probability for transparency
+                    _se_sim_info = [e for e in (_se_leg.get("errors") or []) if "Sim blend" in e or "Sim-only" in e]
+                    scanner_out.at[_se_idx, "sim"] = "SIM" if _se_sim_info else "BOOT"
                     _se_upgraded += 1
                 _se_progress.empty()
                 # Drop edges that failed gate on sim re-eval
@@ -9530,6 +9558,11 @@ with tabs[3]:
                     pp_df = pd.DataFrame(pp_lines)
                     st.session_state["pp_lines"] = pp_df
                     st.success(f"Fetched {len(pp_df)} PrizePicks props.")
+                    # Debug: show unique stat_types
+                    _pp_stat_types2 = sorted(pp_df["stat_type"].dropna().unique()) if "stat_type" in pp_df.columns else []
+                    _pp_mapped2 = {s: map_platform_stat_to_market(s) for s in _pp_stat_types2}
+                    with st.expander(f"PP stat_types ({len(_pp_stat_types2)} unique)", expanded=False):
+                        st.write({s: m or "⚠ UNMAPPED" for s, m in _pp_mapped2.items()})
                     if _auto_on:
                         # Also push to background state so auto-fetcher has fresh baseline
                         _s = _pp_auto_state()
