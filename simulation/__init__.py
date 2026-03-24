@@ -20,6 +20,7 @@ from simulation.game_engine import (
     SimulationOutput,
 )
 from simulation.validation import SimulationValidator, ValidationReport
+from simulation.data_loader import SimulationDataLoader
 
 __all__ = [
     # Config
@@ -52,4 +53,6 @@ __all__ = [
     # Validation
     "SimulationValidator",
     "ValidationReport",
+    # Data Loader
+    "SimulationDataLoader",
 ]

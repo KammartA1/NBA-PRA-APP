@@ -32,6 +32,14 @@ try:
     _QUANT_AVAILABLE = True
 except ImportError:
     _QUANT_AVAILABLE = False
+# ── Possession-Level Simulation Integration ──
+try:
+    from simulation.game_engine import GameEngine, SimulationOutput
+    from simulation.data_loader import SimulationDataLoader
+    from simulation.config import SimulationConfig
+    _SIM_AVAILABLE = True
+except ImportError:
+    _SIM_AVAILABLE = False
 # ──────────────────────────────────────────────
 # CLAUDE AI INTEGRATION
 # ──────────────────────────────────────────────
@@ -415,6 +423,7 @@ ODDS_MARKETS = {
     "H2 Points":       "player_points_q3q4",
     "H2 Rebounds":     "player_rebounds_q3q4",
     "H2 Assists":      "player_assists_q3q4",
+    "H2 3PM":          "player_threes_q3q4",
     "H2 PRA":          "player_points_rebounds_assists_q3q4",
     # ── 1st Quarter markets ─────────────────────
     "Q1 Points":       "player_points_q1",
@@ -442,7 +451,14 @@ ODDS_MARKETS = {
 }
 # Markets with no confirmed Odds API key — available via PP/UD/Sleeper only.
 # These will be skipped during Odds API fetches and the user will be warned.
-ODDS_API_UNSUPPORTED_MARKETS = {"FGA", "3PA", "FTM", "FTA"}
+ODDS_API_UNSUPPORTED_MARKETS = {
+    "FGA", "3PA", "FTM", "FTA",
+    # H1/H2 markets return HTTP 422 from Odds API — source from PrizePicks instead
+    "H1 Points", "H1 Rebounds", "H1 Assists", "H1 3PM", "H1 PRA",
+    "H2 Points", "H2 Rebounds", "H2 Assists", "H2 3PM", "H2 PRA",
+}
+# Same set but keyed by Odds API market key (for functions that work with raw API keys)
+_UNSUPPORTED_API_KEYS = {ODDS_MARKETS[m] for m in ODDS_API_UNSUPPORTED_MARKETS if m in ODDS_MARKETS}
 # ──────────────────────────────────────────────
 # DFS PLATFORM PAYOUT STRUCTURES
 # PrizePicks / Underdog / Sleeper use identical or similar payout tables.
@@ -727,7 +743,7 @@ BOOK_SHARPNESS = {
     "pinnacle":0.99,"circa":0.95,"bookmaker":0.90,"betcris":0.85,
     "draftkings":0.70,"fanduel":0.70,"betmgm":0.65,"caesars":0.65,
     "betrivers":0.60,"pointsbetus":0.55,
-    "betonlineag":0.45,"bovada":0.40,"mybookieag":0.30,
+    "betonlineag":0.45,"mybookieag":0.30,
 }
 def book_sharpness(k):
     return float(BOOK_SHARPNESS.get((k or "").strip().lower(), 0.55))
@@ -2870,6 +2886,9 @@ def _parse_player_prop_outcomes(event_odds, market_key, book_filter=None):
         return out_rows, None
     return rows, None
 def find_player_line_from_events(player_name, market_key, date_iso, book_choice):
+    # [FIX] Skip unsupported markets early to avoid HTTP 422 from Odds API
+    if market_key in _UNSUPPORTED_API_KEYS:
+        return None, None, f"Market {market_key} is unsupported by Odds API — use PP/UD/Sleeper"
     evs, err = odds_get_events(date_iso)
     if err: return None, None, err
     if not evs: return None, None, "No events for that date"
@@ -5158,6 +5177,106 @@ def detect_middle_opportunity(player_name, market_key, event_id):
         return spread >= 1.0, min_line, max_line, round(mid_prob, 3), book_details
     except Exception:
         return False, None, None, None, []
+# ──────────────────────────────────────────────
+# [v7.0] POSSESSION-LEVEL SIMULATION P(OVER) — 60/40 SIM/BOOTSTRAP ENSEMBLE
+# ──────────────────────────────────────────────
+_SIM_N_SIMS = 3000       # simulation count (raised from 500 to 3000 for tighter distributions)
+_SIM_BLEND_WEIGHT = 0.60  # simulation weight in ensemble (60% sim, 40% bootstrap)
+_BOOTSTRAP_BLEND_WEIGHT = 0.40  # bootstrap weight in ensemble
+
+@st.cache_data(ttl=60*30, show_spinner=False)
+def _run_player_simulation(
+    player_name: str,
+    player_id: str,
+    team_abbr: str,
+    opp_abbr: str,
+    is_home: bool,
+    gamelog_json: str,       # JSON-serialized gamelog for caching (Streamlit cache requires hashable)
+    position: str,
+    rest_days: int,
+    n_games: int,
+    game_spread: float,
+) -> dict:
+    """Run the possession-level simulator and return P(over) for all stats.
+
+    Returns a dict: {stat_key: {"p_over_at_line": {line_str: p}, "mean": float, "std": float}}
+    Returns empty dict on failure.
+    """
+    if not _SIM_AVAILABLE:
+        return {}
+    try:
+        gamelog_df = pd.read_json(gamelog_json) if gamelog_json else pd.DataFrame()
+    except Exception:
+        gamelog_df = pd.DataFrame()
+    if gamelog_df.empty:
+        return {}
+    try:
+        loader = SimulationDataLoader()
+        # Build profile for the target player
+        target_profile = loader.build_player_profile(
+            player_name=player_name,
+            player_id=str(player_id),
+            gamelog_df=gamelog_df,
+            position=position,
+            is_starter=True,
+            rotation_order=0,
+            rest_days=rest_days,
+            n_games=n_games,
+        )
+        # Build a default roster around the player (we only care about this player's distribution)
+        home_profiles = [target_profile] if is_home else GameEngine._default_roster(True)
+        away_profiles = GameEngine._default_roster(False) if is_home else [target_profile]
+        if is_home:
+            # Fill remaining 11 slots with defaults
+            home_profiles = [target_profile] + GameEngine._default_roster(True)[1:]
+        else:
+            away_profiles = [target_profile] + GameEngine._default_roster(False)[1:]
+        # Fix player IDs so target player isn't overwritten by defaults
+        for i, p in enumerate(home_profiles[1:] if is_home else away_profiles[1:], 1):
+            p.player_id = f"{'h' if is_home else 'a'}_{i}"
+
+        # Get team pace from TEAM_CTX
+        home_pace = float(TEAM_CTX.get(str(team_abbr if is_home else opp_abbr).upper(), {}).get("PACE", 100.0))
+        away_pace = float(TEAM_CTX.get(str(opp_abbr if is_home else team_abbr).upper(), {}).get("PACE", 100.0))
+
+        engine = GameEngine(
+            config=None,
+            home_profiles=home_profiles,
+            away_profiles=away_profiles,
+            home_name=team_abbr if is_home else opp_abbr,
+            away_name=opp_abbr if is_home else team_abbr,
+            home_pace=home_pace,
+            away_pace=away_pace,
+            pre_game_spread=float(game_spread) if game_spread is not None else 0.0,
+        )
+        output = engine.run_simulation(n=_SIM_N_SIMS, seed=None)
+        # Extract distributions for the target player
+        pid_str = str(player_id)
+        if pid_str not in output.distributions:
+            return {}
+        result = {}
+        for stat_key, dist in output.distributions[pid_str].items():
+            result[stat_key] = {
+                "mean": float(dist.mean),
+                "std": float(dist.std),
+                "values": dist.values.tolist(),
+            }
+        return result
+    except Exception:
+        return {}
+
+
+def _get_sim_prob_over(sim_result: dict, stat_key: str, line: float) -> float | None:
+    """Extract P(over line) from cached simulation result for a given stat key."""
+    if not sim_result or stat_key not in sim_result:
+        return None
+    try:
+        values = np.array(sim_result[stat_key]["values"])
+        return float(np.mean(values > line))
+    except Exception:
+        return None
+
+
 # MAIN PROJECTION ENGINE  [FIX 3: minutes filter]
 # ──────────────────────────────────────────────
 def compute_leg_projection(
@@ -5467,6 +5586,66 @@ def compute_leg_projection(
                 pass
         if p_over_raw is None:
             errors.append(f"Insufficient history (need >=4 games, have {len(stat_series.dropna())})")
+    # ── [v7.0] Possession-Level Simulation Ensemble Blend ─────────────
+    # Run the simulator to get a full-game distribution, then blend
+    # sim P(over) with bootstrap P(over) at 60%/40% (sim/bootstrap).
+    # For H1/H2 markets, use the simulator's native h1_/h2_ distributions
+    # which model actual rotation patterns, blowout dynamics, foul trouble,
+    # and game script — far more accurate than a flat 52/48 split.
+    _sim_p_over = None
+    _sim_mu = None
+    _sim_used = False
+    if _SIM_AVAILABLE and team_abbr and opp_abbr and p_over_raw is not None:
+        try:
+            # Determine simulation stat key: half markets map directly to h1_/h2_ keys
+            if is_half_market and _SIM_AVAILABLE:
+                _sim_stat_key = SimulationDataLoader.market_to_sim_key(market_name)
+            else:
+                _sim_stat_key = SimulationDataLoader.market_to_sim_key(base_market)
+            if _sim_stat_key is not None:
+                # Serialize gamelog for Streamlit caching (requires hashable args)
+                _gl_json = gldf_n.to_json() if not gldf_n.empty else ""
+                _sim_spread = float(_game_spread) if _game_spread is not None else 0.0
+                _sim_result = _run_player_simulation(
+                    player_name=player_name,
+                    player_id=str(player_id),
+                    team_abbr=str(team_abbr).upper(),
+                    opp_abbr=str(opp_abbr).upper(),
+                    is_home=bool(is_home_resolved) if is_home_resolved is not None else True,
+                    gamelog_json=_gl_json,
+                    position=pos_str or "",
+                    rest_days=int(rest_days),
+                    n_games=n_games,
+                    game_spread=_sim_spread,
+                )
+                # For half markets, use the sim's native half-game stat key directly
+                # (models rotation patterns, blowout rest, foul trouble, game script)
+                _sim_line = float(line)  # use raw line for half markets (sim outputs half-game stats)
+                _sim_p = _get_sim_prob_over(_sim_result, _sim_stat_key, _sim_line)
+                if _sim_p is not None:
+                    _sim_p_over = _sim_p
+                    _sim_mu = _sim_result.get(_sim_stat_key, {}).get("mean")
+                    # Blend: 60% simulation + 40% bootstrap (sim models game dynamics;
+                    # bootstrap captures recent form and stat-specific variance)
+                    _bootstrap_p = p_over_raw
+                    p_over_raw = float(
+                        _SIM_BLEND_WEIGHT * _sim_p_over
+                        + _BOOTSTRAP_BLEND_WEIGHT * _bootstrap_p
+                    )
+                    # Also blend the projection mean if sim mean available
+                    if _sim_mu is not None and mu_raw is not None:
+                        mu_raw = float(
+                            _SIM_BLEND_WEIGHT * _sim_mu
+                            + _BOOTSTRAP_BLEND_WEIGHT * mu_raw
+                        )
+                    _sim_used = True
+                    errors.append(
+                        f"Sim ensemble: {_SIM_BLEND_WEIGHT:.0%} sim ({_SIM_N_SIMS} runs) "
+                        f"+ {_BOOTSTRAP_BLEND_WEIGHT:.0%} bootstrap"
+                        + (f" [native {_sim_stat_key}]" if is_half_market else "")
+                    )
+        except Exception:
+            pass  # Simulation failure is non-fatal; fall back to bootstrap-only
     n_valid = int(stat_series.dropna().count())
     # [AUDIT FIX] Half-market with real boxscore data: scale positional prior by _orig_half_factor
     # so shrinkage operates in half-game units (not full-game units)
@@ -5874,6 +6053,12 @@ def compute_leg_projection(
         "minutes_prod_mult": float(_minutes_prod_mult),
         "minutes_prod_label": _minutes_prod_label,
         "hist_avg_minutes":  float(_hist_avg_minutes) if _hist_avg_minutes is not None else None,
+        # [v7.0] Possession-level simulation ensemble
+        "sim_used":          _sim_used,
+        "sim_p_over":        float(_sim_p_over) if _sim_p_over is not None else None,
+        "sim_mu":            float(_sim_mu) if _sim_mu is not None else None,
+        "sim_blend_weight":  float(_SIM_BLEND_WEIGHT) if _sim_used else None,
+        "sim_n_sims":        int(_SIM_N_SIMS) if _sim_used else None,
         "errors":            errors,
     }
 # ──────────────────────────────────────────────

@@ -406,6 +406,7 @@ ODDS_MARKETS = {
     "H2 Points":       "player_points_q3q4",
     "H2 Rebounds":     "player_rebounds_q3q4",
     "H2 Assists":      "player_assists_q3q4",
+    "H2 3PM":          "player_threes_q3q4",
     "H2 PRA":          "player_points_rebounds_assists_q3q4",
     # ── 1st Quarter markets ─────────────────────
     "Q1 Points":       "player_points_q1",
@@ -433,7 +434,14 @@ ODDS_MARKETS = {
 }
 # Markets with no confirmed Odds API key — available via PP/UD/Sleeper only.
 # These will be skipped during Odds API fetches and the user will be warned.
-ODDS_API_UNSUPPORTED_MARKETS = {"FGA", "3PA", "FTM", "FTA"}
+ODDS_API_UNSUPPORTED_MARKETS = {
+    "FGA", "3PA", "FTM", "FTA",
+    # H1/H2 markets return HTTP 422 from Odds API — source from PrizePicks instead
+    "H1 Points", "H1 Rebounds", "H1 Assists", "H1 3PM", "H1 PRA",
+    "H2 Points", "H2 Rebounds", "H2 Assists", "H2 3PM", "H2 PRA",
+}
+# Same set but keyed by Odds API market key (for functions that work with raw API keys)
+_UNSUPPORTED_API_KEYS = {ODDS_MARKETS[m] for m in ODDS_API_UNSUPPORTED_MARKETS if m in ODDS_MARKETS}
 # ──────────────────────────────────────────────
 # DFS PLATFORM PAYOUT STRUCTURES
 # PrizePicks / Underdog / Sleeper use identical or similar payout tables.
@@ -718,7 +726,7 @@ BOOK_SHARPNESS = {
     "pinnacle":0.99,"circa":0.95,"bookmaker":0.90,"betcris":0.85,
     "draftkings":0.70,"fanduel":0.70,"betmgm":0.65,"caesars":0.65,
     "betrivers":0.60,"pointsbetus":0.55,
-    "betonlineag":0.45,"bovada":0.40,"mybookieag":0.30,
+    "betonlineag":0.45,"mybookieag":0.30,
 }
 def book_sharpness(k):
     return float(BOOK_SHARPNESS.get((k or "").strip().lower(), 0.55))
@@ -2861,6 +2869,9 @@ def _parse_player_prop_outcomes(event_odds, market_key, book_filter=None):
         return out_rows, None
     return rows, None
 def find_player_line_from_events(player_name, market_key, date_iso, book_choice):
+    # [FIX] Skip unsupported markets early to avoid HTTP 422 from Odds API
+    if market_key in _UNSUPPORTED_API_KEYS:
+        return None, None, f"Market {market_key} is unsupported by Odds API — use PP/UD/Sleeper"
     evs, err = odds_get_events(date_iso)
     if err: return None, None, err
     if not evs: return None, None, "No events for that date"
@@ -8575,10 +8586,21 @@ with tabs[2]:
                         )
                     # Track per-specialty-market counts for debug output
                     _spec_market_counts: dict[str, int] = {m: 0 for m in _supported_sel if ODDS_MARKETS.get(m) in SPECIALTY_MARKET_KEYS}
+                    _fetch_t0 = time.time()
+                    _total_api_calls = len(evs) * len(market_batches)
+                    _api_call_idx = 0
+                    _skipped_count = len(_unsupported_sel)
+                    _fetch_progress = st.progress(0, text="Fetching lines from Odds API...")
                     for ev in evs:
                         eid = ev.get("id")
                         if not eid: continue
                         for batch_keys in market_batches:
+                            _api_call_idx += 1
+                            if _total_api_calls > 0:
+                                _fetch_progress.progress(
+                                    min(_api_call_idx / _total_api_calls, 1.0),
+                                    text=f"Fetching lines... {_api_call_idx}/{_total_api_calls} API calls ({len(offers)} lines so far)"
+                                )
                             # For specialty markets try all regions for better coverage
                             regions = "us,us2,eu,uk" if any(k in SPECIALTY_MARKET_KEYS for k in batch_keys) else REGION_US
                             odds, oerr = odds_get_event_odds(eid, tuple(batch_keys), regions=regions)
@@ -8599,6 +8621,12 @@ with tabs[2]:
                                 if parsed and m in _spec_market_counts:
                                     _spec_market_counts[m] += len(parsed)
                                 offers.extend([{**r,"market":m} for r in parsed])
+                    _fetch_progress.empty()
+                    _fetch_elapsed = time.time() - _fetch_t0
+                    # Count distinct sources (books) in the fetched offers
+                    _src_books = set(r.get("book","") for r in offers if r.get("book"))
+                    # Count distinct markets that returned data
+                    _mkt_with_data = set(r.get("market","") for r in offers if r.get("market"))
                     if offers:
                         # [FIX 13] Store in session state - persists across tab switches
                         st.session_state["scanner_offers"] = pd.DataFrame(offers)
@@ -8612,13 +8640,17 @@ with tabs[2]:
                             mk2 = r2.get("market_key", ODDS_MARKETS.get(r2.get("market",""), ""))
                             side2 = r2.get("side", "Over")
                             save_opening_line(pn2, mk2, side2, r2.get("line", 0), r2.get("price"))
-                        st.success(f"Fetched {len(offers)} raw prop outcomes — opening lines captured. Cached for 2 hours.")
+                        st.success(
+                            f"Loaded {len(_mkt_with_data)} markets from {len(_src_books)} sources "
+                            f"({_skipped_count} skipped) — {len(offers)} lines in {_fetch_elapsed:.1f}s. "
+                            f"Cached for 2 hours."
+                        )
                     else:
-                        st.warning("No offers returned.")
-                    # Show per-specialty-market debug info for any that returned 0 lines
+                        st.warning(f"No offers returned ({_skipped_count} unsupported markets skipped). Fetch took {_fetch_elapsed:.1f}s.")
+                    # Show per-specialty-market debug info behind collapsed expander
                     _empty_spec = [m for m, cnt in _spec_market_counts.items() if cnt == 0]
                     if _empty_spec or _fetch_errors:
-                        with st.expander(f"Debug ({len(_fetch_errors)} API errors, {len(_empty_spec)} empty specialty markets)"):
+                        with st.expander(f"API details ({len(_fetch_errors)} errors, {len(_empty_spec)} empty specialty markets)", expanded=False):
                             if _empty_spec:
                                 st.caption(
                                     "**Specialty markets with 0 lines** — H1/H2/DD/TD/Fantasy Score open "
@@ -8720,85 +8752,111 @@ with tabs[2]:
                         f"Bulk game log load failed — scanning with {_scan_workers} workers "
                         f"(individual NBA API calls). Click **Load All Game Logs** above for faster scans."
                     )
-                with st.spinner(f"Scanning {len(candidates)} candidates ({_scan_workers} workers)..."):
-                    with ThreadPoolExecutor(max_workers=_scan_workers) as ex:
-                        futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
-                                          n_games=n_games, key_teammate_out=False,
-                                          bankroll=bankroll, frac_kelly=frac_kelly,
-                                          max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
-                                          market_prior_weight=market_prior_weight,
-                                          exclude_chaotic=bool(exclude_chaotic),
-                                          game_date=scan_start,
-                                          injury_team_map=_inj_map)
-                                for pname, mkt, line, meta in candidates]
-                        for (pname, mkt, line, meta), fut in zip(candidates, futs):
-                            try:
-                                # [AUDIT FIX] No-timeout result() blocks UI forever on NBA API hang
-                                leg = fut.result(timeout=60)
-                            except TimeoutError:
-                                dropped.append({"player": pname, "market": mkt, "reason": "thread timeout (NBA API ≥60s)"})
-                                continue
-                            except Exception as _te:
-                                dropped.append({"player": pname, "market": mkt, "reason": f"thread error: {type(_te).__name__}: {_te}"})
-                                continue
-                            leg = recompute_pricing_fields(leg, st.session_state.get("calibrator_map"))
-                            # [FEATURE] Capture every computed leg for Under scan (before gate filter)
-                            all_computed_legs.append((pname, mkt, float(line), meta, leg))
-                            if not leg.get("gate_ok"):
-                                dropped.append({"player":pname,"market":mkt,"reason":leg.get("gate_reason","gated")}); continue
-                            # [AUDIT FIX] Use p_cal exclusively after recompute_pricing_fields;
-                            # p_over fallback could use uncalibrated bootstrap prob which bypasses isotonic correction
-                            pc = leg.get("p_cal")
-                            if pc is None:
-                                dropped.append({"player":pname,"market":mkt,"reason":"p_cal None (calibration failed)"}); continue
-                            pc = float(pc)
-                            pi = leg.get("p_implied")
-                            ev = leg.get("ev_adj")
-                            if pi is None or ev is None:
-                                dropped.append({"player":pname,"market":mkt,"reason":"no price/EV"}); continue
-                            adv = pc - float(pi)
-                            if pc < min_prob: dropped.append({"player":pname,"market":mkt,"reason":f"p_cal<{min_prob:.2f}"}); continue
-                            if adv < min_adv: dropped.append({"player":pname,"market":mkt,"reason":f"adv<{min_adv:.3f}"}); continue
-                            if float(ev) < min_ev: dropped.append({"player":pname,"market":mkt,"reason":f"ev<{min_ev:.3f}"}); continue
-                            mv = leg.get("line_movement") or {}
-                            inj_flag = ("🏥 " + (leg.get("auto_inj_player") or "").title()
-                                        if leg.get("auto_inj") else "")
-                            _src_badge = {"prizepicks": "PP", "underdog": "UD"}.get(
-                                str(meta.get("book","")).lower(), meta.get("book","") or "odds"
+                _scan_t0 = time.time()
+                _scan_progress = st.progress(0, text=f"Scanning {len(candidates)} candidates...")
+                _scan_done_count = 0
+                _scan_total = len(candidates)
+                with ThreadPoolExecutor(max_workers=_scan_workers) as ex:
+                    futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
+                                      n_games=n_games, key_teammate_out=False,
+                                      bankroll=bankroll, frac_kelly=frac_kelly,
+                                      max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
+                                      market_prior_weight=market_prior_weight,
+                                      exclude_chaotic=bool(exclude_chaotic),
+                                      game_date=scan_start,
+                                      injury_team_map=_inj_map)
+                            for pname, mkt, line, meta in candidates]
+                    for (pname, mkt, line, meta), fut in zip(candidates, futs):
+                        _scan_done_count += 1
+                        if _scan_total > 0:
+                            _scan_progress.progress(
+                                min(_scan_done_count / _scan_total, 1.0),
+                                text=f"Scanning... {_scan_done_count}/{_scan_total} ({len(out_rows)} edges found)"
                             )
-                            out_rows.append({
-                                "side": "Over",           # [AUDIT FIX] explicit side for schema parity with Under rows
-                                "src": _src_badge,        # PP / UD / book name
-                                "player":pname,"market":mkt,"line":line,
-                                "p_cal":round(pc,3),"p_implied":round(float(pi),3),
-                                "advantage":round(adv,3),"ev_adj_pct":round(float(ev)*100,2),
-                                "proj":safe_round(leg.get("proj")),
-                                "edge_cat":leg.get("edge_cat",""),"regime":leg.get("regime",""),
-                                "hot_cold":leg.get("hot_cold","Average"),
-                                "team":leg.get("team",""),"opp":leg.get("opp",""),
-                                "b2b": "B2B" if leg.get("b2b") else "",
-                                "dnp_risk": "DNP?" if leg.get("dnp_risk") else "",
-                                "vol_cv":safe_round(leg.get("volatility_cv")),
-                                "rest_d":int(leg.get("rest_days",2)),       # [AUDIT FIX] explicit int
-                                "line_mv":mv.get("direction","--"),
-                                "mv_pips":float(mv.get("pips",0.0)),        # [AUDIT FIX] explicit float
-                                "steam": "STEAM" if mv.get("steam") else ("FADE" if mv.get("fade") else ""),
-                                "stake_$":round(leg.get("stake",0),2),
-                                "n_games":int(leg.get("n_games_used",0)),   # [AUDIT FIX] explicit int
-                                "inj_boost": inj_flag,
-                                "min_proj": safe_round(leg.get("proj_minutes"),0),
-                                # DFS columns — edge above the 50% flat floor
-                                "pp_edge_%": round((pc - 0.50) * 100, 1),
-                                "pp_2leg_ev_%": round((DFS_PP_PAYOUTS[2] * pc**2 - 1.0) * 100, 1),
-                                # [UPGRADE NEW] composite sharpness + trend signals
-                                "sharp": safe_round(leg.get("sharpness_score"), 0),
-                                "sharp_tier": leg.get("sharpness_tier", ""),
-                                "trend": leg.get("trend_label", ""),
-                                "fatigue": leg.get("fatigue_label", "Normal"),
-                                "game_tot": safe_round(leg.get("game_total"), 0),
-                                "l3": safe_round(leg.get("l3_avg"), 1),
-                                "l5": safe_round(leg.get("l5_avg"), 1),
-                            })
+                        try:
+                            # [AUDIT FIX] No-timeout result() blocks UI forever on NBA API hang
+                            leg = fut.result(timeout=60)
+                        except TimeoutError:
+                            dropped.append({"player": pname, "market": mkt, "reason": "thread timeout (NBA API ≥60s)"})
+                            continue
+                        except Exception as _te:
+                            dropped.append({"player": pname, "market": mkt, "reason": f"thread error: {type(_te).__name__}: {_te}"})
+                            continue
+                        leg = recompute_pricing_fields(leg, st.session_state.get("calibrator_map"))
+                        # [FEATURE] Capture every computed leg for Under scan (before gate filter)
+                        all_computed_legs.append((pname, mkt, float(line), meta, leg))
+                        if not leg.get("gate_ok"):
+                            dropped.append({"player":pname,"market":mkt,"reason":leg.get("gate_reason","gated")}); continue
+                        # [AUDIT FIX] Use p_cal exclusively after recompute_pricing_fields;
+                        # p_over fallback could use uncalibrated bootstrap prob which bypasses isotonic correction
+                        pc = leg.get("p_cal")
+                        if pc is None:
+                            dropped.append({"player":pname,"market":mkt,"reason":"p_cal None (calibration failed)"}); continue
+                        pc = float(pc)
+                        pi = leg.get("p_implied")
+                        ev = leg.get("ev_adj")
+                        if pi is None or ev is None:
+                            dropped.append({"player":pname,"market":mkt,"reason":"no price/EV"}); continue
+                        adv = pc - float(pi)
+                        if pc < min_prob: dropped.append({"player":pname,"market":mkt,"reason":f"p_cal<{min_prob:.2f}"}); continue
+                        if adv < min_adv: dropped.append({"player":pname,"market":mkt,"reason":f"adv<{min_adv:.3f}"}); continue
+                        if float(ev) < min_ev: dropped.append({"player":pname,"market":mkt,"reason":f"ev<{min_ev:.3f}"}); continue
+                        mv = leg.get("line_movement") or {}
+                        inj_flag = ("🏥 " + (leg.get("auto_inj_player") or "").title()
+                                    if leg.get("auto_inj") else "")
+                        _src_badge = {"prizepicks": "PP", "underdog": "UD"}.get(
+                            str(meta.get("book","")).lower(), meta.get("book","") or "odds"
+                        )
+                        out_rows.append({
+                            "side": "Over",           # [AUDIT FIX] explicit side for schema parity with Under rows
+                            "src": _src_badge,        # PP / UD / book name
+                            "player":pname,"market":mkt,"line":line,
+                            "p_cal":round(pc,3),"p_implied":round(float(pi),3),
+                            "advantage":round(adv,3),"ev_adj_pct":round(float(ev)*100,2),
+                            "proj":safe_round(leg.get("proj")),
+                            "edge_cat":leg.get("edge_cat",""),"regime":leg.get("regime",""),
+                            "hot_cold":leg.get("hot_cold","Average"),
+                            "team":leg.get("team",""),"opp":leg.get("opp",""),
+                            "b2b": "B2B" if leg.get("b2b") else "",
+                            "dnp_risk": "DNP?" if leg.get("dnp_risk") else "",
+                            "vol_cv":safe_round(leg.get("volatility_cv")),
+                            "rest_d":int(leg.get("rest_days",2)),       # [AUDIT FIX] explicit int
+                            "line_mv":mv.get("direction","--"),
+                            "mv_pips":float(mv.get("pips",0.0)),        # [AUDIT FIX] explicit float
+                            "steam": "STEAM" if mv.get("steam") else ("FADE" if mv.get("fade") else ""),
+                            "stake_$":round(leg.get("stake",0),2),
+                            "n_games":int(leg.get("n_games_used",0)),   # [AUDIT FIX] explicit int
+                            "inj_boost": inj_flag,
+                            "min_proj": safe_round(leg.get("proj_minutes"),0),
+                            # DFS columns — edge above the 50% flat floor
+                            "pp_edge_%": round((pc - 0.50) * 100, 1),
+                            "pp_2leg_ev_%": round((DFS_PP_PAYOUTS[2] * pc**2 - 1.0) * 100, 1),
+                            # [UPGRADE NEW] composite sharpness + trend signals
+                            "sharp": safe_round(leg.get("sharpness_score"), 0),
+                            "sharp_tier": leg.get("sharpness_tier", ""),
+                            "trend": leg.get("trend_label", ""),
+                            "fatigue": leg.get("fatigue_label", "Normal"),
+                            "game_tot": safe_round(leg.get("game_total"), 0),
+                            "l3": safe_round(leg.get("l3_avg"), 1),
+                            "l5": safe_round(leg.get("l5_avg"), 1),
+                        })
+                _scan_progress.empty()
+                _scan_elapsed = time.time() - _scan_t0
+                # Count sources that contributed candidates
+                _scan_sources = set()
+                if _use_odds_api and _odds_has_data:
+                    _scan_sources.add("Odds API")
+                if _use_platforms:
+                    for _ps in ["pp_lines", "ud_lines", "sl_lines"]:
+                        _pdf = st.session_state.get(_ps)
+                        if _pdf is not None and not _pdf.empty:
+                            _scan_sources.add({"pp_lines":"PrizePicks","ud_lines":"Underdog","sl_lines":"Sleeper"}.get(_ps, _ps))
+                _scan_markets = set(m for _, m, _, _ in candidates)
+                st.info(
+                    f"Scanned {len(candidates)} candidates across {len(_scan_markets)} markets "
+                    f"from {', '.join(_scan_sources) if _scan_sources else 'unknown'} "
+                    f"in {_scan_elapsed:.1f}s — {len(out_rows)} edges, {len(dropped)} dropped"
+                )
             out_df = pd.DataFrame(out_rows)
             if not out_df.empty:
                 # [UPGRADE NEW] Sort by composite sharpness score (when available), then by EV as tiebreaker
