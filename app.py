@@ -5534,9 +5534,9 @@ def compute_leg_projection(
                     is_starter=True,
                     rotation_order=0,
                 )
-                # Quick 500-sim run with speed-optimized config
+                # Production-grade sim: 3000 possessions for stable convergence
                 _sim_cfg = SimulationConfig(
-                    default_simulations=500,
+                    default_simulations=3000,
                     random_seed=int(hashlib.md5(f"{player_name}_{base_market}_{line}".encode()).hexdigest()[:8], 16) % (2**31),
                 )
                 _sim_home_pace = 100.0
@@ -5560,16 +5560,16 @@ def compute_leg_projection(
                     away_pace=_sim_away_pace if is_home_resolved else _sim_home_pace,
                     pre_game_spread=_sim_spread,
                 )
-                _sim_output = _sim_engine.run_simulation(n=500)
+                _sim_output = _sim_engine.run_simulation(n=3000)
                 _sim_dist = _sim_output.get_player_dist(_sim_pid, _sim_stat)
                 if _sim_dist is not None:
                     sim_prob = _sim_dist.prob_over(float(effective_line))
                     sim_mean = _sim_dist.mean
                     sim_std  = _sim_dist.std
-                    # Blend: 70% bootstrap/NegBin + 30% simulation
+                    # Blend: 80% simulation + 20% bootstrap (sim-dominant ensemble)
                     if p_over_raw is not None and sim_prob is not None:
-                        p_over_raw = float(0.70 * p_over_raw + 0.30 * sim_prob)
-                        errors.append(f"Sim blend: sim_p={sim_prob:.3f}, sim_mu={sim_mean:.1f}, sim_std={sim_std:.1f} (500 sims)")
+                        p_over_raw = float(0.80 * sim_prob + 0.20 * p_over_raw)
+                        errors.append(f"Sim blend: sim_p={sim_prob:.3f}, sim_mu={sim_mean:.1f}, sim_std={sim_std:.1f} (3000 sims)")
                     elif sim_prob is not None:
                         p_over_raw = sim_prob
                         errors.append(f"Sim-only: sim_p={sim_prob:.3f} (bootstrap unavailable)")
@@ -9130,7 +9130,8 @@ with tabs[2]:
                             game_date=scan_start,
                             injury_team_map=_inj_map,
                             scan_mode=False)  # Full sim ensemble
-                    except Exception:
+                    except Exception as _se_err:
+                        _se_dropped_idx.append(_se_idx)
                         continue
                     _se_leg = recompute_pricing_fields(_se_leg, st.session_state.get("calibrator_map"))
                     _se_pc = _se_leg.get("p_cal")
@@ -9161,6 +9162,9 @@ with tabs[2]:
                     scanner_out.at[_se_idx, "mv_pips"] = float((_se_leg.get("line_movement") or {}).get("pips", 0.0))
                     _mv = _se_leg.get("line_movement") or {}
                     scanner_out.at[_se_idx, "steam"] = "STEAM" if _mv.get("steam") else ("FADE" if _mv.get("fade") else "")
+                    # Mark as sim-enhanced with the sim probability for transparency
+                    _se_sim_info = [e for e in (_se_leg.get("errors") or []) if "Sim blend" in e or "Sim-only" in e]
+                    scanner_out.at[_se_idx, "sim"] = "SIM" if _se_sim_info else "BOOT"
                     _se_upgraded += 1
                 _se_progress.empty()
                 # Drop edges that failed gate on sim re-eval
