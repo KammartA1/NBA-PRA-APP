@@ -7527,28 +7527,29 @@ with tabs[0]:
         if tasks:
             _inj_map = st.session_state.get("injury_team_map", {})
             with st.spinner("Computing projections..."):
-                with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as ex:
-                    futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
-                                      n_games=n_games, key_teammate_out=to,
-                                      bankroll=bankroll, frac_kelly=frac_kelly,
-                                      max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
-                                      market_prior_weight=market_prior_weight,
-                                      exclude_chaotic=bool(exclude_chaotic),
-                                      game_date=scan_date,
-                                      injury_team_map=_inj_map)
-                            for (tag, pname, mkt, line, meta, to) in tasks]
-                    results = []
-                    for f in futs:
-                        try:
-                            results.append(f.result(timeout=60))
-                        except TimeoutError:
-                            results.append({"player": "Error", "market": "?", "line": 0.0,
-                                            "errors": ["thread timeout (≥60s)"],
-                                            "gate_ok": False, "gate_reason": "thread timeout"})
-                        except Exception as _te:
-                            results.append({"player": "Error", "market": "?", "line": 0.0,
-                                            "errors": [f"thread error: {type(_te).__name__}: {_te}"],
-                                            "gate_ok": False, "gate_reason": "thread error"})
+                results = []
+                _model_progress = st.progress(0, text=f"Running model on {len(tasks)} legs...")
+                for _ti, (tag, pname, mkt, line, meta, to) in enumerate(tasks):
+                    _model_progress.progress(
+                        min((_ti + 1) / len(tasks), 1.0),
+                        text=f"Running model... {_ti + 1}/{len(tasks)}: {pname} {mkt}"
+                    )
+                    try:
+                        _leg = compute_leg_projection(
+                            pname, mkt, line, meta,
+                            n_games=n_games, key_teammate_out=to,
+                            bankroll=bankroll, frac_kelly=frac_kelly,
+                            max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
+                            market_prior_weight=market_prior_weight,
+                            exclude_chaotic=bool(exclude_chaotic),
+                            game_date=scan_date,
+                            injury_team_map=_inj_map)
+                        results.append(_leg)
+                    except Exception as _te:
+                        results.append({"player": pname, "market": mkt, "line": float(line),
+                                        "errors": [f"model error: {type(_te).__name__}: {_te}"],
+                                        "gate_ok": False, "gate_reason": "model error"})
+                _model_progress.empty()
             calib = st.session_state.get("calibrator_map")
             results = [recompute_pricing_fields(dict(leg), calib) for leg in results]
             st.session_state["last_results"] = results
