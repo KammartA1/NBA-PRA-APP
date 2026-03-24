@@ -8775,6 +8775,10 @@ with tabs[2]:
                 _filtered_out = _pre_count - len(candidates)
                 if _filtered_out > 0:
                     st.caption(f"Filtered {_filtered_out} non-current-NBA players from candidates")
+            # Store candidates for sim-enhance button (needs meta dicts)
+            st.session_state["_scanner_candidates"] = list(candidates)
+            # Reset sim-enhanced flag for new scan
+            st.session_state.pop("_sim_enhanced_scan_id", None)
             out_rows, dropped = [], []
             all_computed_legs = []  # [FEATURE] Stores all computed legs for Under scan
             if candidates:
@@ -9053,6 +9057,110 @@ with tabs[2]:
             st.dataframe(styled, use_container_width=True)
         except Exception:
             st.dataframe(scanner_out, use_container_width=True)
+        # ── SIM-ENHANCE: Run full possession sim on each edge sequentially ──
+        _sim_available = False
+        try:
+            from simulation.game_engine import GameEngine as _sim_check
+            _sim_available = True
+        except ImportError:
+            pass
+        if _sim_available and not st.session_state.get("_sim_enhanced_scan_id"):
+            if st.button("⚡ Enhance All with Sim Engine", key="sim_enhance_btn", use_container_width=True,
+                         help="Run full MC possession sim on each edge (sequential — no timeout). Updates projections in-place."):
+                _inj_map = st.session_state.get("injury_team_map", {})
+                _se_progress = st.progress(0, text="Sim-enhancing edges...")
+                _se_total = len(scanner_out)
+                _se_upgraded = 0
+                _se_dropped_idx = []
+                # Recover original candidates from session state for meta
+                _se_candidates = st.session_state.get("_scanner_candidates", [])
+                _se_meta_map = {}
+                for _pn, _mk, _ln, _mt in _se_candidates:
+                    _se_meta_map[(normalize_name(_pn), _mk, float(_ln))] = _mt
+                for _se_i, (_se_idx, _se_row) in enumerate(scanner_out.iterrows()):
+                    _se_progress.progress(
+                        min((_se_i + 1) / _se_total, 1.0),
+                        text=f"Sim-enhancing... {_se_i + 1}/{_se_total} ({_se_upgraded} upgraded)"
+                    )
+                    _se_pname = str(_se_row.get("player", ""))
+                    _se_mkt = str(_se_row.get("market", ""))
+                    _se_line = float(_se_row.get("line", 0))
+                    # Look up meta from candidates
+                    _se_key = (normalize_name(_se_pname), _se_mkt, _se_line)
+                    _se_meta = _se_meta_map.get(_se_key, {
+                        "event_id": None, "home_team": "", "away_team": "",
+                        "commence_time": "", "price": 2.0,
+                        "book": str(_se_row.get("book", "prizepicks")),
+                        "market_key": _se_row.get("market_key") or ODDS_MARKETS.get(_se_mkt),
+                        "side": "Over",
+                    })
+                    try:
+                        _se_leg = compute_leg_projection(
+                            _se_pname, _se_mkt, _se_line, _se_meta,
+                            n_games=n_games, key_teammate_out=False,
+                            bankroll=bankroll, frac_kelly=frac_kelly,
+                            max_risk_frac=float(st.session_state.get("max_risk_per_bet", 3.0)) / 100.0,
+                            market_prior_weight=market_prior_weight,
+                            exclude_chaotic=bool(exclude_chaotic),
+                            game_date=scan_start,
+                            injury_team_map=_inj_map,
+                            scan_mode=False)  # Full sim ensemble
+                    except Exception:
+                        continue
+                    _se_leg = recompute_pricing_fields(_se_leg, st.session_state.get("calibrator_map"))
+                    _se_pc = _se_leg.get("p_cal")
+                    if _se_pc is None or not _se_leg.get("gate_ok"):
+                        _se_dropped_idx.append(_se_idx)
+                        continue
+                    _se_pc = float(_se_pc)
+                    _se_pi = _se_leg.get("p_implied")
+                    _se_ev = _se_leg.get("ev_adj")
+                    if _se_pi is None or _se_ev is None:
+                        continue
+                    _se_adv = _se_pc - float(_se_pi)
+                    # Update row in-place
+                    scanner_out.at[_se_idx, "p_cal"] = round(_se_pc, 3)
+                    scanner_out.at[_se_idx, "advantage"] = round(_se_adv, 3)
+                    scanner_out.at[_se_idx, "ev_adj_pct"] = round(float(_se_ev) * 100, 2)
+                    scanner_out.at[_se_idx, "proj"] = safe_round(_se_leg.get("proj"))
+                    scanner_out.at[_se_idx, "edge_cat"] = _se_leg.get("edge_cat", "")
+                    scanner_out.at[_se_idx, "regime"] = _se_leg.get("regime", "")
+                    scanner_out.at[_se_idx, "sharp"] = safe_round(_se_leg.get("sharpness_score"), 0)
+                    scanner_out.at[_se_idx, "sharp_tier"] = _se_leg.get("sharpness_tier", "")
+                    scanner_out.at[_se_idx, "trend"] = _se_leg.get("trend_label", "")
+                    scanner_out.at[_se_idx, "fatigue"] = _se_leg.get("fatigue_label", "Normal")
+                    scanner_out.at[_se_idx, "stake_$"] = round(_se_leg.get("stake", 0), 2)
+                    scanner_out.at[_se_idx, "pp_edge_%"] = round((_se_pc - 0.50) * 100, 1)
+                    scanner_out.at[_se_idx, "pp_2leg_ev_%"] = round((DFS_PP_PAYOUTS[2] * _se_pc ** 2 - 1.0) * 100, 1)
+                    scanner_out.at[_se_idx, "line_mv"] = (_se_leg.get("line_movement") or {}).get("direction", "--")
+                    scanner_out.at[_se_idx, "mv_pips"] = float((_se_leg.get("line_movement") or {}).get("pips", 0.0))
+                    _mv = _se_leg.get("line_movement") or {}
+                    scanner_out.at[_se_idx, "steam"] = "STEAM" if _mv.get("steam") else ("FADE" if _mv.get("fade") else "")
+                    _se_upgraded += 1
+                _se_progress.empty()
+                # Drop edges that failed gate on sim re-eval
+                if _se_dropped_idx:
+                    scanner_out = scanner_out.drop(_se_dropped_idx)
+                # Re-filter by thresholds
+                scanner_out = scanner_out[
+                    (scanner_out["p_cal"].astype(float) >= min_prob) &
+                    (scanner_out["advantage"].astype(float) >= min_adv) &
+                    (scanner_out["ev_adj_pct"].astype(float) / 100.0 >= min_ev)
+                ].copy()
+                # Re-sort by composite score
+                if "sharp" in scanner_out.columns and scanner_out["sharp"].notna().any():
+                    scanner_out["_sort"] = scanner_out["sharp"].fillna(0).astype(float) * 0.6 + scanner_out["ev_adj_pct"].fillna(0).astype(float) * 0.4
+                    scanner_out = scanner_out.sort_values("_sort", ascending=False).drop(columns=["_sort"])
+                else:
+                    scanner_out = scanner_out.sort_values("ev_adj_pct", ascending=False)
+                # Persist updated results
+                st.session_state["scanner_results"] = scanner_out
+                st.session_state["_sim_enhanced_scan_id"] = st.session_state.get("scanner_scan_id")
+                _save_scanner_cache()
+                st.success(f"Sim-enhanced {_se_upgraded}/{_se_total} edges · {len(_se_dropped_idx)} dropped on re-eval · {len(scanner_out)} final edges")
+                st.rerun()
+        elif st.session_state.get("_sim_enhanced_scan_id") == st.session_state.get("scanner_scan_id"):
+            st.caption("✓ Edges already sim-enhanced for this scan")
         # 📊 AI Slate Briefing
         if _get_anthropic_key():
             _sl_btn_col, _sl_clear_col = st.columns([3, 1])
