@@ -8898,100 +8898,10 @@ with tabs[2]:
                             _scan_sources.add({"pp_lines":"PrizePicks","ud_lines":"Underdog","sl_lines":"Sleeper"}.get(_ps, _ps))
                 _scan_markets = set(m for _, m, _, _ in candidates)
                 st.info(
-                    f"Pass 1 (bootstrap): Scanned {len(candidates)} candidates across {len(_scan_markets)} markets "
+                    f"Scanned {len(candidates)} candidates across {len(_scan_markets)} markets "
                     f"from {', '.join(_scan_sources) if _scan_sources else 'unknown'} "
                     f"in {_scan_elapsed:.1f}s — {len(out_rows)} edges, {len(dropped)} dropped"
                 )
-                # ── PASS 2: Re-run edges through full sim ensemble (scan_mode=False) ──
-                # Check if simulation module is available
-                try:
-                    from simulation.game_engine import GameEngine as _p2_check
-                    _p2_sim_ok = True
-                except ImportError:
-                    _p2_sim_ok = False
-                if out_rows and _p2_sim_ok:
-                    _pass2_candidates = []
-                    for _r in out_rows:
-                        # Find matching original candidate to get meta
-                        for _pn, _mk, _ln, _mt in candidates:
-                            if _pn == _r["player"] and _mk == _r["market"] and float(_ln) == float(_r["line"]):
-                                _pass2_candidates.append((_pn, _mk, _ln, _mt))
-                                break
-                    if _pass2_candidates:
-                        _p2_t0 = time.time()
-                        _p2_progress = st.progress(0, text=f"Pass 2: Sim-enhancing {len(_pass2_candidates)} edges...")
-                        _p2_workers = min(8, len(_pass2_candidates))
-                        _p2_done = 0
-                        with ThreadPoolExecutor(max_workers=_p2_workers) as ex:
-                            _p2_futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
-                                                  n_games=n_games, key_teammate_out=False,
-                                                  bankroll=bankroll, frac_kelly=frac_kelly,
-                                                  max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
-                                                  market_prior_weight=market_prior_weight,
-                                                  exclude_chaotic=bool(exclude_chaotic),
-                                                  game_date=scan_start,
-                                                  injury_team_map=_inj_map,
-                                                  scan_mode=False)
-                                        for pname, mkt, line, meta in _pass2_candidates]
-                            _p2_upgraded = 0
-                            for (_pn, _mk, _ln, _mt), fut in zip(_pass2_candidates, _p2_futs):
-                                _p2_done += 1
-                                _p2_progress.progress(
-                                    min(_p2_done / len(_pass2_candidates), 1.0),
-                                    text=f"Pass 2: Sim-enhancing... {_p2_done}/{len(_pass2_candidates)}"
-                                )
-                                try:
-                                    _p2_leg = fut.result(timeout=45)
-                                except Exception:
-                                    continue
-                                _p2_leg = recompute_pricing_fields(_p2_leg, st.session_state.get("calibrator_map"))
-                                if not _p2_leg.get("gate_ok"):
-                                    # Sim re-evaluation gated this leg — remove from out_rows
-                                    out_rows = [r for r in out_rows if not (r["player"] == _pn and r["market"] == _mk and float(r["line"]) == float(_ln))]
-                                    dropped.append({"player": _pn, "market": _mk, "reason": f"gated on sim pass: {_p2_leg.get('gate_reason','')}"})
-                                    continue
-                                # Update the existing out_row with sim-enhanced values
-                                _p2_pc = _p2_leg.get("p_cal")
-                                if _p2_pc is None:
-                                    continue
-                                _p2_pc = float(_p2_pc)
-                                _p2_pi = _p2_leg.get("p_implied")
-                                _p2_ev = _p2_leg.get("ev_adj")
-                                if _p2_pi is None or _p2_ev is None:
-                                    continue
-                                _p2_adv = _p2_pc - float(_p2_pi)
-                                # Find and update matching row
-                                for _row in out_rows:
-                                    if _row["player"] == _pn and _row["market"] == _mk and float(_row["line"]) == float(_ln):
-                                        _row["p_cal"] = round(_p2_pc, 3)
-                                        _row["advantage"] = round(_p2_adv, 3)
-                                        _row["ev_adj_pct"] = round(float(_p2_ev) * 100, 2)
-                                        _row["proj"] = safe_round(_p2_leg.get("proj"))
-                                        _row["edge_cat"] = _p2_leg.get("edge_cat", "")
-                                        _row["regime"] = _p2_leg.get("regime", "")
-                                        _row["sharp"] = safe_round(_p2_leg.get("sharpness_score"), 0)
-                                        _row["sharp_tier"] = _p2_leg.get("sharpness_tier", "")
-                                        _row["trend"] = _p2_leg.get("trend_label", "")
-                                        _row["fatigue"] = _p2_leg.get("fatigue_label", "Normal")
-                                        _row["stake_$"] = round(_p2_leg.get("stake", 0), 2)
-                                        _row["pp_edge_%"] = round((_p2_pc - 0.50) * 100, 1)
-                                        _row["pp_2leg_ev_%"] = round((DFS_PP_PAYOUTS[2] * _p2_pc**2 - 1.0) * 100, 1)
-                                        _p2_upgraded += 1
-                                        break
-                        _p2_progress.empty()
-                        _p2_elapsed = time.time() - _p2_t0
-                        # Re-filter: sim pass may have shifted EV/advantage below thresholds
-                        _pre_filter_count = len(out_rows)
-                        out_rows = [r for r in out_rows
-                                    if float(r.get("p_cal", 0)) >= min_prob
-                                    and float(r.get("advantage", 0)) >= min_adv
-                                    and float(r.get("ev_adj_pct", 0)) / 100.0 >= min_ev]
-                        _p2_filtered = _pre_filter_count - len(out_rows)
-                        st.success(
-                            f"Pass 2 (sim ensemble): {_p2_upgraded} legs upgraded with MC possession sim "
-                            f"in {_p2_elapsed:.1f}s"
-                            + (f" ({_p2_filtered} dropped below threshold)" if _p2_filtered else "")
-                        )
             out_df = pd.DataFrame(out_rows)
             if not out_df.empty:
                 # [UPGRADE NEW] Sort by composite sharpness score (when available), then by EV as tiebreaker
