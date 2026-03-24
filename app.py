@@ -8486,6 +8486,14 @@ with tabs[2]:
                 elif _pp_rows:
                     st.session_state["pp_lines"] = pd.DataFrame(_pp_rows)
                     st.success(f"✓ {len(_pp_rows)} PP props")
+                    # Debug: show unique stat_types so we can verify H1/H2 mapping
+                    _pp_stat_types = sorted(set(r.get("stat_type","") for r in _pp_rows if r.get("stat_type")))
+                    _pp_mapped = {s: map_platform_stat_to_market(s) for s in _pp_stat_types}
+                    _pp_unmapped = [s for s, m in _pp_mapped.items() if m is None]
+                    with st.expander(f"PP stat_types ({len(_pp_stat_types)} unique)", expanded=False):
+                        st.write({s: m or "⚠ UNMAPPED" for s, m in _pp_mapped.items()})
+                        if _pp_unmapped:
+                            st.warning(f"Unmapped stat_types: {_pp_unmapped}")
                 else:
                     st.warning("PP: 0 props found")
             _pp_loaded = st.session_state.get("pp_lines")
@@ -8738,6 +8746,9 @@ with tabs[2]:
                         stat_t = r.get("stat_type","")
                         mkt = map_platform_stat_to_market(stat_t)
                         if not mkt or mkt not in MARKET_OPTIONS:
+                            continue
+                        # Filter by user's market selection
+                        if mkt not in markets_sel:
                             continue
                         line = r.get("line")
                         if not pname or line is None or pd.isna(line):
@@ -9530,6 +9541,11 @@ with tabs[3]:
                     pp_df = pd.DataFrame(pp_lines)
                     st.session_state["pp_lines"] = pp_df
                     st.success(f"Fetched {len(pp_df)} PrizePicks props.")
+                    # Debug: show unique stat_types
+                    _pp_stat_types2 = sorted(pp_df["stat_type"].dropna().unique()) if "stat_type" in pp_df.columns else []
+                    _pp_mapped2 = {s: map_platform_stat_to_market(s) for s in _pp_stat_types2}
+                    with st.expander(f"PP stat_types ({len(_pp_stat_types2)} unique)", expanded=False):
+                        st.write({s: m or "⚠ UNMAPPED" for s, m in _pp_mapped2.items()})
                     if _auto_on:
                         # Also push to background state so auto-fetcher has fresh baseline
                         _s = _pp_auto_state()
