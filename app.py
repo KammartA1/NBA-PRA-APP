@@ -3411,6 +3411,17 @@ def _pp_league_is_nba(league_str: str) -> bool:
     s = re.sub(r"[\s_\-\(\)]+", " ", str(league_str or "").upper()).strip()
     return any(s == p or s.startswith(p + " ") or s.startswith(p + "_") for p in _PP_NBA_LEAGUE_PREFIXES)
 
+def _pp_league_half_prefix(league_str: str) -> str:
+    """Return 'H1 ', 'H2 ', 'Q1 ' etc. if the league indicates a period, else ''."""
+    s = re.sub(r"[\s_\-\(\)]+", " ", str(league_str or "").upper()).strip()
+    if "1H" in s or "FIRST HALF" in s:
+        return "H1 "
+    if "2H" in s or "SECOND HALF" in s:
+        return "H2 "
+    if "1Q" in s or "FIRST QUARTER" in s:
+        return "Q1 "
+    return ""
+
 def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")):
     """Parse PrizePicks JSON response into list of prop dicts.
     Pass league_filter=None to accept all leagues (e.g. when user pastes full-site JSON).
@@ -3448,20 +3459,28 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
             odds_type = {1: "goblin", 2: "standard", 3: "demon"}.get(int(rank_val), "")
         if player_name and stat_type and line_score is not None:
             try:
+                # If league indicates a half/quarter (e.g. "NBA 1H"), prefix the stat_type
+                # so "Points" under "NBA 1H" becomes "H1 Points" for correct market mapping.
+                league_raw = str(attrs.get("league", "") or "")
+                _half_pfx = _pp_league_half_prefix(league_raw)
+                effective_stat = stat_type
+                if _half_pfx and not stat_type.upper().startswith(("H1","H2","1H","2H","Q1","1Q")):
+                    effective_stat = _half_pfx + stat_type
                 rows.append({
                     "player": player_name,
-                    "stat_type": stat_type,
+                    "stat_type": effective_stat,
                     "line": float(line_score),
                     "start_time": attrs.get("start_time", ""),
                     "source": "prizepicks",
                     "odds_type": odds_type or "standard",
+                    "league": league_raw,
                 })
             except (TypeError, ValueError):
                 pass
     return rows
 def _parse_pp_response_all(data):
-    """Parse PP JSON accepting all leagues — used when user pastes full-site JSON."""
-    return _parse_pp_response(data, league_filter=None)
+    """Parse PP JSON — still filters NBA only (user may paste full-site JSON with all sports)."""
+    return _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H"))
 def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """Make one PrizePicks API request.
     Uses multi-browser curl_cffi impersonation (matching GOLFAPP's proven approach),
@@ -8741,6 +8760,21 @@ with tabs[2]:
                             "market_key": ODDS_MARKETS.get(mkt), "side": "Over",
                         }
                         candidates.append((pname, mkt, float(line), meta))
+            # ── Pre-filter: remove non-current-NBA players ──────────────
+            # Use bulk game log (already cached) to build set of active NBA player names
+            _bulk_gl = _fetch_bulk_gamelogs()
+            _active_nba_names: set = set()
+            if _bulk_gl is not None and not _bulk_gl.empty:
+                _name_col = "PLAYER_NAME" if "PLAYER_NAME" in _bulk_gl.columns else None
+                if _name_col:
+                    _active_nba_names = {normalize_name(n) for n in _bulk_gl[_name_col].dropna().unique()}
+            if _active_nba_names:
+                _pre_count = len(candidates)
+                candidates = [(p, m, l, mt) for p, m, l, mt in candidates
+                              if normalize_name(p) in _active_nba_names]
+                _filtered_out = _pre_count - len(candidates)
+                if _filtered_out > 0:
+                    st.caption(f"Filtered {_filtered_out} non-current-NBA players from candidates")
             out_rows, dropped = [], []
             all_computed_legs = []  # [FEATURE] Stores all computed legs for Under scan
             if candidates:
