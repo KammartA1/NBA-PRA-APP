@@ -3407,9 +3407,12 @@ PRIZEPICKS_API = "https://api.prizepicks.com/projections"
 _PP_NBA_LEAGUE_PREFIXES = ("NBA",)  # matches "NBA", "NBA 1Q", "NBA 1H", "NBA 2H", "NBA_1Q", etc.
 
 def _pp_league_is_nba(league_str: str) -> bool:
-    """Return True if the league string is any NBA variant from PrizePicks API."""
-    s = re.sub(r"[\s_\-\(\)]+", " ", str(league_str or "").upper()).strip()
-    return any(s == p or s.startswith(p + " ") or s.startswith(p + "_") for p in _PP_NBA_LEAGUE_PREFIXES)
+    """Return True if the league string is any NBA variant from PrizePicks API.
+    Handles: 'NBA', 'NBA1H', 'NBA1Q', 'NBA 1H', 'NBA_2H', 'NBA (1H)', etc.
+    Excludes: 'WNBASZN', 'NBB', 'AUSNBL' — must start with exactly 'NBA'.
+    """
+    s = re.sub(r"[\s_\-\(\)]+", "", str(league_str or "").upper()).strip()
+    return s == "NBA" or (s.startswith("NBA") and len(s) > 3 and s[3:4].isdigit())
 
 def _pp_league_half_prefix(league_str: str) -> str:
     """Return 'H1 ', 'H2 ', 'Q1 ' etc. if the league indicates a period, else ''."""
@@ -3425,10 +3428,16 @@ def _pp_league_half_prefix(league_str: str) -> str:
 def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")):
     """Parse PrizePicks JSON response into list of prop dicts.
     Pass league_filter=None to accept all leagues (e.g. when user pastes full-site JSON).
-    Uses fuzzy NBA league matching so "NBA (1H)", "NBA_1Q", "NBA2H" etc. all pass.
+    Uses fuzzy NBA league matching so "NBA1H", "NBA1Q", "NBA2H" etc. all pass.
+    Resolves league from relationships → included (not from attributes.league which is empty).
     """
     _PP_VALID_TYPES = {"projection", "new_player_projection", "boardprojection"}
     included = {item["id"]: item for item in data.get("included", []) if isinstance(item, dict) and "id" in item}
+    # Build league ID → name map from included items
+    _league_name_map = {}
+    for _iid, _item in included.items():
+        if _item.get("type") == "league":
+            _league_name_map[_iid] = (_item.get("attributes", {}) or {}).get("name", "")
     rows = []
     for proj in data.get("data", []):
         if not isinstance(proj, dict):
@@ -3439,11 +3448,16 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
         _has_fields = bool(attrs.get("stat_type") and attrs.get("line_score") is not None)
         if _type not in _PP_VALID_TYPES and not _has_fields:
             continue
-        if league_filter:
-            league = str(attrs.get("league", "") or "")
-            if league and not _pp_league_is_nba(league):
-                continue
         rels = proj.get("relationships", {}) or {}
+        # Resolve league from relationships → included (PP stores league as a relationship, not attribute)
+        _league_rel = (rels.get("league", {}).get("data", {}) or {}).get("id")
+        league = _league_name_map.get(_league_rel, "") if _league_rel else ""
+        # Fallback: check attributes.league (older API format or pasted JSON)
+        if not league:
+            league = str(attrs.get("league", "") or "")
+        if league_filter:
+            if not league or not _pp_league_is_nba(league):
+                continue
         player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
         if not player_id:
             player_id = (rels.get("player", {}).get("data", {}) or {}).get("id")
@@ -3459,10 +3473,9 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
             odds_type = {1: "goblin", 2: "standard", 3: "demon"}.get(int(rank_val), "")
         if player_name and stat_type and line_score is not None:
             try:
-                # If league indicates a half/quarter (e.g. "NBA 1H"), prefix the stat_type
-                # so "Points" under "NBA 1H" becomes "H1 Points" for correct market mapping.
-                league_raw = str(attrs.get("league", "") or "")
-                _half_pfx = _pp_league_half_prefix(league_raw)
+                # If league indicates a half/quarter (e.g. "NBA1H"), prefix the stat_type
+                # so "Points" under "NBA1H" becomes "H1 Points" for correct market mapping.
+                _half_pfx = _pp_league_half_prefix(league)
                 effective_stat = stat_type
                 if _half_pfx and not stat_type.upper().startswith(("H1","H2","1H","2H","Q1","1Q")):
                     effective_stat = _half_pfx + stat_type
@@ -3473,7 +3486,7 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
                     "start_time": attrs.get("start_time", ""),
                     "source": "prizepicks",
                     "odds_type": odds_type or "standard",
-                    "league": league_raw,
+                    "league": league,
                 })
             except (TypeError, ValueError):
                 pass
