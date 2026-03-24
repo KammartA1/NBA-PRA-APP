@@ -5169,6 +5169,7 @@ def compute_leg_projection(
     market_prior_weight=0.65, exclude_chaotic=True,
     game_date=None, is_home=None,
     injury_team_map=None,   # {team_abbr_upper: [player_name_lower, ...]} for OUT/DOUBTFUL players
+    scan_mode=False,        # skip simulation & line-movement I/O for fast scanning
 ):
     errors = []
     game_date = game_date or date.today()
@@ -5473,7 +5474,8 @@ def compute_leg_projection(
         sim_prob = None
         sim_mean = None
         sim_std  = None
-        try:
+        if not scan_mode:
+          try:
             from simulation.game_engine import GameEngine
             from simulation.config import SimulationConfig
             from simulation.player_state import PlayerProfile as SimPlayerProfile
@@ -5539,9 +5541,9 @@ def compute_leg_projection(
                     elif sim_prob is not None:
                         p_over_raw = sim_prob
                         errors.append(f"Sim-only: sim_p={sim_prob:.3f} (bootstrap unavailable)")
-        except ImportError:
+          except ImportError:
             pass  # simulation package not installed
-        except Exception as _sim_err:
+          except Exception as _sim_err:
             errors.append(f"Sim engine skipped: {type(_sim_err).__name__}")
         if p_over_raw is None:
             errors.append(f"Insufficient history (need >=4 games, have {len(stat_series.dropna())})")
@@ -5713,7 +5715,10 @@ def compute_leg_projection(
                 stake_reason  = "dnp_risk_half"
     mk_key = meta.get("market_key") if meta else ODDS_MARKETS.get(market_name,"")
     player_norm = normalize_name(player_name)
-    mv_signal = get_line_movement_signal(player_norm, str(mk_key), float(line), side_str)
+    if scan_mode:
+        mv_signal = {"direction": "FLAT", "pips": 0.0, "steam": False, "fade": False, "msg": "", "opening": float(line)}
+    else:
+        mv_signal = get_line_movement_signal(player_norm, str(mk_key), float(line), side_str)
     sharp_div = {}
     if meta and meta.get("event_id"):
         try:
