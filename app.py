@@ -649,14 +649,19 @@ STAT_FIELDS = {
 # Half-game projection scale factors (league-average baseline)
 HALF_FACTOR = {
     "H1 Points": 0.52, "H1 Rebounds": 0.52, "H1 Assists": 0.52,
-    "H1 3PM": 0.52, "H1 PRA": 0.52, "H1 PR": 0.52, "H1 PA": 0.52,
+    "H1 3PM": 0.52, "H1 PRA": 0.52, "H1 PR": 0.52, "H1 PA": 0.52, "H1 RA": 0.52,
     "H1 FTM": 0.52, "H1 FTA": 0.52, "H1 FGM": 0.52, "H1 FGA": 0.52,
+    "H1 Blocks": 0.52, "H1 Steals": 0.52, "H1 Turnovers": 0.52,
     "H2 Points": 0.48, "H2 Rebounds": 0.48, "H2 Assists": 0.48,
-    "H2 3PM": 0.48, "H2 PRA": 0.48, "H2 PR": 0.48, "H2 PA": 0.48,
+    "H2 3PM": 0.48, "H2 PRA": 0.48, "H2 PR": 0.48, "H2 PA": 0.48, "H2 RA": 0.48,
     "H2 FTM": 0.48, "H2 FTA": 0.48, "H2 FGM": 0.48, "H2 FGA": 0.48,
+    "H2 Blocks": 0.48, "H2 Steals": 0.48, "H2 Turnovers": 0.48,
     # 1Q markets: Q1_SCORING_FRACTION of full-game (research-validated: 26.5%, not 25%)
     "Q1 Points": Q1_SCORING_FRACTION, "Q1 Rebounds": 0.25, "Q1 Assists": 0.25,
     "Q1 3PM": 0.25, "Q1 PRA": Q1_SCORING_FRACTION, "Q1 FTM": 0.24, "Q1 FGA": Q1_SCORING_FRACTION,
+    "Q1 Blocks": 0.25, "Q1 Steals": 0.25, "Q1 Turnovers": 0.25,
+    "Q1 FGM": 0.25, "Q1 FTA": 0.25, "Q1 PA": Q1_SCORING_FRACTION,
+    "Q1 PR": Q1_SCORING_FRACTION, "Q1 RA": 0.25,
 }
 # [AUDIT FIX] Position-specific half-game adjustment deltas on top of HALF_FACTOR baseline.
 # Guards attack more in H1 (faster pace, early shot attempts); Bigs grab more boards in H2
@@ -4367,12 +4372,18 @@ def format_edge_alert(leg):
     p_cal = leg.get("p_cal") or 0
     ev = (leg.get("ev_adj_pct") or (leg.get("ev_adj", 0) * 100 if leg.get("ev_adj") else 0))
     proj = leg.get("proj")
+    _side_label = leg.get("bet_side", leg.get("side", "Over"))
+    _side_prefix = "U" if str(_side_label).lower() == "under" else "O"
+    try:
+        proj_f = float(proj) if proj is not None else None
+    except (ValueError, TypeError):
+        proj_f = None
     return (
-        f"**{leg.get('player','?')}** — {leg.get('market','?')} O{leg.get('line','?')}\n"
-        f"Proj: {proj:.1f} | P: {p_cal*100:.1f}% | EV: {ev:.1f}%\n"
+        f"**{leg.get('player','?')}** — {leg.get('market','?')} {_side_prefix}{leg.get('line','?')}\n"
+        f"Proj: {proj_f:.1f} | P: {p_cal*100:.1f}% | EV: {ev:.1f}%\n"
         f"Book: {leg.get('book','?')} | {leg.get('edge_cat','')}"
-    ) if proj else (
-        f"**{leg.get('player','?')}** — {leg.get('market','?')} O{leg.get('line','?')}\n"
+    ) if proj_f is not None else (
+        f"**{leg.get('player','?')}** — {leg.get('market','?')} {_side_prefix}{leg.get('line','?')}\n"
         f"P: {p_cal*100:.1f}% | EV: {ev:.1f}% | {leg.get('edge_cat','')}"
     )
 # ──────────────────────────────────────────────
@@ -7925,7 +7936,7 @@ with tabs[1]:
                 f"<div style='text-align:center;padding:0.3rem;background:{_sim_col}12;border:1px solid {_sim_col}40;border-radius:4px;'>"
                 f"<div style='font-size:0.52rem;color:#4A607A;letter-spacing:0.12em;font-family:Chakra Petch,monospace;'>SIM ENGINE</div>"
                 f"<div style='font-size:0.72rem;color:{_sim_col};font-weight:600;font-family:Fira Code,monospace;'>{_n_sim_legs}/{len(res)} BLENDED</div>"
-                f"<div style='font-size:0.50rem;color:#3A5570;'>500 sims/leg</div>"
+                f"<div style='font-size:0.50rem;color:#3A5570;'>3000 sims/leg</div>"
                 f"</div>", unsafe_allow_html=True)
         except Exception:
             pass
@@ -8517,7 +8528,7 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                     _dd_data = [
                         {
                             "player": l.get("player"), "market": l.get("market"),
-                            "line": l.get("line"), "side": l.get("side", "Over"),
+                            "line": l.get("line"), "side": l.get("bet_side", l.get("side", "Over")),
                             "proj": round(float(l.get("proj") or 0), 2),
                             "p_cal_%": round(float(l.get("p_cal") or 0) * 100, 1),
                             "ev_%": round(float(l.get("ev_pct") or 0), 1),
@@ -8569,7 +8580,7 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                     _legs_data = [
                         {
                             "player": l.get("player"), "market": l.get("market"),
-                            "line": l.get("line"), "side": "Over",
+                            "line": l.get("line"), "side": l.get("bet_side", l.get("side", "Over")),
                             "p_cal_%": round(float(l.get("p_cal") or 0) * 100, 1),
                             "ev_%": round(float(l.get("ev_pct") or 0), 1),
                             "edge_cat": l.get("edge_cat"), "team": l.get("team"),
@@ -9247,8 +9258,16 @@ with tabs[2]:
                     if _adv_u < min_adv or _ev_u < min_ev:
                         continue
                     _umv = _leg.get("line_movement") or {}
+                    _u_src_badge = {"prizepicks": "PP", "underdog": "UD"}.get(
+                        str((_mt or {}).get("book","")).lower(),
+                        (_mt or {}).get("book","") or "odds"
+                    )
                     under_rows.append({
                         "side": "Under",
+                        "src": _u_src_badge,
+                        "price_decimal": _leg.get("price_decimal"),
+                        "book": _leg.get("book") or ((_mt or {}).get("book")),
+                        "event_id": _leg.get("event_id") or ((_mt or {}).get("event_id")),
                         "player": _pn, "market": _mk, "line": _ln,
                         "p_cal": round(_p_under, 3),
                         "p_implied": round(_p_imp_u, 3),
@@ -10221,6 +10240,7 @@ with tabs[3]:
             if ud_filter:
                 display_ud = ud_df[ud_df["player"].str.strip().str.contains(ud_filter.strip(), case=False, na=False)]
             st.dataframe(display_ud, use_container_width=True)
+            ud_min_ev = st.number_input("Min EV%", -5.0, 30.0, 2.0, 0.5, key="ud_min_ev")
             if st.button("Scan Underdog vs Model", use_container_width=True):
                 ud_candidates = []
                 _ud_meta_base = {"event_id": None, "home_team": "", "away_team": "",
@@ -10253,7 +10273,8 @@ with tabs[3]:
                                     pass
                     calib = st.session_state.get("calibrator_map")
                     ud_results = [recompute_pricing_fields(dict(l), calib) for l in ud_results]
-                    ud_edges = [l for l in ud_results if l.get("gate_ok") and float(l.get("ev_adj",0) or 0) > 0]
+                    ud_min_ev = st.session_state.get("ud_min_ev", 2.0)
+                    ud_edges = [l for l in ud_results if l.get("gate_ok") and float(l.get("ev_adj",0) or 0)*100 >= ud_min_ev]
                     if ud_edges:
                         st.success(f"{len(ud_edges)} edges vs Underdog lines")
                         ud_out = pd.DataFrame([{
@@ -10400,12 +10421,13 @@ with tabs[3]:
             if st.button("Find Best Lines for Scanner Results", use_container_width=True):
                 shop_rows = []
                 for _, r in scanner_out_shop.iterrows():
-                    eid = r.get("event_id") if hasattr(r,"get") else None
-                    mk = ODDS_MARKETS.get(r.get("market","") if hasattr(r,"get") else "")
-                    pn = normalize_name(str(r.get("player","") if hasattr(r,"get") else ""))
+                    eid = r.get("event_id")
+                    mk = ODDS_MARKETS.get(r.get("market", ""))
+                    pn = normalize_name(str(r.get("player", "")))
+                    _shop_side = str(r.get("side", "Over")).strip()
                     best_p, best_b = None, None
                     if eid and mk and pn and has_odds_key:
-                        best_p, best_b = get_best_available_price(eid, mk, pn, "Over")
+                        best_p, best_b = get_best_available_price(eid, mk, pn, _shop_side)
                     shop_rows.append({
                         "player": r.get("player",""), "market": r.get("market",""),
                         "line": r.get("line"), "book": r.get("book",""),
@@ -10716,7 +10738,11 @@ with tabs[5]:
             else:
                 st.info("Moderate hit rate. Continue collecting data, focus on CLV tracking.")
             if brier_cal > brier:
-                st.warning("Calibrator is WORSENING Brier score - needs more data. Reset to identity.")
+                st.warning("Calibrator is WORSENING Brier score - needs more data or a reset.")
+                if st.button("Reset Calibrator to Identity", key="reset_calib_brier_btn"):
+                    st.session_state["calibrator_map"] = None
+                    st.success("Calibrator reset to identity. Raw probabilities will be used.")
+                    st.rerun()
     # ── Rolling Brier Score ────────────────────────────────────
     st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
     st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>ROLLING BRIER SCORE (TRAILING WINDOWS)</div>", unsafe_allow_html=True)
@@ -10754,8 +10780,10 @@ with tabs[6]:
             rate = len(clv_pos) / max(n_clv, 1)
             c1, c2, c3 = st.columns(3)
             c1.metric("Beats Closing Line", f"{rate*100:.0f}%", help="CLV price > 0 = bought above close")
-            c2.metric("Avg CLV (price)", f"{clv_lb['clv_price'].mean():.4f}" if not clv_lb.empty else "--")
-            c3.metric("Avg Line CLV", f"{clv_lb['clv_line'].mean():.2f}" if not clv_lb.empty else "--")
+            _avg_clv_price = clv_lb['clv_price'].mean()
+            _avg_clv_line = clv_lb['clv_line'].mean()
+            c2.metric("Avg CLV (price)", f"{_avg_clv_price:.4f}" if not pd.isna(_avg_clv_price) else "--")
+            c3.metric("Avg Line CLV", f"{_avg_clv_line:.2f}" if not pd.isna(_avg_clv_line) else "--")
             if n_clv < 10:
                 st.warning(f"Only {n_clv} CLV data point{'s' if n_clv != 1 else ''} — rate is not yet statistically meaningful. Keep logging bets and fetching CLV updates.")
             st.dataframe(clv_lb, use_container_width=True)
@@ -11021,9 +11049,10 @@ border-bottom:1px solid #0E1E30;'>▸ BANKROLL</div>""", unsafe_allow_html=True)
             value=float(st.session_state.get("bankroll", 1000.0)), step=50.0,
             key="settings_bankroll")
         st.session_state["bankroll"] = float(_set_br)
-        _bs2 = load_user_state(user_id)
+        _settings_uid = st.session_state.get("user_id", "trader")
+        _bs2 = load_user_state(_settings_uid)
         _bs2["bankroll"] = float(_set_br)
-        save_user_state(user_id, _bs2)
+        save_user_state(_settings_uid, _bs2)
         # ── MODEL PARAMETERS ────────────────────────────────
         st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;
 color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
