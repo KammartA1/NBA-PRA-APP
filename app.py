@@ -3892,140 +3892,116 @@ def _clv_auto_loop(state: dict):
             log.warning("[Auto-CLV] Error in background loop: %s", e)
 
 def _clv_auto_update_pending_bets() -> dict:
-    """Core logic: find pending bets for games starting within 10 minutes,
-    fetch closing lines, update CLV fields on the bets."""
-    result = {"bets_checked": 0, "bets_updated": 0, "errors": []}
-    try:
-        from database.connection import session_scope as _db_session_scope
-        from database.models import Bet as _BetModel, Event as _EventModel, LineMovement as _LMModel
-        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-    except ImportError as ie:
-        result["errors"].append(f"Import error: {ie}")
-        return result
+    """Core logic: scan CSV history files for pending bets with games starting
+    within the next 12 minutes, fetch closing lines via apply_clv_update_to_legs(),
+    and write updated legs back to CSV."""
+    result = {"bets_checked": 0, "bets_updated": 0, "errors": [], "files_scanned": 0}
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    import glob as _glob_mod
 
     now = _dt.now(_tz.utc)
-    window_start = now - _td(minutes=2)
-    window_end = now + _td(minutes=12)  # Capture lines 10-12 min before tip
+    window_end = now + _td(minutes=12)
 
-    try:
-        with _db_session_scope() as session:
-            # Find events starting within the window
-            starting_events = (
-                session.query(_EventModel)
-                .filter(
-                    _EventModel.sport == "NBA",
-                    _EventModel.status.in_(["scheduled", "in_progress"]),
-                    _EventModel.start_time >= window_start,
-                    _EventModel.start_time <= window_end,
-                )
-                .all()
-            )
-            if not starting_events:
-                return result
+    # Find all history CSV files
+    csv_files = _glob_mod.glob("history_*.csv")
+    if not csv_files:
+        return result
 
-            event_names = {ev.event_name for ev in starting_events}
-            # Get event_ids for Odds API lookups
-            event_api_ids = {}
-            for ev in starting_events:
+    for csv_path in csv_files:
+        result["files_scanned"] += 1
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as e:
+            result["errors"].append(f"Read {csv_path}: {e}")
+            continue
+
+        if df.empty or "legs" not in df.columns or "result" not in df.columns:
+            continue
+
+        modified = False
+        for idx in range(len(df)):
+            row_result = str(df.loc[idx, "result"]).strip()
+            if row_result != "Pending":
+                continue
+
+            # Parse legs JSON
+            try:
+                legs_raw = df.loc[idx, "legs"]
+                if not isinstance(legs_raw, str) or not legs_raw.strip():
+                    continue
+                legs = json.loads(legs_raw)
+                if not isinstance(legs, list) or not legs:
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            # Check if any leg's commence_time is within the 12-minute window
+            has_upcoming = False
+            for leg in legs:
+                ct = leg.get("commence_time")
+                if not ct:
+                    continue
                 try:
-                    meta = json.loads(ev.metadata_json or "{}")
-                    if meta.get("event_id"):
-                        event_api_ids[ev.event_name] = meta["event_id"]
-                except Exception:
-                    pass
+                    if isinstance(ct, str):
+                        # Parse ISO format commence_time
+                        ct_parsed = _dt.fromisoformat(ct.replace("Z", "+00:00"))
+                    else:
+                        continue
+                    # Game starts between now and 12 minutes from now
+                    if now <= ct_parsed <= window_end:
+                        has_upcoming = True
+                        break
+                except (ValueError, TypeError):
+                    continue
 
-            # Find all pending bets for these events
-            pending_bets = (
-                session.query(_BetModel)
-                .filter(
-                    _BetModel.sport == "NBA",
-                    _BetModel.status == "pending",
-                    _BetModel.event.in_(event_names),
-                    _BetModel.closing_line == None,
+            if not has_upcoming:
+                continue
+
+            # Check if CLV already applied recently (avoid redundant API calls)
+            already_updated = all(leg.get("line_close") is not None for leg in legs)
+            if already_updated:
+                continue
+
+            result["bets_checked"] += 1
+            log.info("[Auto-CLV] Found pending bet row %d in %s with upcoming game", idx, csv_path)
+
+            # Apply CLV update using the existing function
+            try:
+                updated_legs, errs = apply_clv_update_to_legs(legs)
+                for e in errs:
+                    result["errors"].append(e)
+
+                # Check if any legs were actually updated with closing lines
+                any_updated = any(
+                    ul.get("line_close") is not None
+                    for ul in updated_legs
                 )
-                .all()
-            )
-
-            if not pending_bets:
-                return result
-
-            result["bets_checked"] = len(pending_bets)
-            log.info("[Auto-CLV] Found %d pending bets for %d upcoming events",
-                     len(pending_bets), len(starting_events))
-
-            # Fetch closing lines for each event from Odds API
-            _fetched_lines = {}  # (event_name, player_norm, market) -> (line, price)
-            for ev_name, ev_api_id in event_api_ids.items():
-                try:
-                    from workers.closing_worker import _fetch_closing_lines_from_api
-                    api_rows = _fetch_closing_lines_from_api(ev_api_id)
-                    for row in api_rows:
-                        _pn = normalize_name(row.get("player", ""))
-                        _mk = row.get("market", "")
-                        _fetched_lines[(_pn, _mk)] = (row["line"], row.get("odds_decimal"))
-                        # Store as closing line movement in DB
-                        lm = _LMModel(
-                            sport="NBA",
-                            event=ev_name,
-                            market=_mk,
-                            book=row.get("book", "consensus"),
-                            player=row.get("player", ""),
-                            line=row["line"],
-                            odds=None,
-                            timestamp=now,
-                            is_opening=False,
-                            is_closing=True,
-                        )
-                        session.add(lm)
-                except Exception as e:
-                    result["errors"].append(f"API fetch for {ev_name}: {e}")
-
-            # Also check platform lines in session state (if available in shared scope)
-            # This handles PP/UD-sourced bets that don't have Odds API event IDs
-
-            # Update each pending bet with closing line + CLV
-            for bet in pending_bets:
-                _pn = normalize_name(bet.player or "")
-                _mk = bet.market or ""
-                closing_data = _fetched_lines.get((_pn, _mk))
-                if closing_data is None:
-                    # Try alternate market key formats
-                    for _alt_key, _alt_val in _fetched_lines.items():
-                        if _alt_key[0] == _pn and _mk in _alt_key[1]:
-                            closing_data = _alt_val
-                            break
-                if closing_data is not None:
-                    cl_line, cl_price = closing_data
-                    bet.closing_line = cl_line
-                    # Compute CLV
-                    from workers.closing_worker import compute_clv
-                    clv = compute_clv(
-                        bet_line=float(bet.bet_line),
-                        closing_line=float(cl_line),
-                        direction=bet.direction or "over",
-                    )
-                    # Store in features snapshot
-                    try:
-                        features = json.loads(bet.features_snapshot_json or "{}")
-                    except (json.JSONDecodeError, TypeError):
-                        features = {}
-                    features["closing_line"] = cl_line
-                    features["clv_cents"] = clv
-                    features["clv_auto_updated"] = True
-                    features["clv_computed_at"] = now.isoformat()
-                    features["closing_price"] = cl_price
-                    bet.features_snapshot_json = json.dumps(features, default=str)
+                if any_updated:
+                    df.loc[idx, "legs"] = json.dumps(updated_legs, default=str)
+                    modified = True
                     result["bets_updated"] += 1
-                    log.info(
-                        "[Auto-CLV] Updated %s %s %s: bet=%.1f close=%.1f CLV=%.2f%%",
-                        bet.player, bet.market, bet.direction,
-                        bet.bet_line, cl_line, clv,
-                    )
+                    # Log details
+                    for ul in updated_legs:
+                        if ul.get("line_close") is not None:
+                            log.info(
+                                "[Auto-CLV] Updated %s %s %s: bet=%.1f close=%.1f clv_line=%s",
+                                ul.get("player", "?"), ul.get("market", "?"),
+                                ul.get("side", "Over"),
+                                float(ul.get("line", 0) or 0),
+                                float(ul.get("line_close", 0) or 0),
+                                ul.get("clv_line", "?"),
+                            )
+            except Exception as e:
+                result["errors"].append(f"CLV update row {idx}: {e}")
+                log.warning("[Auto-CLV] Error updating row %d: %s", idx, e)
 
-            session.commit()
-    except Exception as e:
-        result["errors"].append(f"DB error: {e}")
-        log.warning("[Auto-CLV] Database error: %s", e)
+        # Write back to CSV if modified
+        if modified:
+            try:
+                df.to_csv(csv_path, index=False)
+                log.info("[Auto-CLV] Saved updated CLV data to %s", csv_path)
+            except Exception as e:
+                result["errors"].append(f"Save {csv_path}: {e}")
 
     return result
 
@@ -9836,33 +9812,10 @@ with tabs[2]:
                     st.success(f"Steam alerts fired to Discord/Telegram.")
             else:
                 st.success("No significant line moves vs opening. Lines are stable.")
-    # ── Auto CLV Tracking ──────────────────────────────────────────
+    # ── Scanner CLV snapshot (opening vs current for scanned edges) ──
     _active_scan = st.session_state.get("clv_active_scan", [])
     if _active_scan:
-        with st.expander(f"Auto-CLV Tracker ({len(_active_scan)} bets tracked)", expanded=False):
-            # Background thread status indicator
-            _clv_bg = _clv_auto_state()
-            _clv_bg_alive = _clv_bg.get("thread") and _clv_bg["thread"].is_alive()
-            _clv_bg_last = _clv_bg.get("last_run", "never")
-            _clv_bg_updates = _clv_bg.get("updates_count", 0)
-            _clv_bg_color = "#00FFB2" if _clv_bg_alive else "#FF3358"
-            st.markdown(
-                f"<div style='font-family:Chakra Petch,monospace;font-size:0.58rem;letter-spacing:0.10em;margin-bottom:0.5rem;'>"
-                f"<span style='color:{_clv_bg_color};'>● AUTO-CLV {'ACTIVE' if _clv_bg_alive else 'STOPPED'}</span>"
-                f" · Checks every 2m · Captures closing lines 10m before tip-off"
-                f" · Last check: {_clv_bg_last or 'pending'}"
-                f" · Auto-updates: {_clv_bg_updates}"
-                f"</div>"
-                f"<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#00FFB2;"
-                f"letter-spacing:0.10em;margin-bottom:0.5rem;'>"
-                f"Opening lines captured automatically. Current lines fetched live.</div>",
-                unsafe_allow_html=True,
-            )
-            # Restart button if thread died
-            if not _clv_bg_alive:
-                if st.button("Restart Auto-CLV Background Thread", key="restart_clv_bg"):
-                    _ensure_clv_auto_thread()
-                    st.rerun()
+        with st.expander(f"Scanner CLV Snapshot ({len(_active_scan)} edges)", expanded=False):
             clv_rows = []
             for _clv_bet in _active_scan:
                 _open_line, _open_price = get_opening_line(
@@ -9881,42 +9834,14 @@ with tabs[2]:
                         "Side": _clv_bet.get("side", ""),
                         "Open Line": f"{float(_open_line):.1f}",
                         "Current": f"{_current:.1f}",
-                        "CLV": f"{_move:+.1f}",
+                        "Move": f"{_move:+.1f}",
                         "Status": "Favorable" if _favorable else ("Neutral" if _move == 0 else "Unfavorable"),
                     })
             if clv_rows:
                 st.dataframe(pd.DataFrame(clv_rows), use_container_width=True, hide_index=True)
             else:
                 st.info("No opening lines captured yet. Run a scan first.")
-            _clv_btn_col1, _clv_btn_col2 = st.columns(2)
-            with _clv_btn_col1:
-                if st.button("Refresh CLV (re-fetch closing lines)", key="auto_clv_refresh"):
-                    if _active_scan:
-                        _updated_scan = []
-                        for _clv_bet in _active_scan:
-                            try:
-                                _cl_line, _cl_price, _cl_book, _cl_err = fetch_latest_market_for_leg(_clv_bet)
-                                if _cl_line is not None:
-                                    _clv_bet["line"] = _cl_line
-                                    _clv_bet["price_decimal"] = _cl_price
-                            except Exception:
-                                pass
-                            _updated_scan.append(_clv_bet)
-                        st.session_state["clv_active_scan"] = _updated_scan
-                    st.rerun()
-            with _clv_btn_col2:
-                if st.button("Force CLV Update Now (all pending bets)", key="force_clv_update"):
-                    with st.spinner("Fetching closing lines for all pending bets..."):
-                        _force_result = _clv_auto_update_pending_bets()
-                    if _force_result["bets_updated"] > 0:
-                        st.success(f"Updated CLV for {_force_result['bets_updated']}/{_force_result['bets_checked']} pending bets")
-                    elif _force_result["bets_checked"] > 0:
-                        st.info(f"Checked {_force_result['bets_checked']} bets — no closing lines available yet")
-                    else:
-                        st.info("No pending bets with upcoming games found")
-                    if _force_result.get("errors"):
-                        for _fe in _force_result["errors"]:
-                            st.caption(f"Error: {_fe}")
+            st.caption("Full Auto-CLV tracking for logged bets is on the History tab.")
     scanner_dropped = st.session_state.get("scanner_dropped", [])
     if scanner_dropped:
         with st.expander(f"Excluded ({len(scanner_dropped)})", expanded=False):
@@ -10632,6 +10557,87 @@ with tabs[4]:
                         st.success("CLV updated")
                 except Exception as e:
                     st.error(f"CLV update failed: {e}")
+        # ── Auto-CLV Background Tracker ──────────────────────────────
+        st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+        st.markdown("<span style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#FFB800;letter-spacing:0.10em;'>AUTO-CLV BACKGROUND TRACKER</span>", unsafe_allow_html=True)
+        st.caption("Automatically fetches closing lines for your pending bets 12 minutes before each game starts. No action needed — runs in the background every 2 minutes.")
+        _clv_bg = _clv_auto_state()
+        _clv_bg_alive = _clv_bg.get("thread") and _clv_bg["thread"].is_alive()
+        _clv_bg_last = _clv_bg.get("last_run", "never")
+        _clv_bg_updates = _clv_bg.get("updates_count", 0)
+        _clv_bg_last_result = _clv_bg.get("last_result") or {}
+        _clv_bg_color = "#00FFB2" if _clv_bg_alive else "#FF3358"
+        st.markdown(
+            f"<div style='font-family:Chakra Petch,monospace;font-size:0.58rem;letter-spacing:0.10em;margin:0.4rem 0;'>"
+            f"<span style='color:{_clv_bg_color};font-weight:700;'>● AUTO-CLV {'ACTIVE' if _clv_bg_alive else 'STOPPED'}</span>"
+            f" &nbsp;·&nbsp; Checks every 2m &nbsp;·&nbsp; 12-min pre-tip window"
+            f" &nbsp;·&nbsp; Last check: {_clv_bg_last or 'pending'}"
+            f" &nbsp;·&nbsp; Total auto-updates: {_clv_bg_updates}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        if _clv_bg_last_result:
+            _lr_checked = _clv_bg_last_result.get("bets_checked", 0)
+            _lr_updated = _clv_bg_last_result.get("bets_updated", 0)
+            _lr_files = _clv_bg_last_result.get("files_scanned", 0)
+            _lr_errs = _clv_bg_last_result.get("errors", [])
+            st.markdown(
+                f"<div style='font-family:Fira Code,monospace;font-size:0.55rem;color:#4A607A;margin-bottom:0.3rem;'>"
+                f"Last run: {_lr_files} file(s) scanned · {_lr_checked} pending bet(s) checked · {_lr_updated} updated"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            if _lr_errs:
+                for _ae in _lr_errs[:3]:
+                    st.caption(f"Error: {_ae}")
+        _clv_ctrl1, _clv_ctrl2 = st.columns(2)
+        with _clv_ctrl1:
+            if not _clv_bg_alive:
+                if st.button("Restart Auto-CLV Thread", key="hist_restart_clv_bg"):
+                    _ensure_clv_auto_thread()
+                    st.rerun()
+            else:
+                st.markdown("<span style='font-size:0.6rem;color:#00FFB2;'>Background thread running</span>", unsafe_allow_html=True)
+        with _clv_ctrl2:
+            if st.button("Force CLV Update Now", key="hist_force_clv_update"):
+                with st.spinner("Fetching closing lines for all pending bets in history..."):
+                    _force_result = _clv_auto_update_pending_bets()
+                if _force_result["bets_updated"] > 0:
+                    st.success(f"Updated CLV for {_force_result['bets_updated']}/{_force_result['bets_checked']} pending bets")
+                    st.rerun()
+                elif _force_result["bets_checked"] > 0:
+                    st.info(f"Checked {_force_result['bets_checked']} bets — no closing lines available yet (games may not be within 12-min window)")
+                else:
+                    st.info("No pending bets with upcoming games found in history")
+                if _force_result.get("errors"):
+                    for _fe in _force_result["errors"][:5]:
+                        st.caption(f"Error: {_fe}")
+        # Show CLV data for pending bets that have been auto-updated
+        _hist_clv_rows = []
+        for _hi in range(len(h)):
+            if str(h.loc[_hi, "result"]).strip() != "Pending":
+                continue
+            try:
+                _hlegs = json.loads(h.loc[_hi, "legs"]) if isinstance(h.loc[_hi, "legs"], str) else []
+            except (json.JSONDecodeError, TypeError):
+                _hlegs = []
+            for _hl in _hlegs:
+                if _hl.get("line_close") is not None:
+                    _clv_val = _hl.get("clv_line")
+                    _clv_fav = _hl.get("clv_line_fav")
+                    _hist_clv_rows.append({
+                        "Player": _hl.get("player", "?"),
+                        "Market": _hl.get("market", "?"),
+                        "Side": _hl.get("side", "Over"),
+                        "Bet Line": f"{float(_hl.get('line', 0) or 0):.1f}",
+                        "Close Line": f"{float(_hl.get('line_close', 0) or 0):.1f}",
+                        "CLV": f"{float(_clv_val):+.1f}" if _clv_val is not None else "--",
+                        "Status": ("Favorable" if _clv_fav else "Unfavorable") if _clv_fav is not None else "--",
+                        "Updated": _hl.get("close_ts", ""),
+                    })
+        if _hist_clv_rows:
+            st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#00FFB2;letter-spacing:0.10em;margin-top:0.5rem;'>CLOSING LINE VALUES (AUTO-TRACKED)</div>", unsafe_allow_html=True)
+            st.dataframe(pd.DataFrame(_hist_clv_rows), use_container_width=True, hide_index=True)
 # ─── CALIBRATION TAB ─────────────────────────────────────────
 with tabs[5]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>CALIBRATION ENGINE</div>""", unsafe_allow_html=True)
