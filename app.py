@@ -8345,10 +8345,12 @@ with tabs[1]:
                             unsafe_allow_html=True,
                         )
                 # [FEATURE] Under flip card — zero extra API calls, reuses p_cal from above
-                if bool(st.session_state.get("show_unders", False)):
+                # Only show Under flip for Over legs (for Under legs, p_cal is already P(Under))
+                if bool(st.session_state.get("show_unders", False)) and str(leg.get("bet_side", "Over")).lower() != "under":
                     _p_cal_u = leg.get("p_cal")
                     _p_imp_u_base = leg.get("p_implied")
                     if _p_cal_u is not None and _p_imp_u_base is not None:
+                        # p_cal and p_implied are Over-side here (bet_side != Under)
                         _p_under = 1.0 - float(_p_cal_u)
                         _p_imp_u = 1.0 - float(_p_imp_u_base)
                         _vol_cv_u = leg.get("volatility_cv")
@@ -9237,7 +9239,10 @@ with tabs[2]:
             if bool(st.session_state.get("show_unders", False)) and all_computed_legs:
                 under_rows = []
                 for _pn, _mk, _ln, _mt, _leg in all_computed_legs:
-                    _pc = float(_leg.get("p_cal") or _leg.get("p_over") or 0)
+                    _pc = _leg.get("p_cal")
+                    if _pc is None:
+                        continue  # skip legs without calibrated probability
+                    _pc = float(_pc)
                     _pi = _leg.get("p_implied")
                     if _pi is None:
                         continue
