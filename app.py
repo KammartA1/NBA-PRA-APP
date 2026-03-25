@@ -5689,6 +5689,24 @@ def compute_leg_projection(
                 "FGM": "fgm", "FGA": "fga", "FTM": "ftm", "FTA": "fta",
             }
             _sim_stat = _SIM_STAT_MAP.get(base_market)
+            # [FIX] For half/Q1 markets, use the sim's period-specific stats
+            # The sim tracks h1_* (Q1+Q2) and h2_* (Q3+Q4) stats natively.
+            _sim_line_for_prob = float(line)  # raw market line (Q1/H1/H2/full)
+            _sim_period_scale = 1.0  # factor to convert sim stat → display stat
+            if _sim_stat and is_half_market:
+                _mkt_upper = market_name.upper()
+                if _mkt_upper.startswith("H1 "):
+                    # H1 market → use h1_stat directly, raw line
+                    _sim_stat = f"h1_{_sim_stat}"
+                elif _mkt_upper.startswith("H2 "):
+                    # H2 market → use h2_stat directly, raw line
+                    _sim_stat = f"h2_{_sim_stat}"
+                elif _mkt_upper.startswith("Q1 "):
+                    # Q1 market → sim only has H1 (Q1+Q2), so use h1_stat
+                    # and scale line by 2 (Q1 ≈ 50% of H1)
+                    _sim_stat = f"h1_{_sim_stat}"
+                    _sim_line_for_prob = float(line) * 2.0
+                    _sim_period_scale = 0.5  # scale h1 mean/std down to Q1
             if _sim_stat and mu_raw is not None and sigma is not None and sigma > 0:
                 # Build a simplified player profile from model data
                 _sim_usage = float(usage_rate) if usage_rate else 0.20
@@ -5733,9 +5751,10 @@ def compute_leg_projection(
                 _sim_output = _sim_engine.run_simulation(n=3000)
                 _sim_dist = _sim_output.get_player_dist(_sim_pid, _sim_stat)
                 if _sim_dist is not None:
-                    sim_prob = _sim_dist.prob_over(float(effective_line))
-                    sim_mean = _sim_dist.mean
-                    sim_std  = _sim_dist.std
+                    sim_prob = _sim_dist.prob_over(_sim_line_for_prob)
+                    # Scale mean/std to the market's period (Q1/H1/H2/full)
+                    sim_mean = _sim_dist.mean * _sim_period_scale
+                    sim_std  = _sim_dist.std * _sim_period_scale
                     # Blend: 80% simulation + 20% bootstrap (sim-dominant ensemble)
                     if p_over_raw is not None and sim_prob is not None:
                         p_over_raw = float(0.80 * sim_prob + 0.20 * p_over_raw)
@@ -7718,6 +7737,12 @@ with tabs[0]:
                         st.warning(f"{tag} auto-line failed ({ferr}). Using manual {line:.1f}.")
             if not line or float(line) <= 0:
                 warnings.append(f"{tag}: invalid line"); continue
+            # [FIX] When auto-line fails, meta is None — create a proper fallback
+            # with default price so the engine can compute p_implied, EV, and gate correctly
+            if meta is None:
+                meta = {"event_id": None, "home_team": "", "away_team": "",
+                        "commence_time": "", "price": 1.909,
+                        "book": "manual", "market_key": market_key, "side": leg_side}
             tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out), leg_side))
         if tasks:
             _inj_map = st.session_state.get("injury_team_map", {})
@@ -9682,8 +9707,10 @@ with tabs[2]:
                 if _mkt_v in MARKET_OPTIONS:
                     st.session_state[f"_staged_mkt_{i}"] = _mkt_v
                 st.session_state[f"_staged_mline_{i}"]  = float(r.get("line", 22.5))
-                # If source is PrizePicks, use the scanned line directly — PP lines are not on Odds API
-                _is_pp_source = (sportsbook2 == "prizepicks") or (str(r.get("source","")).lower() == "prizepicks")
+                # If source is a platform (PP/UD/Sleeper), use manual mode — these markets
+                # aren't on Odds API so auto-line will fail for many stat types
+                _r_book = str(r.get("book", "") or r.get("src", "")).lower()
+                _is_pp_source = (sportsbook2 == "prizepicks") or _r_book in ("prizepicks", "pp", "underdog", "ud", "sleeper")
                 st.session_state[f"_staged_manual_{i}"] = _is_pp_source
                 st.session_state[f"_staged_out_{i}"]    = False
                 # Pass the side (Over/Under) from scanner to model
