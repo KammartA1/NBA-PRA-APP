@@ -7571,6 +7571,8 @@ for _si in range(1, 5):
         st.session_state[f"manual_{_si}"] = st.session_state.pop(f"_staged_manual_{_si}")
     if f"_staged_out_{_si}" in st.session_state:
         st.session_state[f"out_{_si}"]    = st.session_state.pop(f"_staged_out_{_si}")
+    if f"_staged_side_{_si}" in st.session_state:
+        st.session_state[f"side_{_si}"]   = st.session_state.pop(f"_staged_side_{_si}")
 if "_staged_model_date" in st.session_state:
     st.session_state["model_date"] = st.session_state.pop("_staged_model_date")
 with tabs[0]:
@@ -7683,20 +7685,24 @@ with tabs[0]:
             with cols[col_idx]:
                 st.markdown(f"<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.14em;text-transform:uppercase;margin-bottom:0.4rem;'>LEG {leg_n}</div>", unsafe_allow_html=True)
                 pname = st.text_input(f"Player", key=f"pname_{leg_n}", placeholder="e.g. LeBron James")
-                mkt = st.selectbox(f"Market", options=MARKET_OPTIONS, key=f"mkt_{leg_n}")
+                _mkt_side_cols = st.columns([3, 1])
+                with _mkt_side_cols[0]:
+                    mkt = st.selectbox(f"Market", options=MARKET_OPTIONS, key=f"mkt_{leg_n}")
+                with _mkt_side_cols[1]:
+                    leg_side = st.selectbox("Side", options=["Over", "Under"], key=f"side_{leg_n}")
                 manual = st.checkbox(f"Manual line", key=f"manual_{leg_n}")
                 if manual:
                     st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#FFB800;letter-spacing:0.10em;margin:-4px 0 2px 0;'>⚠ MANUAL — not from Odds API</div>", unsafe_allow_html=True)
                 mline = st.number_input(f"Line", min_value=0.0, value=float(st.session_state.get(f"line_{leg_n}",22.5)), step=0.5, key=f"mline_{leg_n}")
                 out_cb = st.checkbox(f"Key teammate OUT?", key=f"out_{leg_n}")
-                leg_configs.append((tag, pname, mkt, manual, mline, out_cb))
+                leg_configs.append((tag, pname, mkt, manual, mline, out_cb, leg_side))
     if st.session_state.get("_auto_run_model"):
         st.info("⚡ Legs loaded from Live Scanner — running model automatically...")
     run_btn = (st.button("RUN MODEL", use_container_width=True, disabled=_loss_stop_hit)
                or bool(st.session_state.pop("_auto_run_model", False)))
     if run_btn and not _loss_stop_hit:
         results = []; warnings = []; tasks = []
-        for (tag, pname, mkt, manual, mline, teammate_out) in leg_configs:
+        for (tag, pname, mkt, manual, mline, teammate_out, leg_side) in leg_configs:
             pname = (pname or "").strip()
             if not pname: continue
             market_key = ODDS_MARKETS.get(mkt)
@@ -7730,13 +7736,13 @@ with tabs[0]:
                         st.warning(f"{tag} auto-line failed ({ferr}). Using manual {line:.1f}.")
             if not line or float(line) <= 0:
                 warnings.append(f"{tag}: invalid line"); continue
-            tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out)))
+            tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out), leg_side))
         if tasks:
             _inj_map = st.session_state.get("injury_team_map", {})
             with st.spinner("Computing projections..."):
                 results = []
                 _model_progress = st.progress(0, text=f"Running model on {len(tasks)} legs...")
-                for _ti, (tag, pname, mkt, line, meta, to) in enumerate(tasks):
+                for _ti, (tag, pname, mkt, line, meta, to, _leg_side) in enumerate(tasks):
                     _model_progress.progress(
                         min((_ti + 1) / len(tasks), 1.0),
                         text=f"Running model... {_ti + 1}/{len(tasks)}: {pname} {mkt}"
@@ -7751,14 +7757,53 @@ with tabs[0]:
                             exclude_chaotic=bool(exclude_chaotic),
                             game_date=scan_date,
                             injury_team_map=_inj_map)
+                        # Store the user-selected side (Over/Under) in the leg
+                        _leg["bet_side"] = _leg_side
                         results.append(_leg)
                     except Exception as _te:
                         results.append({"player": pname, "market": mkt, "line": float(line),
                                         "errors": [f"model error: {type(_te).__name__}: {_te}"],
-                                        "gate_ok": False, "gate_reason": "model error"})
+                                        "gate_ok": False, "gate_reason": "model error",
+                                        "bet_side": _leg_side})
                 _model_progress.empty()
             calib = st.session_state.get("calibrator_map")
             results = [recompute_pricing_fields(dict(leg), calib) for leg in results]
+            # For Under legs, flip the probabilities and re-evaluate edge/EV
+            for _rleg in results:
+                if _rleg.get("bet_side", "Over") == "Under":
+                    _p_over = _rleg.get("p_cal") or _rleg.get("p_over") or 0.5
+                    _p_under = 1.0 - float(_p_over)
+                    _rleg["p_cal"] = _p_under
+                    _rleg["p_over_original"] = float(_p_over)
+                    # Recalculate implied prob for the Under side
+                    _rleg_price = _rleg.get("price_decimal")
+                    if _rleg_price and float(_rleg_price) > 1:
+                        _rleg["p_implied"] = 1.0 - (1.0 / float(_rleg_price)) if float(_rleg_price) > 1 else 0.5
+                    else:
+                        _p_imp_orig = _rleg.get("p_implied")
+                        if _p_imp_orig is not None:
+                            _rleg["p_implied"] = 1.0 - float(_p_imp_orig)
+                    # Re-derive advantage and EV from Under perspective
+                    _p_imp_u = _rleg.get("p_implied") or 0.5
+                    _rleg["advantage"] = float(_p_under - float(_p_imp_u))
+                    if float(_p_imp_u) > 0:
+                        _ev_u = (_p_under / float(_p_imp_u)) - 1.0
+                    else:
+                        _ev_u = 0.0
+                    # Apply volatility penalty
+                    pen = _rleg.get("vol_penalty", 1.0) or 1.0
+                    _rleg["ev_adj"] = _ev_u * float(pen) if _rleg.get("gate_ok") else None
+                    _rleg["ev_pct"] = float(_rleg["ev_adj"] * 100) if _rleg["ev_adj"] is not None else None
+                    _rleg["edge"] = _rleg["ev_adj"]
+                    _rleg["edge_cat"] = classify_edge(_rleg["ev_adj"])
+                    # Recalculate stake for Under
+                    if _rleg.get("gate_ok") and _rleg.get("ev_adj") and float(_rleg["ev_adj"]) > 0 and bankroll > 0:
+                        _rleg_price_u = _rleg_price or 2.0
+                        sd, sf, sr = recommended_stake(bankroll, _p_under, float(_rleg_price_u), frac_kelly,
+                                                       float(st.session_state.get("max_risk_per_bet", 3.0)) / 100.0)
+                        _rleg["stake"] = float(sd)
+                        _rleg["stake_frac"] = float(sf)
+                        _rleg["stake_reason"] = sr
             st.session_state["last_results"] = results
             # ── [UNIFIED] Auto-CLV: log opening lines to database ──
             try:
@@ -7963,13 +8008,13 @@ with tabs[1]:
   <div style='font-size:0.65rem;color:#4A607A;letter-spacing:0.08em;'>{leg.get("team","??")} vs {leg.get("opp","??")}</div>
   <div style='clear:both;'></div>
 </div>
-<div style='font-size:0.70rem;color:#4A607A;margin:0.15rem 0;text-transform:uppercase;letter-spacing:0.06em;'>{leg["market"]} | {rest_tag} | {leg.get("position_bucket","?")}</div>
+<div style='font-size:0.70rem;color:#4A607A;margin:0.15rem 0;text-transform:uppercase;letter-spacing:0.06em;'>{leg["market"]} {"<span style='color:#FF8080;font-weight:700;'>UNDER</span>" if leg.get("bet_side","Over")=="Under" else "<span style='color:#00FFB2;font-weight:700;'>OVER</span>"} | {rest_tag} | {leg.get("position_bucket","?")}</div>
 <div style='display:flex;justify-content:space-between;margin:0.6rem 0;'>
   <div style='text-align:center;'><div style='font-size:0.60rem;color:#4A607A;'>LINE</div><div style='font-family:Fira Code,monospace;font-size:1.1rem;color:#EEF4FF;font-weight:500;'>{leg["line"]:.1f}</div></div>
   <div style='text-align:center;'><div style='font-size:0.60rem;color:#4A607A;'>PROJ</div><div style='font-family:Fira Code,monospace;font-size:1.1rem;color:#00AAFF;font-weight:500;'>{proj_disp}</div></div>
   <div style='text-align:center;'><div style='font-size:0.60rem;color:#4A607A;'>EV</div><div style='font-family:Fira Code,monospace;font-size:1.1rem;color:{ec};font-weight:600;'>{ev_str}</div></div>
 </div>
-{prob_bar_html(p_cal_v, label="P(OVER)")}
+{prob_bar_html(p_cal_v, label=f"P({leg.get('bet_side', 'OVER').upper()})")}
 {prob_bar_html(leg.get("p_implied"), label="IMPLIED")}
 <div style='margin-top:0.6rem;display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center;'>
   {regime_badge(leg.get("regime","?"))}
@@ -8004,7 +8049,7 @@ with tabs[1]:
                         f"<div style='margin-top:0.45rem;background:#00AAFF08;border:1px solid #00AAFF25;border-radius:3px;padding:0.3rem 0.5rem;'>"
                         f"<div style='font-size:0.52rem;color:#00AAFF;letter-spacing:0.10em;font-family:Chakra Petch,monospace;'>SIM ENGINE (500 POSS-LEVEL SIMS)</div>"
                         f"<div style='display:flex;justify-content:space-between;margin-top:0.15rem;'>"
-                        f"<span style='font-size:0.62rem;color:#4A607A;'>P(over):</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:{_sp_col};font-weight:600;'>{_sp*100:.1f}%</span>"
+                        f"<span style='font-size:0.62rem;color:#4A607A;'>P({leg.get('bet_side','over').lower()}):</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:{_sp_col};font-weight:600;'>{_sp*100:.1f}%</span>"
                         f"<span style='font-size:0.62rem;color:#4A607A;'>Mean:</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:#EEF4FF;'>{_sm:.1f}</span>"
                         f"<span style='font-size:0.62rem;color:#4A607A;'>Std:</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:#EEF4FF;'>{_ss:.1f}</span>"
                         f"</div></div>"
@@ -8275,7 +8320,7 @@ with tabs[1]:
                                 player=str(leg.get("player","?")),
                                 market=str(leg.get("market","?")),
                                 line=float(leg.get("line") or 0),
-                                side=str(leg.get("side","Over")),
+                                side=str(leg.get("bet_side", leg.get("side","Over"))),
                                 proj=float(leg.get("proj") or 0),
                                 p_cal=float(leg.get("p_cal") or 0),
                                 ev_pct=float(leg.get("ev_pct") or 0),
@@ -8380,7 +8425,7 @@ with tabs[1]:
             except Exception as e:
                 st.caption(f"Joint MC error: {type(e).__name__}: {e}")
         with st.expander("Raw Data Table", expanded=False):
-            display_cols = ["player","market","line","proj","p_cal","p_implied","advantage",
+            display_cols = ["player","market","bet_side","line","proj","p_cal","p_implied","advantage",
                             "ev_pct","edge_cat","gate_ok","stake","volatility_label","volatility_cv",
                             "regime","rest_days","position_bucket","context_mult","n_games_used",
                             "usage_rate","pos_def_mult","half_factor","pace_adj"]
@@ -8423,7 +8468,7 @@ with tabs[1]:
         if st.button("🎰 Find Best DFS Entries", use_container_width=True, key="dfs_optimizer_btn"):
             _gated = [l for l in res if float(l.get("p_cal") or 0) > 0.50]
             if len(_gated) < 2:
-                st.warning("Need 2+ legs with P(Over) > 50% to build entries.")
+                st.warning("Need 2+ legs with P(selected side) > 50% to build entries.")
             else:
                 with st.spinner(f"Optimizing {dfs_platform.title()} entries with MC simulation…"):
                     dfs_results = dfs_entry_optimizer(
@@ -9689,9 +9734,13 @@ with tabs[2]:
                 _is_pp_source = (sportsbook2 == "prizepicks") or (str(r.get("source","")).lower() == "prizepicks")
                 st.session_state[f"_staged_manual_{i}"] = _is_pp_source
                 st.session_state[f"_staged_out_{i}"]    = False
+                # Pass the side (Over/Under) from scanner to model
+                _r_side = str(r.get("side", "Over")).strip()
+                st.session_state[f"_staged_side_{i}"]   = "Under" if _r_side.lower() == "under" else "Over"
             # Clear unused legs beyond selection count
             for i in range(len(_legs_for_model) + 1, 5):
                 st.session_state[f"_staged_pname_{i}"] = ""
+                st.session_state[f"_staged_side_{i}"] = "Over"
             # Sync scanner date and book to MODEL tab
             st.session_state["_staged_model_date"] = scan_start
             if sportsbook2 and sportsbook2 != "all":
