@@ -3851,6 +3851,200 @@ def get_pp_auto_lines():
         return db_rows, db_age, err
     return [], None, err
 # ──────────────────────────────────────────────
+# AUTO-CLV BACKGROUND UPDATER
+# ──────────────────────────────────────────────
+# Background thread that captures closing lines 10 minutes before each game's
+# tip-off for all pending bets. This ensures the most accurate CLV tracking
+# without relying on the user clicking "Refresh CLV" manually.
+_clv_auto_state_store: dict = {
+    "lock": threading.Lock(),
+    "thread": None,
+    "stop_evt": threading.Event(),
+    "enabled": True,
+    "last_run": None,
+    "last_result": None,
+    "updates_count": 0,
+}
+
+def _clv_auto_state() -> dict:
+    return _clv_auto_state_store
+
+def _clv_auto_loop(state: dict):
+    """Background loop: every 2 minutes, check if any games are starting
+    within the next 10 minutes. If so, fetch closing lines for all pending bets
+    related to those games and update them."""
+    log.info("[Auto-CLV] Background thread started")
+    while True:
+        try:
+            # Sleep for 2 minutes between checks (or wake early if poked)
+            state["stop_evt"].wait(timeout=120)
+            state["stop_evt"].clear()
+
+            if not state.get("enabled", True):
+                continue
+
+            updates = _clv_auto_update_pending_bets()
+            with state["lock"]:
+                state["last_run"] = _now_iso()
+                state["last_result"] = updates
+                state["updates_count"] += updates.get("bets_updated", 0)
+        except Exception as e:
+            log.warning("[Auto-CLV] Error in background loop: %s", e)
+
+def _clv_auto_update_pending_bets() -> dict:
+    """Core logic: find pending bets for games starting within 10 minutes,
+    fetch closing lines, update CLV fields on the bets."""
+    result = {"bets_checked": 0, "bets_updated": 0, "errors": []}
+    try:
+        from database.connection import session_scope as _db_session_scope
+        from database.models import Bet as _BetModel, Event as _EventModel, LineMovement as _LMModel
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    except ImportError as ie:
+        result["errors"].append(f"Import error: {ie}")
+        return result
+
+    now = _dt.now(_tz.utc)
+    window_start = now - _td(minutes=2)
+    window_end = now + _td(minutes=12)  # Capture lines 10-12 min before tip
+
+    try:
+        with _db_session_scope() as session:
+            # Find events starting within the window
+            starting_events = (
+                session.query(_EventModel)
+                .filter(
+                    _EventModel.sport == "NBA",
+                    _EventModel.status.in_(["scheduled", "in_progress"]),
+                    _EventModel.start_time >= window_start,
+                    _EventModel.start_time <= window_end,
+                )
+                .all()
+            )
+            if not starting_events:
+                return result
+
+            event_names = {ev.event_name for ev in starting_events}
+            # Get event_ids for Odds API lookups
+            event_api_ids = {}
+            for ev in starting_events:
+                try:
+                    meta = json.loads(ev.metadata_json or "{}")
+                    if meta.get("event_id"):
+                        event_api_ids[ev.event_name] = meta["event_id"]
+                except Exception:
+                    pass
+
+            # Find all pending bets for these events
+            pending_bets = (
+                session.query(_BetModel)
+                .filter(
+                    _BetModel.sport == "NBA",
+                    _BetModel.status == "pending",
+                    _BetModel.event.in_(event_names),
+                    _BetModel.closing_line == None,
+                )
+                .all()
+            )
+
+            if not pending_bets:
+                return result
+
+            result["bets_checked"] = len(pending_bets)
+            log.info("[Auto-CLV] Found %d pending bets for %d upcoming events",
+                     len(pending_bets), len(starting_events))
+
+            # Fetch closing lines for each event from Odds API
+            _fetched_lines = {}  # (event_name, player_norm, market) -> (line, price)
+            for ev_name, ev_api_id in event_api_ids.items():
+                try:
+                    from workers.closing_worker import _fetch_closing_lines_from_api
+                    api_rows = _fetch_closing_lines_from_api(ev_api_id)
+                    for row in api_rows:
+                        _pn = normalize_name(row.get("player", ""))
+                        _mk = row.get("market", "")
+                        _fetched_lines[(_pn, _mk)] = (row["line"], row.get("odds_decimal"))
+                        # Store as closing line movement in DB
+                        lm = _LMModel(
+                            sport="NBA",
+                            event=ev_name,
+                            market=_mk,
+                            book=row.get("book", "consensus"),
+                            player=row.get("player", ""),
+                            line=row["line"],
+                            odds=None,
+                            timestamp=now,
+                            is_opening=False,
+                            is_closing=True,
+                        )
+                        session.add(lm)
+                except Exception as e:
+                    result["errors"].append(f"API fetch for {ev_name}: {e}")
+
+            # Also check platform lines in session state (if available in shared scope)
+            # This handles PP/UD-sourced bets that don't have Odds API event IDs
+
+            # Update each pending bet with closing line + CLV
+            for bet in pending_bets:
+                _pn = normalize_name(bet.player or "")
+                _mk = bet.market or ""
+                closing_data = _fetched_lines.get((_pn, _mk))
+                if closing_data is None:
+                    # Try alternate market key formats
+                    for _alt_key, _alt_val in _fetched_lines.items():
+                        if _alt_key[0] == _pn and _mk in _alt_key[1]:
+                            closing_data = _alt_val
+                            break
+                if closing_data is not None:
+                    cl_line, cl_price = closing_data
+                    bet.closing_line = cl_line
+                    # Compute CLV
+                    from workers.closing_worker import compute_clv
+                    clv = compute_clv(
+                        bet_line=float(bet.bet_line),
+                        closing_line=float(cl_line),
+                        direction=bet.direction or "over",
+                    )
+                    # Store in features snapshot
+                    try:
+                        features = json.loads(bet.features_snapshot_json or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        features = {}
+                    features["closing_line"] = cl_line
+                    features["clv_cents"] = clv
+                    features["clv_auto_updated"] = True
+                    features["clv_computed_at"] = now.isoformat()
+                    features["closing_price"] = cl_price
+                    bet.features_snapshot_json = json.dumps(features, default=str)
+                    result["bets_updated"] += 1
+                    log.info(
+                        "[Auto-CLV] Updated %s %s %s: bet=%.1f close=%.1f CLV=%.2f%%",
+                        bet.player, bet.market, bet.direction,
+                        bet.bet_line, cl_line, clv,
+                    )
+
+            session.commit()
+    except Exception as e:
+        result["errors"].append(f"DB error: {e}")
+        log.warning("[Auto-CLV] Database error: %s", e)
+
+    return result
+
+def _ensure_clv_auto_thread():
+    """Start the auto-CLV background thread if not already running."""
+    state = _clv_auto_state()
+    if state.get("thread") and state["thread"].is_alive():
+        return
+    t = threading.Thread(target=_clv_auto_loop, args=(state,), daemon=True, name="clv_auto_updater")
+    state["thread"] = t
+    t.start()
+
+# Auto-start the CLV background thread on module load
+try:
+    _ensure_clv_auto_thread()
+except Exception:
+    pass
+
+# ──────────────────────────────────────────────
 # UNDERDOG INGESTION
 # ──────────────────────────────────────────────
 # Try v3 then v4 endpoint
@@ -7377,6 +7571,8 @@ for _si in range(1, 5):
         st.session_state[f"manual_{_si}"] = st.session_state.pop(f"_staged_manual_{_si}")
     if f"_staged_out_{_si}" in st.session_state:
         st.session_state[f"out_{_si}"]    = st.session_state.pop(f"_staged_out_{_si}")
+    if f"_staged_side_{_si}" in st.session_state:
+        st.session_state[f"side_{_si}"]   = st.session_state.pop(f"_staged_side_{_si}")
 if "_staged_model_date" in st.session_state:
     st.session_state["model_date"] = st.session_state.pop("_staged_model_date")
 with tabs[0]:
@@ -7489,20 +7685,24 @@ with tabs[0]:
             with cols[col_idx]:
                 st.markdown(f"<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.14em;text-transform:uppercase;margin-bottom:0.4rem;'>LEG {leg_n}</div>", unsafe_allow_html=True)
                 pname = st.text_input(f"Player", key=f"pname_{leg_n}", placeholder="e.g. LeBron James")
-                mkt = st.selectbox(f"Market", options=MARKET_OPTIONS, key=f"mkt_{leg_n}")
+                _mkt_side_cols = st.columns([3, 1])
+                with _mkt_side_cols[0]:
+                    mkt = st.selectbox(f"Market", options=MARKET_OPTIONS, key=f"mkt_{leg_n}")
+                with _mkt_side_cols[1]:
+                    leg_side = st.selectbox("Side", options=["Over", "Under"], key=f"side_{leg_n}")
                 manual = st.checkbox(f"Manual line", key=f"manual_{leg_n}")
                 if manual:
                     st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#FFB800;letter-spacing:0.10em;margin:-4px 0 2px 0;'>⚠ MANUAL — not from Odds API</div>", unsafe_allow_html=True)
                 mline = st.number_input(f"Line", min_value=0.0, value=float(st.session_state.get(f"line_{leg_n}",22.5)), step=0.5, key=f"mline_{leg_n}")
                 out_cb = st.checkbox(f"Key teammate OUT?", key=f"out_{leg_n}")
-                leg_configs.append((tag, pname, mkt, manual, mline, out_cb))
+                leg_configs.append((tag, pname, mkt, manual, mline, out_cb, leg_side))
     if st.session_state.get("_auto_run_model"):
         st.info("⚡ Legs loaded from Live Scanner — running model automatically...")
     run_btn = (st.button("RUN MODEL", use_container_width=True, disabled=_loss_stop_hit)
                or bool(st.session_state.pop("_auto_run_model", False)))
     if run_btn and not _loss_stop_hit:
         results = []; warnings = []; tasks = []
-        for (tag, pname, mkt, manual, mline, teammate_out) in leg_configs:
+        for (tag, pname, mkt, manual, mline, teammate_out, leg_side) in leg_configs:
             pname = (pname or "").strip()
             if not pname: continue
             market_key = ODDS_MARKETS.get(mkt)
@@ -7536,13 +7736,13 @@ with tabs[0]:
                         st.warning(f"{tag} auto-line failed ({ferr}). Using manual {line:.1f}.")
             if not line or float(line) <= 0:
                 warnings.append(f"{tag}: invalid line"); continue
-            tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out)))
+            tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out), leg_side))
         if tasks:
             _inj_map = st.session_state.get("injury_team_map", {})
             with st.spinner("Computing projections..."):
                 results = []
                 _model_progress = st.progress(0, text=f"Running model on {len(tasks)} legs...")
-                for _ti, (tag, pname, mkt, line, meta, to) in enumerate(tasks):
+                for _ti, (tag, pname, mkt, line, meta, to, _leg_side) in enumerate(tasks):
                     _model_progress.progress(
                         min((_ti + 1) / len(tasks), 1.0),
                         text=f"Running model... {_ti + 1}/{len(tasks)}: {pname} {mkt}"
@@ -7557,14 +7757,57 @@ with tabs[0]:
                             exclude_chaotic=bool(exclude_chaotic),
                             game_date=scan_date,
                             injury_team_map=_inj_map)
+                        # Store the user-selected side (Over/Under) in the leg
+                        _leg["bet_side"] = _leg_side
                         results.append(_leg)
                     except Exception as _te:
                         results.append({"player": pname, "market": mkt, "line": float(line),
                                         "errors": [f"model error: {type(_te).__name__}: {_te}"],
-                                        "gate_ok": False, "gate_reason": "model error"})
+                                        "gate_ok": False, "gate_reason": "model error",
+                                        "bet_side": _leg_side})
                 _model_progress.empty()
             calib = st.session_state.get("calibrator_map")
             results = [recompute_pricing_fields(dict(leg), calib) for leg in results]
+            # For Under legs, flip the probabilities and re-evaluate edge/EV
+            for _rleg in results:
+                if _rleg.get("bet_side", "Over") == "Under":
+                    _p_over = _rleg.get("p_cal") or _rleg.get("p_over") or 0.5
+                    _p_under = 1.0 - float(_p_over)
+                    _rleg["p_cal"] = _p_under
+                    _rleg["p_over_original"] = float(_p_over)
+                    # Flip sim_prob too — it's stored as P(Over) from the sim engine
+                    if _rleg.get("sim_prob") is not None:
+                        _rleg["sim_prob_over_original"] = float(_rleg["sim_prob"])
+                        _rleg["sim_prob"] = 1.0 - float(_rleg["sim_prob"])
+                    # Recalculate implied prob for the Under side
+                    _rleg_price = _rleg.get("price_decimal")
+                    if _rleg_price and float(_rleg_price) > 1:
+                        _rleg["p_implied"] = 1.0 - (1.0 / float(_rleg_price)) if float(_rleg_price) > 1 else 0.5
+                    else:
+                        _p_imp_orig = _rleg.get("p_implied")
+                        if _p_imp_orig is not None:
+                            _rleg["p_implied"] = 1.0 - float(_p_imp_orig)
+                    # Re-derive advantage and EV from Under perspective
+                    _p_imp_u = _rleg.get("p_implied") or 0.5
+                    _rleg["advantage"] = float(_p_under - float(_p_imp_u))
+                    if float(_p_imp_u) > 0:
+                        _ev_u = (_p_under / float(_p_imp_u)) - 1.0
+                    else:
+                        _ev_u = 0.0
+                    # Apply volatility penalty
+                    pen = _rleg.get("vol_penalty", 1.0) or 1.0
+                    _rleg["ev_adj"] = _ev_u * float(pen) if _rleg.get("gate_ok") else None
+                    _rleg["ev_pct"] = float(_rleg["ev_adj"] * 100) if _rleg["ev_adj"] is not None else None
+                    _rleg["edge"] = _rleg["ev_adj"]
+                    _rleg["edge_cat"] = classify_edge(_rleg["ev_adj"])
+                    # Recalculate stake for Under
+                    if _rleg.get("gate_ok") and _rleg.get("ev_adj") and float(_rleg["ev_adj"]) > 0 and bankroll > 0:
+                        _rleg_price_u = _rleg_price or 2.0
+                        sd, sf, sr = recommended_stake(bankroll, _p_under, float(_rleg_price_u), frac_kelly,
+                                                       float(st.session_state.get("max_risk_per_bet", 3.0)) / 100.0)
+                        _rleg["stake"] = float(sd)
+                        _rleg["stake_frac"] = float(sf)
+                        _rleg["stake_reason"] = sr
             st.session_state["last_results"] = results
             # ── [UNIFIED] Auto-CLV: log opening lines to database ──
             try:
@@ -7769,13 +8012,13 @@ with tabs[1]:
   <div style='font-size:0.65rem;color:#4A607A;letter-spacing:0.08em;'>{leg.get("team","??")} vs {leg.get("opp","??")}</div>
   <div style='clear:both;'></div>
 </div>
-<div style='font-size:0.70rem;color:#4A607A;margin:0.15rem 0;text-transform:uppercase;letter-spacing:0.06em;'>{leg["market"]} | {rest_tag} | {leg.get("position_bucket","?")}</div>
+<div style='font-size:0.70rem;color:#4A607A;margin:0.15rem 0;text-transform:uppercase;letter-spacing:0.06em;'>{leg["market"]} {"<span style='color:#FF8080;font-weight:700;'>UNDER</span>" if leg.get("bet_side","Over")=="Under" else "<span style='color:#00FFB2;font-weight:700;'>OVER</span>"} | {rest_tag} | {leg.get("position_bucket","?")}</div>
 <div style='display:flex;justify-content:space-between;margin:0.6rem 0;'>
   <div style='text-align:center;'><div style='font-size:0.60rem;color:#4A607A;'>LINE</div><div style='font-family:Fira Code,monospace;font-size:1.1rem;color:#EEF4FF;font-weight:500;'>{leg["line"]:.1f}</div></div>
   <div style='text-align:center;'><div style='font-size:0.60rem;color:#4A607A;'>PROJ</div><div style='font-family:Fira Code,monospace;font-size:1.1rem;color:#00AAFF;font-weight:500;'>{proj_disp}</div></div>
   <div style='text-align:center;'><div style='font-size:0.60rem;color:#4A607A;'>EV</div><div style='font-family:Fira Code,monospace;font-size:1.1rem;color:{ec};font-weight:600;'>{ev_str}</div></div>
 </div>
-{prob_bar_html(p_cal_v, label="P(OVER)")}
+{prob_bar_html(p_cal_v, label=f"P({leg.get('bet_side', 'OVER').upper()})")}
 {prob_bar_html(leg.get("p_implied"), label="IMPLIED")}
 <div style='margin-top:0.6rem;display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center;'>
   {regime_badge(leg.get("regime","?"))}
@@ -7808,9 +8051,9 @@ with tabs[1]:
                     _sp_col = "#00FFB2" if _sp > 0.55 else ("#FFB800" if _sp > 0.45 else "#FF3358")
                     card_html += (
                         f"<div style='margin-top:0.45rem;background:#00AAFF08;border:1px solid #00AAFF25;border-radius:3px;padding:0.3rem 0.5rem;'>"
-                        f"<div style='font-size:0.52rem;color:#00AAFF;letter-spacing:0.10em;font-family:Chakra Petch,monospace;'>SIM ENGINE (500 POSS-LEVEL SIMS)</div>"
+                        f"<div style='font-size:0.52rem;color:#00AAFF;letter-spacing:0.10em;font-family:Chakra Petch,monospace;'>SIM ENGINE (3000 POSS-LEVEL SIMS)</div>"
                         f"<div style='display:flex;justify-content:space-between;margin-top:0.15rem;'>"
-                        f"<span style='font-size:0.62rem;color:#4A607A;'>P(over):</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:{_sp_col};font-weight:600;'>{_sp*100:.1f}%</span>"
+                        f"<span style='font-size:0.62rem;color:#4A607A;'>P({leg.get('bet_side','over').lower()}):</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:{_sp_col};font-weight:600;'>{_sp*100:.1f}%</span>"
                         f"<span style='font-size:0.62rem;color:#4A607A;'>Mean:</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:#EEF4FF;'>{_sm:.1f}</span>"
                         f"<span style='font-size:0.62rem;color:#4A607A;'>Std:</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:#EEF4FF;'>{_ss:.1f}</span>"
                         f"</div></div>"
@@ -8081,7 +8324,7 @@ with tabs[1]:
                                 player=str(leg.get("player","?")),
                                 market=str(leg.get("market","?")),
                                 line=float(leg.get("line") or 0),
-                                side=str(leg.get("side","Over")),
+                                side=str(leg.get("bet_side", leg.get("side","Over"))),
                                 proj=float(leg.get("proj") or 0),
                                 p_cal=float(leg.get("p_cal") or 0),
                                 ev_pct=float(leg.get("ev_pct") or 0),
@@ -8186,7 +8429,7 @@ with tabs[1]:
             except Exception as e:
                 st.caption(f"Joint MC error: {type(e).__name__}: {e}")
         with st.expander("Raw Data Table", expanded=False):
-            display_cols = ["player","market","line","proj","p_cal","p_implied","advantage",
+            display_cols = ["player","market","bet_side","line","proj","p_cal","p_implied","advantage",
                             "ev_pct","edge_cat","gate_ok","stake","volatility_label","volatility_cv",
                             "regime","rest_days","position_bucket","context_mult","n_games_used",
                             "usage_rate","pos_def_mult","half_factor","pace_adj"]
@@ -8229,7 +8472,7 @@ with tabs[1]:
         if st.button("🎰 Find Best DFS Entries", use_container_width=True, key="dfs_optimizer_btn"):
             _gated = [l for l in res if float(l.get("p_cal") or 0) > 0.50]
             if len(_gated) < 2:
-                st.warning("Need 2+ legs with P(Over) > 50% to build entries.")
+                st.warning("Need 2+ legs with P(selected side) > 50% to build entries.")
             else:
                 with st.spinner(f"Optimizing {dfs_platform.title()} entries with MC simulation…"):
                     dfs_results = dfs_entry_optimizer(
@@ -9082,6 +9325,209 @@ with tabs[2]:
             st.dataframe(styled, use_container_width=True)
         except Exception:
             st.dataframe(scanner_out, use_container_width=True)
+        # ── REFRESH EDGES: Re-fetch lines + recalculate probabilities/edges ──
+        _ref_col1, _ref_col2 = st.columns([1, 1])
+        with _ref_col1:
+            _do_refresh_edges = st.button(
+                "🔄 Refresh Edges (Update Lines + Probabilities)",
+                key="refresh_edges_btn",
+                use_container_width=True,
+                help="Re-fetches current market lines for all scanned props and recalculates probabilities, edges, and Kelly stakes — no full re-scan needed.",
+            )
+        with _ref_col2:
+            _last_refresh = st.session_state.get("_edges_last_refresh", "")
+            if _last_refresh:
+                st.caption(f"Last refreshed: {_last_refresh}")
+        if _do_refresh_edges:
+            _ref_t0 = time.time()
+            _ref_total = len(scanner_out)
+            _ref_progress = st.progress(0, text=f"Refreshing edges for {_ref_total} props...")
+            _ref_updated = 0
+            _ref_dropped_idx = []
+            _inj_map = st.session_state.get("injury_team_map", {})
+            _se_candidates = st.session_state.get("_scanner_candidates", [])
+            _ref_meta_map = {}
+            for _pn, _mk, _ln, _mt in _se_candidates:
+                _ref_meta_map[(normalize_name(_pn), _mk, float(_ln))] = _mt
+            # Parallel re-computation: re-run compute_leg_projection for each edge
+            # This recalculates everything: fresh game logs, updated projections, new probabilities
+            _ref_tasks = []
+            for _ref_idx, _ref_row in scanner_out.iterrows():
+                _ref_pname = str(_ref_row.get("player", ""))
+                _ref_mkt = str(_ref_row.get("market", ""))
+                _ref_line = float(_ref_row.get("line", 0))
+                _ref_key = (normalize_name(_ref_pname), _ref_mkt, _ref_line)
+                _ref_meta = _ref_meta_map.get(_ref_key, {
+                    "event_id": _ref_row.get("event_id"),
+                    "home_team": "", "away_team": "",
+                    "commence_time": "",
+                    "price": float(_ref_row.get("price_decimal") or 2.0),
+                    "book": str(_ref_row.get("book", "prizepicks")),
+                    "market_key": _ref_row.get("market_key") or ODDS_MARKETS.get(_ref_mkt),
+                    "side": str(_ref_row.get("side", "Over")),
+                })
+                # Also try to fetch latest line from market (for Odds API sources)
+                _ref_tasks.append((_ref_idx, _ref_pname, _ref_mkt, _ref_line, _ref_meta))
+            # First pass: fetch fresh lines for Odds API-sourced legs in parallel
+            _ref_new_lines = {}
+            _ref_odds_legs = [
+                t for t in _ref_tasks
+                if t[4].get("event_id") and str(t[4].get("book", "")).lower() not in ("prizepicks", "underdog", "sleeper")
+            ]
+            if _ref_odds_legs:
+                with ThreadPoolExecutor(max_workers=min(16, len(_ref_odds_legs))) as _ref_ex:
+                    _ref_line_futs = {
+                        _ref_ex.submit(fetch_latest_market_for_leg, {
+                            "event_id": t[4].get("event_id"),
+                            "market_key": t[4].get("market_key") or ODDS_MARKETS.get(t[2]),
+                            "player_norm": normalize_name(t[1]),
+                            "side": t[4].get("side", "Over"),
+                            "book": t[4].get("book"),
+                        }): t[0]
+                        for t in _ref_odds_legs
+                    }
+                    for _ref_fut in _ref_line_futs:
+                        _ridx = _ref_line_futs[_ref_fut]
+                        try:
+                            _rl, _rp, _rb, _re = _ref_fut.result(timeout=15)
+                            if _rl is not None:
+                                _ref_new_lines[_ridx] = (_rl, _rp)
+                        except Exception:
+                            pass
+            # Also refresh platform lines (PP/UD) if available
+            _pp_df_ref = st.session_state.get("pp_lines")
+            _ud_df_ref = st.session_state.get("ud_lines")
+            _sl_df_ref = st.session_state.get("sl_lines")
+            for _ridx, _rpn, _rmkt, _rln, _rmeta in _ref_tasks:
+                _rbk = str(_rmeta.get("book", "")).lower()
+                if _rbk in ("prizepicks", "underdog", "sleeper"):
+                    _plat_df = {"prizepicks": _pp_df_ref, "underdog": _ud_df_ref, "sleeper": _sl_df_ref}.get(_rbk)
+                    if _plat_df is not None and not _plat_df.empty:
+                        _plat_match = _plat_df[
+                            (_plat_df["player"].str.strip() == _rpn) &
+                            (_plat_df["stat_type"].apply(lambda x: map_platform_stat_to_market(x)) == _rmkt)
+                        ]
+                        if not _plat_match.empty:
+                            _new_line = float(_plat_match.iloc[0].get("line", _rln))
+                            if _new_line != _rln:
+                                _ref_new_lines[_ridx] = (_new_line, 2.0)
+            # Second pass: re-run compute_leg_projection in parallel with updated lines
+            _ref_recompute_tasks = []
+            for _ref_idx, _ref_pname, _ref_mkt, _ref_line, _ref_meta in _ref_tasks:
+                # Use new line if available, otherwise keep original
+                if _ref_idx in _ref_new_lines:
+                    _ref_line = _ref_new_lines[_ref_idx][0]
+                    _ref_meta = dict(_ref_meta)
+                    if _ref_new_lines[_ref_idx][1] is not None:
+                        _ref_meta["price"] = _ref_new_lines[_ref_idx][1]
+                _ref_recompute_tasks.append((_ref_idx, _ref_pname, _ref_mkt, _ref_line, _ref_meta))
+            _ref_done = 0
+            with ThreadPoolExecutor(max_workers=min(32, len(_ref_recompute_tasks))) as _ref_ex2:
+                _ref_futs2 = {
+                    _ref_ex2.submit(
+                        compute_leg_projection, rpn, rmk, rln, rmt,
+                        n_games=n_games, key_teammate_out=False,
+                        bankroll=bankroll, frac_kelly=frac_kelly,
+                        max_risk_frac=float(st.session_state.get("max_risk_per_bet", 3.0)) / 100.0,
+                        market_prior_weight=market_prior_weight,
+                        exclude_chaotic=bool(exclude_chaotic),
+                        game_date=scan_start,
+                        injury_team_map=_inj_map,
+                        scan_mode=True,
+                    ): (ridx, rpn, rmk, rln, rmt)
+                    for ridx, rpn, rmk, rln, rmt in _ref_recompute_tasks
+                }
+                for _ref_fut2 in _ref_futs2:
+                    _ref_done += 1
+                    _ref_progress.progress(
+                        min(_ref_done / _ref_total, 1.0),
+                        text=f"Refreshing... {_ref_done}/{_ref_total} ({_ref_updated} updated)"
+                    )
+                    _ridx2, _rpn2, _rmk2, _rln2, _rmt2 = _ref_futs2[_ref_fut2]
+                    try:
+                        _ref_leg = _ref_fut2.result(timeout=30)
+                    except Exception:
+                        _ref_dropped_idx.append(_ridx2)
+                        continue
+                    _ref_leg = recompute_pricing_fields(_ref_leg, st.session_state.get("calibrator_map"))
+                    _ref_pc = _ref_leg.get("p_cal")
+                    if _ref_pc is None or not _ref_leg.get("gate_ok"):
+                        _ref_dropped_idx.append(_ridx2)
+                        continue
+                    _ref_pc = float(_ref_pc)
+                    _ref_pi = _ref_leg.get("p_implied")
+                    _ref_ev = _ref_leg.get("ev_adj")
+                    if _ref_pi is None or _ref_ev is None:
+                        _ref_dropped_idx.append(_ridx2)
+                        continue
+                    _ref_adv = _ref_pc - float(_ref_pi)
+                    # Update the row with refreshed values
+                    scanner_out.at[_ridx2, "line"] = _rln2
+                    scanner_out.at[_ridx2, "p_cal"] = round(_ref_pc, 3)
+                    scanner_out.at[_ridx2, "p_implied"] = round(float(_ref_pi), 3)
+                    scanner_out.at[_ridx2, "advantage"] = round(_ref_adv, 3)
+                    scanner_out.at[_ridx2, "ev_adj_pct"] = round(float(_ref_ev) * 100, 2)
+                    scanner_out.at[_ridx2, "proj"] = safe_round(_ref_leg.get("proj"))
+                    scanner_out.at[_ridx2, "edge_cat"] = _ref_leg.get("edge_cat", "")
+                    scanner_out.at[_ridx2, "regime"] = _ref_leg.get("regime", "")
+                    scanner_out.at[_ridx2, "sharp"] = safe_round(_ref_leg.get("sharpness_score"), 0)
+                    scanner_out.at[_ridx2, "sharp_tier"] = _ref_leg.get("sharpness_tier", "")
+                    scanner_out.at[_ridx2, "trend"] = _ref_leg.get("trend_label", "")
+                    scanner_out.at[_ridx2, "fatigue"] = _ref_leg.get("fatigue_label", "Normal")
+                    scanner_out.at[_ridx2, "stake_$"] = round(_ref_leg.get("stake", 0), 2)
+                    scanner_out.at[_ridx2, "pp_edge_%"] = round((_ref_pc - 0.50) * 100, 1)
+                    scanner_out.at[_ridx2, "pp_2leg_ev_%"] = round((DFS_PP_PAYOUTS[2] * _ref_pc ** 2 - 1.0) * 100, 1)
+                    _ref_mv = _ref_leg.get("line_movement") or {}
+                    scanner_out.at[_ridx2, "line_mv"] = _ref_mv.get("direction", "--")
+                    scanner_out.at[_ridx2, "mv_pips"] = float(_ref_mv.get("pips", 0.0))
+                    scanner_out.at[_ridx2, "steam"] = "STEAM" if _ref_mv.get("steam") else ("FADE" if _ref_mv.get("fade") else "")
+                    if "price_decimal" in scanner_out.columns:
+                        scanner_out.at[_ridx2, "price_decimal"] = _ref_leg.get("price_decimal")
+                    _ref_updated += 1
+            _ref_progress.empty()
+            # Drop edges that failed on refresh
+            if _ref_dropped_idx:
+                scanner_out = scanner_out.drop(_ref_dropped_idx)
+            # Re-filter by thresholds
+            scanner_out = scanner_out[
+                (scanner_out["p_cal"].astype(float) >= min_prob) &
+                (scanner_out["advantage"].astype(float) >= min_adv) &
+                (scanner_out["ev_adj_pct"].astype(float) / 100.0 >= min_ev)
+            ].copy()
+            # Re-sort
+            if "sharp" in scanner_out.columns and scanner_out["sharp"].notna().any():
+                scanner_out["_sort"] = scanner_out["sharp"].fillna(0).astype(float) * 0.6 + scanner_out["ev_adj_pct"].fillna(0).astype(float) * 0.4
+                scanner_out = scanner_out.sort_values("_sort", ascending=False).drop(columns=["_sort"])
+            else:
+                scanner_out = scanner_out.sort_values("ev_adj_pct", ascending=False)
+            # Persist
+            st.session_state["scanner_results"] = scanner_out
+            st.session_state["_edges_last_refresh"] = _now_iso()
+            # Update CLV active scan with new lines
+            _clv_snap_refresh = []
+            for _, _rr in scanner_out.iterrows():
+                _clv_snap_refresh.append({
+                    "player": _rr.get("player"),
+                    "player_norm": normalize_name(str(_rr.get("player", ""))),
+                    "market": _rr.get("market"),
+                    "market_key": _rr.get("market_key") or ODDS_MARKETS.get(str(_rr.get("market", "")), ""),
+                    "line": _rr.get("line"),
+                    "price_decimal": _rr.get("price_decimal"),
+                    "side": _rr.get("side", "Over"),
+                    "event_id": _rr.get("event_id"),
+                    "book": _rr.get("book"),
+                    "timestamp": _now_iso(),
+                })
+            st.session_state["clv_active_scan"] = _clv_snap_refresh
+            _save_scanner_cache()
+            _ref_elapsed = time.time() - _ref_t0
+            _lines_moved = len(_ref_new_lines)
+            st.success(
+                f"Refreshed {_ref_updated}/{_ref_total} edges in {_ref_elapsed:.1f}s — "
+                f"{_lines_moved} lines updated · {len(_ref_dropped_idx)} dropped on re-eval · "
+                f"{len(scanner_out)} final edges"
+            )
+            st.rerun()
         # ── SIM-ENHANCE: Run full possession sim on each edge sequentially ──
         _sim_available = False
         try:
@@ -9292,9 +9738,13 @@ with tabs[2]:
                 _is_pp_source = (sportsbook2 == "prizepicks") or (str(r.get("source","")).lower() == "prizepicks")
                 st.session_state[f"_staged_manual_{i}"] = _is_pp_source
                 st.session_state[f"_staged_out_{i}"]    = False
+                # Pass the side (Over/Under) from scanner to model
+                _r_side = str(r.get("side", "Over")).strip()
+                st.session_state[f"_staged_side_{i}"]   = "Under" if _r_side.lower() == "under" else "Over"
             # Clear unused legs beyond selection count
             for i in range(len(_legs_for_model) + 1, 5):
                 st.session_state[f"_staged_pname_{i}"] = ""
+                st.session_state[f"_staged_side_{i}"] = "Over"
             # Sync scanner date and book to MODEL tab
             st.session_state["_staged_model_date"] = scan_start
             if sportsbook2 and sportsbook2 != "all":
@@ -9390,12 +9840,29 @@ with tabs[2]:
     _active_scan = st.session_state.get("clv_active_scan", [])
     if _active_scan:
         with st.expander(f"Auto-CLV Tracker ({len(_active_scan)} bets tracked)", expanded=False):
+            # Background thread status indicator
+            _clv_bg = _clv_auto_state()
+            _clv_bg_alive = _clv_bg.get("thread") and _clv_bg["thread"].is_alive()
+            _clv_bg_last = _clv_bg.get("last_run", "never")
+            _clv_bg_updates = _clv_bg.get("updates_count", 0)
+            _clv_bg_color = "#00FFB2" if _clv_bg_alive else "#FF3358"
             st.markdown(
-                "<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#00FFB2;"
-                "letter-spacing:0.10em;margin-bottom:0.5rem;'>"
-                "Opening lines captured automatically. Current lines fetched live.</div>",
+                f"<div style='font-family:Chakra Petch,monospace;font-size:0.58rem;letter-spacing:0.10em;margin-bottom:0.5rem;'>"
+                f"<span style='color:{_clv_bg_color};'>● AUTO-CLV {'ACTIVE' if _clv_bg_alive else 'STOPPED'}</span>"
+                f" · Checks every 2m · Captures closing lines 10m before tip-off"
+                f" · Last check: {_clv_bg_last or 'pending'}"
+                f" · Auto-updates: {_clv_bg_updates}"
+                f"</div>"
+                f"<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#00FFB2;"
+                f"letter-spacing:0.10em;margin-bottom:0.5rem;'>"
+                f"Opening lines captured automatically. Current lines fetched live.</div>",
                 unsafe_allow_html=True,
             )
+            # Restart button if thread died
+            if not _clv_bg_alive:
+                if st.button("Restart Auto-CLV Background Thread", key="restart_clv_bg"):
+                    _ensure_clv_auto_thread()
+                    st.rerun()
             clv_rows = []
             for _clv_bet in _active_scan:
                 _open_line, _open_price = get_opening_line(
@@ -9421,20 +9888,35 @@ with tabs[2]:
                 st.dataframe(pd.DataFrame(clv_rows), use_container_width=True, hide_index=True)
             else:
                 st.info("No opening lines captured yet. Run a scan first.")
-            if st.button("Refresh CLV (re-fetch closing lines)", key="auto_clv_refresh"):
-                if _active_scan:
-                    _updated_scan = []
-                    for _clv_bet in _active_scan:
-                        try:
-                            _cl_line, _cl_price, _cl_book, _cl_err = fetch_latest_market_for_leg(_clv_bet)
-                            if _cl_line is not None:
-                                _clv_bet["line"] = _cl_line
-                                _clv_bet["price_decimal"] = _cl_price
-                        except Exception:
-                            pass
-                        _updated_scan.append(_clv_bet)
-                    st.session_state["clv_active_scan"] = _updated_scan
-                st.rerun()
+            _clv_btn_col1, _clv_btn_col2 = st.columns(2)
+            with _clv_btn_col1:
+                if st.button("Refresh CLV (re-fetch closing lines)", key="auto_clv_refresh"):
+                    if _active_scan:
+                        _updated_scan = []
+                        for _clv_bet in _active_scan:
+                            try:
+                                _cl_line, _cl_price, _cl_book, _cl_err = fetch_latest_market_for_leg(_clv_bet)
+                                if _cl_line is not None:
+                                    _clv_bet["line"] = _cl_line
+                                    _clv_bet["price_decimal"] = _cl_price
+                            except Exception:
+                                pass
+                            _updated_scan.append(_clv_bet)
+                        st.session_state["clv_active_scan"] = _updated_scan
+                    st.rerun()
+            with _clv_btn_col2:
+                if st.button("Force CLV Update Now (all pending bets)", key="force_clv_update"):
+                    with st.spinner("Fetching closing lines for all pending bets..."):
+                        _force_result = _clv_auto_update_pending_bets()
+                    if _force_result["bets_updated"] > 0:
+                        st.success(f"Updated CLV for {_force_result['bets_updated']}/{_force_result['bets_checked']} pending bets")
+                    elif _force_result["bets_checked"] > 0:
+                        st.info(f"Checked {_force_result['bets_checked']} bets — no closing lines available yet")
+                    else:
+                        st.info("No pending bets with upcoming games found")
+                    if _force_result.get("errors"):
+                        for _fe in _force_result["errors"]:
+                            st.caption(f"Error: {_fe}")
     scanner_dropped = st.session_state.get("scanner_dropped", [])
     if scanner_dropped:
         with st.expander(f"Excluded ({len(scanner_dropped)})", expanded=False):
