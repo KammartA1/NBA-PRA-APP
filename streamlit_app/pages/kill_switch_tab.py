@@ -22,8 +22,9 @@ def render() -> None:
 
     bankroll = float(st.session_state.get("bankroll", 1000))
     peak = float(st.session_state.get("peak_bankroll", bankroll))
-    if peak < bankroll:
+    if bankroll > peak:
         peak = bankroll
+        st.session_state["peak_bankroll"] = peak
 
     try:
         from services.kill_switch import KillSwitch

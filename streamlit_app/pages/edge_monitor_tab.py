@@ -87,15 +87,19 @@ def _render_daily_verdict(verdict) -> None:
         return
 
     m = verdict.metrics
+    if not m:
+        st.info("No metrics data available.")
+        return
 
     st.markdown("### Core Metrics")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
+        _clv_delta = round(m.clv_50_avg - m.clv_200_avg, 2)
         st.metric("CLV (50-bet)", f"{m.clv_50_avg:.2f}c",
-                  delta=f"{m.clv_50_avg - m.clv_200_avg:+.2f}c vs 200-bet")
+                  delta=_clv_delta, delta_color="normal")
     with c2:
         st.metric("Brier Score", f"{m.brier_score:.4f}",
-                  delta=f"{m.brier_advantage:+.4f} vs market")
+                  delta=round(m.brier_advantage, 4), delta_color="inverse")
     with c3:
         st.metric("ROI (50-bet)", f"{m.roi_50_pct:.1f}%")
     with c4:
