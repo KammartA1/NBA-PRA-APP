@@ -6206,6 +6206,10 @@ def recompute_pricing_fields(leg, calib):
     leg["p_cal"] = p_cal
     price = leg.get("price_decimal")
     p_imp = implied_prob_from_decimal(price) if price is not None else None
+    # [FIX] Flip p_implied for Under bets — price is typically the Over-side price
+    _side = leg.get("side", "Over") or "Over"
+    if "under" in str(_side).lower() and p_imp is not None:
+        p_imp = 1.0 - float(p_imp)
     leg["p_implied"] = p_imp
     leg["advantage"] = float(p_cal-p_imp) if (p_cal and p_imp) else None
     ev_raw = ev_per_dollar(p_cal, price) if (p_cal and price) else None

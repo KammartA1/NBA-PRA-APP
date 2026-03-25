@@ -5846,6 +5846,11 @@ def compute_leg_projection(
     # [UPGRADE 6] Over/Under asymmetry: model the correct side independently
     _is_under = "under" in str(side_str).lower()
     p_model = (1.0 - p_over_raw if _is_under and p_over_raw is not None else p_over_raw)
+    # [FIX] Flip p_implied for Under bets — the price from the API is typically
+    # the Over-side price, so 1/price gives P(Over implied). For Under bets we
+    # need P(Under implied) ≈ 1 - P(Over implied). Exact for PP/UD (50/50 pricing).
+    if _is_under and p_implied is not None:
+        p_implied = 1.0 - float(p_implied)
     sharp = book_sharpness(meta.get("book") if meta else None)
     w_model = float(market_prior_weight)
     w_eff = float(np.clip(w_model*(1.0-0.60*sharp)+0.15, 0.10, 0.95))
@@ -6160,7 +6165,8 @@ def compute_leg_projection(
         "minutes_prod_label": _minutes_prod_label,
         "hist_avg_minutes":  float(_hist_avg_minutes) if _hist_avg_minutes is not None else None,
         # [UNIFIED] Game simulation overlay
-        "sim_prob":          float(sim_prob) if sim_prob is not None else None,
+        # [FIX] Flip sim_prob for Under bets — raw sim always computes P(Over)
+        "sim_prob":          float(1.0 - sim_prob if _is_under else sim_prob) if sim_prob is not None else None,
         "sim_mean":          float(sim_mean) if sim_mean is not None else None,
         "sim_std":           float(sim_std) if sim_std is not None else None,
         "errors":            errors,
@@ -7724,8 +7730,12 @@ with tabs[0]:
                         text=f"Running model... {_ti + 1}/{len(tasks)}: {pname} {mkt}"
                     )
                     try:
+                        # Inject user-selected side into meta so engine computes
+                        # the correct direction (P(Over) vs P(Under)) from the start
+                        _run_meta = dict(meta) if meta else {"side": _leg_side}
+                        _run_meta["side"] = _leg_side
                         _leg = compute_leg_projection(
-                            pname, mkt, line, meta,
+                            pname, mkt, line, _run_meta,
                             n_games=n_games, key_teammate_out=to,
                             bankroll=bankroll, frac_kelly=frac_kelly,
                             max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
@@ -7744,46 +7754,8 @@ with tabs[0]:
                 _model_progress.empty()
             calib = st.session_state.get("calibrator_map")
             results = [recompute_pricing_fields(dict(leg), calib) for leg in results]
-            # For Under legs, flip the probabilities and re-evaluate edge/EV
-            for _rleg in results:
-                if _rleg.get("bet_side", "Over") == "Under":
-                    _p_over = _rleg.get("p_cal") or _rleg.get("p_over") or 0.5
-                    _p_under = 1.0 - float(_p_over)
-                    _rleg["p_cal"] = _p_under
-                    _rleg["p_over_original"] = float(_p_over)
-                    # Flip sim_prob too — it's stored as P(Over) from the sim engine
-                    if _rleg.get("sim_prob") is not None:
-                        _rleg["sim_prob_over_original"] = float(_rleg["sim_prob"])
-                        _rleg["sim_prob"] = 1.0 - float(_rleg["sim_prob"])
-                    # Recalculate implied prob for the Under side
-                    _rleg_price = _rleg.get("price_decimal")
-                    if _rleg_price and float(_rleg_price) > 1:
-                        _rleg["p_implied"] = 1.0 - (1.0 / float(_rleg_price)) if float(_rleg_price) > 1 else 0.5
-                    else:
-                        _p_imp_orig = _rleg.get("p_implied")
-                        if _p_imp_orig is not None:
-                            _rleg["p_implied"] = 1.0 - float(_p_imp_orig)
-                    # Re-derive advantage and EV from Under perspective
-                    _p_imp_u = _rleg.get("p_implied") or 0.5
-                    _rleg["advantage"] = float(_p_under - float(_p_imp_u))
-                    if float(_p_imp_u) > 0:
-                        _ev_u = (_p_under / float(_p_imp_u)) - 1.0
-                    else:
-                        _ev_u = 0.0
-                    # Apply volatility penalty
-                    pen = _rleg.get("vol_penalty", 1.0) or 1.0
-                    _rleg["ev_adj"] = _ev_u * float(pen) if _rleg.get("gate_ok") else None
-                    _rleg["ev_pct"] = float(_rleg["ev_adj"] * 100) if _rleg["ev_adj"] is not None else None
-                    _rleg["edge"] = _rleg["ev_adj"]
-                    _rleg["edge_cat"] = classify_edge(_rleg["ev_adj"])
-                    # Recalculate stake for Under
-                    if _rleg.get("gate_ok") and _rleg.get("ev_adj") and float(_rleg["ev_adj"]) > 0 and bankroll > 0:
-                        _rleg_price_u = _rleg_price or 2.0
-                        sd, sf, sr = recommended_stake(bankroll, _p_under, float(_rleg_price_u), frac_kelly,
-                                                       float(st.session_state.get("max_risk_per_bet", 3.0)) / 100.0)
-                        _rleg["stake"] = float(sd)
-                        _rleg["stake_frac"] = float(sf)
-                        _rleg["stake_reason"] = sr
+            # Engine now computes correct direction (P(Over) or P(Under)) natively
+            # based on meta["side"], so no post-hoc flip is needed.
             st.session_state["last_results"] = results
             # ── [UNIFIED] Auto-CLV: log opening lines to database ──
             try:
