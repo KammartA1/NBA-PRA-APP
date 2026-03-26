@@ -310,6 +310,13 @@ def _build_odds_api_candidates(app, markets, book, game_date) -> list[tuple]:
             log.warning("Odds API events: %s", err or "no events")
             return []
 
+        # Build today's team schedule from events for opponent resolution
+        if hasattr(app, "build_today_schedule_from_events"):
+            try:
+                app.build_today_schedule_from_events(evs)
+            except Exception:
+                pass
+
         # Unsupported markets for Odds API
         unsupported = getattr(app, "ODDS_API_UNSUPPORTED_MARKETS", set())
         supported_markets = [m for m in markets if m not in unsupported]
@@ -447,10 +454,21 @@ def _build_platform_candidates(
             # Platforms use true 50/50 (no vig): decimal 2.0
             plat_price = 2.0
 
+            # Try to resolve home/away teams from cached schedule
+            _home_team, _away_team = "", ""
+            try:
+                import streamlit as _st
+                _sched = _st.session_state.get("_today_team_schedule", {})
+                if _sched and hasattr(app, "map_team_name_to_abbr"):
+                    # We don't know player's team yet — leave for compute_leg_projection
+                    pass
+            except Exception:
+                pass
+
             meta = {
                 "event_id": None,
-                "home_team": "",
-                "away_team": "",
+                "home_team": _home_team,
+                "away_team": _away_team,
                 "commence_time": "",
                 "price": plat_price,
                 "book": plat_label,

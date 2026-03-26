@@ -2813,6 +2813,19 @@ def nba_scoreboard_games(game_date):
                  "away_team_id":int(r.get("VISITOR_TEAM_ID"))} for _,r in df.iterrows()], None
     except Exception as e:
         return [], f"{type(e).__name__}: {e}"
+def build_today_schedule_from_events(events: list[dict]):
+    """Build team→opponent schedule from Odds API events and cache in session state."""
+    schedule = {}
+    for ev in (events or []):
+        home = map_team_name_to_abbr(ev.get("home_team", "") or "")
+        away = map_team_name_to_abbr(ev.get("away_team", "") or "")
+        if home and away:
+            schedule[home] = {"opp": away, "is_home": True}
+            schedule[away] = {"opp": home, "is_home": False}
+    if schedule:
+        st.session_state["_today_team_schedule"] = schedule
+    return schedule
+
 def opponent_from_team_abbr(team_abbr, game_date):
     games, _ = nba_scoreboard_games(game_date)
     tid_map = team_id_to_abbr_map()
@@ -5428,6 +5441,14 @@ def compute_leg_projection(
     if team_abbr and not opp_abbr:
         try:
             opp_abbr, is_home_resolved = opponent_from_team_abbr(team_abbr, game_date)
+        except Exception: pass
+    # Fallback 2: use Odds API events schedule (stored in session state from earlier fetch)
+    if team_abbr and not opp_abbr:
+        try:
+            _today_schedule = st.session_state.get("_today_team_schedule", {})
+            if team_abbr in _today_schedule:
+                opp_abbr = _today_schedule[team_abbr]["opp"]
+                is_home_resolved = _today_schedule[team_abbr]["is_home"]
         except Exception: pass
     # ── Auto key_teammate_out from injury map ─────────────────────
     auto_inj_triggered = False
