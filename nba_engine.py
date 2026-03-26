@@ -5400,21 +5400,22 @@ def compute_leg_projection(
     # second call to compute_rest_factor which made the same API call twice.
     b2b_flag = (rest_days == 0)
     # Resolve team/opponent
+    # IMPORTANT: Game log MATCHUP shows the LAST game played, not today's game.
+    # Use game log only to identify player's team abbreviation.
+    # Always use live scoreboard or meta for TODAY's opponent.
     team_abbr, opp_abbr, is_home_resolved = None, None, is_home
     if not gldf_n.empty:
         try:
             matchup = str(gldf_n.iloc[0].get("MATCHUP","")).strip()
+            # Extract only the player's TEAM from game log (first part of matchup)
             if " vs " in matchup.lower().replace("vs.","vs"):
                 pts = re.split(r'\s+vs\.?\s+', matchup, flags=re.IGNORECASE)
-                if len(pts)==2: team_abbr, opp_abbr = pts[0].strip(), pts[1].strip()
+                if len(pts)==2: team_abbr = pts[0].strip()
             elif " @ " in matchup:
                 pts = matchup.split(" @ ")
-                if len(pts)==2: team_abbr, opp_abbr = pts[0].strip(), pts[1].strip()
+                if len(pts)==2: team_abbr = pts[0].strip()
         except Exception: pass
-    if team_abbr and not opp_abbr:
-        try:
-            opp_abbr, is_home_resolved = opponent_from_team_abbr(team_abbr, game_date)
-        except Exception: pass
+    # Primary: use meta (PrizePicks/odds source) for today's opponent
     if meta:
         try:
             home_abbr = map_team_name_to_abbr(meta.get("home_team","") or "")
@@ -5422,6 +5423,11 @@ def compute_leg_projection(
             if team_abbr and home_abbr and away_abbr:
                 if team_abbr == home_abbr: opp_abbr, is_home_resolved = away_abbr, True
                 elif team_abbr == away_abbr: opp_abbr, is_home_resolved = home_abbr, False
+        except Exception: pass
+    # Fallback: use live NBA scoreboard for today's opponent
+    if team_abbr and not opp_abbr:
+        try:
+            opp_abbr, is_home_resolved = opponent_from_team_abbr(team_abbr, game_date)
         except Exception: pass
     # ── Auto key_teammate_out from injury map ─────────────────────
     auto_inj_triggered = False
