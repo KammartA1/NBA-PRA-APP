@@ -96,6 +96,17 @@ def scan_all_books(
 
     candidates = []
 
+    # ── Always build today's team schedule (needed for opponent resolution) ──
+    # This ensures PrizePicks props can resolve opponents even if Odds API
+    # candidates aren't being fetched in this scan.
+    try:
+        date_iso = game_date.isoformat() if hasattr(game_date, "isoformat") else str(game_date)
+        evs, _ = _app.odds_get_events(date_iso)
+        if evs and hasattr(_app, "build_today_schedule_from_events"):
+            _app.build_today_schedule_from_events(evs)
+    except Exception:
+        pass
+
     # ── Odds API candidates ──
     if use_odds_api:
         odds_candidates = _build_odds_api_candidates(_app, markets, book, game_date)

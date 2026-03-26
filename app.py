@@ -7784,6 +7784,14 @@ with tabs[0]:
                         "book": "manual", "market_key": market_key, "side": leg_side}
             tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out), leg_side))
         if tasks:
+            # Ensure today's team schedule is built for opponent resolution
+            if "_today_team_schedule" not in st.session_state:
+                try:
+                    _sched_evs, _ = odds_get_events(scan_date.isoformat() if hasattr(scan_date, "isoformat") else str(scan_date))
+                    if _sched_evs:
+                        build_today_schedule_from_events(_sched_evs)
+                except Exception:
+                    pass
             _inj_map = st.session_state.get("injury_team_map", {})
             with st.spinner("Computing projections..."):
                 results = []
@@ -9063,6 +9071,14 @@ with tabs[2]:
             st.session_state["_scanner_candidates"] = list(candidates)
             # Reset sim-enhanced flag for new scan
             st.session_state.pop("_sim_enhanced_scan_id", None)
+            # Ensure today's team schedule is built for opponent resolution
+            if "_today_team_schedule" not in st.session_state:
+                try:
+                    _sched_evs, _ = odds_get_events(scan_start.isoformat())
+                    if _sched_evs:
+                        build_today_schedule_from_events(_sched_evs)
+                except Exception:
+                    pass
             out_rows, dropped = [], []
             all_computed_legs = []  # [FEATURE] Stores all computed legs for Under scan
             if candidates:
