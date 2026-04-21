@@ -39,6 +39,9 @@ class PlayerProfile:
     foul_rate: float = 0.03           # P(committing a foul) per possession
     foul_draw_rate: float = 0.03      # P(drawing a foul) per possession
 
+    # Clutch performance
+    clutch_rating: float = 0.0        # -1.0 (chokes) → 0 (neutral) → +1.0 (ice cold closer)
+
     # Flags
     is_starter: bool = True
     rotation_order: int = 0           # 0-4 starters, 5-9+ bench

@@ -3,7 +3,8 @@ simulation/game_engine.py
 =========================
 The core game engine.  Orchestrates a full NBA game simulation at the
 possession level: alternating possessions, lineup management, fatigue,
-fouls, game script, blowout detection, and stat accumulation.
+fouls, game script, blowout detection, transition play, dynamic pace,
+hot/cold streaks, context brain integration, and stat accumulation.
 
 Main entry point: ``GameEngine.run_simulation(n)`` which runs N
 independent game simulations and returns full stat distributions.
@@ -22,6 +23,7 @@ from scipy import stats as sp_stats
 
 from simulation.config import (
     CoachArchetype,
+    SeasonPhase,
     SimulationConfig,
     DEFAULT_CONFIG,
 )
@@ -29,7 +31,7 @@ from simulation.player_state import PlayerProfile, PlayerState
 from simulation.team_state import TeamState
 from simulation.fatigue_model import FatigueModel
 from simulation.foul_model import FoulModel
-from simulation.game_script import GameScriptModel
+from simulation.game_script import GameScriptModel, GamePhase
 from simulation.blowout_model import BlowoutModel
 from simulation.lineup_manager import LineupManager
 from simulation.possession import PossessionEngine, PossessionResult
@@ -44,11 +46,10 @@ class PlayerDistribution:
     """Statistical summary of a player's simulated stat distributions."""
     player_name: str
     player_id: str
-    stat_name: str                     # "points", "rebounds", "assists", "pra", etc.
+    stat_name: str
     n_sims: int
-    values: np.ndarray                 # raw array of simulated values
+    values: np.ndarray
 
-    # Descriptive stats (populated by compute())
     mean: float = 0.0
     median: float = 0.0
     std: float = 0.0
@@ -64,7 +65,6 @@ class PlayerDistribution:
     max_val: float = 0.0
 
     def compute(self) -> None:
-        """Populate descriptive statistics from the raw values array."""
         v = self.values.astype(np.float64)
         self.mean = float(np.mean(v))
         self.median = float(np.median(v))
@@ -81,11 +81,9 @@ class PlayerDistribution:
         self.max_val = float(np.max(v))
 
     def prob_over(self, line: float) -> float:
-        """P(stat > line) from the empirical distribution."""
         return float(np.mean(self.values > line))
 
     def prob_under(self, line: float) -> float:
-        """P(stat < line) from the empirical distribution."""
         return float(np.mean(self.values < line))
 
     def to_dict(self) -> dict:
@@ -115,8 +113,7 @@ class SimulationOutput:
     home_team: str
     away_team: str
     distributions: Dict[str, Dict[str, PlayerDistribution]]
-    # distributions[player_id][stat_name] -> PlayerDistribution
-    game_results: List[Dict[str, Any]]   # per-sim summary (scores, blowout, etc.)
+    game_results: List[Dict[str, Any]]
 
     def get_player_dist(
         self, player_id: str, stat: str,
@@ -128,7 +125,6 @@ class SimulationOutput:
         return dist.prob_over(line) if dist else None
 
     def to_dataframe(self) -> pd.DataFrame:
-        """Flatten distributions to a summary DataFrame."""
         rows = []
         for pid, stat_map in self.distributions.items():
             for stat_name, dist in stat_map.items():
@@ -141,11 +137,12 @@ class SimulationOutput:
 # ---------------------------------------------------------------------------
 
 class GameEngine:
-    """Possession-level NBA game simulator.
+    """Possession-level NBA game simulator with Context Brain integration.
 
     Usage::
 
-        engine = GameEngine(config, home_profiles, away_profiles)
+        engine = GameEngine(config, home_profiles, away_profiles,
+                           game_context=my_context)
         output = engine.run_simulation(n=10000)
         p_over = output.prob_over("player_123", "points", 24.5)
     """
@@ -154,7 +151,6 @@ class GameEngine:
         "points", "rebounds", "assists", "steals", "blocks",
         "turnovers", "minutes", "pra", "pr", "pa", "ra",
         "fgm", "fga", "three_pm", "three_pa", "ftm", "fta",
-        # Half-game stats (H1 = Q1+Q2, H2 = Q3+Q4)
         "h1_points", "h1_rebounds", "h1_assists", "h1_steals", "h1_blocks",
         "h1_turnovers", "h1_minutes", "h1_pra", "h1_pr", "h1_pa", "h1_ra",
         "h1_fgm", "h1_fga", "h1_three_pm", "h1_three_pa", "h1_ftm", "h1_fta",
@@ -175,6 +171,7 @@ class GameEngine:
         pre_game_spread: float = 0.0,
         home_archetype: CoachArchetype | None = None,
         away_archetype: CoachArchetype | None = None,
+        game_context: Any | None = None,
     ) -> None:
         self.cfg = config or DEFAULT_CONFIG
         self.home_profiles = home_profiles or self._default_roster(True)
@@ -186,20 +183,28 @@ class GameEngine:
         self.pre_game_spread = pre_game_spread
         self.home_archetype = home_archetype
         self.away_archetype = away_archetype
+        self.game_context = game_context
 
-        # Sub-models
         self.fatigue_model = FatigueModel(self.cfg)
         self.foul_model = FoulModel(self.cfg)
         self.possession_engine = PossessionEngine(self.cfg)
         self.blowout_model = BlowoutModel(self.cfg)
 
+        self._context_adjustments = None
+        if self.game_context is not None:
+            try:
+                from simulation.context_brain import ContextBrain
+                brain = ContextBrain(self.cfg)
+                self._context_adjustments = brain.compute_adjustments(self.game_context)
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------
-    # Default roster generation (for testing / when no data available)
+    # Default roster generation
     # ------------------------------------------------------------------
 
     @staticmethod
     def _default_roster(is_home: bool) -> List[PlayerProfile]:
-        """Generate a realistic 12-man roster with default attributes."""
         positions = ["PG", "SG", "SF", "PF", "C",
                       "PG", "SG", "SF", "PF", "C", "SF", "PF"]
         prefix = "H" if is_home else "A"
@@ -246,21 +251,88 @@ class GameEngine:
         team.update_dynamic_usage()
         return team
 
+    def _apply_context_to_profiles(
+        self,
+        profiles: List[PlayerProfile],
+        is_perspective_team: bool,
+    ) -> List[PlayerProfile]:
+        """Apply Context Brain adjustments to player profiles pre-game."""
+        adj = self._context_adjustments
+        if adj is None:
+            return profiles
+
+        try:
+            from simulation.context_brain import ContextBrain
+            brain = ContextBrain(self.cfg)
+            adjusted = []
+            for p in profiles:
+                is_star = p.usage_rate >= 0.25 and p.is_starter
+                if is_perspective_team:
+                    adjusted.append(brain.apply_to_player_profile(p, adj, is_star))
+                else:
+                    adjusted.append(p)
+            return adjusted
+        except Exception:
+            return profiles
+
+    def _apply_starting_fatigue(
+        self, team: TeamState, is_perspective_team: bool,
+    ) -> None:
+        """Set pre-game fatigue for all players based on context."""
+        adj = self._context_adjustments
+        if adj is None or not is_perspective_team:
+            return
+        starting_fatigue = adj.fatigue_starting_level
+        if starting_fatigue <= 0:
+            return
+        for p in team.players:
+            p.fatigue_level = self.fatigue_model.compute_starting_fatigue(
+                p, context_fatigue_start=starting_fatigue,
+            )
+            p.update_efficiency()
+
+    # ------------------------------------------------------------------
+    # Previous play type determination
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _determine_previous_play_type(poss_result: PossessionResult) -> str:
+        if poss_result.turnover or poss_result.steal:
+            return "turnover"
+        if poss_result.shot_made:
+            return "made_shot"
+        if poss_result.offensive_rebound:
+            return "offensive_rebound"
+        return "defensive_rebound"
+
     # ------------------------------------------------------------------
     # Simulate a single game
     # ------------------------------------------------------------------
 
     def simulate_game(self, rng: np.random.Generator) -> Dict[str, Any]:
-        """Run one full game simulation.  Returns a dict with player stat
-        lines and game metadata.
-        """
         cfg = self.cfg
+        adj = self._context_adjustments
 
-        # Build fresh state
-        home = self._build_team(self.home_profiles, self.home_name, self.home_pace)
-        away = self._build_team(self.away_profiles, self.away_name, self.away_pace)
+        context_pace_mult = adj.pace_multiplier if adj else 1.0
+        context_defense_adj = adj.defense_adjustment if adj else 0.0
+        context_3pt_mod = adj.three_pt_rate_modifier if adj else 0.0
+        context_2pt_mod = adj.two_pt_rate_modifier if adj else 0.0
+        context_fatigue_rate_mult = adj.fatigue_rate_multiplier if adj else 1.0
+        altitude_factor = 0.0
+        if adj and self.game_context:
+            city = getattr(self.game_context, "altitude_city", "")
+            if city in ("DEN", "UTA", "SLC"):
+                altitude_factor = cfg.fatigue_altitude_factor
 
-        # Sub-models (per-game instances for stateful models)
+        home_profiles = self._apply_context_to_profiles(self.home_profiles, True)
+        away_profiles = self._apply_context_to_profiles(self.away_profiles, False)
+
+        home = self._build_team(home_profiles, self.home_name, self.home_pace)
+        away = self._build_team(away_profiles, self.away_name, self.away_pace)
+
+        self._apply_starting_fatigue(home, True)
+        self._apply_starting_fatigue(away, False)
+
         home_lineup_mgr = LineupManager(cfg, self.home_archetype)
         away_lineup_mgr = LineupManager(cfg, self.away_archetype)
         home_script = GameScriptModel(cfg)
@@ -268,27 +340,34 @@ class GameEngine:
         home_lineup_mgr.initialize(home)
         away_lineup_mgr.initialize(away)
 
-        # Game pace = average of both teams
-        game_pace = (self.home_pace + self.away_pace) / 2.0
-        total_poss = int(round(cfg.possessions_per_game * game_pace / cfg.league_avg_pace))
-        min_per_poss = 48.0 / max(total_poss, 1)
+        base_game_pace = (self.home_pace + self.away_pace) / 2.0 * context_pace_mult
+        base_total_poss = int(round(cfg.possessions_per_game * base_game_pace / cfg.league_avg_pace))
+        base_min_per_poss = 48.0 / max(base_total_poss, 1)
 
         offense_is_home = True
         blowout_detected = False
         blowout_possession = -1
+        transition_possessions = 0
 
+        previous_play_type = "made_shot"
+        hot_streaks: Dict[int, int] = {}
+
+        elapsed_minutes = 0.0
         possession_num = 0
-        while possession_num < total_poss:
-            quarter = min(possession_num // (total_poss // 4) + 1, 4)
-            # --- Track which half we're in (H1 = Q1-Q2, H2 = Q3-Q4) ---
+        max_possessions = base_total_poss + 40
+
+        while elapsed_minutes < 48.0 and possession_num < max_possessions:
+            poss_per_quarter = max(base_total_poss // 4, 1)
+            quarter = min(int(elapsed_minutes / 12.0) + 1, 4)
             current_half = 1 if quarter <= 2 else 2
             for p in home.players + away.players:
                 p._current_half = current_half
 
-            # Reset quarter fouls at quarter boundaries
-            if possession_num > 0 and possession_num % (total_poss // 4) == 0:
-                home.reset_quarter_fouls()
-                away.reset_quarter_fouls()
+            if possession_num > 0 and quarter > 1:
+                prev_quarter = min(int((elapsed_minutes - base_min_per_poss) / 12.0) + 1, 4)
+                if prev_quarter < quarter:
+                    home.reset_quarter_fouls()
+                    away.reset_quarter_fouls()
 
             offense = home if offense_is_home else away
             defense = away if offense_is_home else home
@@ -297,52 +376,61 @@ class GameEngine:
             off_script_model = home_script if offense_is_home else away_script
             def_script_model = away_script if offense_is_home else home_script
 
-            # --- Fatigue update for all players ---
-            for p in home.players:
-                self.fatigue_model.update_player_fatigue(p, game_pace, min_per_poss)
-            for p in away.players:
-                self.fatigue_model.update_player_fatigue(p, game_pace, min_per_poss)
-
-            # --- Game script evaluation ---
             off_decision = off_script_model.evaluate(
                 offense.score, defense.score,
-                possession_num, total_poss,
+                possession_num, base_total_poss,
                 offense.unanswered_opponent_points,
                 offense.timeouts_remaining,
             )
             def_decision = def_script_model.evaluate(
                 defense.score, offense.score,
-                possession_num, total_poss,
+                possession_num, base_total_poss,
                 defense.unanswered_opponent_points,
                 defense.timeouts_remaining,
             )
 
-            # --- Blowout check ---
+            script_pace_mult = getattr(off_decision, 'pace_multiplier', 1.0)
+            effective_pace_mult = context_pace_mult * script_pace_mult
+            min_per_poss = base_min_per_poss / max(effective_pace_mult, 0.5)
+            min_per_poss = max(0.15, min(min_per_poss, 0.6))
+
+            for p in home.players:
+                self.fatigue_model.update_player_fatigue(
+                    p, base_game_pace, min_per_poss,
+                    altitude_factor=altitude_factor if not offense_is_home else 0.0,
+                    schedule_density_factor=(context_fatigue_rate_mult - 1.0),
+                )
+            for p in away.players:
+                self.fatigue_model.update_player_fatigue(
+                    p, base_game_pace, min_per_poss,
+                    altitude_factor=altitude_factor if offense_is_home else 0.0,
+                    schedule_density_factor=(context_fatigue_rate_mult - 1.0),
+                )
+
             margin = home.score - away.score
             blowout_assessment = self.blowout_model.evaluate(
-                margin, possession_num, total_poss, self.pre_game_spread,
+                margin, possession_num, base_total_poss, self.pre_game_spread,
             )
             if blowout_assessment.is_blowout and not blowout_detected:
                 blowout_detected = True
                 blowout_possession = possession_num
 
-            # --- Timeout ---
             if off_decision.call_timeout:
                 offense.call_timeout()
             if def_decision.call_timeout:
                 defense.call_timeout()
 
-            # --- Substitutions ---
             off_lineup_mgr.process_substitutions(
-                offense, possession_num, total_poss, quarter,
-                off_decision, blowout_assessment.pull_starters and offense_is_home == (margin > 0),
+                offense, possession_num, base_total_poss, quarter,
+                off_decision,
+                blowout_assessment.pull_starters and offense_is_home == (margin > 0),
             )
             def_lineup_mgr.process_substitutions(
-                defense, possession_num, total_poss, quarter,
-                def_decision, blowout_assessment.pull_starters and offense_is_home != (margin > 0),
+                defense, possession_num, base_total_poss, quarter,
+                def_decision,
+                blowout_assessment.pull_starters and offense_is_home != (margin > 0),
             )
 
-            # --- Foul adjudication ---
             off_players = offense.get_on_court_players()
             off_indices = list(offense.current_lineup)
             def_players = defense.get_on_court_players()
@@ -358,9 +446,17 @@ class GameEngine:
             if foul_event.foul_occurred and not foul_event.is_offensive:
                 defense.add_team_foul()
 
-            # --- Possession resolution ---
+            is_clutch = getattr(off_decision, 'phase', None) == GamePhase.CLUTCH
+            script_3pt_mod = getattr(off_decision, 'three_pt_rate_modifier', 0.0)
+            script_2pt_mod = getattr(off_decision, 'two_pt_rate_modifier', 0.0)
+            script_ft_mod = getattr(off_decision, 'ft_draw_modifier', 0.0)
+            two_for_one = getattr(off_decision, 'two_for_one', False)
+            end_quarter_heave = getattr(off_decision, 'end_quarter_heave', False)
+
+            combined_3pt_mod = context_3pt_mod + script_3pt_mod
+            combined_2pt_mod = context_2pt_mod + script_2pt_mod
+
             if foul_event.foul_occurred and foul_event.free_throws_awarded > 0:
-                # Free-throw possession
                 poss_result = self.possession_engine.resolve(
                     off_players, off_indices,
                     def_players, def_indices,
@@ -370,33 +466,61 @@ class GameEngine:
                     ft_count=foul_event.free_throws_awarded,
                 )
             elif foul_event.foul_occurred and foul_event.is_offensive:
-                # Offensive foul → turnover, change possession
                 poss_result = PossessionResult(
                     turnover=True, change_possession=True,
                     turnover_player_idx=foul_event.fouling_player_idx,
                 )
             else:
-                # Normal possession
                 poss_result = self.possession_engine.resolve(
                     off_players, off_indices,
                     def_players, def_indices,
                     rng,
+                    previous_play_type=previous_play_type,
+                    three_pt_rate_modifier=combined_3pt_mod,
+                    two_pt_rate_modifier=combined_2pt_mod,
+                    ft_draw_modifier=script_ft_mod,
+                    defense_adjustment=context_defense_adj,
+                    is_clutch=is_clutch,
+                    player_hot_streaks=hot_streaks,
+                    two_for_one=two_for_one,
+                    end_quarter_heave=end_quarter_heave,
                 )
 
-            # --- Score updates ---
+            if getattr(poss_result, 'is_transition', False):
+                transition_possessions += 1
+
+            if poss_result.shot_made and poss_result.shooter_idx is not None:
+                hot_streaks[poss_result.shooter_idx] = hot_streaks.get(poss_result.shooter_idx, 0) + 1
+                _shooter_pid = str(poss_result.shooter_idx)
+                if hasattr(off_script_model, 'record_player_make'):
+                    off_script_model.record_player_make(_shooter_pid)
+            elif poss_result.shot_attempted and poss_result.shooter_idx is not None:
+                hot_streaks[poss_result.shooter_idx] = 0
+                _shooter_pid = str(poss_result.shooter_idx)
+                if hasattr(off_script_model, 'record_player_miss'):
+                    off_script_model.record_player_miss(_shooter_pid)
+
             if poss_result.points_scored > 0:
                 offense.add_points(poss_result.points_scored)
                 defense.opponent_scored(poss_result.points_scored)
+                if hasattr(off_script_model, 'record_own_score'):
+                    off_script_model.record_own_score(poss_result.points_scored)
+                if hasattr(def_script_model, 'record_opponent_score'):
+                    def_script_model.record_opponent_score(poss_result.points_scored)
+            else:
+                if hasattr(off_script_model, 'record_no_score'):
+                    off_script_model.record_no_score()
 
             offense.advance_possession()
 
-            # --- Possession change ---
+            previous_play_type = self._determine_previous_play_type(poss_result)
+
             if poss_result.change_possession:
                 offense_is_home = not offense_is_home
 
+            elapsed_minutes += min_per_poss
             possession_num += 1
 
-        # --- Compile results ---
         all_stat_lines = {}
         for p in home.players + away.players:
             all_stat_lines[p.profile.player_id] = p.to_stat_line()
@@ -408,6 +532,8 @@ class GameEngine:
             "total_possessions": possession_num,
             "blowout": blowout_detected,
             "blowout_possession": blowout_possession,
+            "transition_possessions": transition_possessions,
+            "elapsed_minutes": round(elapsed_minutes, 1),
             "stat_lines": all_stat_lines,
         }
 
@@ -420,24 +546,14 @@ class GameEngine:
         n: int | None = None,
         seed: int | None = None,
     ) -> SimulationOutput:
-        """Run *n* independent game simulations and return distributions.
-
-        Parameters
-        ----------
-        n : number of simulations (default from config)
-        seed : random seed for reproducibility
-        """
         n = n or self.cfg.default_simulations
         seed = seed if seed is not None else self.cfg.random_seed
         rng = np.random.default_rng(seed)
 
-        # Collect raw stat arrays
         all_results: List[Dict[str, Any]] = []
-        # player_id -> stat_name -> list of values
         raw_stats: Dict[str, Dict[str, List[float]]] = {}
 
         for sim_idx in range(n):
-            # Each sim gets a child RNG for independence
             child_rng = np.random.default_rng(rng.integers(0, 2**63))
             game_result = self.simulate_game(child_rng)
             all_results.append({
@@ -446,6 +562,8 @@ class GameEngine:
                 "away_score": game_result["away_score"],
                 "margin": game_result["margin"],
                 "blowout": game_result["blowout"],
+                "total_possessions": game_result["total_possessions"],
+                "transition_possessions": game_result.get("transition_possessions", 0),
             })
 
             for pid, stats in game_result["stat_lines"].items():
@@ -454,7 +572,6 @@ class GameEngine:
                 for key in self.STAT_KEYS:
                     raw_stats[pid][key].append(stats.get(key, 0))
 
-        # Build PlayerDistribution objects
         distributions: Dict[str, Dict[str, PlayerDistribution]] = {}
         all_profiles = self.home_profiles + self.away_profiles
         profile_map = {p.player_id: p for p in all_profiles}
@@ -493,5 +610,4 @@ class GameEngine:
         stat: str,
         line: float,
     ) -> Optional[float]:
-        """Calculate P(stat > line) for a given player from simulation output."""
         return output.prob_over(player_id, stat, line)
