@@ -161,7 +161,7 @@ class LineupManager:
                     subs_to_make.append((idx, "blowout"))
 
         # --- 4. Fatigue threshold ---
-        fatigue_threshold = 0.65
+        fatigue_threshold = self.cfg.fatigue_sub_threshold
         for idx in list(team.current_lineup):
             p = team.players[idx]
             if p.fatigue_level >= fatigue_threshold:

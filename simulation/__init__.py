@@ -5,8 +5,9 @@ Possession-level NBA game simulator for PRA (Points + Rebounds + Assists)
 distribution modelling.  Exports all key classes for external use.
 """
 
-from simulation.config import SimulationConfig, CoachArchetype, DEFAULT_CONFIG
+from simulation.config import SimulationConfig, CoachArchetype, SeasonPhase, DEFAULT_CONFIG
 from simulation.player_state import PlayerProfile, PlayerState
+from simulation.context_brain import ContextBrain, GameContext, ContextAdjustments, InjuredPlayer
 from simulation.team_state import TeamState
 from simulation.fatigue_model import FatigueModel, FatigueResult
 from simulation.foul_model import FoulModel, FoulEvent
@@ -26,7 +27,13 @@ __all__ = [
     # Config
     "SimulationConfig",
     "CoachArchetype",
+    "SeasonPhase",
     "DEFAULT_CONFIG",
+    # Context Brain
+    "ContextBrain",
+    "GameContext",
+    "ContextAdjustments",
+    "InjuredPlayer",
     # Player / Team
     "PlayerProfile",
     "PlayerState",

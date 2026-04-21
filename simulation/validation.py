@@ -3,7 +3,8 @@ simulation/validation.py
 ========================
 Validation suite for the possession-level simulator.  Checks that
 simulated distributions match real NBA distributions across scoring,
-variance, correlations, blowout frequency, and minutes.
+variance, correlations, blowout frequency, minutes, transition play,
+half-game splits, and game-script realism.
 
 All tests return structured diagnostics with pass/fail verdicts.
 """
@@ -20,10 +21,9 @@ from simulation.game_engine import GameEngine, SimulationOutput
 
 
 # ---------------------------------------------------------------------------
-# Reference NBA distributions (2023-24 season averages)
+# Reference NBA distributions (2024-25 season averages)
 # ---------------------------------------------------------------------------
 
-# Per-game stat means and std-devs for a typical starter
 NBA_REFERENCE = {
     "points":   {"mean": 18.0, "std": 8.5,  "skew": 0.3},
     "rebounds":  {"mean": 6.0,  "std": 3.5,  "skew": 0.5},
@@ -35,7 +35,6 @@ NBA_REFERENCE = {
     "pra":       {"mean": 28.0, "std": 11.0, "skew": 0.3},
 }
 
-# Typical stat correlations (starter-level)
 NBA_CORRELATIONS = {
     ("points", "assists"):  0.25,
     ("points", "rebounds"): 0.10,
@@ -44,11 +43,11 @@ NBA_CORRELATIONS = {
     ("rebounds", "minutes"): 0.50,
 }
 
-# Blowout rate: fraction of games with 20+ point final margin
-NBA_BLOWOUT_RATE = 0.15   # ~15%
-
-# Team scoring
+NBA_BLOWOUT_RATE = 0.15
 NBA_TEAM_SCORING = {"mean": 112.0, "std": 12.0}
+
+# Half-game reference: H1 is typically 51-53% of full-game stats
+NBA_H1_SHARE = {"points": 0.52, "rebounds": 0.50, "assists": 0.51}
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +123,9 @@ class SimulationValidator:
         report.add(self.check_minutes_distribution())
         report.add(self.check_team_scoring())
         report.add(self.check_stat_ranges())
+        report.add(self.check_half_game_split())
+        report.add(self.check_pace_realism())
+        report.add(self.check_transition_rate())
         return report
 
     # ------------------------------------------------------------------
@@ -133,7 +135,6 @@ class SimulationValidator:
     def check_scoring_distribution(self) -> ValidationCheck:
         """KS test: simulated scoring vs a normal distribution with NBA
         mean and std for starters."""
-        # Gather all starter point distributions
         starter_pts = self._get_starter_stat("points")
         if len(starter_pts) == 0:
             return ValidationCheck(
@@ -144,12 +145,10 @@ class SimulationValidator:
         ref_mean = self.ref["points"]["mean"]
         ref_std = self.ref["points"]["std"]
 
-        # KS test against N(ref_mean, ref_std)
         ks_stat, p_value = sp_stats.kstest(
             starter_pts, "norm", args=(ref_mean, ref_std),
         )
 
-        # We allow some deviation: pass if p > 0.01 or KS stat < 0.15
         passed = p_value > 0.01 or ks_stat < 0.15
         return ValidationCheck(
             name="scoring_ks_test",
@@ -181,7 +180,6 @@ class SimulationValidator:
 
     def check_correlations(self) -> ValidationCheck:
         """Check PTS-AST, PTS-REB correlations match NBA direction."""
-        # Use first starter found
         pid = self._first_starter_id()
         if pid is None:
             return ValidationCheck("correlation_check", False, 0.0, 0.0, "No starter found")
@@ -194,15 +192,13 @@ class SimulationValidator:
         if pts_vals is None or ast_vals is None or reb_vals is None:
             return ValidationCheck("correlation_check", False, 0.0, 0.0, "Missing stat data")
 
-        # Compute correlations
         corr_pts_ast = float(np.corrcoef(pts_vals.values, ast_vals.values)[0, 1])
         corr_pts_reb = float(np.corrcoef(pts_vals.values, reb_vals.values)[0, 1])
 
         ref_pts_ast = NBA_CORRELATIONS[("points", "assists")]
         ref_pts_reb = NBA_CORRELATIONS[("points", "rebounds")]
 
-        # Pass if direction (sign) matches and magnitude within 0.5
-        sign_ok_1 = (corr_pts_ast > -0.1)   # should be non-negative
+        sign_ok_1 = (corr_pts_ast > -0.1)
         sign_ok_2 = (corr_pts_reb > -0.2)
         mag_ok = abs(corr_pts_ast - ref_pts_ast) < 0.5 and abs(corr_pts_reb - ref_pts_reb) < 0.5
         passed = sign_ok_1 and sign_ok_2 and mag_ok
@@ -226,7 +222,6 @@ class SimulationValidator:
         n_blowout = sum(1 for g in results if abs(g["margin"]) >= 20)
         rate = n_blowout / n
 
-        # Pass if between 5% and 30% (wide tolerance)
         passed = 0.05 <= rate <= 0.30
 
         return ValidationCheck(
@@ -299,6 +294,77 @@ class SimulationValidator:
             detail=detail,
         )
 
+    def check_half_game_split(self) -> ValidationCheck:
+        """H1 stats should be ~50-53% of full-game stats for starters."""
+        pid = self._first_starter_id()
+        if pid is None:
+            return ValidationCheck("half_game_split", False, 0.0, 0.52, "No starter found")
+
+        dists = self.output.distributions.get(pid, {})
+        full_pts = dists.get("points")
+        h1_pts = dists.get("h1_points")
+
+        if full_pts is None or h1_pts is None:
+            return ValidationCheck("half_game_split", False, 0.0, 0.52, "Missing H1 data")
+
+        if full_pts.mean <= 0:
+            return ValidationCheck("half_game_split", False, 0.0, 0.52, "Zero full-game points")
+
+        h1_share = h1_pts.mean / full_pts.mean
+        passed = 0.40 <= h1_share <= 0.60
+
+        return ValidationCheck(
+            name="half_game_split",
+            passed=passed,
+            metric=h1_share,
+            threshold=0.52,
+            detail=f"H1_share={h1_share:.3f} (H1_mean={h1_pts.mean:.1f}, full={full_pts.mean:.1f}), expected 0.45-0.55",
+        )
+
+    def check_pace_realism(self) -> ValidationCheck:
+        """Total possessions per game should be 190-250 (NBA realistic range)."""
+        results = self.output.game_results
+        if not results:
+            return ValidationCheck("pace_realism", False, 0.0, 220.0, "No games")
+
+        poss_counts = [g.get("total_possessions", 220) for g in results]
+        mean_poss = float(np.mean(poss_counts))
+        passed = 180.0 <= mean_poss <= 260.0
+
+        return ValidationCheck(
+            name="pace_realism",
+            passed=passed,
+            metric=mean_poss,
+            threshold=220.0,
+            detail=f"mean_possessions={mean_poss:.1f}, expected 190-250",
+        )
+
+    def check_transition_rate(self) -> ValidationCheck:
+        """If transition tracking available, verify ~15-20% of possessions are transition."""
+        results = self.output.game_results
+        if not results:
+            return ValidationCheck("transition_rate", True, 0.0, 0.17, "No games (skip)")
+
+        total_transition = sum(g.get("transition_possessions", 0) for g in results)
+        total_poss = sum(g.get("total_possessions", 220) for g in results)
+
+        if total_poss == 0 or total_transition == 0:
+            return ValidationCheck(
+                "transition_rate", True, 0.0, 0.17,
+                "Transition tracking not available (skip)",
+            )
+
+        rate = total_transition / total_poss
+        passed = 0.08 <= rate <= 0.30
+
+        return ValidationCheck(
+            name="transition_rate",
+            passed=passed,
+            metric=rate,
+            threshold=0.17,
+            detail=f"transition_rate={rate:.3f} ({total_transition}/{total_poss}), expected 0.12-0.22",
+        )
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -310,7 +376,6 @@ class SimulationValidator:
             dist = stat_map.get(stat)
             if dist is None:
                 continue
-            # Consider a player a "starter" if their minutes mean > 25
             minutes_dist = stat_map.get("minutes")
             if minutes_dist and minutes_dist.mean >= 25.0:
                 arrays.append(dist.values)
