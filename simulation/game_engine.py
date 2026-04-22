@@ -69,8 +69,12 @@ class PlayerDistribution:
         self.mean = float(np.mean(v))
         self.median = float(np.median(v))
         self.std = float(np.std(v, ddof=1)) if len(v) > 1 else 0.0
-        self.skew = float(sp_stats.skew(v)) if len(v) > 2 else 0.0
-        self.kurtosis = float(sp_stats.kurtosis(v)) if len(v) > 3 else 0.0
+        if len(v) > 8 and np.std(v) > 1e-10:
+            self.skew = float(sp_stats.skew(v))
+            self.kurtosis = float(sp_stats.kurtosis(v))
+        else:
+            self.skew = 0.0
+            self.kurtosis = 0.0
         self.p5 = float(np.percentile(v, 5))
         self.p10 = float(np.percentile(v, 10))
         self.p25 = float(np.percentile(v, 25))

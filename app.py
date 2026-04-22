@@ -5715,6 +5715,7 @@ def compute_leg_projection(
         sim_prob = None
         sim_mean = None
         sim_std  = None
+        _SIM_N = 500
         if not scan_mode:
           try:
             from simulation.game_engine import GameEngine
@@ -5722,6 +5723,9 @@ def compute_leg_projection(
             from simulation.player_state import PlayerProfile as SimPlayerProfile
             from simulation.data_loader import SimulationDataLoader
             from simulation.context_brain import ContextBrain, GameContext, InjuredPlayer
+          except ImportError:
+            GameEngine = None
+          if GameEngine is not None:
             _SIM_STAT_MAP = {
                 "Points": "points", "Rebounds": "rebounds", "Assists": "assists",
                 "3PM": "three_pm", "PRA": "pra", "PR": "pr", "PA": "pa", "RA": "ra",
@@ -5742,35 +5746,40 @@ def compute_leg_projection(
                     _sim_line_for_prob = float(line) * 2.0
                     _sim_period_scale = 0.5
             if _sim_stat and mu_raw is not None and sigma is not None and sigma > 0:
+              try:
                 _sim_usage = float(usage_rate) if usage_rate else 0.20
                 _sim_pos = pos_str if pos_str in ("PG","SG","SF","PF","C") else "SF"
                 _sim_rest = int(rest_days) if rest_days is not None else 1
                 _sim_pid = str(player_id or "target_player")
                 _sim_loader = SimulationDataLoader()
+                _is_home_bool = bool(is_home_resolved) if is_home_resolved is not None else True
 
-                # --- Build REAL roster profiles from bulk gamelogs ---
+                # --- Build target player profile from individual gamelog ---
                 _sim_target_profile = _sim_loader.build_player_profile(
                     player_name=player_name, player_id=_sim_pid,
                     gamelog_df=gldf, position=_sim_pos,
                     is_starter=True, rotation_order=0,
                     rest_days=_sim_rest, n_games=10,
                 )
+
+                # --- Build REAL roster profiles from bulk gamelogs ---
                 _bulk_gl = _fetch_bulk_gamelogs()
                 _sim_team_abbr = str(team_abbr or "").upper()
                 _sim_opp_abbr = str(opp_abbr or "").upper()
                 _home_profiles = None
                 _away_profiles = None
-                if _bulk_gl is not None and _sim_team_abbr:
+                if _bulk_gl is not None and _sim_team_abbr and "MATCHUP" in _bulk_gl.columns:
+                  try:
                     _ensure_pid_position_map()
                     _team_players = _bulk_gl[
-                        _bulk_gl["MATCHUP"].str.contains(_sim_team_abbr, na=False)
-                    ] if "MATCHUP" in _bulk_gl.columns else pd.DataFrame()
+                        _bulk_gl["MATCHUP"].str.match(rf'^{re.escape(_sim_team_abbr)}\s', na=False)
+                    ]
                     _opp_players = _bulk_gl[
-                        _bulk_gl["MATCHUP"].str.contains(_sim_opp_abbr, na=False)
-                    ] if "MATCHUP" in _bulk_gl.columns and _sim_opp_abbr else pd.DataFrame()
+                        _bulk_gl["MATCHUP"].str.match(rf'^{re.escape(_sim_opp_abbr)}\s', na=False)
+                    ] if _sim_opp_abbr else pd.DataFrame()
 
                     def _build_team_roster(team_gl_df, target_pid=None, target_profile=None):
-                        if team_gl_df.empty:
+                        if team_gl_df is None or team_gl_df.empty:
                             return None
                         pid_groups = team_gl_df.groupby("PLAYER_ID")
                         player_stats = []
@@ -5782,8 +5791,10 @@ def compute_leg_projection(
                         player_stats.sort(key=lambda x: x[1], reverse=True)
                         player_stats = player_stats[:12]
                         profiles = []
+                        _found_target = False
                         for rank_i, (pid_val, avg_min, grp) in enumerate(player_stats):
                             if target_pid and str(pid_val) == str(target_pid):
+                                _found_target = True
                                 if target_profile:
                                     target_profile_copy = SimPlayerProfile(
                                         name=target_profile.name,
@@ -5821,6 +5832,32 @@ def compute_leg_projection(
                                 n_games=10,
                             )
                             profiles.append(prof)
+                        if target_pid and target_profile and not _found_target:
+                            target_profile_copy = SimPlayerProfile(
+                                name=target_profile.name,
+                                player_id=target_profile.player_id,
+                                position=target_profile.position,
+                                age=target_profile.age,
+                                height_inches=target_profile.height_inches,
+                                rest_days=target_profile.rest_days,
+                                two_pt_pct=target_profile.two_pt_pct,
+                                three_pt_pct=target_profile.three_pt_pct,
+                                ft_pct=target_profile.ft_pct,
+                                usage_rate=target_profile.usage_rate,
+                                assist_rate=target_profile.assist_rate,
+                                rebound_rate=target_profile.rebound_rate,
+                                steal_rate=target_profile.steal_rate,
+                                block_rate=target_profile.block_rate,
+                                turnover_rate=target_profile.turnover_rate,
+                                foul_rate=target_profile.foul_rate,
+                                foul_draw_rate=target_profile.foul_draw_rate,
+                                is_starter=True,
+                                rotation_order=0,
+                            )
+                            profiles.insert(0, target_profile_copy)
+                            for ri, p in enumerate(profiles):
+                                p.is_starter = (ri < 5)
+                                p.rotation_order = ri
                         if len(profiles) < 10:
                             defaults = GameEngine._default_roster(True)
                             while len(profiles) < 10:
@@ -5834,20 +5871,42 @@ def compute_leg_projection(
                         return profiles
 
                     _home_profiles = _build_team_roster(
-                        _team_players if is_home_resolved else _opp_players,
-                        target_pid=_sim_pid if is_home_resolved else None,
-                        target_profile=_sim_target_profile if is_home_resolved else None,
+                        _team_players if _is_home_bool else _opp_players,
+                        target_pid=_sim_pid if _is_home_bool else None,
+                        target_profile=_sim_target_profile if _is_home_bool else None,
                     )
                     _away_profiles = _build_team_roster(
-                        _opp_players if is_home_resolved else _team_players,
-                        target_pid=_sim_pid if not is_home_resolved else None,
-                        target_profile=_sim_target_profile if not is_home_resolved else None,
+                        _opp_players if _is_home_bool else _team_players,
+                        target_pid=_sim_pid if not _is_home_bool else None,
+                        target_profile=_sim_target_profile if not _is_home_bool else None,
                     )
+                  except Exception as _roster_err:
+                    errors.append(f"Sim roster build: {type(_roster_err).__name__}: {_roster_err}")
+                    _home_profiles = None
+                    _away_profiles = None
 
                 if not _home_profiles:
-                    _home_profiles = [_sim_target_profile] + GameEngine._default_roster(True)[1:] if is_home_resolved else GameEngine._default_roster(True)
+                    _home_profiles = (
+                        [_sim_target_profile] + GameEngine._default_roster(True)[1:]
+                        if _is_home_bool
+                        else GameEngine._default_roster(True)
+                    )
                 if not _away_profiles:
-                    _away_profiles = GameEngine._default_roster(False) if is_home_resolved else [_sim_target_profile] + GameEngine._default_roster(False)[1:]
+                    _away_profiles = (
+                        GameEngine._default_roster(False)
+                        if _is_home_bool
+                        else [_sim_target_profile] + GameEngine._default_roster(False)[1:]
+                    )
+
+                _target_in_roster = any(
+                    p.player_id == _sim_pid
+                    for p in (_home_profiles + _away_profiles)
+                )
+                if not _target_in_roster:
+                    if _is_home_bool:
+                        _home_profiles[0] = _sim_target_profile
+                    else:
+                        _away_profiles[0] = _sim_target_profile
 
                 # --- Build Context Brain ---
                 _sim_home_pace = 100.0
@@ -5856,16 +5915,15 @@ def compute_leg_projection(
                 if opp_abbr:
                     _opp_ctx = TEAM_CTX.get(str(opp_abbr).upper(), {})
                     if isinstance(_opp_ctx, dict):
-                        _sim_away_pace = float(_opp_ctx.get("PACE", _opp_ctx.get("pace", 100.0)))
-                        _opp_drtg = float(_opp_ctx.get("DEF_RATING", 112.0))
+                        _sim_away_pace = float(_opp_ctx.get("PACE", _opp_ctx.get("pace", 100.0)) or 100.0)
+                        _opp_drtg = float(_opp_ctx.get("DEF_RATING", 112.0) or 112.0)
                 if team_abbr:
                     _team_ctx = TEAM_CTX.get(str(team_abbr).upper(), {})
                     if isinstance(_team_ctx, dict):
-                        _sim_home_pace = float(_team_ctx.get("PACE", _team_ctx.get("pace", 100.0)))
+                        _sim_home_pace = float(_team_ctx.get("PACE", _team_ctx.get("pace", 100.0)) or 100.0)
 
                 _sim_spread = float(_game_spread) if _game_spread is not None else 0.0
 
-                # Determine season phase
                 _season_phase = SeasonPhase.MID
                 _game_month = game_date.month if game_date else 1
                 _game_day = game_date.day if game_date else 1
@@ -5883,21 +5941,18 @@ def compute_leg_projection(
                     _season_phase = SeasonPhase.POST_ALLSTAR
                 _is_playoff = _season_phase.value.startswith("playoff")
 
-                # B2B detection
-                _team_b2b = b2b_flag
+                _team_b2b = bool(b2b_flag)
                 _opp_b2b = False
                 try:
                     _opp_b2b = get_team_b2b_flag(opp_abbr, game_date) if opp_abbr else False
                 except Exception:
                     pass
 
-                # Altitude cities
                 _altitude_city = ""
-                _home_city_abbr = _sim_team_abbr if is_home_resolved else _sim_opp_abbr
+                _home_city_abbr = _sim_team_abbr if _is_home_bool else _sim_opp_abbr
                 if _home_city_abbr in ("DEN", "UTA"):
                     _altitude_city = _home_city_abbr
 
-                # Injured players for context
                 _injured_list = []
                 if injury_team_map and _sim_team_abbr:
                     for inj_name in injury_team_map.get(_sim_team_abbr, []):
@@ -5906,56 +5961,66 @@ def compute_leg_projection(
                                 player_name=inj_name, usage_rate=0.18, is_starter=True,
                             ))
 
-                _game_context = GameContext(
-                    is_playoff=_is_playoff,
-                    playoff_round=_season_phase.value if _is_playoff else "first",
-                    season_phase=_season_phase,
-                    is_back_to_back=_team_b2b,
-                    rest_days=_sim_rest,
-                    games_in_last_5_days=2,
-                    is_home=bool(is_home_resolved),
-                    is_rivalry=False,
-                    is_national_tv=False,
-                    altitude_city=_altitude_city,
-                    timezone_change=0,
-                    opponent_drtg=_opp_drtg,
-                    opponent_pace=_sim_away_pace if is_home_resolved else _sim_home_pace,
-                    opponent_is_back_to_back=_opp_b2b,
-                    opponent_rest_days=1,
-                    injured_players=_injured_list,
-                )
+                try:
+                    _game_context = GameContext(
+                        is_playoff=_is_playoff,
+                        playoff_round=_season_phase.value if _is_playoff else "first",
+                        season_phase=_season_phase,
+                        is_back_to_back=_team_b2b,
+                        rest_days=_sim_rest,
+                        games_in_last_5_days=2,
+                        is_home=_is_home_bool,
+                        is_rivalry=False,
+                        is_national_tv=False,
+                        altitude_city=_altitude_city,
+                        timezone_change=0,
+                        opponent_drtg=_opp_drtg,
+                        opponent_pace=_sim_away_pace if _is_home_bool else _sim_home_pace,
+                        opponent_is_back_to_back=_opp_b2b,
+                        opponent_rest_days=1,
+                        injured_players=_injured_list,
+                    )
+                except Exception as _ctx_err:
+                    errors.append(f"Sim context build: {type(_ctx_err).__name__}: {_ctx_err}")
+                    _game_context = None
 
-                _sim_cfg = SimulationConfig(
-                    default_simulations=3000,
-                    random_seed=int(hashlib.md5(f"{player_name}_{base_market}_{line}".encode()).hexdigest()[:8], 16) % (2**31),
-                )
-                _sim_engine = GameEngine(
-                    config=_sim_cfg,
-                    home_profiles=_home_profiles,
-                    away_profiles=_away_profiles,
-                    home_name=str(team_abbr or "HOME") if is_home_resolved else str(opp_abbr or "AWAY"),
-                    away_name=str(opp_abbr or "AWAY") if is_home_resolved else str(team_abbr or "HOME"),
-                    home_pace=_sim_home_pace if is_home_resolved else _sim_away_pace,
-                    away_pace=_sim_away_pace if is_home_resolved else _sim_home_pace,
-                    pre_game_spread=_sim_spread,
-                    game_context=_game_context,
-                )
-                _sim_output = _sim_engine.run_simulation(n=3000)
-                _sim_dist = _sim_output.get_player_dist(_sim_pid, _sim_stat)
-                if _sim_dist is not None:
-                    sim_prob = _sim_dist.prob_over(_sim_line_for_prob)
-                    sim_mean = _sim_dist.mean * _sim_period_scale
-                    sim_std  = _sim_dist.std * _sim_period_scale
-                    if p_over_raw is not None and sim_prob is not None:
-                        p_over_raw = float(0.80 * sim_prob + 0.20 * p_over_raw)
-                        errors.append(f"Sim blend: sim_p={sim_prob:.3f}, sim_mu={sim_mean:.1f}, sim_std={sim_std:.1f} (3k sims, real rosters, context brain)")
-                    elif sim_prob is not None:
-                        p_over_raw = sim_prob
-                        errors.append(f"Sim-only: sim_p={sim_prob:.3f} (bootstrap unavailable)")
-          except ImportError:
-            pass
-          except Exception as _sim_err:
-            errors.append(f"Sim engine skipped: {type(_sim_err).__name__}: {_sim_err}")
+                try:
+                    _sim_cfg = SimulationConfig(
+                        default_simulations=_SIM_N,
+                        random_seed=int(hashlib.md5(f"{player_name}_{base_market}_{line}".encode()).hexdigest()[:8], 16) % (2**31),
+                    )
+                    _sim_engine = GameEngine(
+                        config=_sim_cfg,
+                        home_profiles=_home_profiles,
+                        away_profiles=_away_profiles,
+                        home_name=str(team_abbr or "HOME") if _is_home_bool else str(opp_abbr or "AWAY"),
+                        away_name=str(opp_abbr or "AWAY") if _is_home_bool else str(team_abbr or "HOME"),
+                        home_pace=_sim_home_pace if _is_home_bool else _sim_away_pace,
+                        away_pace=_sim_away_pace if _is_home_bool else _sim_home_pace,
+                        pre_game_spread=_sim_spread,
+                        game_context=_game_context,
+                    )
+                    _sim_output = _sim_engine.run_simulation(n=_SIM_N)
+                    _sim_dist = _sim_output.get_player_dist(_sim_pid, _sim_stat)
+                    if _sim_dist is not None:
+                        sim_prob = _sim_dist.prob_over(_sim_line_for_prob)
+                        sim_mean = _sim_dist.mean * _sim_period_scale
+                        sim_std  = _sim_dist.std * _sim_period_scale
+                        if p_over_raw is not None and sim_prob is not None:
+                            p_over_raw = float(0.80 * sim_prob + 0.20 * p_over_raw)
+                            errors.append(f"Sim blend: sim_p={sim_prob:.3f}, sim_mu={sim_mean:.1f}, sim_std={sim_std:.1f} ({_SIM_N} sims, real rosters, context brain)")
+                        elif sim_prob is not None:
+                            p_over_raw = sim_prob
+                            errors.append(f"Sim-only: sim_p={sim_prob:.3f} (bootstrap unavailable)")
+                    else:
+                        _avail_pids = list(_sim_output.distributions.keys())[:5]
+                        errors.append(f"Sim dist miss: pid={_sim_pid}, stat={_sim_stat}, avail_pids={_avail_pids}")
+                except Exception as _sim_err:
+                    import traceback as _tb
+                    _sim_tb = _tb.format_exc().strip().split('\n')[-3:]
+                    errors.append(f"Sim engine error: {type(_sim_err).__name__}: {_sim_err} | {'  '.join(_sim_tb)}")
+              except Exception as _sim_outer_err:
+                errors.append(f"Sim setup error: {type(_sim_outer_err).__name__}: {_sim_outer_err}")
         if p_over_raw is None:
             errors.append(f"Insufficient history (need >=4 games, have {len(stat_series.dropna())})")
     n_valid = int(stat_series.dropna().count())
@@ -8222,7 +8287,7 @@ with tabs[1]:
                     _sp_col = "#00FFB2" if _sp > 0.55 else ("#FFB800" if _sp > 0.45 else "#FF3358")
                     card_html += (
                         f"<div style='margin-top:0.45rem;background:#00AAFF08;border:1px solid #00AAFF25;border-radius:3px;padding:0.3rem 0.5rem;'>"
-                        f"<div style='font-size:0.52rem;color:#00AAFF;letter-spacing:0.10em;font-family:Chakra Petch,monospace;'>SIM ENGINE (3000 POSS-LEVEL SIMS)</div>"
+                        f"<div style='font-size:0.52rem;color:#00AAFF;letter-spacing:0.10em;font-family:Chakra Petch,monospace;'>SIM ENGINE (500 POSS-LEVEL SIMS)</div>"
                         f"<div style='display:flex;justify-content:space-between;margin-top:0.15rem;'>"
                         f"<span style='font-size:0.62rem;color:#4A607A;'>P({leg.get('bet_side','over').lower()}):</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:{_sp_col};font-weight:600;'>{_sp*100:.1f}%</span>"
                         f"<span style='font-size:0.62rem;color:#4A607A;'>Mean:</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:#EEF4FF;'>{_sm:.1f}</span>"
