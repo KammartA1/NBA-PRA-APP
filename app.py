@@ -739,19 +739,35 @@ def book_sharpness(k):
 POSITIONAL_PRIORS = {
     "Guard": {"Points":16.5,"Rebounds":3.4,"Assists":5.8,"3PM":2.1,
               "PRA":25.7,"PR":19.9,"PA":22.3,"RA":9.2,"Blocks":0.4,"Steals":1.2,"Turnovers":2.2,
-              "Q1 Points":4.1,"Q1 Rebounds":0.9,"Q1 Assists":1.5,"Fantasy Score":31.2,
+              "Stocks":1.6,
+              "Q1 Points":4.1,"Q1 Rebounds":0.9,"Q1 Assists":1.5,
+              "H1 Points":8.5,"H1 Rebounds":1.7,"H1 Assists":3.0,"H1 3PM":1.1,
+              "H2 Points":8.0,"H2 Rebounds":1.7,"H2 Assists":2.8,"H2 3PM":1.0,
+              "Fantasy Score":31.2,
               "FGM":5.8,"FGA":13.5,"3PA":6.2,"FTM":3.2,"FTA":3.8},
     "Wing":  {"Points":14.8,"Rebounds":5.9,"Assists":2.9,"3PM":1.6,
               "PRA":23.6,"PR":20.7,"PA":17.7,"RA":8.8,"Blocks":0.8,"Steals":1.0,"Turnovers":1.7,
-              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.7,"Fantasy Score":27.4,
+              "Stocks":1.8,
+              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.7,
+              "H1 Points":7.6,"H1 Rebounds":3.0,"H1 Assists":1.5,"H1 3PM":0.8,
+              "H2 Points":7.2,"H2 Rebounds":2.9,"H2 Assists":1.4,"H2 3PM":0.8,
+              "Fantasy Score":27.4,
               "FGM":5.4,"FGA":12.0,"3PA":4.5,"FTM":2.6,"FTA":3.2},
     "Big":   {"Points":13.2,"Rebounds":8.8,"Assists":2.1,"3PM":0.5,
               "PRA":24.1,"PR":22.0,"PA":15.3,"RA":10.9,"Blocks":1.4,"Steals":0.7,"Turnovers":2.0,
-              "Q1 Points":3.3,"Q1 Rebounds":2.2,"Q1 Assists":0.5,"Fantasy Score":30.5,
+              "Stocks":2.1,
+              "Q1 Points":3.3,"Q1 Rebounds":2.2,"Q1 Assists":0.5,
+              "H1 Points":6.8,"H1 Rebounds":4.4,"H1 Assists":1.1,"H1 3PM":0.3,
+              "H2 Points":6.4,"H2 Rebounds":4.4,"H2 Assists":1.0,"H2 3PM":0.2,
+              "Fantasy Score":30.5,
               "FGM":5.0,"FGA":10.5,"3PA":1.4,"FTM":3.0,"FTA":4.0},
     "Unknown":{"Points":14.8,"Rebounds":5.5,"Assists":3.5,"3PM":1.4,
               "PRA":23.8,"PR":20.3,"PA":18.3,"RA":9.0,"Blocks":0.8,"Steals":0.9,"Turnovers":1.9,
-              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.9,"Fantasy Score":29.7,
+              "Stocks":1.7,
+              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.9,
+              "H1 Points":7.6,"H1 Rebounds":2.8,"H1 Assists":1.8,"H1 3PM":0.7,
+              "H2 Points":7.2,"H2 Rebounds":2.7,"H2 Assists":1.7,"H2 3PM":0.7,
+              "Fantasy Score":29.7,
               "FGM":5.4,"FGA":12.0,"3PA":4.0,"FTM":2.9,"FTA":3.6},
 }
 # [AUDIT CALIBRATION] Rest multipliers re-calibrated to empirical NBA research:
@@ -825,6 +841,10 @@ def _save_scanner_cache():
 def _load_scanner_cache() -> dict:
     import pickle
     try:
+        _stat = os.stat(SCANNER_CACHE_PATH)
+        _age_hours = (time.time() - _stat.st_mtime) / 3600
+        if _age_hours > 12:
+            return {}
         with open(SCANNER_CACHE_PATH, "rb") as _f:
             return pickle.load(_f)
     except Exception:
@@ -1766,11 +1786,11 @@ def compute_travel_fatigue(team_abbr, game_log_df, game_date, b2b_flag):
         miles_approx = abs(lon_delta) * 53.0  # rough miles per degree longitude at NBA latitudes
         direction = "East" if lon_delta > 5 else ("West" if lon_delta < -5 else "Local")
         if miles_approx >= 1800 and direction == "East":
-            return 0.945, "Cross-Country East"  # Worst case: ~5.5% penalty
+            return 0.975, "Cross-Country East"
         if miles_approx >= 1800:
-            return 0.960, "Cross-Country West"  # ~4% penalty
+            return 0.985, "Cross-Country West"
         if miles_approx >= 900:
-            return 0.975, "Long Haul"           # ~2.5% penalty
+            return 0.990, "Long Haul"
         return 1.0, "Normal"
     except Exception:
         return 1.0, "Normal"
@@ -1972,14 +1992,8 @@ def volatility_penalty_factor(cv):
     if cv is None: return 0.0
     v = float(cv)
     if v <= 0.0:   return 1.0
-    if v >= 0.35:  return 0.0
-    # Four empirical anchor points (cv, penalty_factor):
-    # (0.00, 1.00) — perfect consistency
-    # (0.20, 1.00) — low volatility: no penalty
-    # (0.25, 0.85) — moderate: 15% penalty
-    # (0.30, 0.65) — high: 35% penalty
-    # (0.35, 0.00) — too volatile: no bet
-    anchors = [(0.0, 1.0), (0.20, 1.0), (0.25, 0.85), (0.30, 0.65), (0.35, 0.0)]
+    if v >= 0.40:  return 0.0
+    anchors = [(0.0, 1.0), (0.20, 1.0), (0.25, 0.85), (0.30, 0.65), (0.35, 0.30), (0.40, 0.0)]
     for i in range(len(anchors) - 1):
         cv0, p0 = anchors[i]
         cv1, p1 = anchors[i + 1]
@@ -1988,44 +2002,33 @@ def volatility_penalty_factor(cv):
             return float(p0 + t * (p1 - p0))
     return 0.0
 # [FIX 5] Skewness-adjusted volatility gate
-def passes_volatility_gate(cv, ev_raw, skew=None, bet_type="Over"):
-    """
-    [AUDIT UPGRADE] EV-rescue override for CV 0.35–0.42 range.
-    Research (OddsJam, Unabated 2024): High-variance stats (Blocks, Steals, 3PM)
-    frequently have CV > 0.35 yet show genuine edge. A hard 0.35 cutoff discards
-    these. Allow CV up to 0.42 when EV >= 12% (strong model consensus).
-    """
+def passes_volatility_gate(cv, ev_raw, skew=None, bet_type="Over", p_over=None):
     if cv is None:
         return False, "no stat history (CV unavailable)"
     v = float(cv)
     ev_f = float(ev_raw) if ev_raw is not None else None
-    # [v6.0 ROI BOOST] Hard cutoff tightened from 0.42 → 0.38: high-variance props
-    # destroy ROI even with large edges. Research: CV>0.38 has negative CLV at scale.
+    _is_under = "under" in str(bet_type).lower()
+    if _is_under and p_over is not None:
+        _p_under = 1.0 - float(p_over)
+        if _p_under >= 0.60:
+            v = v * 0.75
     if v > 0.38:
         return False, "CV>0.38 (too volatile — variance overwhelms edge)"
-    # 0.32–0.38 range: only pass with elite EV (≥15%)
     if v > 0.32:
         if ev_f is None or ev_f < 0.15:
             return False, f"CV>{v:.2f} needs EV>=15% (high-variance stat)"
-    # [v6.0] Raised from 6% → 8% for CV 0.25-0.32 range
     if v > 0.25 and (ev_f is None or ev_f < 0.08):
         return False, "CV>0.25 needs EV>=8%"
-    # [v6.0] Raised from 2% → 5% minimum EV for medium-CV bets
     if v > 0.15 and (ev_f is None or ev_f < 0.05):
         return False, "CV>0.15 needs EV>=5%"
-    # [v6.0] Even low-CV bets need meaningful edge
     if ev_f is not None and ev_f < 0.03:
         return False, "EV<3% (below noise floor — not worth staking)"
-    # [FIX 5] Skewness-adjusted threshold
-    # [v6.0] Tightened skewness gates for ROI protection
     if skew is not None and v > 0.18:
         is_over = "over" in str(bet_type).lower()
-        # Negative skew + Over bet = tail risk of low games
         if float(skew) < -0.5 and is_over:
             tightened = 0.25
             if v > tightened and (ev_f is None or ev_f < 0.10):
                 return False, f"CV>{tightened:.2f} (neg-skew+Over tightened, needs EV>=10%)"
-        # Positive skew + Under bet = tail risk of blow-up games
         elif float(skew) > 0.5 and not is_over:
             tightened = 0.25
             if v > tightened and (ev_f is None or ev_f < 0.10):
@@ -2036,7 +2039,7 @@ def passes_volatility_gate(cv, ev_raw, skew=None, bet_type="Over"):
 # ──────────────────────────────────────────────
 def bootstrap_prob_over(stat_series, line, n_sims=20000, cv_override=None, market="default"):
     x = pd.to_numeric(stat_series, errors="coerce").dropna().values.astype(float)
-    if x.size < 4:
+    if x.size < 6:
         mu = float(np.nanmean(x)) if x.size else None
         sigma = float(np.nanstd(x, ddof=1)) if x.size > 1 else None
         return None, mu, sigma
@@ -2052,12 +2055,7 @@ def bootstrap_prob_over(stat_series, line, n_sims=20000, cv_override=None, marke
     _seed = int(abs(hash(tuple(x.round(3).tolist()))) % (2**31))
     rng = np.random.default_rng(_seed)
     sims = rng.choice(x, size=int(n_sims), replace=True, p=w)
-    cv = cv_override or (float(x.std(ddof=1) / x.mean()) if x.mean() != 0 else 0.20)
-    # [v6.0] Reduced noise scale from 0.40 → 0.30 for tighter probability estimates
-    noise_scale = max(0.03, min(cv * 0.30, 0.18))
-    noise = rng.normal(0, float(x.std(ddof=1) * noise_scale), int(n_sims))
-    sims_noisy = np.clip(sims + noise, 0, None)
-    p_over = float((sims_noisy > float(line)).mean())
+    p_over = float((sims > float(line)).mean())
     mu_w = float(np.average(x, weights=w) if w is not None else x.mean())
     sigma_w = float(np.sqrt(np.average((x - mu_w)**2, weights=w)) if w is not None else x.std(ddof=1))
     return float(np.clip(p_over, 1e-4, 1-1e-4)), mu_w, max(1e-9, sigma_w)
@@ -3025,7 +3023,7 @@ def apply_clv_update_to_legs(legs):
         side = (leg2.get("side") or "Over").strip().lower()
         if line0 is not None and line1 is not None:
             leg2["clv_line"]=float(line1-line0)
-            leg2["clv_line_fav"]=bool(line1<line0 if "under" not in side else line1>line0)
+            leg2["clv_line_fav"]=bool(line1>line0 if "under" not in side else line1<line0)
         else:
             leg2["clv_line"]=None; leg2["clv_line_fav"]=None
         # M-2 audit fix: the complement approximation (1/(1-1/p)) yields overround=1.0,
@@ -3046,8 +3044,8 @@ def apply_clv_update_to_legs(legs):
             else:
                 imp1 = 1.0 / price1
                 nv1 = float(np.clip(1.0 / (imp1 / _OVR_ASSUMED), 1.001, 50.0))
-            leg2["clv_price"]=float(nv1-nv0)
-            leg2["clv_price_fav"]=bool(nv1>nv0)
+            leg2["clv_price"]=float(nv0-nv1)
+            leg2["clv_price_fav"]=bool(nv0>nv1)
             leg2["clv_price_novig_open"]=float(nv0)
             leg2["clv_price_novig_close"]=float(nv1)
         else:
@@ -3216,7 +3214,7 @@ def compute_pace_adjusted_series(stat_series, opp_team):
 # O/U 230+ = high-pace game → props hit more. O/U 205 = grind = props hit less.
 # Uses league-average implied total (~214 pts in 2024-25) as baseline reference.
 # Returns a multiplier 0.92–1.08 for use as an additional projection factor.
-_LEAGUE_AVG_GAME_TOTAL = 226.5  # 2024-25 league average O/U total (empirical; update each season)
+_LEAGUE_AVG_GAME_TOTAL = 224.0  # 2025-26 league average O/U total (empirical; update each season)
 def compute_game_total_pace_mult(game_total, market):
     """Compute pace/environment multiplier from game O/U total vs league average."""
     if game_total is None:
@@ -3950,11 +3948,10 @@ def _parse_nba_game_time(date_str: str, status_text: str) -> str:
         # Parse "7:00 pm" or "10:30 am"
         from datetime import datetime as _dtm
         t = _dtm.strptime(time_part, "%I:%M %p")
-        # Combine with date — NBA times are Eastern (UTC-5 standard, UTC-4 DST)
-        # Use UTC-4 during NBA season (April = EDT)
         d = _dtm.strptime(date_str[:10], "%Y-%m-%d")
         et = d.replace(hour=t.hour, minute=t.minute)
-        utc = et + _td(hours=4)  # EDT → UTC
+        _et_offset = 4 if d.month in (3, 4, 5, 6, 7, 8, 9, 10) else 5
+        utc = et + _td(hours=_et_offset)
         return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     except Exception:
         return ""
@@ -5659,12 +5656,14 @@ def compute_leg_projection(
             pass
     # [UPGRADE NEW] Schedule fatigue (3-in-4, 4-in-6)
     _fatigue_mult, _fatigue_label = compute_schedule_fatigue(gldf, game_date)
-    # [RESEARCH UPGRADE] Rolling 3-game minutes fatigue (CMU: most predictive signal)
     _rolling_min_avg, _rolling_min_mult, _rolling_min_label = compute_rolling_minutes_fatigue(gldf, n_recent=3)
-    # Combine with schedule fatigue — take the more severe penalty
     if _rolling_min_mult < _fatigue_mult:
         _fatigue_mult = _rolling_min_mult
         _fatigue_label = _rolling_min_label if _fatigue_label == "Normal" else f"{_fatigue_label}+{_rolling_min_label}"
+    if b2b_flag and _fatigue_mult < 1.0:
+        _b2b_base = REST_MULTIPLIERS.get(0, 0.965)
+        _fatigue_incremental = _fatigue_mult / _b2b_base
+        _fatigue_mult = max(_fatigue_mult, _fatigue_incremental)
     # [RESEARCH UPGRADE] Both-teams-B2B suppressor
     _both_b2b, _both_b2b_mult = compute_both_teams_b2b(team_abbr, opp_abbr, b2b_flag, game_date)
     # [UPGRADE NEW] Opponent fatigue → defensive boost
@@ -5788,8 +5787,7 @@ def compute_leg_projection(
                     # At n=6 (just enough), NegBin r-estimate is noisy → 50% blend.
                     # At n=15+, r-estimate is stable → up to 82% NegBin (clearly superior for counts).
                     _n_valid_nb = len(pace_adj_series.dropna())
-                    # [v6.0] Raised NegBin cap from 0.82 → 0.92: NegBin dominates for count stats
-                    _nb_weight = float(np.clip(0.50 + (_n_valid_nb - 6) * 0.06, 0.50, 0.92))
+                    _nb_weight = float(np.clip(0.50 + (_n_valid_nb - 6) * 0.06, 0.50, 0.70))
                     p_over_raw = float(_nb_weight * _nb_p + (1.0 - _nb_weight) * p_over_raw)
                     if _nb_mu is not None:
                         mu_raw = float(0.60 * _nb_mu + 0.40 * mu_raw)
@@ -5806,7 +5804,7 @@ def compute_leg_projection(
         sim_prob = None
         sim_mean = None
         sim_std  = None
-        _SIM_N = 500
+        _SIM_N = 1500
         if not scan_mode:
           try:
             from simulation.game_engine import GameEngine
@@ -6097,12 +6095,7 @@ def compute_leg_projection(
                         sim_prob = _sim_dist.prob_over(_sim_line_for_prob)
                         sim_mean = _sim_dist.mean * _sim_period_scale
                         sim_std  = _sim_dist.std * _sim_period_scale
-                        if p_over_raw is not None and sim_prob is not None:
-                            p_over_raw = float(0.80 * sim_prob + 0.20 * p_over_raw)
-                            errors.append(f"Sim blend: sim_p={sim_prob:.3f}, sim_mu={sim_mean:.1f}, sim_std={sim_std:.1f} ({_SIM_N} sims, real rosters, context brain)")
-                        elif sim_prob is not None:
-                            p_over_raw = sim_prob
-                            errors.append(f"Sim-only: sim_p={sim_prob:.3f} (bootstrap unavailable)")
+                        errors.append(f"Sim ready: sim_p={sim_prob:.3f}, sim_mu={sim_mean:.1f}, sim_std={sim_std:.1f} ({_SIM_N} sims, real rosters, context brain)")
                     else:
                         _avail_pids = list(_sim_output.distributions.keys())[:5]
                         errors.append(f"Sim dist miss: pid={_sim_pid}, stat={_sim_stat}, avail_pids={_avail_pids}")
@@ -6113,7 +6106,7 @@ def compute_leg_projection(
               except Exception as _sim_outer_err:
                 errors.append(f"Sim setup error: {type(_sim_outer_err).__name__}: {_sim_outer_err}")
         if p_over_raw is None:
-            errors.append(f"Insufficient history (need >=4 games, have {len(stat_series.dropna())})")
+            errors.append(f"Insufficient history (need >=6 games, have {len(stat_series.dropna())})")
     n_valid = int(stat_series.dropna().count())
     # [AUDIT FIX] Half-market with real boxscore data: scale positional prior by _orig_half_factor
     # so shrinkage operates in half-game units (not full-game units)
@@ -6177,10 +6170,10 @@ def compute_leg_projection(
         _all_mults = [
             ctx_mult, rest_mult, ha_mult, pos_def_mult, opp_specific_factor,
             _fatigue_mult, _opp_fatigue_mult, _game_script_mult,
-            _both_b2b_mult, _travel_mult, _dvp_l10_mult,
+            1.0, _travel_mult, 1.0,
             _wl_factor, _clutch_factor, _fta_factor, _playoff_factor,
-            _ref_factor, _hca_factor, _pos_b2b_mult,
-            _ts_factor, _efg_factor, _usage_trend_mult, _ftr_factor,
+            _ref_factor, _hca_factor, 1.0,
+            1.0, 1.0, _usage_trend_mult, _ftr_factor,
             _game_total_pace_mult, _altitude_mult, _shoot_luck_mult,
             _minutes_prod_mult,
         ]
@@ -6194,7 +6187,34 @@ def compute_leg_projection(
         proj_full = float(mu_shrunk * _combined_mult)
     else:
         proj_full = None
+        _combined_mult = 1.0
     proj = proj_full * half_factor if (proj_full is not None and is_half_market) else proj_full
+    # ── Context-adjusted P(Over) + 75/25 Sim Blend ──────────────
+    # The 26 multipliers encode tonight's context (opponent, rest, pace, etc.).
+    # Shift the analytical distribution by that context before computing P(Over),
+    # then blend 75% sim (forward-looking) / 25% analytical (context-adjusted).
+    if mu_shrunk is not None and _combined_mult != 1.0 and p_over_raw is not None:
+        _ctx_shift = float(mu_shrunk * (_combined_mult - 1.0))
+        _ctx_series = pace_adj_series + _ctx_shift
+        _p_ctx, _, _ = bootstrap_prob_over(_ctx_series, effective_line, cv_override=vol_cv, market=base_market)
+        if base_market in NEGBINOM_MARKETS and len(_ctx_series.dropna()) >= 6:
+            try:
+                _nb_ctx, _, _ = negbinom_prob_over(_ctx_series, effective_line, market=base_market)
+                if _nb_ctx is not None and _p_ctx is not None:
+                    _n_ctx = len(_ctx_series.dropna())
+                    _nb_w = float(np.clip(0.50 + (_n_ctx - 6) * 0.06, 0.50, 0.70))
+                    _p_ctx = float(_nb_w * _nb_ctx + (1.0 - _nb_w) * _p_ctx)
+            except Exception:
+                pass
+        if _p_ctx is not None:
+            p_over_raw = _p_ctx
+            errors.append(f"Context-adjusted P(Over): shift={_ctx_shift:+.2f}, mult={_combined_mult:.3f}")
+    if sim_prob is not None and p_over_raw is not None:
+        p_over_raw = float(0.75 * sim_prob + 0.25 * p_over_raw)
+        errors.append(f"Sim blend 75/25: sim={sim_prob:.3f}, analytical={p_over_raw:.3f}")
+    elif sim_prob is not None:
+        p_over_raw = sim_prob
+        errors.append(f"Sim-only: sim_p={sim_prob:.3f} (analytical unavailable)")
     # [v3.0] Confidence interval for the projection
     _ci_lower, _ci_upper = compute_projection_ci(mu_shrunk, sigma, half_factor=half_factor)
     regime_label, regime_score = classify_regime(vol_cv, blowout_prob, ctx_mult)
@@ -6205,7 +6225,9 @@ def compute_leg_projection(
         elif not meta:
             price_decimal = 1.909  # Manual line: assume standard -110 so EV/gate compute properly
     except Exception: pass
-    p_implied = implied_prob_from_decimal(price_decimal)
+    _p_implied_raw = implied_prob_from_decimal(price_decimal)
+    _OVR_STD = 1.045
+    p_implied = float(_p_implied_raw / _OVR_STD) if _p_implied_raw is not None else None
     # Determine side early for skewness gate
     side_str = (meta.get("side") if meta else "Over") or "Over"
     # [UPGRADE 6] Over/Under asymmetry: model the correct side independently
@@ -6250,13 +6272,14 @@ def compute_leg_projection(
             pen = pen * 0.88             # Skew opposed to our side: tighten penalty by 12%
     ev_adj = float(ev_raw * pen) if ev_raw is not None else None
     # [FIX 5] Pass skewness to volatility gate
-    gate_ok, gate_reason = passes_volatility_gate(vol_cv, ev_raw, skew=stat_skew, bet_type=side_str)
+    gate_ok, gate_reason = passes_volatility_gate(vol_cv, ev_raw, skew=stat_skew, bet_type=side_str, p_over=p_over_raw)
     if exclude_chaotic and regime_label=="Chaotic":
-        # [AUDIT FIX] Preserve original gate_reason alongside chaotic reason for diagnostic clarity
-        _prev_reason = gate_reason if not gate_ok else ""
-        _chaotic_reason = "chaotic regime (high volatility + blowout risk)"
-        gate_reason = f"{_prev_reason} + {_chaotic_reason}" if _prev_reason else _chaotic_reason
-        gate_ok = False
+        _under_confident = _is_under and p_over_raw is not None and (1.0 - p_over_raw) >= 0.65
+        if not _under_confident:
+            _prev_reason = gate_reason if not gate_ok else ""
+            _chaotic_reason = "chaotic regime (high volatility + blowout risk)"
+            gate_reason = f"{_prev_reason} + {_chaotic_reason}" if _prev_reason else _chaotic_reason
+            gate_ok = False
     if not gate_ok: ev_adj = None
     stake_dollars, stake_frac, stake_reason = 0.0, 0.0, "gated"
     # [AUDIT FIX] Minimum EV threshold: noise below 2% is not worth staking
@@ -6653,7 +6676,8 @@ def recompute_pricing_fields(leg, calib):
     side_str = leg.get("side", "Over") or "Over"
     gate_ok, gate_reason = passes_volatility_gate(
         leg.get("volatility_cv"), ev_raw,
-        skew=leg.get("stat_skewness"), bet_type=side_str)
+        skew=leg.get("stat_skewness"), bet_type=side_str,
+        p_over=leg.get("p_over"))
     regime_label, regime_score = classify_regime(leg.get("volatility_cv"),leg.get("blowout_prob"),leg.get("context_mult"))
     leg["regime"]=regime_label; leg["regime_score"]=float(regime_score)
     if bool(st.session_state.get("exclude_chaotic",True)) and regime_label=="Chaotic":
@@ -8700,7 +8724,7 @@ with tabs[1]:
                         _vol_cv_u = leg.get("volatility_cv")
                         _skew_u = leg.get("stat_skewness")
                         _ev_u = (_p_under / _p_imp_u - 1.0) if _p_imp_u > 0 else None
-                        _gate_u, _reason_u = passes_volatility_gate(_vol_cv_u, _ev_u, skew=_skew_u, bet_type="Under")
+                        _gate_u, _reason_u = passes_volatility_gate(_vol_cv_u, _ev_u, skew=_skew_u, bet_type="Under", p_over=leg.get("p_over"))
                         if _gate_u and not leg.get("dnp_risk") and _p_under >= 0.52:
                             _ev_u_str = f"{_ev_u*100:+.1f}%" if _ev_u is not None else "--"
                             _ec_u = color_for_edge(classify_edge(_ev_u))
@@ -9617,7 +9641,8 @@ with tabs[2]:
                     _ev_u = (_p_under / _p_imp_u - 1.0)
                     _gate_u, _ = passes_volatility_gate(
                         _leg.get("volatility_cv"), _ev_u,
-                        skew=_leg.get("stat_skewness"), bet_type="Under"
+                        skew=_leg.get("stat_skewness"), bet_type="Under",
+                        p_over=_leg.get("p_over")
                     )
                     if not _gate_u or _leg.get("dnp_risk"):
                         continue
@@ -11038,7 +11063,7 @@ with tabs[5]:
     # Only use settled legs for calibration metrics
     settled_df = legs_df[legs_df["y"].notna()].copy() if not legs_df.empty else pd.DataFrame()
     if settled_df.empty:
-        st.markdown(make_card("<span style='color:#4A607A;font-size:0.78rem;'>No settled bets yet. Log bets and mark results to enable calibration.<br><span style='font-size:0.65rem;'>Minimum ~80 settled legs needed.</span></span>"), unsafe_allow_html=True)
+        st.markdown(make_card("<span style='color:#4A607A;font-size:0.78rem;'>No settled bets yet. Log bets and mark results to enable calibration.<br><span style='font-size:0.65rem;'>Minimum ~40 settled legs needed.</span></span>"), unsafe_allow_html=True)
     else:
         y = settled_df["y"].values.astype(float)
         p_raw = settled_df["p_raw"].values.astype(float)
@@ -11081,7 +11106,7 @@ with tabs[5]:
         if st.button("Fit Calibrator from History", use_container_width=True):
             calib = fit_monotone_calibrator(settled_df, n_bins=int(n_bins))
             if calib is None:
-                st.warning(f"Need ~80+ quality legs (currently {n_settled}). Identity calibration used.")
+                st.warning(f"Need ~40+ quality legs (currently {n_settled}). Identity calibration used.")
                 st.session_state["calibrator_map"] = None
             else:
                 st.session_state["calibrator_map"] = calib
