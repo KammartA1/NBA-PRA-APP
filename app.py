@@ -3875,6 +3875,98 @@ def get_pp_auto_lines():
 # Background thread that captures closing lines 10 minutes before each game's
 # tip-off for all pending bets. This ensures the most accurate CLV tracking
 # without relying on the user clicking "Refresh CLV" manually.
+#
+# Tip-off resolution priority:
+#   1. commence_time from Odds API metadata
+#   2. start_time from PrizePicks API (carried into commence_time at logging)
+#   3. NBA ScoreboardV2 API lookup by player team abbreviation
+
+_nba_schedule_cache: dict = {"date": None, "games": None, "fetched_at": 0}
+
+def _get_nba_schedule_start_times(game_date) -> dict:
+    """Return {team_abbr: ISO_start_time} for all games on game_date.
+    Uses NBA ScoreboardV2 with a 10-minute cache."""
+    import time as _time_mod
+    cache = _nba_schedule_cache
+    date_str = game_date.strftime("%Y-%m-%d") if hasattr(game_date, "strftime") else str(game_date)
+    if (cache["date"] == date_str and cache["games"] is not None
+            and _time_mod.time() - cache["fetched_at"] < 600):
+        return cache["games"]
+    try:
+        sb = scoreboardv2.ScoreboardV2(game_date=game_date.strftime("%m/%d/%Y"))
+        df = sb.get_data_frames()[0]
+        result = {}
+        tid_map = team_id_to_abbr_map()
+        for _, r in df.iterrows():
+            game_status = str(r.get("GAME_STATUS_TEXT", "")).strip()
+            game_code = str(r.get("GAMECODE", ""))
+            home_id = int(r.get("HOME_TEAM_ID", 0))
+            away_id = int(r.get("VISITOR_TEAM_ID", 0))
+            ha = tid_map.get(home_id, "")
+            aa = tid_map.get(away_id, "")
+            # NBA GAMECODE format: "20250422/BOSNY" — date + away+home abbreviation
+            # GAME_STATUS_TEXT shows "7:00 pm ET" for unstarted games
+            # Prefer GAME_DATE_EST + GAME_STATUS_TEXT for scheduled time
+            gdate = str(r.get("GAME_DATE_EST", ""))[:10]
+            # Parse time from GAME_STATUS_TEXT (e.g. "7:00 pm ET", "10:00 pm ET")
+            start_iso = _parse_nba_game_time(gdate, game_status)
+            if start_iso and ha:
+                result[ha] = start_iso
+            if start_iso and aa:
+                result[aa] = start_iso
+        cache["date"] = date_str
+        cache["games"] = result
+        cache["fetched_at"] = _time_mod.time()
+        return result
+    except Exception as e:
+        log.warning("[Auto-CLV] NBA schedule fetch failed: %s", e)
+        return cache.get("games") or {}
+
+
+def _parse_nba_game_time(date_str: str, status_text: str) -> str:
+    """Convert NBA date + status text ('7:00 pm ET') into UTC ISO string."""
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    if not date_str or not status_text:
+        return ""
+    status_lower = status_text.lower().strip()
+    # Only parse scheduled times (contains am/pm), skip "Final", "In Progress", etc.
+    if "pm" not in status_lower and "am" not in status_lower:
+        return ""
+    try:
+        time_part = status_lower.replace("et", "").replace("est", "").replace("edt", "").strip()
+        # Parse "7:00 pm" or "10:30 am"
+        from datetime import datetime as _dtm
+        t = _dtm.strptime(time_part, "%I:%M %p")
+        # Combine with date — NBA times are Eastern (UTC-5 standard, UTC-4 DST)
+        # Use UTC-4 during NBA season (April = EDT)
+        d = _dtm.strptime(date_str[:10], "%Y-%m-%d")
+        et = d.replace(hour=t.hour, minute=t.minute)
+        utc = et + _td(hours=4)  # EDT → UTC
+        return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        return ""
+
+
+def _resolve_leg_start_time(leg: dict, schedule_cache: dict = None) -> str:
+    """Try to determine game start time for a leg.
+    Returns ISO UTC string or empty string."""
+    # 1. commence_time already set
+    ct = leg.get("commence_time")
+    if ct and isinstance(ct, str) and ct.strip():
+        return ct.strip()
+    # 2. start_time from PrizePicks (may have been stored separately)
+    st_val = leg.get("start_time")
+    if st_val and isinstance(st_val, str) and st_val.strip():
+        return st_val.strip()
+    # 3. NBA schedule lookup by team abbreviation
+    team = leg.get("team")
+    if team and schedule_cache:
+        sched_time = schedule_cache.get(str(team).upper())
+        if sched_time:
+            return sched_time
+    return ""
+
+
 _clv_auto_state_store: dict = {
     "lock": threading.Lock(),
     "thread": None,
@@ -3895,7 +3987,6 @@ def _clv_auto_loop(state: dict):
     log.info("[Auto-CLV] Background thread started")
     while True:
         try:
-            # Sleep for 2 minutes between checks (or wake early if poked)
             state["stop_evt"].wait(timeout=120)
             state["stop_evt"].clear()
 
@@ -3911,114 +4002,127 @@ def _clv_auto_loop(state: dict):
             log.warning("[Auto-CLV] Error in background loop: %s", e)
 
 def _clv_auto_update_pending_bets() -> dict:
-    """Core logic: scan CSV history files for pending bets with games starting
+    """Scan Supabase + local CSV files for pending bets with games starting
     within the next 12 minutes, fetch closing lines via apply_clv_update_to_legs(),
-    and write updated legs back to CSV."""
-    result = {"bets_checked": 0, "bets_updated": 0, "errors": [], "files_scanned": 0}
+    and persist updated legs to both Supabase and CSV."""
+    result = {"bets_checked": 0, "bets_updated": 0, "errors": [],
+              "sources": {"supabase": 0, "csv": 0}}
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     import glob as _glob_mod
 
     now = _dt.now(_tz.utc)
     window_end = now + _td(minutes=12)
 
-    # Find all history CSV files
-    csv_files = _glob_mod.glob("history_*.csv")
-    if not csv_files:
-        return result
+    # Pre-fetch NBA schedule for tip-off resolution fallback
+    try:
+        today = _dt.now(_tz.utc).date()
+        from datetime import date as _date_cls
+        sched_cache = _get_nba_schedule_start_times(_date_cls(today.year, today.month, today.day))
+    except Exception:
+        sched_cache = {}
 
+    def _parse_start(ct_str):
+        """Parse ISO start time string to aware datetime, or None."""
+        if not ct_str or not isinstance(ct_str, str) or not ct_str.strip():
+            return None
+        try:
+            return _dt.fromisoformat(ct_str.strip().replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+
+    def _process_legs(legs):
+        """Check if any leg's game is upcoming, apply CLV, return (updated_legs, was_updated)."""
+        has_upcoming = False
+        for leg in legs:
+            resolved = _resolve_leg_start_time(leg, sched_cache)
+            ct_parsed = _parse_start(resolved)
+            if ct_parsed and now <= ct_parsed <= window_end:
+                has_upcoming = True
+                break
+        if not has_upcoming:
+            return legs, False
+        if all(leg.get("line_close") is not None for leg in legs):
+            return legs, False
+        result["bets_checked"] += 1
+        try:
+            updated_legs, errs = apply_clv_update_to_legs(legs)
+            for e in errs:
+                result["errors"].append(e)
+            any_updated = any(ul.get("line_close") is not None for ul in updated_legs)
+            if any_updated:
+                result["bets_updated"] += 1
+                for ul in updated_legs:
+                    if ul.get("line_close") is not None:
+                        log.info(
+                            "[Auto-CLV] Updated %s %s %s: bet=%.1f close=%.1f clv_line=%s",
+                            ul.get("player", "?"), ul.get("market", "?"),
+                            ul.get("side", "Over"),
+                            float(ul.get("line", 0) or 0),
+                            float(ul.get("line_close", 0) or 0),
+                            ul.get("clv_line", "?"),
+                        )
+                return updated_legs, True
+        except Exception as e:
+            result["errors"].append(f"CLV update: {e}")
+            log.warning("[Auto-CLV] Error: %s", e)
+        return legs, False
+
+    # ── Source 1: Supabase (persistent, cross-session) ──────────────
+    try:
+        supa_rows = _supa.load_all_pending_bets()
+        for supa_row in supa_rows:
+            supa_id = supa_row.get("id")
+            legs_raw = supa_row.get("legs", [])
+            if isinstance(legs_raw, str):
+                try:
+                    legs_raw = json.loads(legs_raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            if not isinstance(legs_raw, list) or not legs_raw:
+                continue
+            updated_legs, was_updated = _process_legs(legs_raw)
+            if was_updated and supa_id:
+                _supa.update_history_row(
+                    supa_row.get("user_id", "default"), int(supa_id),
+                    {"legs": updated_legs}
+                )
+                result["sources"]["supabase"] += 1
+                log.info("[Auto-CLV] Synced CLV to Supabase row %s", supa_id)
+    except Exception as e:
+        result["errors"].append(f"Supabase scan: {e}")
+
+    # ── Source 2: Local CSV files (fallback / cache) ────────────────
+    csv_files = _glob_mod.glob("history_*.csv")
     for csv_path in csv_files:
-        result["files_scanned"] += 1
         try:
             df = pd.read_csv(csv_path)
         except Exception as e:
             result["errors"].append(f"Read {csv_path}: {e}")
             continue
-
         if df.empty or "legs" not in df.columns or "result" not in df.columns:
             continue
-
         modified = False
         for idx in range(len(df)):
-            row_result = str(df.loc[idx, "result"]).strip()
-            if row_result != "Pending":
+            if str(df.loc[idx, "result"]).strip() != "Pending":
                 continue
-
-            # Parse legs JSON
             try:
-                legs_raw = df.loc[idx, "legs"]
-                if not isinstance(legs_raw, str) or not legs_raw.strip():
+                legs_str = df.loc[idx, "legs"]
+                if not isinstance(legs_str, str) or not legs_str.strip():
                     continue
-                legs = json.loads(legs_raw)
+                legs = json.loads(legs_str)
                 if not isinstance(legs, list) or not legs:
                     continue
             except (json.JSONDecodeError, TypeError):
                 continue
-
-            # Check if any leg's commence_time is within the 12-minute window
-            has_upcoming = False
-            for leg in legs:
-                ct = leg.get("commence_time")
-                if not ct:
-                    continue
-                try:
-                    if isinstance(ct, str):
-                        # Parse ISO format commence_time
-                        ct_parsed = _dt.fromisoformat(ct.replace("Z", "+00:00"))
-                    else:
-                        continue
-                    # Game starts between now and 12 minutes from now
-                    if now <= ct_parsed <= window_end:
-                        has_upcoming = True
-                        break
-                except (ValueError, TypeError):
-                    continue
-
-            if not has_upcoming:
-                continue
-
-            # Check if CLV already applied recently (avoid redundant API calls)
-            already_updated = all(leg.get("line_close") is not None for leg in legs)
-            if already_updated:
-                continue
-
-            result["bets_checked"] += 1
-            log.info("[Auto-CLV] Found pending bet row %d in %s with upcoming game", idx, csv_path)
-
-            # Apply CLV update using the existing function
-            try:
-                updated_legs, errs = apply_clv_update_to_legs(legs)
-                for e in errs:
-                    result["errors"].append(e)
-
-                # Check if any legs were actually updated with closing lines
-                any_updated = any(
-                    ul.get("line_close") is not None
-                    for ul in updated_legs
-                )
-                if any_updated:
-                    df.loc[idx, "legs"] = json.dumps(updated_legs, default=str)
-                    modified = True
-                    result["bets_updated"] += 1
-                    # Log details
-                    for ul in updated_legs:
-                        if ul.get("line_close") is not None:
-                            log.info(
-                                "[Auto-CLV] Updated %s %s %s: bet=%.1f close=%.1f clv_line=%s",
-                                ul.get("player", "?"), ul.get("market", "?"),
-                                ul.get("side", "Over"),
-                                float(ul.get("line", 0) or 0),
-                                float(ul.get("line_close", 0) or 0),
-                                ul.get("clv_line", "?"),
-                            )
-            except Exception as e:
-                result["errors"].append(f"CLV update row {idx}: {e}")
-                log.warning("[Auto-CLV] Error updating row %d: %s", idx, e)
-
-        # Write back to CSV if modified
+            updated_legs, was_updated = _process_legs(legs)
+            if was_updated:
+                df.loc[idx, "legs"] = json.dumps(updated_legs, default=str)
+                modified = True
+                result["sources"]["csv"] += 1
         if modified:
             try:
                 df.to_csv(csv_path, index=False)
-                log.info("[Auto-CLV] Saved updated CLV data to %s", csv_path)
+                log.info("[Auto-CLV] Saved updated CLV to %s", csv_path)
             except Exception as e:
                 result["errors"].append(f"Save {csv_path}: {e}")
 
@@ -8013,8 +8117,9 @@ with tabs[0]:
                                     break
                     if _pp_line is not None:
                         line = _pp_line
+                        _pp_st = str(_r.get("start_time", "") or "") if _r is not None else ""
                         meta = {"event_id": None, "home_team": "", "away_team": "",
-                                "commence_time": "", "price": 1.909,
+                                "commence_time": _pp_st, "price": 1.909,
                                 "book": "prizepicks", "market_key": market_key, "side": "Over"}
                         st.success(f"{tag} - {pname} {mkt}: line {line:.1f} (PrizePicks)")
                     else:
@@ -9290,9 +9395,10 @@ with tabs[2]:
                         # and causing high-variance markets (3PM, Blocks, Steals) to be
                         # dropped by the p_cal < min_prob gate even when they had real edges.
                         _plat_price = 2.0 if _plat_label in ("prizepicks", "underdog", "sleeper") else 1.909
+                        _plat_st = str(r.get("start_time", "") or "")
                         meta = {
                             "event_id": None, "home_team": "", "away_team": "",
-                            "commence_time": "", "price": _plat_price,
+                            "commence_time": _plat_st, "price": _plat_price,
                             "book": _plat_label,
                             "market_key": ODDS_MARKETS.get(mkt), "side": "Over",
                         }
@@ -9648,7 +9754,7 @@ with tabs[2]:
                 _ref_meta = _ref_meta_map.get(_ref_key, {
                     "event_id": _ref_row.get("event_id"),
                     "home_team": "", "away_team": "",
-                    "commence_time": "",
+                    "commence_time": str(_ref_row.get("start_time", "") or ""),
                     "price": float(_ref_row.get("price_decimal") or 2.0),
                     "book": str(_ref_row.get("book", "prizepicks")),
                     "market_key": _ref_row.get("market_key") or ODDS_MARKETS.get(_ref_mkt),
@@ -9848,7 +9954,8 @@ with tabs[2]:
                     _se_key = (normalize_name(_se_pname), _se_mkt, _se_line)
                     _se_meta = _se_meta_map.get(_se_key, {
                         "event_id": None, "home_team": "", "away_team": "",
-                        "commence_time": "", "price": 2.0,
+                        "commence_time": str(_se_row.get("start_time", "") or ""),
+                        "price": 2.0,
                         "book": str(_se_row.get("book", "prizepicks")),
                         "market_key": _se_row.get("market_key") or ODDS_MARKETS.get(_se_mkt),
                         "side": "Over",
@@ -10389,13 +10496,13 @@ with tabs[3]:
             st.dataframe(display_df, use_container_width=True)
             if st.button("Scan PrizePicks vs Model", use_container_width=True):
                 pp_candidates = []
-                _pp_meta_base = {"event_id": None, "home_team": "", "away_team": "",
-                                 "commence_time": "", "price": 2.0,
-                                 "book": "prizepicks", "side": "Over"}
                 for _, r in display_df.iterrows():
                     mkt = map_platform_stat_to_market(r.get("stat_type",""))
                     if mkt and r.get("line"):
-                        _m = dict(_pp_meta_base, market_key=ODDS_MARKETS.get(mkt))
+                        _m = {"event_id": None, "home_team": "", "away_team": "",
+                              "commence_time": str(r.get("start_time", "") or ""),
+                              "price": 2.0, "book": "prizepicks", "side": "Over",
+                              "market_key": ODDS_MARKETS.get(mkt)}
                         pp_candidates.append((r["player"], mkt, float(r["line"]), _m))
                 if pp_candidates:
                     _inj_map = st.session_state.get("injury_team_map", {})
@@ -10539,13 +10646,13 @@ with tabs[3]:
             ud_min_ev = st.number_input("Min EV%", -5.0, 30.0, 2.0, 0.5, key="ud_min_ev")
             if st.button("Scan Underdog vs Model", use_container_width=True):
                 ud_candidates = []
-                _ud_meta_base = {"event_id": None, "home_team": "", "away_team": "",
-                                 "commence_time": "", "price": 2.0,
-                                 "book": "underdog", "side": "Over"}
                 for _, r in display_ud.iterrows():
                     mkt = map_platform_stat_to_market(r.get("stat_type",""))
                     if mkt and r.get("line"):
-                        _m = dict(_ud_meta_base, market_key=ODDS_MARKETS.get(mkt))
+                        _m = {"event_id": None, "home_team": "", "away_team": "",
+                              "commence_time": str(r.get("start_time", "") or ""),
+                              "price": 2.0, "book": "underdog", "side": "Over",
+                              "market_key": ODDS_MARKETS.get(mkt)}
                         ud_candidates.append((r["player"], mkt, float(r["line"]), _m))
                 if ud_candidates:
                     _inj_map = st.session_state.get("injury_team_map", {})

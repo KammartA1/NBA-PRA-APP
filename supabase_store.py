@@ -168,6 +168,24 @@ def delete_history_row(uid: str, row_id: int) -> bool:
         return False
 
 
+def load_all_pending_bets() -> list:
+    """Load ALL pending bets across all users (for background CLV updater)."""
+    sb = _get_client()
+    if sb is None:
+        return []
+    try:
+        resp = _retry(lambda: (
+            sb.table("bet_history")
+            .select("*")
+            .eq("result", "Pending")
+            .execute()
+        ))
+        return resp.data or []
+    except Exception as e:
+        log.warning("[supabase_store] load_all_pending_bets failed: %s", e)
+        return []
+
+
 def clear_history(uid: str) -> bool:
     """Delete ALL history for a user."""
     sb = _get_client()
