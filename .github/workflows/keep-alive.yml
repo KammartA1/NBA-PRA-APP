@@ -1,0 +1,46 @@
+name: Keep Alive
+# Pings the Streamlit app and Supabase every 10 hours to prevent auto-sleep.
+# Streamlit Cloud sleeps after ~12h of no traffic; Supabase free tier pauses after 7 days.
+
+on:
+  schedule:
+    # Run every 10 hours: 00:00, 10:00, 20:00 UTC
+    - cron: "0 0,10,20 * * *"
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping Streamlit app
+        run: |
+          # Replace with your actual Streamlit Cloud URL
+          APP_URL="${{ secrets.STREAMLIT_APP_URL }}"
+          if [ -z "$APP_URL" ]; then
+            echo "STREAMLIT_APP_URL secret not set — skipping app ping"
+          else
+            echo "Pinging $APP_URL ..."
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$APP_URL" || echo "000")
+            echo "HTTP response: $HTTP_CODE"
+            if [ "$HTTP_CODE" = "000" ]; then
+              echo "App may be sleeping — retrying in 15s..."
+              sleep 15
+              curl -s -o /dev/null --max-time 60 "$APP_URL" || true
+            fi
+          fi
+
+      - name: Ping Supabase (prevent free-tier pause)
+        run: |
+          SUPA_URL="${{ secrets.SUPABASE_URL }}"
+          SUPA_KEY="${{ secrets.SUPABASE_KEY }}"
+          if [ -z "$SUPA_URL" ] || [ -z "$SUPA_KEY" ]; then
+            echo "Supabase secrets not set — skipping DB ping"
+          else
+            echo "Pinging Supabase..."
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+              -H "apikey: $SUPA_KEY" \
+              -H "Authorization: Bearer $SUPA_KEY" \
+              "$SUPA_URL/rest/v1/user_settings?select=id&limit=1" || echo "000")
+            echo "Supabase response: $HTTP_CODE"
+          fi

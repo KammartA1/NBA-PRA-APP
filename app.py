@@ -4268,14 +4268,16 @@ def get_best_available_price(event_id, market_key, player_norm, side):
 PROP_HISTORY_PATH = "prop_line_history.jsonl"
 def save_prop_line(player, market, line, price, book, event_id=None):
     """Append a prop line snapshot to JSONL history file."""
+    rec = {
+        "ts": _now_iso(), "player": player, "market": market,
+        "line": float(line) if line is not None else None,
+        "price": float(price) if price is not None else None,
+        "book": book, "event_id": event_id,
+    }
+    _supa.append_prop_line(rec)
     try:
         with open(PROP_HISTORY_PATH, "a") as f:
-            f.write(json.dumps({
-                "ts": _now_iso(), "player": player, "market": market,
-                "line": float(line) if line is not None else None,
-                "price": float(price) if price is not None else None,
-                "book": book, "event_id": event_id,
-            }) + "\n")
+            f.write(json.dumps(rec) + "\n")
     except Exception:
         pass
 # ──────────────────────────────────────────────
@@ -4283,15 +4285,15 @@ def save_prop_line(player, market, line, price, book, event_id=None):
 # ──────────────────────────────────────────────
 def save_opening_line(player_norm, market_key, side, line, price):
     """Persist the first-seen line for a player/market/side as the 'opening' line."""
+    today = date.today().isoformat()
+    key = f"{player_norm}|{market_key}|{side}|{today}"
+    _supa.set_opening_line(key, float(line), price, _now_iso(), today)
     try:
         data = {}
         if os.path.exists(OPENING_LINES_PATH):
             with open(OPENING_LINES_PATH) as f:
                 data = json.load(f)
-        # Include date in key so each day gets its own independent opening line
-        today = date.today().isoformat()
-        key = f"{player_norm}|{market_key}|{side}|{today}"
-        if key not in data:  # Only write once per key (true opening)
+        if key not in data:
             data[key] = {"line": float(line), "price": price, "ts": _now_iso(), "date": today}
             with open(OPENING_LINES_PATH, "w") as f:
                 json.dump(data, f)
@@ -4299,13 +4301,17 @@ def save_opening_line(player_norm, market_key, side, line, price):
         logging.warning(f"save_opening_line: {ex}")
 def get_opening_line(player_norm, market_key, side):
     """Return (opening_line, opening_price) or (None, None) if not recorded."""
+    today = date.today().isoformat()
+    key = f"{player_norm}|{market_key}|{side}|{today}"
+    if _supa.is_available():
+        rec = _supa.get_opening_line(key)
+        if rec:
+            return rec.get("line"), rec.get("price")
     try:
         if not os.path.exists(OPENING_LINES_PATH):
             return None, None
         with open(OPENING_LINES_PATH) as f:
             data = json.load(f)
-        today = date.today().isoformat()
-        key = f"{player_norm}|{market_key}|{side}|{today}"
         rec = data.get(key)
         if rec:
             return rec.get("line"), rec.get("price")
@@ -4322,6 +4328,10 @@ def clear_opening_lines():
 # WATCHLIST PERSISTENCE
 # ──────────────────────────────────────────────
 def load_watchlist(uid):
+    if _supa.is_available():
+        wl = _supa.load_watchlist(uid)
+        if wl:
+            return wl
     path = WATCHLIST_PATH_TPL.format(uid=re.sub(r"[^a-zA-Z0-9_-]", "_", uid or "default"))
     try:
         if os.path.exists(path):
@@ -4331,6 +4341,7 @@ def load_watchlist(uid):
         pass
     return []
 def save_watchlist(uid, players):
+    _supa.save_watchlist(uid, list(players))
     path = WATCHLIST_PATH_TPL.format(uid=re.sub(r"[^a-zA-Z0-9_-]", "_", uid or "default"))
     try:
         with open(path, "w") as f:
@@ -6597,9 +6608,14 @@ def recompute_pricing_fields(leg, calib):
 # USER AUTHENTICATION SYSTEM
 # ──────────────────────────────────────────────
 AUTH_DB_PATH = "users_auth.json"
+import supabase_store as _supa
 def _hash_pw(pw: str) -> str:
     return hashlib.sha256(pw.strip().encode()).hexdigest()
 def _load_auth_db() -> dict:
+    if _supa.is_available():
+        db = _supa.load_auth_db()
+        if db:
+            return db
     try:
         if os.path.exists(AUTH_DB_PATH):
             with open(AUTH_DB_PATH) as f:
@@ -6608,6 +6624,9 @@ def _load_auth_db() -> dict:
         pass
     return {}
 def _save_auth_db(db: dict):
+    if _supa.is_available():
+        for uname, rec in db.items():
+            _supa.save_auth_user(uname, rec.get("pw_hash",""), rec.get("email",""))
     try:
         with open(AUTH_DB_PATH, "w") as f:
             json.dump(db, f, indent=2)
@@ -6646,6 +6665,10 @@ def user_state_path(uid): return f"user_state_{re.sub(r'[^a-zA-Z0-9_-]','_',uid 
 def history_path(uid):    return f"history_{re.sub(r'[^a-zA-Z0-9_-]','_',uid or 'default')}.csv"
 # [FIX 15] No TTL on user data - persists forever on disk
 def load_user_state(uid):
+    if _supa.is_available():
+        s = _supa.load_user_settings(uid)
+        if s:
+            return s
     fp = user_state_path(uid)
     try:
         if os.path.exists(fp):
@@ -6653,10 +6676,15 @@ def load_user_state(uid):
     except Exception: pass
     return {}
 def save_user_state(uid, state):
+    _supa.save_user_settings(uid, state or {})
     try:
         with open(user_state_path(uid),"w") as f: json.dump(state or {}, f)
     except Exception: pass
 def load_history(uid):
+    if _supa.is_available():
+        df = _supa.load_history(uid)
+        if not df.empty:
+            return df
     fp = history_path(uid)
     try:
         if os.path.exists(fp): return pd.read_csv(fp)
@@ -6702,6 +6730,7 @@ def is_loss_stop_active(uid, bankroll):
         pass
     return False, ""
 def append_history(uid, row):
+    _supa.append_history(uid, row)
     df = load_history(uid)
     pd.concat([df, pd.DataFrame([row])], ignore_index=True).to_csv(history_path(uid), index=False)
 # ============================================================
@@ -10737,7 +10766,7 @@ with tabs[4]:
             lc3.metric("Leg Misses", n_leg_miss)
         else:
             st.caption("Per-leg accuracy will appear once you mark individual leg results below.")
-        st.dataframe(h, use_container_width=True)
+        st.dataframe(h.drop(columns=["_supa_id"], errors="ignore"), use_container_width=True)
         # [FIX 12] Export button
         csv_data = h.to_csv(index=False)
         _exp_col, _del_col = st.columns([2, 1])
@@ -10754,8 +10783,11 @@ with tabs[4]:
                 st.markdown("<div style='height:1.6rem;'></div>", unsafe_allow_html=True)
                 if st.button("Delete Row", key="del_row_btn", type="primary"):
                     try:
+                        _supa_id = h.loc[int(_del_idx), "_supa_id"] if "_supa_id" in h.columns else None
+                        if _supa_id and _supa.is_available():
+                            _supa.delete_history_row(user_id, int(_supa_id))
                         h2 = h.drop(index=int(_del_idx)).reset_index(drop=True)
-                        h2.to_csv(history_path(user_id), index=False)
+                        h2.drop(columns=["_supa_id"], errors="ignore").to_csv(history_path(user_id), index=False)
                         st.success(f"Row {int(_del_idx)} deleted.")
                         st.rerun()
                     except Exception as _de:
@@ -10772,6 +10804,7 @@ with tabs[4]:
                 _ca1, _ca2 = st.columns(2)
                 if _ca1.button("Yes — delete everything", key="confirm_clear_yes", type="primary"):
                     try:
+                        _supa.clear_history(user_id)
                         pd.DataFrame().to_csv(history_path(user_id), index=False)
                         st.session_state["confirm_clear_all"] = False
                         st.success("All history cleared.")
@@ -10807,14 +10840,20 @@ with tabs[4]:
             if st.button("Save Leg Results", key="save_leg_results"):
                 h2 = h.copy()
                 h2.loc[int(leg_row_idx), "leg_results"] = json.dumps(new_leg_results)
-                # Auto-derive parlay result: HIT only if all legs HIT, MISS if any MISS, else Pending
+                _new_result = h2.loc[int(leg_row_idx), "result"]
                 if all(r=="HIT" for r in new_leg_results):
-                    h2.loc[int(leg_row_idx), "result"] = "HIT"
+                    _new_result = "HIT"
                 elif any(r=="MISS" for r in new_leg_results):
-                    h2.loc[int(leg_row_idx), "result"] = "MISS"
+                    _new_result = "MISS"
                 elif all(r in ("HIT","PUSH") for r in new_leg_results):
-                    h2.loc[int(leg_row_idx), "result"] = "PUSH"
-                h2.to_csv(history_path(user_id), index=False)
+                    _new_result = "PUSH"
+                h2.loc[int(leg_row_idx), "result"] = _new_result
+                _sid = h2.loc[int(leg_row_idx), "_supa_id"] if "_supa_id" in h2.columns else None
+                if _sid and _supa.is_available():
+                    _supa.update_history_row(user_id, int(_sid), {
+                        "leg_results": new_leg_results, "result": _new_result,
+                    })
+                h2.drop(columns=["_supa_id"], errors="ignore").to_csv(history_path(user_id), index=False)
                 st.success("Leg results saved — calibration will now use individual leg outcomes.")
         else:
             st.caption("No legs found for this row.")
@@ -10826,7 +10865,10 @@ with tabs[4]:
             new_res = st.selectbox("Result", ["Pending","HIT","MISS","PUSH"])
             if st.button("Update Result"):
                 h2 = h.copy(); h2.loc[int(idx),"result"] = new_res
-                h2.to_csv(history_path(user_id), index=False)
+                _sid = h2.loc[int(idx), "_supa_id"] if "_supa_id" in h2.columns else None
+                if _sid and _supa.is_available():
+                    _supa.update_history_row(user_id, int(_sid), {"result": new_res})
+                h2.drop(columns=["_supa_id"], errors="ignore").to_csv(history_path(user_id), index=False)
                 st.success("Updated")
         with uc2:
             st.markdown("<span style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#4A607A;letter-spacing:0.10em;'>CLV UPDATE</span>", unsafe_allow_html=True)
@@ -10840,7 +10882,10 @@ with tabs[4]:
                     else:
                         legs2, errs = apply_clv_update_to_legs(legs)
                         h2.loc[int(idx2),"legs"] = json.dumps(legs2)
-                        h2.to_csv(history_path(user_id), index=False)
+                        _sid = h2.loc[int(idx2), "_supa_id"] if "_supa_id" in h2.columns else None
+                        if _sid and _supa.is_available():
+                            _supa.update_history_row(user_id, int(_sid), {"legs": legs2})
+                        h2.drop(columns=["_supa_id"], errors="ignore").to_csv(history_path(user_id), index=False)
                         for e in errs[:5]: st.warning(e)
                         st.success("CLV updated")
                 except Exception as e:
