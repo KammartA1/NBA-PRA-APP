@@ -4006,8 +4006,7 @@ def _clv_auto_update_pending_bets() -> dict:
     """Scan Supabase + local CSV files for pending bets with games starting
     within the next 12 minutes, fetch closing lines via apply_clv_update_to_legs(),
     and persist updated legs to both Supabase and CSV."""
-    result = {"bets_checked": 0, "bets_updated": 0, "errors": [],
-              "sources": {"supabase": 0, "csv": 0}}
+    result = {"bets_checked": 0, "bets_updated": 0, "errors": []}
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     import glob as _glob_mod
 
@@ -4068,31 +4067,7 @@ def _clv_auto_update_pending_bets() -> dict:
             log.warning("[Auto-CLV] Error: %s", e)
         return legs, False
 
-    # ── Source 1: Supabase (persistent, cross-session) ──────────────
-    try:
-        supa_rows = _supa.load_all_pending_bets()
-        for supa_row in supa_rows:
-            supa_id = supa_row.get("id")
-            legs_raw = supa_row.get("legs", [])
-            if isinstance(legs_raw, str):
-                try:
-                    legs_raw = json.loads(legs_raw)
-                except (json.JSONDecodeError, TypeError):
-                    continue
-            if not isinstance(legs_raw, list) or not legs_raw:
-                continue
-            updated_legs, was_updated = _process_legs(legs_raw)
-            if was_updated and supa_id:
-                _supa.update_history_row(
-                    supa_row.get("user_id", "default"), int(supa_id),
-                    {"legs": updated_legs}
-                )
-                result["sources"]["supabase"] += 1
-                log.info("[Auto-CLV] Synced CLV to Supabase row %s", supa_id)
-    except Exception as e:
-        result["errors"].append(f"Supabase scan: {e}")
-
-    # ── Source 2: Local CSV files (fallback / cache) ────────────────
+    # ── Scan local CSV files for pending bets ─────────────────────
     csv_files = _glob_mod.glob("history_*.csv")
     for csv_path in csv_files:
         try:
@@ -4119,7 +4094,6 @@ def _clv_auto_update_pending_bets() -> dict:
             if was_updated:
                 df.loc[idx, "legs"] = json.dumps(updated_legs, default=str)
                 modified = True
-                result["sources"]["csv"] += 1
         if modified:
             try:
                 df.to_csv(csv_path, index=False)
@@ -4379,7 +4353,6 @@ def save_prop_line(player, market, line, price, book, event_id=None):
         "price": float(price) if price is not None else None,
         "book": book, "event_id": event_id,
     }
-    _supa.append_prop_line(rec)
     try:
         with open(PROP_HISTORY_PATH, "a") as f:
             f.write(json.dumps(rec) + "\n")
@@ -4392,7 +4365,6 @@ def save_opening_line(player_norm, market_key, side, line, price):
     """Persist the first-seen line for a player/market/side as the 'opening' line."""
     today = date.today().isoformat()
     key = f"{player_norm}|{market_key}|{side}|{today}"
-    _supa.set_opening_line(key, float(line), price, _now_iso(), today)
     try:
         data = {}
         if os.path.exists(OPENING_LINES_PATH):
@@ -4408,10 +4380,6 @@ def get_opening_line(player_norm, market_key, side):
     """Return (opening_line, opening_price) or (None, None) if not recorded."""
     today = date.today().isoformat()
     key = f"{player_norm}|{market_key}|{side}|{today}"
-    if _supa.is_available():
-        rec = _supa.get_opening_line(key)
-        if rec:
-            return rec.get("line"), rec.get("price")
     try:
         if not os.path.exists(OPENING_LINES_PATH):
             return None, None
@@ -4433,10 +4401,6 @@ def clear_opening_lines():
 # WATCHLIST PERSISTENCE
 # ──────────────────────────────────────────────
 def load_watchlist(uid):
-    if _supa.is_available():
-        wl = _supa.load_watchlist(uid)
-        if wl:
-            return wl
     path = WATCHLIST_PATH_TPL.format(uid=re.sub(r"[^a-zA-Z0-9_-]", "_", uid or "default"))
     try:
         if os.path.exists(path):
@@ -4446,7 +4410,6 @@ def load_watchlist(uid):
         pass
     return []
 def save_watchlist(uid, players):
-    _supa.save_watchlist(uid, list(players))
     path = WATCHLIST_PATH_TPL.format(uid=re.sub(r"[^a-zA-Z0-9_-]", "_", uid or "default"))
     try:
         with open(path, "w") as f:
@@ -6713,14 +6676,9 @@ def recompute_pricing_fields(leg, calib):
 # USER AUTHENTICATION SYSTEM
 # ──────────────────────────────────────────────
 AUTH_DB_PATH = "users_auth.json"
-import supabase_store as _supa
 def _hash_pw(pw: str) -> str:
     return hashlib.sha256(pw.strip().encode()).hexdigest()
 def _load_auth_db() -> dict:
-    if _supa.is_available():
-        db = _supa.load_auth_db()
-        if db:
-            return db
     try:
         if os.path.exists(AUTH_DB_PATH):
             with open(AUTH_DB_PATH) as f:
@@ -6729,9 +6687,6 @@ def _load_auth_db() -> dict:
         pass
     return {}
 def _save_auth_db(db: dict):
-    if _supa.is_available():
-        for uname, rec in db.items():
-            _supa.save_auth_user(uname, rec.get("pw_hash",""), rec.get("email",""))
     try:
         with open(AUTH_DB_PATH, "w") as f:
             json.dump(db, f, indent=2)
@@ -6770,10 +6725,6 @@ def user_state_path(uid): return f"user_state_{re.sub(r'[^a-zA-Z0-9_-]','_',uid 
 def history_path(uid):    return f"history_{re.sub(r'[^a-zA-Z0-9_-]','_',uid or 'default')}.csv"
 # [FIX 15] No TTL on user data - persists forever on disk
 def load_user_state(uid):
-    if _supa.is_available():
-        s = _supa.load_user_settings(uid)
-        if s:
-            return s
     fp = user_state_path(uid)
     try:
         if os.path.exists(fp):
@@ -6781,15 +6732,10 @@ def load_user_state(uid):
     except Exception: pass
     return {}
 def save_user_state(uid, state):
-    _supa.save_user_settings(uid, state or {})
     try:
         with open(user_state_path(uid),"w") as f: json.dump(state or {}, f)
     except Exception: pass
 def load_history(uid):
-    if _supa.is_available():
-        df = _supa.load_history(uid)
-        if not df.empty:
-            return df
     fp = history_path(uid)
     try:
         if os.path.exists(fp): return pd.read_csv(fp)
@@ -6835,7 +6781,6 @@ def is_loss_stop_active(uid, bankroll):
         pass
     return False, ""
 def append_history(uid, row):
-    _supa.append_history(uid, row)
     df = load_history(uid)
     pd.concat([df, pd.DataFrame([row])], ignore_index=True).to_csv(history_path(uid), index=False)
 # ============================================================
@@ -10883,7 +10828,7 @@ with tabs[4]:
             lc3.metric("Leg Misses", n_leg_miss)
         else:
             st.caption("Per-leg accuracy will appear once you mark individual leg results below.")
-        st.dataframe(h.drop(columns=["_supa_id"], errors="ignore"), use_container_width=True)
+        st.dataframe(h, use_container_width=True)
         # [FIX 12] Export button
         csv_data = h.to_csv(index=False)
         _exp_col, _del_col = st.columns([2, 1])
@@ -10900,11 +10845,8 @@ with tabs[4]:
                 st.markdown("<div style='height:1.6rem;'></div>", unsafe_allow_html=True)
                 if st.button("Delete Row", key="del_row_btn", type="primary"):
                     try:
-                        _supa_id = h.loc[int(_del_idx), "_supa_id"] if "_supa_id" in h.columns else None
-                        if _supa_id and _supa.is_available():
-                            _supa.delete_history_row(user_id, int(_supa_id))
                         h2 = h.drop(index=int(_del_idx)).reset_index(drop=True)
-                        h2.drop(columns=["_supa_id"], errors="ignore").to_csv(history_path(user_id), index=False)
+                        h2.to_csv(history_path(user_id), index=False)
                         st.success(f"Row {int(_del_idx)} deleted.")
                         st.rerun()
                     except Exception as _de:
@@ -10921,7 +10863,6 @@ with tabs[4]:
                 _ca1, _ca2 = st.columns(2)
                 if _ca1.button("Yes — delete everything", key="confirm_clear_yes", type="primary"):
                     try:
-                        _supa.clear_history(user_id)
                         pd.DataFrame().to_csv(history_path(user_id), index=False)
                         st.session_state["confirm_clear_all"] = False
                         st.success("All history cleared.")
@@ -10965,12 +10906,7 @@ with tabs[4]:
                 elif all(r in ("HIT","PUSH") for r in new_leg_results):
                     _new_result = "PUSH"
                 h2.loc[int(leg_row_idx), "result"] = _new_result
-                _sid = h2.loc[int(leg_row_idx), "_supa_id"] if "_supa_id" in h2.columns else None
-                if _sid and _supa.is_available():
-                    _supa.update_history_row(user_id, int(_sid), {
-                        "leg_results": new_leg_results, "result": _new_result,
-                    })
-                h2.drop(columns=["_supa_id"], errors="ignore").to_csv(history_path(user_id), index=False)
+                h2.to_csv(history_path(user_id), index=False)
                 st.success("Leg results saved — calibration will now use individual leg outcomes.")
         else:
             st.caption("No legs found for this row.")
@@ -10982,10 +10918,7 @@ with tabs[4]:
             new_res = st.selectbox("Result", ["Pending","HIT","MISS","PUSH"])
             if st.button("Update Result"):
                 h2 = h.copy(); h2.loc[int(idx),"result"] = new_res
-                _sid = h2.loc[int(idx), "_supa_id"] if "_supa_id" in h2.columns else None
-                if _sid and _supa.is_available():
-                    _supa.update_history_row(user_id, int(_sid), {"result": new_res})
-                h2.drop(columns=["_supa_id"], errors="ignore").to_csv(history_path(user_id), index=False)
+                h2.to_csv(history_path(user_id), index=False)
                 st.success("Updated")
         with uc2:
             st.markdown("<span style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#4A607A;letter-spacing:0.10em;'>CLV UPDATE</span>", unsafe_allow_html=True)
@@ -10999,10 +10932,7 @@ with tabs[4]:
                     else:
                         legs2, errs = apply_clv_update_to_legs(legs)
                         h2.loc[int(idx2),"legs"] = json.dumps(legs2)
-                        _sid = h2.loc[int(idx2), "_supa_id"] if "_supa_id" in h2.columns else None
-                        if _sid and _supa.is_available():
-                            _supa.update_history_row(user_id, int(_sid), {"legs": legs2})
-                        h2.drop(columns=["_supa_id"], errors="ignore").to_csv(history_path(user_id), index=False)
+                        h2.to_csv(history_path(user_id), index=False)
                         for e in errs[:5]: st.warning(e)
                         st.success("CLV updated")
                 except Exception as e:
