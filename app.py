@@ -926,60 +926,72 @@ def get_season_string(today=None):
 # ──────────────────────────────────────────────
 @st.cache_data(ttl=60*60*6, show_spinner=False)  # 6h cache — large payload, refresh once per session
 def _fetch_bulk_gamelogs():
-    """LeagueGameLog: ONE call returns every player's game log for the season.
-    Replaces ~200 individual PlayerGameLog calls for a full-slate scan.
-    Returns a DataFrame sorted newest-first per player, or None on failure.
-    Retries up to 3 times with increasing timeout on network errors.
+    """LeagueGameLog: fetches Regular Season + Playoffs game logs so
+    rest-day calculations stay accurate once the postseason begins.
     """
     from nba_api.stats.endpoints import LeagueGameLog
-    for _attempt, _timeout in enumerate([60, 90, 120]):
-        try:
-            df = LeagueGameLog(
-                player_or_team_abbreviation="P",
-                season=get_season_string(),
-                season_type_all_star="Regular Season",
-                timeout=_timeout,
-            ).get_data_frames()[0]
-            if df.empty:
-                return None
-            # Normalize player ID column (LeagueGameLog uses PLAYER_ID)
-            if "PLAYER_ID" not in df.columns and "Player_ID" in df.columns:
-                df = df.rename(columns={"Player_ID": "PLAYER_ID"})
-            df["PLAYER_ID"] = pd.to_numeric(df["PLAYER_ID"], errors="coerce")
-            df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], errors="coerce")
-            # Sort newest → oldest within each player
-            df = df.sort_values(["PLAYER_ID", "GAME_DATE"], ascending=[True, False])
-            # LeagueGameLog returns MIN as float; convert to match PlayerGameLog "MM:SS" format
-            if "MIN" in df.columns:
-                df["MIN"] = pd.to_numeric(df["MIN"], errors="coerce")
-            return df
-        except Exception:
-            if _attempt == 2:
-                return None
-            continue
-    return None
+    season = get_season_string()
+    all_dfs = []
+    for stype in ["Regular Season", "Playoffs"]:
+        for _attempt, _timeout in enumerate([60, 90, 120]):
+            try:
+                df = LeagueGameLog(
+                    player_or_team_abbreviation="P",
+                    season=season,
+                    season_type_all_star=stype,
+                    timeout=_timeout,
+                ).get_data_frames()[0]
+                if not df.empty:
+                    all_dfs.append(df)
+                break
+            except Exception:
+                if _attempt == 2:
+                    break
+                continue
+    if not all_dfs:
+        return None
+    df = pd.concat(all_dfs, ignore_index=True)
+    if "PLAYER_ID" not in df.columns and "Player_ID" in df.columns:
+        df = df.rename(columns={"Player_ID": "PLAYER_ID"})
+    df["PLAYER_ID"] = pd.to_numeric(df["PLAYER_ID"], errors="coerce")
+    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], errors="coerce")
+    df = df.drop_duplicates(subset=["PLAYER_ID", "GAME_ID"], keep="first")
+    df = df.sort_values(["PLAYER_ID", "GAME_DATE"], ascending=[True, False])
+    if "MIN" in df.columns:
+        df["MIN"] = pd.to_numeric(df["MIN"], errors="coerce")
+    return df
 # ──────────────────────────────────────────────
 # GAME LOG FETCHER
 # ──────────────────────────────────────────────
 @st.cache_data(ttl=60*30, show_spinner=False)
 def fetch_player_gamelog(player_id, max_games=15):
     """Per-player game log. Tries the bulk cache first (instant), falls back to individual API call."""
-    # ── Fast path: bulk dataframe already in cache ──────────────
     bulk = _fetch_bulk_gamelogs()
     if bulk is not None:
         pid = int(player_id)
         player_df = bulk[bulk["PLAYER_ID"] == pid].head(int(max_games)).copy()
         if not player_df.empty:
-            # Convert GAME_DATE back to string so downstream code (pd.to_datetime) still works
             player_df["GAME_DATE"] = player_df["GAME_DATE"].dt.strftime("%b %d, %Y")
             return player_df, []
-    # ── Slow path: individual PlayerGameLog call (10s timeout) ──
-    # [AUDIT FIX] Explicitly filter to Regular Season to exclude preseason/playoff contamination
     errs = []
     season_str = get_season_string()
+    all_dfs = []
+    for stype in ["Playoffs", "Regular Season"]:
+        try:
+            gl = playergamelog.PlayerGameLog(
+                player_id=player_id, timeout=10,
+                season=season_str, season_type_all_star=stype)
+            df = gl.get_data_frames()[0]
+            if not df.empty:
+                all_dfs.append(df)
+        except Exception as e:
+            errs.append(f"{stype}: {type(e).__name__}: {e}")
+    if all_dfs:
+        combined = pd.concat(all_dfs, ignore_index=True)
+        combined["_sort_date"] = pd.to_datetime(combined.get("GAME_DATE", pd.Series()), errors="coerce")
+        combined = combined.sort_values("_sort_date", ascending=False).drop(columns=["_sort_date"])
+        return combined.head(int(max_games)).copy(), []
     for params in [
-        {"season": season_str, "season_type_all_star": "Regular Season"},
-        {"season": season_str},
         {"season_nullable": season_str, "season_type_all_star": "Regular Season"},
         {"season_nullable": season_str},
         {},
