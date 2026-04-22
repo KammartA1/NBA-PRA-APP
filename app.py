@@ -23,6 +23,7 @@ import requests
 import streamlit as st
 from streamlit_cookies_controller import CookieController
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
 # ──────────────────────────────────────────────
 # CLAUDE AI INTEGRATION
 # ──────────────────────────────────────────────
