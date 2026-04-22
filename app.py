@@ -23,6 +23,7 @@ import requests
 import streamlit as st
 from streamlit_cookies_controller import CookieController
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
 # ──────────────────────────────────────────────
 # CLAUDE AI INTEGRATION
 # ──────────────────────────────────────────────
@@ -9323,13 +9324,19 @@ with tabs[2]:
                             for _fe in _fetch_errors:
                                 st.caption(_fe)
     # ── Bulk game log loader (recommended before large scans) ──────
-    bulk_loaded = _fetch_bulk_gamelogs() is not None
-    _bulk_label = "✓ All Game Logs Loaded" if bulk_loaded else "Load All Game Logs (Recommended)"
+    # IMPORTANT: Never call _fetch_bulk_gamelogs() here for the button label —
+    # if the cache is cold it blocks the page for 30-120s with no spinner.
+    # Use session_state flag only; the actual fetch happens on button click
+    # or inside Run Scan (both wrapped in st.spinner).
+    _bulk_cache_key = "_bulk_gamelogs_loaded"
+    bulk_loaded = st.session_state.get(_bulk_cache_key, False)
+    _bulk_label = "All Game Logs Loaded" if bulk_loaded else "Load All Game Logs (Recommended)"
     if scan_col.button(_bulk_label, use_container_width=True, disabled=bulk_loaded):
         with st.spinner("Loading all NBA player game logs (one-time, cached 6h)..."):
             _fetch_bulk_gamelogs.clear()
             result = _fetch_bulk_gamelogs()
         if result is not None:
+            st.session_state[_bulk_cache_key] = True
             st.success(f"Loaded {len(result):,} game log rows — scans are now near-instant.")
         else:
             st.warning("Bulk load failed — scanner will fall back to per-player fetches.")
@@ -9404,13 +9411,16 @@ with tabs[2]:
                         }
                         candidates.append((pname, mkt, float(line), meta))
             # ── Pre-filter: remove non-current-NBA players ──────────────
-            # Use bulk game log (already cached) to build set of active NBA player names
-            _bulk_gl = _fetch_bulk_gamelogs()
+            # Use bulk game log to build set of active NBA player names.
+            # Wrap in spinner since this can take 30-120s on a cold cache.
             _active_nba_names: set = set()
+            with st.spinner("Loading player roster data..."):
+                _bulk_gl = _fetch_bulk_gamelogs()
             if _bulk_gl is not None and not _bulk_gl.empty:
                 _name_col = "PLAYER_NAME" if "PLAYER_NAME" in _bulk_gl.columns else None
                 if _name_col:
                     _active_nba_names = {normalize_name(n) for n in _bulk_gl[_name_col].dropna().unique()}
+                st.session_state[_bulk_cache_key] = True
             if _active_nba_names:
                 _pre_count = len(candidates)
                 candidates = [(p, m, l, mt) for p, m, l, mt in candidates
