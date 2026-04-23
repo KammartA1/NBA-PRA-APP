@@ -6242,7 +6242,7 @@ def compute_leg_projection(
         sim_std  = None
         if not scan_mode:
           try:
-            from simulation.game_engine import GameEngine
+            from simulation.game_engine import GameEngine, PlayerDistribution
             from simulation.config import SimulationConfig, SeasonPhase
             from simulation.player_state import PlayerProfile as SimPlayerProfile
             from simulation.data_loader import SimulationDataLoader
@@ -6256,6 +6256,9 @@ def compute_leg_projection(
                 "Blocks": "blocks", "Steals": "steals", "Turnovers": "turnovers",
                 "FGM": "fgm", "FGA": "fga", "FTM": "ftm", "FTA": "fta",
                 "Personal Fouls": "fouls",
+                "3PA": "three_pa", "2PA": "two_pa",
+                "Fantasy Score": "fantasy_score", "Stocks": "stocks",
+                "Double Double": "double_double", "Triple Double": "triple_double",
             }
             _sim_stat = _SIM_STAT_MAP.get(base_market)
             _sim_line_for_prob = float(line)
@@ -6527,6 +6530,41 @@ def compute_leg_projection(
                     )
                     _sim_output = _sim_engine.run_simulation(n=_SIM_N)
                     _sim_dist = _sim_output.get_player_dist(_sim_pid, _sim_stat)
+                    # Derive composite stats from base per-sim distributions
+                    if _sim_dist is None and _sim_stat is not None:
+                        _cpfx = ""
+                        if _sim_stat.startswith("h1_"):
+                            _cpfx = "h1_"
+                        elif _sim_stat.startswith("h2_"):
+                            _cpfx = "h2_"
+                        _cbase = _sim_stat[len(_cpfx):] if _cpfx else _sim_stat
+                        _cget = lambda s: _sim_output.get_player_dist(_sim_pid, f"{_cpfx}{s}")
+                        if _cbase == "fantasy_score":
+                            _d = [_cget(s) for s in ("points","rebounds","assists","blocks","steals","turnovers")]
+                            if all(x is not None for x in _d):
+                                _cv = _d[0].values + 1.2*_d[1].values + 1.5*_d[2].values + 3.0*_d[3].values + 3.0*_d[4].values - _d[5].values
+                                _sim_dist = PlayerDistribution(player_name=player_name, player_id=_sim_pid, stat_name=_sim_stat, n_sims=len(_cv), values=_cv)
+                                _sim_dist.compute()
+                        elif _cbase == "stocks":
+                            _db, _ds = _cget("blocks"), _cget("steals")
+                            if _db is not None and _ds is not None:
+                                _cv = _db.values + _ds.values
+                                _sim_dist = PlayerDistribution(player_name=player_name, player_id=_sim_pid, stat_name=_sim_stat, n_sims=len(_cv), values=_cv)
+                                _sim_dist.compute()
+                        elif _cbase == "two_pa":
+                            _dfga, _d3pa = _cget("fga"), _cget("three_pa")
+                            if _dfga is not None and _d3pa is not None:
+                                _cv = _dfga.values - _d3pa.values
+                                _sim_dist = PlayerDistribution(player_name=player_name, player_id=_sim_pid, stat_name=_sim_stat, n_sims=len(_cv), values=_cv)
+                                _sim_dist.compute()
+                        elif _cbase in ("double_double", "triple_double"):
+                            _dp, _dr, _da = _cget("points"), _cget("rebounds"), _cget("assists")
+                            if all(x is not None for x in [_dp, _dr, _da]):
+                                _cnt = (_dp.values >= 10).astype(float) + (_dr.values >= 10).astype(float) + (_da.values >= 10).astype(float)
+                                _thresh = 3.0 if _cbase == "triple_double" else 2.0
+                                _cv = (_cnt >= _thresh).astype(float)
+                                _sim_dist = PlayerDistribution(player_name=player_name, player_id=_sim_pid, stat_name=_sim_stat, n_sims=len(_cv), values=_cv)
+                                _sim_dist.compute()
                     if _sim_dist is not None:
                         sim_prob = _sim_dist.prob_over(_sim_line_for_prob)
                         sim_mean = _sim_dist.mean * _sim_period_scale
