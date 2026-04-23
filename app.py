@@ -5663,7 +5663,7 @@ def compute_combo_projection(
             bankroll=bankroll, frac_kelly=frac_kelly, max_risk_frac=max_risk_frac,
             market_prior_weight=market_prior_weight, exclude_chaotic=exclude_chaotic,
             game_date=game_date, is_home=is_home,
-            injury_team_map=injury_team_map, scan_mode=True,
+            injury_team_map=injury_team_map, scan_mode=False,
         )
 
     legs = []
@@ -5698,6 +5698,20 @@ def compute_combo_projection(
 
     z = (float(line) - combined_proj) / max(combined_sigma, 0.01)
     combined_p_over = float(np.clip(1.0 - _norm.cdf(z), 1e-4, 1 - 1e-4))
+
+    # ── Combine per-leg sim results (if both legs ran the sim engine) ──
+    _combo_sim_prob = None
+    _combo_sim_mean = None
+    _combo_sim_std  = None
+    _leg_sim_means = [lg.get("sim_mean") for lg in successful if lg.get("sim_mean") is not None]
+    _leg_sim_stds  = [lg.get("sim_std") for lg in successful if lg.get("sim_std") is not None]
+    if len(_leg_sim_means) == len(successful) and len(successful) > 0:
+        _combo_sim_mean = sum(_leg_sim_means)
+        _combo_sim_std  = math.sqrt(sum(s**2 for s in _leg_sim_stds))
+        _zs = (float(line) - _combo_sim_mean) / max(_combo_sim_std, 0.01)
+        _combo_sim_prob = float(np.clip(1.0 - _norm.cdf(_zs), 1e-4, 1 - 1e-4))
+        combined_p_over = float(0.75 * _combo_sim_prob + 0.25 * combined_p_over)
+        errors.append(f"Combo sim blend 75/25: sim_p={_combo_sim_prob:.3f}, analytical={combined_p_over:.3f}, sim_mu={_combo_sim_mean:.1f}, sim_std={_combo_sim_std:.1f}")
 
     side_str = (meta.get("side") if meta else "Over") or "Over"
     _is_under = "under" in str(side_str).lower()
@@ -5797,6 +5811,7 @@ def compute_combo_projection(
             "rest_days": lg.get("rest_days"),
             "sharpness": lg.get("sharpness_score"),
             "n_games_used": lg.get("n_games_used"),
+            "sim_mean": lg.get("sim_mean"), "sim_std": lg.get("sim_std"),
         })
 
     n_games_min = min((int(lg.get("n_games_used") or 0) for lg in successful), default=0)
@@ -5909,6 +5924,9 @@ def compute_combo_projection(
         "errors":           errors,
         "is_combo":         True,
         "sub_projections":  sub_projs,
+        "sim_prob":         float(1.0 - _combo_sim_prob if _is_under else _combo_sim_prob) if _combo_sim_prob is not None else None,
+        "sim_mean":         float(_combo_sim_mean) if _combo_sim_mean is not None else None,
+        "sim_std":          float(_combo_sim_std) if _combo_sim_std is not None else None,
     }
 
 # MAIN PROJECTION ENGINE  [FIX 3: minutes filter]
