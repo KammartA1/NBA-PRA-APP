@@ -2058,7 +2058,7 @@ def volatility_penalty_factor(cv):
             return float(p0 + t * (p1 - p0))
     return 0.0
 # [FIX 5] Skewness-adjusted volatility gate
-def passes_volatility_gate(cv, ev_raw, skew=None, bet_type="Over", p_over=None):
+def passes_volatility_gate(cv, ev_raw, skew=None, bet_type="Over", p_over=None, market=None):
     if cv is None:
         return False, "no stat history (CV unavailable)"
     v = float(cv)
@@ -2068,6 +2068,24 @@ def passes_volatility_gate(cv, ev_raw, skew=None, bet_type="Over", p_over=None):
         _p_under = 1.0 - float(p_over)
         if _p_under >= 0.60:
             v = v * 0.75
+    # Period markets (Q1/H1/H2) have inherently higher CV due to smaller sample
+    # denominators — a player averaging 0.5 Q1 3PM has CV ~1.4 by definition.
+    # Use relaxed thresholds calibrated for period-market variance.
+    _mkt = str(market or "")
+    _is_period = _mkt.startswith(("Q1 ", "H1 ", "H2 "))
+    _is_low_mean_count = _mkt in ("Q1 3PM", "Q1 FTM", "H1 3PM", "H2 3PM",
+                                   "Blocks", "Steals", "Personal Fouls")
+    if _is_period or _is_low_mean_count:
+        if v > 0.80:
+            return False, "CV>0.80 (too volatile even for period/count stat)"
+        if v > 0.60:
+            if ev_f is None or ev_f < 0.12:
+                return False, f"CV>{v:.2f} needs EV>=12% (period/count stat)"
+        if v > 0.45 and (ev_f is None or ev_f < 0.06):
+            return False, "CV>0.45 needs EV>=6% (period/count stat)"
+        if ev_f is not None and ev_f < 0.03:
+            return False, "EV<3% (below noise floor)"
+        return True, ""
     if v > 0.38:
         return False, "CV>0.38 (too volatile — variance overwhelms edge)"
     if v > 0.32:
@@ -3548,8 +3566,14 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
         if not league:
             league = str(attrs.get("league", "") or "")
         if league_filter:
-            if not league or not _pp_league_is_nba(league):
+            if league and not _pp_league_is_nba(league):
                 continue
+            # If league is empty but stat_type maps to a known NBA market, accept it
+            # PrizePicks sometimes omits the league relationship for specialty stats
+            if not league:
+                _test_mkt = map_platform_stat_to_market(attrs.get("stat_type", ""))
+                if _test_mkt is None:
+                    continue
         player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
         if not player_id:
             player_id = (rels.get("player", {}).get("data", {}) or {}).get("id")
@@ -4957,7 +4981,17 @@ def pre_warm_scanner_caches(candidates, n_games):
     parallel (4 workers) before the main scan threads start.  Uses a session-
     state set to skip players already warmed this session.
     """
-    unique_names = list(dict.fromkeys(pname for pname, *_ in candidates))
+    _raw_names = list(dict.fromkeys(pname for pname, *_ in candidates))
+    unique_names = []
+    for n in _raw_names:
+        if "+" in n:
+            for part in re.split(r'\s*\+\s*', n):
+                part = part.strip()
+                if part and part not in unique_names:
+                    unique_names.append(part)
+        else:
+            if n not in unique_names:
+                unique_names.append(n)
     already_warm = st.session_state.get("_prewarm_done", set())
     to_warm = [n for n in unique_names if n not in already_warm]
     if not to_warm:
@@ -5595,66 +5629,304 @@ def compute_combo_projection(
     game_date=None, is_home=None,
     injury_team_map=None, scan_mode=False,
 ):
-    """Project a combo bet by projecting each player individually and summing."""
+    """Project a combo bet using bulk-cached gamelogs (no per-player API calls).
+
+    Fetches each player's gamelog from the bulk cache, computes individual
+    stat projections, then combines them for the pair total.  This avoids
+    the serial compute_leg_projection calls that caused 30-second timeouts.
+    """
+    combo_player = " + ".join(pn.strip() for pn in player_names)
     base_market = COMBO_BASE_MAP.get(market_name)
+    _err_base = {"player": combo_player, "market": market_name,
+                 "line": float(line), "proj": None, "p_over": None, "p_cal": None,
+                 "p_implied": None, "p_raw": None, "p_model": None,
+                 "edge": None, "ev_raw": None, "ev_adj": None,
+                 "is_combo": True, "gate_ok": False,
+                 "sigma": None, "volatility_cv": None, "volatility_label": None,
+                 "stake": 0.0, "stake_frac": 0.0, "stake_reason": "gated",
+                 "errors": [], "sub_projections": []}
     if not base_market:
-        return {"player": " + ".join(player_names), "market": market_name,
-                "line": float(line), "proj": None, "p_over": None, "p_cal": None,
-                "edge": None, "errors": [f"Unknown combo market: {market_name}"],
-                "is_combo": True, "gate_ok": False, "gate_reason": "unknown combo market"}
+        _err_base["errors"] = [f"Unknown combo market: {market_name}"]
+        _err_base["gate_reason"] = "unknown combo market"
+        return _err_base
 
-    projections = []
-    all_errors = []
+    game_date = game_date or date.today()
+    errors = []
+    sub_projs = []
+
     for pn in player_names:
-        res = compute_leg_projection(
-            player_name=pn.strip(), market_name=base_market, line=0,
-            meta=meta, n_games=n_games, key_teammate_out=key_teammate_out,
-            bankroll=bankroll, frac_kelly=frac_kelly, max_risk_frac=max_risk_frac,
-            market_prior_weight=market_prior_weight, exclude_chaotic=exclude_chaotic,
-            game_date=game_date, is_home=is_home,
-            injury_team_map=injury_team_map, scan_mode=True,
-        )
-        if res.get("proj") is not None:
-            projections.append(res)
-        else:
-            all_errors.append(f"{pn}: no projection")
+        pn = pn.strip()
+        pid = lookup_player_id(pn)
+        if not pid:
+            errors.append(f"{pn}: player not found")
+            continue
 
-    if len(projections) < len(player_names):
-        return {"player": " + ".join(player_names), "market": market_name,
-                "line": float(line), "proj": None, "p_over": None, "p_cal": None,
-                "edge": None, "errors": all_errors, "is_combo": True,
-                "gate_ok": False, "gate_reason": "incomplete combo data",
-                "warning": f"Only {len(projections)}/{len(player_names)} players resolved"}
+        gldf, gl_errs = fetch_player_gamelog(player_id=pid, max_games=max(6, n_games + 5))
+        if gl_errs:
+            errors.extend([f"{pn}: {m}" for m in gl_errs])
+        if gldf is None or gldf.empty:
+            errors.append(f"{pn}: no stat history")
+            continue
 
-    combined_proj = sum(float(r["proj"]) for r in projections)
-    combined_sigma = math.sqrt(sum(float(r.get("sigma") or r.get("proj", 0) * 0.15) ** 2
-                                   for r in projections))
+        gldf_n = gldf.head(n_games)
+        if not gldf_n.empty and "MIN" in gldf_n.columns:
+            try:
+                min_vals = gldf_n["MIN"].apply(lambda v:
+                    float(str(v).split(":")[0]) if isinstance(v, str) and ":" in str(v)
+                    else safe_float(v, default=0.0))
+                mask = min_vals >= MIN_MINUTES_THRESHOLD
+                gldf_filtered = gldf_n[mask]
+                if len(gldf_filtered) >= 4:
+                    gldf_n = gldf_filtered
+            except Exception:
+                pass
+
+        stat_series = compute_stat_from_gamelog(gldf_n, base_market)
+        if stat_series.dropna().empty or len(stat_series.dropna()) < 3:
+            errors.append(f"{pn}: insufficient stat history for {base_market}")
+            continue
+
+        vol_cv, vol_label = compute_volatility(stat_series)
+
+        opp_abbr = None
+        team_abbr = None
+        if not gldf_n.empty:
+            try:
+                matchup = str(gldf_n.iloc[0].get("MATCHUP", "")).strip()
+                if " vs " in matchup.lower().replace("vs.", "vs"):
+                    pts = re.split(r'\s+vs\.?\s+', matchup, flags=re.IGNORECASE)
+                    if len(pts) == 2:
+                        team_abbr = pts[0].strip()
+                elif " @ " in matchup:
+                    pts = matchup.split(" @ ")
+                    if len(pts) == 2:
+                        team_abbr = pts[0].strip()
+            except Exception:
+                pass
+        if team_abbr:
+            try:
+                opp_abbr, _ = opponent_from_team_abbr(team_abbr, game_date)
+            except Exception:
+                pass
+            if not opp_abbr:
+                try:
+                    _sched = st.session_state.get("_today_team_schedule", {})
+                    if team_abbr in _sched:
+                        opp_abbr = _sched[team_abbr]["opp"]
+                except Exception:
+                    pass
+
+        pace_adj_series = compute_pace_adjusted_series(stat_series, opp_abbr)
+        p_over, mu_w, sigma_w = bootstrap_prob_over(pace_adj_series, 0.0, market=base_market)
+
+        if mu_w is None:
+            errors.append(f"{pn}: bootstrap failed")
+            continue
+
+        if base_market in NEGBINOM_MARKETS and len(pace_adj_series.dropna()) >= 6:
+            try:
+                nb_p, nb_mu, nb_sigma = negbinom_prob_over(pace_adj_series, 0.0, market=base_market)
+                if nb_p is not None and nb_mu is not None:
+                    _n_v = len(pace_adj_series.dropna())
+                    _nb_w = float(np.clip(0.50 + (_n_v - 6) * 0.06, 0.50, 0.70))
+                    mu_w = float(_nb_w * nb_mu + (1.0 - _nb_w) * mu_w)
+                    if nb_sigma is not None and sigma_w is not None:
+                        sigma_w = float(_nb_w * nb_sigma + (1.0 - _nb_w) * sigma_w)
+            except Exception:
+                pass
+
+        ctx_mult = advanced_context_multiplier(pn, base_market, opp_abbr, False)
+        rest_mult, rest_days = compute_rest_factor(gldf, game_date)
+        _log_adj = math.log(max(float(ctx_mult), 1e-6)) + math.log(max(float(rest_mult), 1e-6))
+        _log_adj = float(np.clip(_log_adj, math.log(0.80), math.log(1.20)))
+        _adj_mult = math.exp(_log_adj)
+        proj_val = float(mu_w * _adj_mult)
+
+        sub_projs.append({
+            "player": pn, "proj": round(proj_val, 2),
+            "sigma": round(sigma_w, 3) if sigma_w else round(proj_val * 0.15, 3),
+            "cv": vol_cv, "cv_label": vol_label,
+            "team": team_abbr, "opp": opp_abbr,
+        })
+
+    if len(sub_projs) < len(player_names):
+        _err_base["errors"] = errors
+        _err_base["gate_reason"] = "no stat history (combo player missing)"
+        _err_base["warning"] = f"Only {len(sub_projs)}/{len(player_names)} players resolved"
+        return _err_base
+
+    combined_proj = sum(s["proj"] for s in sub_projs)
+    combined_sigma = math.sqrt(sum(s["sigma"] ** 2 for s in sub_projs))
+    combined_cv_vals = [s["cv"] for s in sub_projs if s["cv"] is not None]
+    combined_cv = float(np.mean(combined_cv_vals)) if combined_cv_vals else None
+    combined_cv_label = "Low" if (combined_cv or 0) < 0.15 else ("Moderate" if (combined_cv or 0) < 0.30 else "High")
+
     combined_p_over = None
-    combined_p_cal = None
     try:
         from scipy.stats import norm
         z = (float(line) - combined_proj) / max(combined_sigma, 0.01)
-        combined_p_over = round(float(1.0 - norm.cdf(z)), 4)
-        combined_p_cal = combined_p_over
+        combined_p_over = float(np.clip(1.0 - norm.cdf(z), 1e-4, 1 - 1e-4))
     except Exception:
         pass
 
-    edge = round(combined_p_cal - 0.50, 4) if combined_p_cal is not None else None
+    if combined_p_over is None:
+        _err_base["errors"] = errors + ["probability computation failed"]
+        _err_base["gate_reason"] = "p_over unavailable"
+        _err_base["proj"] = round(combined_proj, 2)
+        _err_base["sigma"] = round(combined_sigma, 2)
+        _err_base["sub_projections"] = sub_projs
+        return _err_base
+
+    price_decimal = None
+    try:
+        if meta and meta.get("price") is not None:
+            price_decimal = float(meta["price"])
+    except Exception:
+        pass
+    p_implied_raw = implied_prob_from_decimal(price_decimal)
+    _OVR_STD = 1.045
+    p_implied = float(p_implied_raw / _OVR_STD) if p_implied_raw is not None else None
+
+    p_model = combined_p_over
+    side_str = (meta.get("side") if meta else "Over") or "Over"
+    _is_under = "under" in str(side_str).lower()
+    if _is_under:
+        p_model = 1.0 - p_model
+    if _is_under and p_implied is not None:
+        p_implied = 1.0 - float(p_implied)
+
+    sharp = book_sharpness(meta.get("book") if meta else None)
+    w_model = float(market_prior_weight)
+    w_eff = float(np.clip(w_model * (1.0 - 0.60 * sharp) + 0.15, 0.10, 0.95))
+    if p_model is not None and p_implied is not None:
+        p_raw = float(np.clip(w_eff * p_model + (1.0 - w_eff) * p_implied, 1e-4, 1 - 1e-4))
+    else:
+        p_raw = p_model
+    p_cal = p_raw
+
+    ev_raw = ev_per_dollar(p_cal, price_decimal) if (p_cal is not None and price_decimal is not None) else None
+    pen = volatility_penalty_factor(combined_cv)
+    ev_adj = float(ev_raw * pen) if ev_raw is not None else None
+    gate_ok, gate_reason = passes_volatility_gate(combined_cv, ev_raw, market=market_name)
+
+    if not gate_ok:
+        ev_adj = None
+    stake_dollars, stake_frac, stake_reason = 0.0, 0.0, "gated"
+    if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj >= 0.05:
+        stake_dollars, stake_frac, stake_reason = recommended_stake(
+            bankroll, float(p_cal), float(price_decimal), frac_kelly, max_risk_frac)
+
+    teams = [s.get("team") for s in sub_projs if s.get("team")]
+    opps = [s.get("opp") for s in sub_projs if s.get("opp")]
 
     return {
-        "player": " + ".join(pn.strip() for pn in player_names),
+        "player": combo_player,
+        "player_norm": normalize_name(combo_player),
+        "player_id": None,
         "market": market_name,
         "line": float(line),
         "proj": round(combined_proj, 2),
+        "proj_vs_line": round(combined_proj - float(line), 2),
+        "p_over": float(p_raw) if p_raw is not None else None,
+        "p_raw": float(p_raw) if p_raw is not None else None,
+        "p_model": float(p_model) if p_model is not None else None,
+        "p_cal": float(p_cal) if p_cal is not None else None,
+        "p_implied": float(p_implied) if p_implied is not None else None,
+        "advantage": float(p_cal - p_implied) if (p_cal and p_implied) else None,
+        "price_decimal": float(price_decimal) if price_decimal is not None else None,
+        "book": meta.get("book") if meta else None,
+        "event_id": meta.get("event_id") if meta else None,
+        "market_key": meta.get("market_key") if meta else None,
+        "side": side_str,
+        "commence_time": meta.get("commence_time") if meta else None,
+        "regime": "Stable",
+        "regime_score": 0.0,
+        "ev_raw": float(ev_raw) if ev_raw is not None else None,
+        "ev_adj": float(ev_adj) if ev_adj is not None else None,
+        "ev_pct": float(ev_adj * 100) if ev_adj is not None else None,
+        "stake": float(stake_dollars),
+        "stake_frac": float(stake_frac),
+        "stake_reason": stake_reason,
+        "vol_penalty": float(pen),
+        "gate_ok": bool(gate_ok),
+        "gate_reason": gate_reason,
+        "edge": float(ev_adj) if ev_adj is not None else None,
+        "edge_cat": classify_edge(ev_adj),
+        "team": " / ".join(teams) if teams else None,
+        "opp": " / ".join(opps) if opps else None,
+        "is_home": None,
+        "headshot": None,
+        "blowout_prob": 0.0,
+        "context_mult": 1.0,
+        "rest_mult": 1.0,
+        "rest_days": 1,
+        "ha_mult": 1.0,
+        "volatility_cv": combined_cv,
+        "volatility_label": combined_cv_label,
+        "stat_skewness": None,
+        "position": "Combo",
+        "position_bucket": "Combo",
+        "n_games_used": n_games,
+        "mu_raw": round(combined_proj, 2),
+        "mu_shrunk": round(combined_proj, 2),
         "sigma": round(combined_sigma, 2),
-        "p_over": combined_p_over,
-        "p_cal": combined_p_cal,
-        "edge": edge,
+        "negbinom_used": base_market in NEGBINOM_MARKETS,
+        "line_movement": {"direction": "FLAT", "pips": 0.0, "steam": False, "fade": False, "msg": "", "opening": float(line)},
+        "sharp_div": {},
+        "usage_rate": None,
+        "pos_def_mult": 1.0,
+        "half_factor": 1.0,
+        "pace_adj": False,
+        "auto_inj": False,
+        "auto_inj_player": None,
+        "lineup_boost": 1.0,
+        "lineup_label": "Normal",
+        "key_teammate_out": False,
+        "b2b": False,
+        "proj_minutes": None,
+        "dnp_risk": False,
+        "opp_specific_factor": 1.0,
+        "n_vs_opp": 0,
+        "hot_cold": "Average",
+        "hot_cold_z": 0.0,
+        "schedule_fatigue": 1.0,
+        "fatigue_label": "Normal",
+        "opp_fatigue_mult": 1.0,
+        "opp_fatigue_label": "Normal",
+        "game_total": None,
+        "game_spread": None,
+        "game_script_mult": 1.0,
+        "trend_score": 0.0,
+        "trend_label": "Flat",
+        "trend_slope": 0.0,
+        "l3_avg": None,
+        "l5_avg": None,
+        "l10_avg": None,
+        "sharpness_score": 0.0,
+        "sharpness_tier": "",
+        "sharpness_color": "",
+        "sharpness_components": {},
+        "rolling_min_avg": None,
+        "rolling_min_label": "Normal",
+        "both_b2b": False,
+        "both_b2b_mult": 1.0,
+        "travel_mult": 1.0,
+        "travel_label": "Normal",
+        "dvp_l10_mult": 1.0,
+        "dvp_l10_label": "Avg",
+        "over_rate_l10": None,
+        "reversion_label": "Normal",
+        "streak_count": 0,
+        "streak_label": "None",
+        "streak_signal": 0.0,
+        "wl_factor": 1.0,
+        "wl_label": "Neutral",
+        "w_avg": None,
+        "l_avg": None,
+        "expected_win_prob": 0.5,
+        "errors": errors,
         "is_combo": True,
-        "gate_ok": combined_p_cal is not None and abs(edge or 0) >= 0.02,
-        "gate_reason": "combo projection",
-        "errors": all_errors,
-        "sub_projections": [{"player": r["player"], "proj": r["proj"]} for r in projections],
+        "sub_projections": sub_projs,
     }
 
 # MAIN PROJECTION ENGINE  [FIX 3: minutes filter]
@@ -6454,7 +6726,7 @@ def compute_leg_projection(
             pen = pen * 0.88             # Skew opposed to our side: tighten penalty by 12%
     ev_adj = float(ev_raw * pen) if ev_raw is not None else None
     # [FIX 5] Pass skewness to volatility gate
-    gate_ok, gate_reason = passes_volatility_gate(vol_cv, ev_raw, skew=stat_skew, bet_type=side_str, p_over=p_over_raw)
+    gate_ok, gate_reason = passes_volatility_gate(vol_cv, ev_raw, skew=stat_skew, bet_type=side_str, p_over=p_over_raw, market=market_name)
     if exclude_chaotic and regime_label=="Chaotic":
         _under_confident = _is_under and p_over_raw is not None and (1.0 - p_over_raw) >= 0.65
         if not _under_confident:
@@ -6860,7 +7132,7 @@ def recompute_pricing_fields(leg, calib):
     gate_ok, gate_reason = passes_volatility_gate(
         leg.get("volatility_cv"), ev_raw,
         skew=leg.get("stat_skewness"), bet_type=side_str,
-        p_over=leg.get("p_over"))
+        p_over=leg.get("p_over"), market=leg.get("market"))
     regime_label, regime_score = classify_regime(leg.get("volatility_cv"),leg.get("blowout_prob"),leg.get("context_mult"))
     leg["regime"]=regime_label; leg["regime_score"]=float(regime_score)
     if bool(st.session_state.get("exclude_chaotic",True)) and regime_label=="Chaotic":
@@ -8931,7 +9203,7 @@ with tabs[1]:
                         _vol_cv_u = leg.get("volatility_cv")
                         _skew_u = leg.get("stat_skewness")
                         _ev_u = (_p_under / _p_imp_u - 1.0) if _p_imp_u > 0 else None
-                        _gate_u, _reason_u = passes_volatility_gate(_vol_cv_u, _ev_u, skew=_skew_u, bet_type="Under", p_over=leg.get("p_over"))
+                        _gate_u, _reason_u = passes_volatility_gate(_vol_cv_u, _ev_u, skew=_skew_u, bet_type="Under", p_over=leg.get("p_over"), market=leg.get("market"))
                         if _gate_u and not leg.get("dnp_risk") and _p_under >= 0.52:
                             _ev_u_str = f"{_ev_u*100:+.1f}%" if _ev_u is not None else "--"
                             _ec_u = color_for_edge(classify_edge(_ev_u))
@@ -9302,12 +9574,19 @@ with tabs[2]:
                     st.error(f"PP: {_pp_err}")
                 elif _pp_rows:
                     st.session_state["pp_lines"] = pd.DataFrame(_pp_rows)
-                    st.success(f"✓ {len(_pp_rows)} PP props")
-                    # Debug: show unique stat_types so we can verify H1/H2 mapping
+                    # Count by mapped market
                     _pp_stat_types = sorted(set(r.get("stat_type","") for r in _pp_rows if r.get("stat_type")))
                     _pp_mapped = {s: map_platform_stat_to_market(s) for s in _pp_stat_types}
                     _pp_unmapped = [s for s, m in _pp_mapped.items() if m is None]
-                    with st.expander(f"PP stat_types ({len(_pp_stat_types)} unique)", expanded=False):
+                    _pp_mkt_counts = {}
+                    for r in _pp_rows:
+                        _m = map_platform_stat_to_market(r.get("stat_type",""))
+                        if _m:
+                            _pp_mkt_counts[_m] = _pp_mkt_counts.get(_m, 0) + 1
+                    _mkt_summary = ", ".join(f"{m}({c})" for m, c in sorted(_pp_mkt_counts.items()))
+                    st.success(f"✓ {len(_pp_rows)} PP props across {len(_pp_mkt_counts)} markets")
+                    with st.expander(f"PP markets ({len(_pp_stat_types)} stat_types)", expanded=False):
+                        st.caption(_mkt_summary)
                         st.write({s: m or "⚠ UNMAPPED" for s, m in _pp_mapped.items()})
                         if _pp_unmapped:
                             st.warning(f"Unmapped stat_types: {_pp_unmapped}")
@@ -9882,7 +10161,7 @@ with tabs[2]:
                     _gate_u, _ = passes_volatility_gate(
                         _leg.get("volatility_cv"), _ev_u,
                         skew=_leg.get("stat_skewness"), bet_type="Under",
-                        p_over=_leg.get("p_over")
+                        p_over=_leg.get("p_over"), market=_leg.get("market")
                     )
                     if not _gate_u or _leg.get("dnp_risk"):
                         continue
