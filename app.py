@@ -437,6 +437,11 @@ ODDS_MARKETS = {
     # ── Q1 markets actually on PrizePicks ──
     "Q1 3PM":          "player_threes_q1",
     "Q1 FTM":          "player_free_throws_made_q1",
+    # ── Combo bets (Player A + Player B) from PrizePicks ──
+    "Points (Combo)":  "player_points_combo",
+    "Rebounds (Combo)": "player_rebounds_combo",
+    "Assists (Combo)": "player_assists_combo",
+    "3PM (Combo)":     "player_threes_combo",
 }
 # Markets with no confirmed Odds API key — available via PP/UD/Sleeper only.
 # These will be skipped during Odds API fetches and the user will be warned.
@@ -449,6 +454,8 @@ ODDS_API_UNSUPPORTED_MARKETS = {
     "H2 Fantasy Score",
     # Q1 markets — PP/UD only
     "Q1 Points", "Q1 Rebounds", "Q1 Assists", "Q1 3PM", "Q1 FTM",
+    # Combo bets — PP only
+    "Points (Combo)", "Rebounds (Combo)", "Assists (Combo)", "3PM (Combo)",
 }
 # Same set but keyed by Odds API market key (for functions that work with raw API keys)
 _UNSUPPORTED_API_KEYS = {ODDS_MARKETS[m] for m in ODDS_API_UNSUPPORTED_MARKETS if m in ODDS_MARKETS}
@@ -638,7 +645,11 @@ STAT_FIELDS = {
     "Q1 Points":       "PTS",
     "Q1 Rebounds":     "REB",
     "Q1 Assists":      "AST",
-    # Alt lines use same fields as base
+    # Combo bets use same base stat field (projected per-player, then summed)
+    "Points (Combo)":  "PTS",
+    "Rebounds (Combo)": "REB",
+    "Assists (Combo)": "AST",
+    "3PM (Combo)":     "FG3M",
     # Fantasy score: PTS + 1.2*REB + 1.5*AST + 3*(BLK+STL) - TOV (DK-style)
     "Fantasy Score":   ("PTS","REB","AST","BLK","STL","TOV"),
     # Combo / special
@@ -748,7 +759,8 @@ POSITIONAL_PRIORS = {
               "H2 Points":8.0,"H2 Rebounds":1.7,"H2 Assists":2.8,"H2 3PM":1.0,
               "H2 PRA":12.5,"H2 Fantasy Score":15.0,
               "Fantasy Score":31.2,
-              "FGM":5.8,"FGA":13.5,"3PA":6.2,"FTM":3.2,"FTA":3.8},
+              "FGM":5.8,"FGA":13.5,"3PA":6.2,"FTM":3.2,"FTA":3.8,
+              "Points (Combo)":33.0,"Rebounds (Combo)":6.8,"Assists (Combo)":11.6,"3PM (Combo)":4.2},
     "Wing":  {"Points":14.8,"Rebounds":5.9,"Assists":2.9,"3PM":1.6,
               "PRA":23.6,"PR":20.7,"PA":17.7,"RA":8.8,"Blocks":0.8,"Steals":1.0,"Turnovers":1.7,
               "Stocks":1.8,"Personal Fouls":2.5,"2PA":7.5,
@@ -758,7 +770,8 @@ POSITIONAL_PRIORS = {
               "H2 Points":7.2,"H2 Rebounds":2.9,"H2 Assists":1.4,"H2 3PM":0.8,
               "H2 PRA":11.5,"H2 Fantasy Score":13.2,
               "Fantasy Score":27.4,
-              "FGM":5.4,"FGA":12.0,"3PA":4.5,"FTM":2.6,"FTA":3.2},
+              "FGM":5.4,"FGA":12.0,"3PA":4.5,"FTM":2.6,"FTA":3.2,
+              "Points (Combo)":29.6,"Rebounds (Combo)":11.8,"Assists (Combo)":5.8,"3PM (Combo)":3.2},
     "Big":   {"Points":13.2,"Rebounds":8.8,"Assists":2.1,"3PM":0.5,
               "PRA":24.1,"PR":22.0,"PA":15.3,"RA":10.9,"Blocks":1.4,"Steals":0.7,"Turnovers":2.0,
               "Stocks":2.1,"Personal Fouls":3.2,"2PA":9.1,
@@ -768,7 +781,8 @@ POSITIONAL_PRIORS = {
               "H2 Points":6.4,"H2 Rebounds":4.4,"H2 Assists":1.0,"H2 3PM":0.2,
               "H2 PRA":11.8,"H2 Fantasy Score":14.6,
               "Fantasy Score":30.5,
-              "FGM":5.0,"FGA":10.5,"3PA":1.4,"FTM":3.0,"FTA":4.0},
+              "FGM":5.0,"FGA":10.5,"3PA":1.4,"FTM":3.0,"FTA":4.0,
+              "Points (Combo)":26.4,"Rebounds (Combo)":17.6,"Assists (Combo)":4.2,"3PM (Combo)":1.0},
     "Unknown":{"Points":14.8,"Rebounds":5.5,"Assists":3.5,"3PM":1.4,
               "PRA":23.8,"PR":20.3,"PA":18.3,"RA":9.0,"Blocks":0.8,"Steals":0.9,"Turnovers":1.9,
               "Stocks":1.7,"Personal Fouls":2.7,"2PA":8.0,
@@ -778,7 +792,8 @@ POSITIONAL_PRIORS = {
               "H2 Points":7.2,"H2 Rebounds":2.7,"H2 Assists":1.7,"H2 3PM":0.7,
               "H2 PRA":11.6,"H2 Fantasy Score":14.3,
               "Fantasy Score":29.7,
-              "FGM":5.4,"FGA":12.0,"3PA":4.0,"FTM":2.9,"FTA":3.6},
+              "FGM":5.4,"FGA":12.0,"3PA":4.0,"FTM":2.9,"FTA":3.6,
+              "Points (Combo)":29.6,"Rebounds (Combo)":11.0,"Assists (Combo)":7.0,"3PM (Combo)":2.8},
 }
 # [AUDIT CALIBRATION] Rest multipliers re-calibrated to empirical NBA research:
 # PubMed 2020 (Esteves et al.): B2B team performance declines ~1.9 pts/game (~2.7% of ~70-pt total).
@@ -803,6 +818,7 @@ LAMBDA_DECAY_BY_STAT = {
     "Q1 Points": 0.84, "Q1 Rebounds": 0.81, "Q1 Assists": 0.84, "Q1 3PM": 0.79,
     "Q1 FTM": 0.81,
     "Fantasy Score": 0.85,
+    "Points (Combo)": 0.85, "Rebounds (Combo)": 0.82, "Assists (Combo)": 0.85, "3PM (Combo)": 0.80,
     "default": 0.85,
 }
 # [v5.0] Count stats where Negative Binomial outperforms bootstrap (overdispersed count data)
