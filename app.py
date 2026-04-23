@@ -414,17 +414,11 @@ ODDS_MARKETS = {
     "Q1 Points":       "player_points_q1",
     "Q1 Rebounds":     "player_rebounds_q1",
     "Q1 Assists":      "player_assists_q1",
-    # ── Alternate lines ─────────────────────────
-    "Alt Points":      "player_points_alternate",
-    "Alt Rebounds":    "player_rebounds_alternate",
-    "Alt Assists":     "player_assists_alternate",
-    "Alt 3PM":         "player_threes_alternate",
     # ── Fantasy score ────────────────────────────
     "Fantasy Score":   "player_fantasy_points",
     # ── Combo / special ─────────────────────────
     "Double Double":   "player_double_double",
     "Triple Double":   "player_triple_double",
-    "First Basket":    "player_first_basket",
     # ── Shooting volume ───────────────────────────
     # Confirmed Odds API key: player_field_goals = FGM made.
     # FGA/FTM/FTA/3PA: no confirmed Odds API key; selectable for PP/UD/Sleeper source only.
@@ -645,16 +639,11 @@ STAT_FIELDS = {
     "Q1 Rebounds":     "REB",
     "Q1 Assists":      "AST",
     # Alt lines use same fields as base
-    "Alt Points":      "PTS",
-    "Alt Rebounds":    "REB",
-    "Alt Assists":     "AST",
-    "Alt 3PM":         "FG3M",
     # Fantasy score: PTS + 1.2*REB + 1.5*AST + 3*(BLK+STL) - TOV (DK-style)
     "Fantasy Score":   ("PTS","REB","AST","BLK","STL","TOV"),
     # Combo / special
     "Double Double":   ("PTS","REB","AST","BLK","STL"),
     "Triple Double":   ("PTS","REB","AST","BLK","STL"),
-    "First Basket":    "PTS",
     # Shooting volume
     "FGM":             "FGM",
     "FGA":             "FGA",
@@ -737,8 +726,6 @@ def get_half_factor(market_name, position_bucket="Unknown", spread_abs=None, gam
         except Exception:
             pass
     return base_adj
-# Alt markets — same engine, different API key
-ALT_MARKETS = {"Alt Points","Alt Rebounds","Alt Assists","Alt 3PM"}
 # Fantasy score markets need custom stat computation
 FANTASY_MARKETS = {"Fantasy Score", "H1 Fantasy Score", "H2 Fantasy Score"}
 # DD/TD markets — probability from game log, not bootstrap
@@ -815,7 +802,6 @@ LAMBDA_DECAY_BY_STAT = {
     "H2 PRA": 0.84, "H2 Fantasy Score": 0.85,
     "Q1 Points": 0.84, "Q1 Rebounds": 0.81, "Q1 Assists": 0.84, "Q1 3PM": 0.79,
     "Q1 FTM": 0.81,
-    "Alt Points": 0.85, "Alt Rebounds": 0.82, "Alt Assists": 0.85, "Alt 3PM": 0.80,
     "Fantasy Score": 0.85,
     "default": 0.85,
 }
@@ -2192,7 +2178,7 @@ def estimate_player_correlation(leg1, leg2):
     if pid1 and pid2 and int(pid1) == int(pid2):
         m1l = leg1.get("market") or ""
         m2l = leg2.get("market") or ""
-        _pts_grp = {"Points", "PRA", "PA", "Alt Points"}
+        _pts_grp = {"Points", "PRA", "PA"}
         _reb_grp = {"Rebounds", "PR", "RA"}
         _ast_grp = {"Assists", "PA", "RA"}
         _same_family = (
@@ -2217,7 +2203,7 @@ def estimate_player_correlation(leg1, leg2):
         if m1 == m2:
             corr += 0.20   # same market + same team: share touches and game script directly
         else:
-            _pts_grp = {"Points", "PRA", "PA", "Alt Points"}
+            _pts_grp = {"Points", "PRA", "PA"}
             _reb_grp = {"Rebounds", "PR", "RA"}
             _ast_grp = {"Assists", "PA", "RA"}
             _same_grp = (
@@ -2710,14 +2696,14 @@ def compute_game_script_mult(game_total, spread_abs, market, team_abbr, opp_abbr
             t = _effective_total
             # League avg ~220. Each 5 points above/below adjusts by ~1.5%
             delta = (t - 220.0) / 5.0
-            if market in ("Points", "PRA", "PA", "PR", "Alt Points", "H1 Points", "H2 Points"):
+            if market in ("Points", "PRA", "PA", "PR", "H1 Points", "H2 Points"):
                 mult *= float(np.clip(1.0 + delta * 0.015, 0.88, 1.12))
             elif market in ("Assists", "RA"):
                 mult *= float(np.clip(1.0 + delta * 0.012, 0.90, 1.10))
             elif market in ("Rebounds", "PR"):
                 # More possessions = more rebounding opportunities but also more FGM
                 mult *= float(np.clip(1.0 + delta * 0.008, 0.92, 1.08))
-            elif market in ("3PM", "Alt 3PM", "H1 3PM"):
+            elif market in ("3PM", "H1 3PM"):
                 # High-total games correlate with open 3s
                 mult *= float(np.clip(1.0 + delta * 0.010, 0.90, 1.10))
             # Low total games (< 210): harder for any scoring props
@@ -2904,11 +2890,6 @@ def _parse_player_prop_outcomes(event_odds, market_key, book_filter=None):
                 point_val = out.get("point")
                 side_val  = out.get("name") or ""
                 # Handle binary markets (DD/TD: Yes/No) which have no numeric point.
-                # First Basket is a binary win/lose market (player name = outcome); routing
-                # it through the numeric prop engine (P(pts > 0.5) ≈ 1.0) produces garbage.
-                # Skip First Basket entirely — it needs a dedicated binary model.
-                if market_key == "player_first_basket":
-                    continue
                 if point_val is None and player:
                     side_lwr = side_val.strip().lower()
                     if side_lwr == "no":
@@ -4332,11 +4313,6 @@ def map_platform_stat_to_market(stat_type):
         # ── Fantasy / DFS ─────────────────────────────────────────────────
         "Fantasy Score": "Fantasy Score", "Fantasy Points": "Fantasy Score",
         "DFS Points": "Fantasy Score", "FP": "Fantasy Score",
-        # ── Alternate lines (Odds API only) ───────────────────────────────
-        "Alt Points": "Alt Points", "Alt Rebounds": "Alt Rebounds",
-        "Alt Assists": "Alt Assists", "Alt 3PM": "Alt 3PM",
-        # ── First Basket (Odds API only) ──────────────────────────────────
-        "First Basket": "First Basket", "1st Basket": "First Basket",
         # ── Binary / special ──────────────────────────────────────────────
         "Double Double": "Double Double", "Double-Double": "Double Double",
         "Dbl Dbl": "Double Double", "DD": "Double Double",
@@ -8075,11 +8051,7 @@ if st.session_state.get("scanner_results") is None:
 # Restore alert dedup hashes from disk so re-alerts don't fire after session reset
 if "_scanner_alert_hashes" not in st.session_state:
     st.session_state["_scanner_alert_hashes"] = _load_alert_hashes()
-# First Basket is a binary market with no numeric line — exclude from MODEL tab selector.
-# All shooting volume markets (FGM/FGA/FTM/FTA/3PA) and specialty combos are now re-enabled;
-# they're supported via PP/UD direct lines even if Odds API has no matching market key.
-_MARKET_EXCLUDE_FROM_UI = {"First Basket", "Alt Points", "Alt Rebounds", "Alt Assists", "Alt 3PM"}
-MARKET_OPTIONS = [k for k in ODDS_MARKETS.keys() if k not in _MARKET_EXCLUDE_FROM_UI]
+MARKET_OPTIONS = list(ODDS_MARKETS.keys())
 def _daily_pnl(uid):
     h = load_history(uid)
     if h.empty: return 0.0
