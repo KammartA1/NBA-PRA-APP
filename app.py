@@ -3655,6 +3655,8 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                 if r.ok:
                     resp_obj = r
                     break
+                if r.status_code == 429:
+                    return None, "HTTP 429"
             except Exception:
                 continue
         if resp_obj is not None:
@@ -3678,6 +3680,8 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
             )
             if r.ok:
                 return r, None
+            if r.status_code == 429:
+                return None, "HTTP 429"
         except Exception:
             pass
 
@@ -3694,6 +3698,8 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         }, cookies=cookie_dict or None, timeout=25)
         if r.ok:
             return r, None
+        if r.status_code == 429:
+            return None, "HTTP 429"
     except ImportError:
         pass
     except Exception:
@@ -3712,16 +3718,19 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 def _pp_fetch_one(per_page, cookies_str, single_stat):
-    """Fetch one PP request with retry. Returns (rows, error)."""
-    for attempt in range(3):
+    """Fetch one PP request with retry + 429-aware backoff. Returns (rows, error)."""
+    _MAX_ATTEMPTS = 5
+    for attempt in range(_MAX_ATTEMPTS):
         r, err = _pp_request(per_page=per_page, cookies_str=cookies_str, single_stat=single_stat)
         if err:
-            if attempt < 2:
-                time.sleep(2 ** (attempt + 1))
+            is_rate_limit = "429" in str(err)
+            if attempt < _MAX_ATTEMPTS - 1:
+                _wait = (10 * (attempt + 1)) if is_rate_limit else (2 ** (attempt + 1))
+                time.sleep(_wait)
                 continue
             return [], err
         if r is None:
-            if attempt < 2:
+            if attempt < _MAX_ATTEMPTS - 1:
                 time.sleep(2 ** (attempt + 1))
                 continue
             return [], "No response from PrizePicks"
