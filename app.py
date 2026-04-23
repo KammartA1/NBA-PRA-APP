@@ -321,7 +321,7 @@ def get_referee_foul_factor(crew_chief_name, market):
     crew_chief_name: str (from NBA schedule API or manual entry).
     Only meaningful for: FTA, FTM, Stocks, Steals, Points.
     """
-    if market not in ("FTA", "FTM", "Stocks", "Steals", "Points", "PRA"):
+    if market not in ("FTA", "FTM", "Stocks", "Steals", "Points", "PRA", "Personal Fouls"):
         return 1.0, "N/A", "N/A"
     if not crew_chief_name:
         return 1.0, "Avg Crew", "Unknown"
@@ -414,17 +414,11 @@ ODDS_MARKETS = {
     "Q1 Points":       "player_points_q1",
     "Q1 Rebounds":     "player_rebounds_q1",
     "Q1 Assists":      "player_assists_q1",
-    # ── Alternate lines ─────────────────────────
-    "Alt Points":      "player_points_alternate",
-    "Alt Rebounds":    "player_rebounds_alternate",
-    "Alt Assists":     "player_assists_alternate",
-    "Alt 3PM":         "player_threes_alternate",
     # ── Fantasy score ────────────────────────────
     "Fantasy Score":   "player_fantasy_points",
     # ── Combo / special ─────────────────────────
     "Double Double":   "player_double_double",
     "Triple Double":   "player_triple_double",
-    "First Basket":    "player_first_basket",
     # ── Shooting volume ───────────────────────────
     # Confirmed Odds API key: player_field_goals = FGM made.
     # FGA/FTM/FTA/3PA: no confirmed Odds API key; selectable for PP/UD/Sleeper source only.
@@ -433,14 +427,28 @@ ODDS_MARKETS = {
     "3PA":             "player_three_point_field_goals_attempted",
     "FTM":             "player_free_throws_made",
     "FTA":             "player_free_throws_attempted",
+    "2PA":             "player_two_point_field_goals_attempted",
+    "Personal Fouls":  "player_personal_fouls",
+    # ── Extended H1 markets (source from PP/UD only) ──
+    "H1 Fantasy Score":"player_fantasy_points_q1q2",
+    # ── Extended H2 markets ──
+    "H2 3PM":          "player_threes_q3q4",
+    "H2 Fantasy Score":"player_fantasy_points_q3q4",
+    # ── Q1 markets actually on PrizePicks ──
+    "Q1 3PM":          "player_threes_q1",
+    "Q1 FTM":          "player_free_throws_made_q1",
 }
 # Markets with no confirmed Odds API key — available via PP/UD/Sleeper only.
 # These will be skipped during Odds API fetches and the user will be warned.
 ODDS_API_UNSUPPORTED_MARKETS = {
-    "FGA", "3PA", "FTM", "FTA",
+    "FGA", "3PA", "FTM", "FTA", "2PA", "Personal Fouls",
     # H1/H2 markets return HTTP 422 from Odds API — source from PrizePicks instead
     "H1 Points", "H1 Rebounds", "H1 Assists", "H1 3PM", "H1 PRA",
+    "H1 Fantasy Score",
     "H2 Points", "H2 Rebounds", "H2 Assists", "H2 3PM", "H2 PRA",
+    "H2 Fantasy Score",
+    # Q1 markets — PP/UD only
+    "Q1 Points", "Q1 Rebounds", "Q1 Assists", "Q1 3PM", "Q1 FTM",
 }
 # Same set but keyed by Odds API market key (for functions that work with raw API keys)
 _UNSUPPORTED_API_KEYS = {ODDS_MARKETS[m] for m in ODDS_API_UNSUPPORTED_MARKETS if m in ODDS_MARKETS}
@@ -631,51 +639,46 @@ STAT_FIELDS = {
     "Q1 Rebounds":     "REB",
     "Q1 Assists":      "AST",
     # Alt lines use same fields as base
-    "Alt Points":      "PTS",
-    "Alt Rebounds":    "REB",
-    "Alt Assists":     "AST",
-    "Alt 3PM":         "FG3M",
     # Fantasy score: PTS + 1.2*REB + 1.5*AST + 3*(BLK+STL) - TOV (DK-style)
     "Fantasy Score":   ("PTS","REB","AST","BLK","STL","TOV"),
     # Combo / special
     "Double Double":   ("PTS","REB","AST","BLK","STL"),
     "Triple Double":   ("PTS","REB","AST","BLK","STL"),
-    "First Basket":    "PTS",
     # Shooting volume
     "FGM":             "FGM",
     "FGA":             "FGA",
     "3PA":             "FG3A",
     "FTM":             "FTM",
     "FTA":             "FTA",
+    "2PA":             ("FGA", "-FG3A"),  # FGA minus FG3A — handled specially in compute_stat_from_gamelog
+    "Personal Fouls":  "PF",
+    # Extended H1/H2 half-game markets (resolved to base fields, scaled via HALF_FACTOR)
+    "H1 Fantasy Score":("PTS", "REB", "AST", "BLK", "STL", "TOV"),
+    "H2 Fantasy Score":("PTS", "REB", "AST", "BLK", "STL", "TOV"),
+    # Q1 markets actually on PrizePicks
+    "Q1 3PM":          "FG3M",
+    "Q1 FTM":          "FTM",
 }
 # Half-game projection scale factors (league-average baseline)
 HALF_FACTOR = {
     "H1 Points": 0.52, "H1 Rebounds": 0.52, "H1 Assists": 0.52,
-    "H1 3PM": 0.52, "H1 PRA": 0.52, "H1 PR": 0.52, "H1 PA": 0.52, "H1 RA": 0.52,
-    "H1 FTM": 0.52, "H1 FTA": 0.52, "H1 FGM": 0.52, "H1 FGA": 0.52,
-    "H1 Blocks": 0.52, "H1 Steals": 0.52, "H1 Turnovers": 0.52,
+    "H1 3PM": 0.52, "H1 PRA": 0.52, "H1 Fantasy Score": 0.52,
     "H2 Points": 0.48, "H2 Rebounds": 0.48, "H2 Assists": 0.48,
-    "H2 3PM": 0.48, "H2 PRA": 0.48, "H2 PR": 0.48, "H2 PA": 0.48, "H2 RA": 0.48,
-    "H2 FTM": 0.48, "H2 FTA": 0.48, "H2 FGM": 0.48, "H2 FGA": 0.48,
-    "H2 Blocks": 0.48, "H2 Steals": 0.48, "H2 Turnovers": 0.48,
+    "H2 3PM": 0.48, "H2 PRA": 0.48, "H2 Fantasy Score": 0.48,
     # 1Q markets: Q1_SCORING_FRACTION of full-game (research-validated: 26.5%, not 25%)
     "Q1 Points": Q1_SCORING_FRACTION, "Q1 Rebounds": 0.25, "Q1 Assists": 0.25,
-    "Q1 3PM": 0.25, "Q1 PRA": Q1_SCORING_FRACTION, "Q1 FTM": 0.24, "Q1 FGA": Q1_SCORING_FRACTION,
-    "Q1 Blocks": 0.25, "Q1 Steals": 0.25, "Q1 Turnovers": 0.25,
-    "Q1 FGM": 0.25, "Q1 FTA": 0.25, "Q1 PA": Q1_SCORING_FRACTION,
-    "Q1 PR": Q1_SCORING_FRACTION, "Q1 RA": 0.25,
+    "Q1 3PM": 0.25, "Q1 FTM": 0.24,
 }
 # [AUDIT FIX] Position-specific half-game adjustment deltas on top of HALF_FACTOR baseline.
 # Guards attack more in H1 (faster pace, early shot attempts); Bigs grab more boards in H2
 # (closeouts, putbacks in crunch time); Wings are near-neutral.
 _HALF_POS_DELTA = {
     "Guard": {
-        "H1 Points": +0.02, "H1 3PM": +0.02, "H1 FGA": +0.02, "H1 FGM": +0.01,
-        "H2 Rebounds": -0.02, "H2 PR": -0.01,
+        "H1 Points": +0.02, "H1 3PM": +0.02,
+        "H2 Rebounds": -0.02,
     },
     "Big": {
-        "H2 Rebounds": +0.03, "H2 PR": +0.02, "H2 RA": +0.02,
-        "H1 FTM": -0.02, "H1 FTA": -0.02,   # fewer foul-drawing touches in H1
+        "H2 Rebounds": +0.03,
     },
     "Wing": {},   # near-neutral; real split captured by boxscore data when available
     "Unknown": {},
@@ -709,7 +712,7 @@ def get_half_factor(market_name, position_bucket="Unknown", spread_abs=None, gam
                 close_boost = -0.025  # Expected blowout: H2 scoring deflated (starters sit)
             else:
                 close_boost = 0.0
-            if market_name in ("H2 Points", "H2 PRA", "H2 PA", "H2 FTM", "H2 FTA"):
+            if market_name in ("H2 Points", "H2 PRA", "H2 Fantasy Score"):
                 base_adj = float(np.clip(base_adj + close_boost, 0.05, 0.60))
         except Exception:
             pass
@@ -723,10 +726,8 @@ def get_half_factor(market_name, position_bucket="Unknown", spread_abs=None, gam
         except Exception:
             pass
     return base_adj
-# Alt markets — same engine, different API key
-ALT_MARKETS = {"Alt Points","Alt Rebounds","Alt Assists","Alt 3PM"}
 # Fantasy score markets need custom stat computation
-FANTASY_MARKETS = {"Fantasy Score"}
+FANTASY_MARKETS = {"Fantasy Score", "H1 Fantasy Score", "H2 Fantasy Score"}
 # DD/TD markets — probability from game log, not bootstrap
 DD_TD_MARKETS = {"Double Double","Triple Double"}
 BOOK_SHARPNESS = {
@@ -740,34 +741,42 @@ def book_sharpness(k):
 POSITIONAL_PRIORS = {
     "Guard": {"Points":16.5,"Rebounds":3.4,"Assists":5.8,"3PM":2.1,
               "PRA":25.7,"PR":19.9,"PA":22.3,"RA":9.2,"Blocks":0.4,"Steals":1.2,"Turnovers":2.2,
-              "Stocks":1.6,
-              "Q1 Points":4.1,"Q1 Rebounds":0.9,"Q1 Assists":1.5,
+              "Stocks":1.6,"Personal Fouls":2.3,"2PA":7.3,
+              "Q1 Points":4.1,"Q1 Rebounds":0.9,"Q1 Assists":1.5,"Q1 3PM":0.5,"Q1 FTM":0.8,
               "H1 Points":8.5,"H1 Rebounds":1.7,"H1 Assists":3.0,"H1 3PM":1.1,
+              "H1 PRA":13.2,"H1 Fantasy Score":16.2,
               "H2 Points":8.0,"H2 Rebounds":1.7,"H2 Assists":2.8,"H2 3PM":1.0,
+              "H2 PRA":12.5,"H2 Fantasy Score":15.0,
               "Fantasy Score":31.2,
               "FGM":5.8,"FGA":13.5,"3PA":6.2,"FTM":3.2,"FTA":3.8},
     "Wing":  {"Points":14.8,"Rebounds":5.9,"Assists":2.9,"3PM":1.6,
               "PRA":23.6,"PR":20.7,"PA":17.7,"RA":8.8,"Blocks":0.8,"Steals":1.0,"Turnovers":1.7,
-              "Stocks":1.8,
-              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.7,
+              "Stocks":1.8,"Personal Fouls":2.5,"2PA":7.5,
+              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.7,"Q1 3PM":0.4,"Q1 FTM":0.7,
               "H1 Points":7.6,"H1 Rebounds":3.0,"H1 Assists":1.5,"H1 3PM":0.8,
+              "H1 PRA":12.1,"H1 Fantasy Score":14.2,
               "H2 Points":7.2,"H2 Rebounds":2.9,"H2 Assists":1.4,"H2 3PM":0.8,
+              "H2 PRA":11.5,"H2 Fantasy Score":13.2,
               "Fantasy Score":27.4,
               "FGM":5.4,"FGA":12.0,"3PA":4.5,"FTM":2.6,"FTA":3.2},
     "Big":   {"Points":13.2,"Rebounds":8.8,"Assists":2.1,"3PM":0.5,
               "PRA":24.1,"PR":22.0,"PA":15.3,"RA":10.9,"Blocks":1.4,"Steals":0.7,"Turnovers":2.0,
-              "Stocks":2.1,
-              "Q1 Points":3.3,"Q1 Rebounds":2.2,"Q1 Assists":0.5,
+              "Stocks":2.1,"Personal Fouls":3.2,"2PA":9.1,
+              "Q1 Points":3.3,"Q1 Rebounds":2.2,"Q1 Assists":0.5,"Q1 3PM":0.1,"Q1 FTM":0.8,
               "H1 Points":6.8,"H1 Rebounds":4.4,"H1 Assists":1.1,"H1 3PM":0.3,
+              "H1 PRA":12.3,"H1 Fantasy Score":15.9,
               "H2 Points":6.4,"H2 Rebounds":4.4,"H2 Assists":1.0,"H2 3PM":0.2,
+              "H2 PRA":11.8,"H2 Fantasy Score":14.6,
               "Fantasy Score":30.5,
               "FGM":5.0,"FGA":10.5,"3PA":1.4,"FTM":3.0,"FTA":4.0},
     "Unknown":{"Points":14.8,"Rebounds":5.5,"Assists":3.5,"3PM":1.4,
               "PRA":23.8,"PR":20.3,"PA":18.3,"RA":9.0,"Blocks":0.8,"Steals":0.9,"Turnovers":1.9,
-              "Stocks":1.7,
-              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.9,
+              "Stocks":1.7,"Personal Fouls":2.7,"2PA":8.0,
+              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.9,"Q1 3PM":0.4,"Q1 FTM":0.7,
               "H1 Points":7.6,"H1 Rebounds":2.8,"H1 Assists":1.8,"H1 3PM":0.7,
+              "H1 PRA":12.2,"H1 Fantasy Score":15.4,
               "H2 Points":7.2,"H2 Rebounds":2.7,"H2 Assists":1.7,"H2 3PM":0.7,
+              "H2 PRA":11.6,"H2 Fantasy Score":14.3,
               "Fantasy Score":29.7,
               "FGM":5.4,"FGA":12.0,"3PA":4.0,"FTM":2.9,"FTA":3.6},
 }
@@ -785,10 +794,14 @@ LAMBDA_DECAY_BY_STAT = {
     "Points": 0.85, "Rebounds": 0.82, "Assists": 0.85,
     "3PM": 0.80, "PRA": 0.84, "PR": 0.83, "PA": 0.84, "RA": 0.82,
     "Blocks": 0.78, "Steals": 0.80, "Turnovers": 0.83, "Stocks": 0.78,
-    "H1 Points": 0.85, "H1 Rebounds": 0.82, "H1 Assists": 0.85,
-    "H2 Points": 0.85, "H2 Rebounds": 0.82, "H2 Assists": 0.85,
-    "Q1 Points": 0.84, "Q1 Rebounds": 0.81, "Q1 Assists": 0.84,
-    "Alt Points": 0.85, "Alt Rebounds": 0.82, "Alt Assists": 0.85, "Alt 3PM": 0.80,
+    "Personal Fouls": 0.80, "2PA": 0.82,
+    "FGM": 0.84, "FGA": 0.83, "3PA": 0.80, "FTM": 0.82, "FTA": 0.82,
+    "H1 Points": 0.85, "H1 Rebounds": 0.82, "H1 Assists": 0.85, "H1 3PM": 0.80,
+    "H1 PRA": 0.84, "H1 Fantasy Score": 0.85,
+    "H2 Points": 0.85, "H2 Rebounds": 0.82, "H2 Assists": 0.85, "H2 3PM": 0.80,
+    "H2 PRA": 0.84, "H2 Fantasy Score": 0.85,
+    "Q1 Points": 0.84, "Q1 Rebounds": 0.81, "Q1 Assists": 0.84, "Q1 3PM": 0.79,
+    "Q1 FTM": 0.81,
     "Fantasy Score": 0.85,
     "default": 0.85,
 }
@@ -800,6 +813,7 @@ NEGBINOM_MARKETS = frozenset({
     "Rebounds", "RA", "PR", "Turnovers", "FTA", "FTM",
     # FGM/FGA/3PA are also overdispersed integer counts — NegBin improves calibration
     "FGM", "FGA", "3PA",
+    "Personal Fouls", "2PA",
 })
 # Persistent file paths
 OPENING_LINES_PATH   = "opening_lines.json"
@@ -1102,6 +1116,26 @@ def fetch_player_halfgame_log(player_id, game_log_df, market_name, n_games=10):
     stats_df = pd.DataFrame(stats_list)
     # Resolve base market (strip H1/H2/Q1 prefix)
     base_mkt = market_name.replace("H1 ","").replace("H2 ","").replace("Q1 ","")
+    # Fantasy Score uses weighted DK formula
+    if base_mkt == "Fantasy Score":
+        try:
+            pts = pd.to_numeric(stats_df.get("PTS"), errors="coerce").fillna(0)
+            reb = pd.to_numeric(stats_df.get("REB"), errors="coerce").fillna(0)
+            ast = pd.to_numeric(stats_df.get("AST"), errors="coerce").fillna(0)
+            blk = pd.to_numeric(stats_df.get("BLK"), errors="coerce").fillna(0)
+            stl = pd.to_numeric(stats_df.get("STL"), errors="coerce").fillna(0)
+            tov = pd.to_numeric(stats_df.get("TOV"), errors="coerce").fillna(0)
+            return (pts + 1.2*reb + 1.5*ast + 2.0*blk + 2.0*stl - 1.0*tov).reset_index(drop=True)
+        except Exception:
+            return None
+    # 2PA = FGA - FG3A
+    if base_mkt == "2PA":
+        try:
+            fga = pd.to_numeric(stats_df.get("FGA"), errors="coerce").fillna(0)
+            fg3a = pd.to_numeric(stats_df.get("FG3A"), errors="coerce").fillna(0)
+            return (fga - fg3a).reset_index(drop=True)
+        except Exception:
+            return None
     stat_field = STAT_FIELDS.get(base_mkt)
     if stat_field is None:
         return None
@@ -1256,7 +1290,7 @@ def bayesian_shrink(observed_mu, n_obs, market, position_bucket, custom_priors=N
 # ──────────────────────────────────────────────
 def compute_stat_from_gamelog(df, market):
     # [UPGRADE] Fantasy Score: weighted DraftKings formula
-    if market == "Fantasy Score":
+    if market in ("Fantasy Score", "H1 Fantasy Score", "H2 Fantasy Score"):
         try:
             pts = pd.to_numeric(df.get("PTS"), errors="coerce").fillna(0)
             reb = pd.to_numeric(df.get("REB"), errors="coerce").fillna(0)
@@ -1264,10 +1298,15 @@ def compute_stat_from_gamelog(df, market):
             blk = pd.to_numeric(df.get("BLK"), errors="coerce").fillna(0)
             stl = pd.to_numeric(df.get("STL"), errors="coerce").fillna(0)
             tov = pd.to_numeric(df.get("TOV"), errors="coerce").fillna(0)
-            # [AUDIT FIX] PrizePicks/DraftKings official formula:
-            # PTS×1 + REB×1.2 + AST×1.5 + BLK×2 + STL×2 – TOV×1
-            # Previous code used 3.0× for blk+stl (FanDuel formula) — WRONG.
             return pts + 1.2*reb + 1.5*ast + 2.0*blk + 2.0*stl - 1.0*tov
+        except Exception:
+            return pd.Series([], dtype=float)
+    # Two Pointers Attempted = FGA - FG3A
+    if market == "2PA":
+        try:
+            fga = pd.to_numeric(df.get("FGA"), errors="coerce").fillna(0)
+            fg3a = pd.to_numeric(df.get("FG3A"), errors="coerce").fillna(0)
+            return fga - fg3a
         except Exception:
             return pd.Series([], dtype=float)
     f = STAT_FIELDS.get(market)
@@ -2139,7 +2178,7 @@ def estimate_player_correlation(leg1, leg2):
     if pid1 and pid2 and int(pid1) == int(pid2):
         m1l = leg1.get("market") or ""
         m2l = leg2.get("market") or ""
-        _pts_grp = {"Points", "PRA", "PA", "Alt Points"}
+        _pts_grp = {"Points", "PRA", "PA"}
         _reb_grp = {"Rebounds", "PR", "RA"}
         _ast_grp = {"Assists", "PA", "RA"}
         _same_family = (
@@ -2164,7 +2203,7 @@ def estimate_player_correlation(leg1, leg2):
         if m1 == m2:
             corr += 0.20   # same market + same team: share touches and game script directly
         else:
-            _pts_grp = {"Points", "PRA", "PA", "Alt Points"}
+            _pts_grp = {"Points", "PRA", "PA"}
             _reb_grp = {"Rebounds", "PR", "RA"}
             _ast_grp = {"Assists", "PA", "RA"}
             _same_grp = (
@@ -2657,14 +2696,14 @@ def compute_game_script_mult(game_total, spread_abs, market, team_abbr, opp_abbr
             t = _effective_total
             # League avg ~220. Each 5 points above/below adjusts by ~1.5%
             delta = (t - 220.0) / 5.0
-            if market in ("Points", "PRA", "PA", "PR", "Alt Points", "H1 Points", "H2 Points"):
+            if market in ("Points", "PRA", "PA", "PR", "H1 Points", "H2 Points"):
                 mult *= float(np.clip(1.0 + delta * 0.015, 0.88, 1.12))
             elif market in ("Assists", "RA"):
                 mult *= float(np.clip(1.0 + delta * 0.012, 0.90, 1.10))
             elif market in ("Rebounds", "PR"):
                 # More possessions = more rebounding opportunities but also more FGM
                 mult *= float(np.clip(1.0 + delta * 0.008, 0.92, 1.08))
-            elif market in ("3PM", "Alt 3PM", "H1 3PM"):
+            elif market in ("3PM", "H1 3PM"):
                 # High-total games correlate with open 3s
                 mult *= float(np.clip(1.0 + delta * 0.010, 0.90, 1.10))
             # Low total games (< 210): harder for any scoring props
@@ -2851,11 +2890,6 @@ def _parse_player_prop_outcomes(event_odds, market_key, book_filter=None):
                 point_val = out.get("point")
                 side_val  = out.get("name") or ""
                 # Handle binary markets (DD/TD: Yes/No) which have no numeric point.
-                # First Basket is a binary win/lose market (player name = outcome); routing
-                # it through the numeric prop engine (P(pts > 0.5) ≈ 1.0) produces garbage.
-                # Skip First Basket entirely — it needs a dedicated binary model.
-                if market_key == "player_first_basket":
-                    continue
                 if point_val is None and player:
                     side_lwr = side_val.strip().lower()
                     if side_lwr == "no":
@@ -4294,6 +4328,8 @@ def map_platform_stat_to_market(stat_type):
         "1st Half Assists": "H1 Assists", "H1 Ast": "H1 Assists",
         "H1 3PM": "H1 3PM", "1H 3PM": "H1 3PM",
         "1st Half 3-Pointers Made": "H1 3PM", "H1 3-Pointers Made": "H1 3PM",
+        "H1 3-PT Made": "H1 3PM", "1H 3-PT Made": "H1 3PM",
+        "1st Half 3-PT Made": "H1 3PM", "H1 3PT Made": "H1 3PM",
         "H1 PRA": "H1 PRA", "1H PRA": "H1 PRA",
         "1st Half PRA": "H1 PRA", "H1 Pts+Reb+Ast": "H1 PRA",
         # ── 2nd Half ──────────────────────────────────────────────────────
@@ -4306,6 +4342,18 @@ def map_platform_stat_to_market(stat_type):
         "2nd Half Assists": "H2 Assists", "H2 Ast": "H2 Assists",
         "H2 PRA": "H2 PRA", "2H PRA": "H2 PRA",
         "2nd Half PRA": "H2 PRA", "H2 Pts+Reb+Ast": "H2 PRA",
+        # ── Rebs+Asts (RA alias) ──────────────────────────────────────────
+        "Rebs+Asts": "RA", "Rebs + Asts": "RA",
+        "Rebounds+Assists": "RA", "Rebounds + Assists": "RA",
+        # ── Personal Fouls ───────────────────────────────────────────────
+        "Personal Fouls": "Personal Fouls", "PF": "Personal Fouls",
+        "Fouls": "Personal Fouls", "Fls": "Personal Fouls",
+        "Fouls Committed": "Personal Fouls",
+        # ── Two Pointers Attempted ───────────────────────────────────────
+        "Two Pointers Attempted": "2PA", "2PA": "2PA",
+        "Two Point Attempts": "2PA", "2-Point Attempts": "2PA",
+        "2PT Attempted": "2PA", "Two Point Field Goals Attempted": "2PA",
+        "2-Pt Attempts": "2PA",
         # ── 1st Quarter ───────────────────────────────────────────────────
         "Q1 Points": "Q1 Points", "1Q Points": "Q1 Points",
         "1st Quarter Points": "Q1 Points", "Q1 Pts": "Q1 Points",
@@ -4313,6 +4361,29 @@ def map_platform_stat_to_market(stat_type):
         "1st Quarter Rebounds": "Q1 Rebounds", "Q1 Reb": "Q1 Rebounds",
         "Q1 Assists": "Q1 Assists", "1Q Assists": "Q1 Assists",
         "1st Quarter Assists": "Q1 Assists", "Q1 Ast": "Q1 Assists",
+        "Q1 3-PT Made": "Q1 3PM", "Q1 3PM": "Q1 3PM", "1Q 3PM": "Q1 3PM",
+        "1st Quarter 3-Pointers Made": "Q1 3PM", "Q1 3-Pointers Made": "Q1 3PM",
+        "Q1 3 Pointers Made": "Q1 3PM",
+        "Q1 Free Throws Made": "Q1 FTM", "Q1 FTM": "Q1 FTM", "1Q FTM": "Q1 FTM",
+        "1st Quarter Free Throws Made": "Q1 FTM",
+        # ── Extended H1 markets (only those on PrizePicks) ──────────────
+        "H1 Fantasy Score": "H1 Fantasy Score", "1H Fantasy Score": "H1 Fantasy Score",
+        "1st Half Fantasy Score": "H1 Fantasy Score", "H1 Fantasy Points": "H1 Fantasy Score",
+        "1st Half Fantasy Points": "H1 Fantasy Score",
+        "H1 Pts+Rebs+Asts": "H1 PRA",
+        # ── Extended H2 markets ─────────────────────────────────────────
+        "H2 3PM": "H2 3PM", "2H 3PM": "H2 3PM",
+        "2nd Half 3-Pointers Made": "H2 3PM", "H2 3-PT Made": "H2 3PM",
+        "2nd Half 3-PT Made": "H2 3PM", "H2 3PT Made": "H2 3PM",
+        "H2 3-Pointers Made": "H2 3PM",
+        "H2 Fantasy Score": "H2 Fantasy Score", "2H Fantasy Score": "H2 Fantasy Score",
+        "2nd Half Fantasy Score": "H2 Fantasy Score", "H2 Fantasy Points": "H2 Fantasy Score",
+        # ── Combo bets (player-pair combinations from PrizePicks) ──────
+        "Points (Combo)": "Points (Combo)",
+        "Rebounds (Combo)": "Rebounds (Combo)",
+        "Assists (Combo)": "Assists (Combo)",
+        "3-PT Made (Combo)": "3PM (Combo)", "3PM (Combo)": "3PM (Combo)",
+        "3-Pointers Made (Combo)": "3PM (Combo)",
     }
     s = str(stat_type).strip()
     s_lower = s.lower()
@@ -5097,7 +5168,7 @@ def get_opponent_fta_rate_factor(opp_abbr, market):
     Returns (fta_factor, fta_label) for FTA/FTM/Stocks/Points props.
     >1.0 = opponent commits more fouls (favorable for FTA/FTM).
     """
-    if market not in ("FTA", "FTM", "Stocks", "Steals", "Points", "PRA"):
+    if market not in ("FTA", "FTM", "Stocks", "Steals", "Points", "PRA", "Personal Fouls"):
         return 1.0, "N/A"
     try:
         from nba_api.stats.endpoints import LeagueDashTeamStats
@@ -5476,6 +5547,89 @@ def detect_middle_opportunity(player_name, market_key, event_id):
         return spread >= 1.0, min_line, max_line, round(mid_prob, 3), book_details
     except Exception:
         return False, None, None, None, []
+# ──────────────────────────────────────────────
+# COMBO BET ENGINE — Player-pair combination bets
+# PrizePicks "Points (Combo)" = Player A Points + Player B Points
+# ──────────────────────────────────────────────
+COMBO_MARKETS = {"Points (Combo)", "Rebounds (Combo)", "Assists (Combo)", "3PM (Combo)"}
+COMBO_BASE_MAP = {
+    "Points (Combo)": "Points", "Rebounds (Combo)": "Rebounds",
+    "Assists (Combo)": "Assists", "3PM (Combo)": "3PM",
+}
+
+def is_combo_market(market_name):
+    return market_name in COMBO_MARKETS
+
+def compute_combo_projection(
+    player_names, market_name, line, meta,
+    n_games, key_teammate_out,
+    bankroll=0.0, frac_kelly=0.25, max_risk_frac=0.05,
+    market_prior_weight=0.65, exclude_chaotic=True,
+    game_date=None, is_home=None,
+    injury_team_map=None, scan_mode=False,
+):
+    """Project a combo bet by projecting each player individually and summing."""
+    base_market = COMBO_BASE_MAP.get(market_name)
+    if not base_market:
+        return {"player": " + ".join(player_names), "market": market_name,
+                "line": float(line), "proj": None, "p_over": None, "p_cal": None,
+                "edge": None, "errors": [f"Unknown combo market: {market_name}"],
+                "is_combo": True, "gate_ok": False, "gate_reason": "unknown combo market"}
+
+    projections = []
+    all_errors = []
+    for pn in player_names:
+        res = compute_leg_projection(
+            player_name=pn.strip(), market_name=base_market, line=0,
+            meta=meta, n_games=n_games, key_teammate_out=key_teammate_out,
+            bankroll=bankroll, frac_kelly=frac_kelly, max_risk_frac=max_risk_frac,
+            market_prior_weight=market_prior_weight, exclude_chaotic=exclude_chaotic,
+            game_date=game_date, is_home=is_home,
+            injury_team_map=injury_team_map, scan_mode=True,
+        )
+        if res.get("proj") is not None:
+            projections.append(res)
+        else:
+            all_errors.append(f"{pn}: no projection")
+
+    if len(projections) < len(player_names):
+        return {"player": " + ".join(player_names), "market": market_name,
+                "line": float(line), "proj": None, "p_over": None, "p_cal": None,
+                "edge": None, "errors": all_errors, "is_combo": True,
+                "gate_ok": False, "gate_reason": "incomplete combo data",
+                "warning": f"Only {len(projections)}/{len(player_names)} players resolved"}
+
+    combined_proj = sum(float(r["proj"]) for r in projections)
+    combined_sigma = math.sqrt(sum(float(r.get("sigma") or r.get("proj", 0) * 0.15) ** 2
+                                   for r in projections))
+    combined_p_over = None
+    combined_p_cal = None
+    try:
+        from scipy.stats import norm
+        z = (float(line) - combined_proj) / max(combined_sigma, 0.01)
+        combined_p_over = round(float(1.0 - norm.cdf(z)), 4)
+        combined_p_cal = combined_p_over
+    except Exception:
+        pass
+
+    edge = round(combined_p_cal - 0.50, 4) if combined_p_cal is not None else None
+
+    return {
+        "player": " + ".join(pn.strip() for pn in player_names),
+        "market": market_name,
+        "line": float(line),
+        "proj": round(combined_proj, 2),
+        "sigma": round(combined_sigma, 2),
+        "p_over": combined_p_over,
+        "p_cal": combined_p_cal,
+        "edge": edge,
+        "is_combo": True,
+        "gate_ok": combined_p_cal is not None and abs(edge or 0) >= 0.02,
+        "gate_reason": "combo projection",
+        "errors": all_errors,
+        "sub_projections": [{"player": r["player"], "proj": r["proj"]} for r in projections],
+    }
+
 # MAIN PROJECTION ENGINE  [FIX 3: minutes filter]
 # ──────────────────────────────────────────────
 def compute_leg_projection(
@@ -5538,10 +5692,10 @@ def compute_leg_projection(
     stat_skew = compute_skewness(stat_series)
     # [AUDIT FIX] Skewness heuristic when n<4: market-type prior so gate isn't fully bypassed
     if stat_skew is None and not stat_series.dropna().empty:
-        if base_market in ("3PM", "Blocks", "Steals", "Stocks", "FTM", "FTA"):
+        if base_market in ("3PM", "Blocks", "Steals", "Stocks", "FTM", "FTA", "Personal Fouls"):
             stat_skew = 0.70   # Count/rate stats dominated by zeros: strong right skew
-        elif base_market in ("Rebounds", "RA", "PR"):
-            stat_skew = 0.25   # Mildly right-skewed (occasional bigs blowups)
+        elif base_market in ("Rebounds", "RA", "PR", "2PA", "FGA", "FGM"):
+            stat_skew = 0.25   # Mildly right-skewed
     rest_mult, rest_days = compute_rest_factor(gldf, game_date)
     # [UPGRADE 2] Projected minutes + DNP risk
     proj_minutes, dnp_risk = compute_projected_minutes(gldf_n, n_games=n_games)
@@ -5820,6 +5974,7 @@ def compute_leg_projection(
                 "3PM": "three_pm", "PRA": "pra", "PR": "pr", "PA": "pa", "RA": "ra",
                 "Blocks": "blocks", "Steals": "steals", "Turnovers": "turnovers",
                 "FGM": "fgm", "FGA": "fga", "FTM": "ftm", "FTA": "fta",
+                "Personal Fouls": "fouls",
             }
             _sim_stat = _SIM_STAT_MAP.get(base_market)
             _sim_line_for_prob = float(line)
@@ -6320,13 +6475,14 @@ def compute_leg_projection(
             sharp_div = sharp_divergence_alert(meta["event_id"], mk_key, player_norm, side_str, side_str) or {}
         except Exception: sharp_div = {}
     # [UPGRADE NEW] L3/L5/L10 trend convergence
+    # For half/Q1 markets using full-game fallback: scale stat_series so L3/L5/L10 match the period
+    _trend_series = stat_series
+    if is_half_market and half_factor < 1.0 and not stat_series.empty:
+        _trend_series = stat_series * half_factor
     _trend_score, _trend_label, _trend_slope, _l3, _l5, _l10 = compute_trend_convergence(
-        stat_series, float(line), side=side_str)
-    # [v4.0 UPGRADE] Consecutive streak signal — combined with reversion nudge in single apply.
-    # [AUDIT FIX] Using combined nudge prevents double-counting from reversion + streak signals.
-    # Only the STRONGER of the two signals contributes beyond the base; capped at ±0.045 total.
+        _trend_series, float(line), side=side_str)
     _streak_count, _streak_label, _streak_signal = compute_consecutive_streak(
-        stat_series, float(line), side=side_str)
+        _trend_series, float(line), side=side_str)
     # Combine: streak and reversion directional agreement → additive up to cap
     #           streak and reversion in opposition → take the stronger one
     _str_same_dir = (_streak_signal >= 0) == (_combined_streak_reversion_nudge >= 0) or _streak_signal == 0
@@ -7895,11 +8051,7 @@ if st.session_state.get("scanner_results") is None:
 # Restore alert dedup hashes from disk so re-alerts don't fire after session reset
 if "_scanner_alert_hashes" not in st.session_state:
     st.session_state["_scanner_alert_hashes"] = _load_alert_hashes()
-# First Basket is a binary market with no numeric line — exclude from MODEL tab selector.
-# All shooting volume markets (FGM/FGA/FTM/FTA/3PA) and specialty combos are now re-enabled;
-# they're supported via PP/UD direct lines even if Odds API has no matching market key.
-_MARKET_EXCLUDE_FROM_UI = {"First Basket", "Alt Points", "Alt Rebounds", "Alt Assists", "Alt 3PM"}
-MARKET_OPTIONS = [k for k in ODDS_MARKETS.keys() if k not in _MARKET_EXCLUDE_FROM_UI]
+MARKET_OPTIONS = list(ODDS_MARKETS.keys())
 def _daily_pnl(uid):
     h = load_history(uid)
     if h.empty: return 0.0
@@ -8447,16 +8599,30 @@ with tabs[1]:
                     if pid:
                         gl_exp, _ = fetch_player_gamelog(player_id=pid, max_games=10)
                         if not gl_exp.empty:
-                            s_exp = compute_stat_from_gamelog(gl_exp, _mkt_exp.replace("H1 ","").replace("H2 ",""))
-                            s_exp = pd.to_numeric(s_exp, errors="coerce").dropna().reset_index(drop=True)
-                            if not s_exp.empty:
+                            _is_period_mkt = _mkt_exp in HALF_FACTOR
+                            _chart_label = _mkt_exp
+                            s_exp = None
+                            if _is_period_mkt:
+                                _hg = fetch_player_halfgame_log(pid, gl_exp, _mkt_exp, n_games=10)
+                                if _hg is not None and len(_hg.dropna()) >= 3:
+                                    s_exp = pd.to_numeric(_hg, errors="coerce").dropna().reset_index(drop=True)
+                                    _chart_label = f"{_mkt_exp} (real splits)"
+                            if s_exp is None or s_exp.empty:
+                                _base_mkt = _mkt_exp.replace("H1 ","").replace("H2 ","").replace("Q1 ","")
+                                s_exp = compute_stat_from_gamelog(gl_exp, _base_mkt)
+                                s_exp = pd.to_numeric(s_exp, errors="coerce").dropna().reset_index(drop=True)
+                                if _is_period_mkt and not s_exp.empty:
+                                    _hf = HALF_FACTOR.get(_mkt_exp, 1.0)
+                                    s_exp = (s_exp * _hf).round(1)
+                                    _chart_label = f"{_mkt_exp} (scaled ×{_hf})"
+                            if s_exp is not None and not s_exp.empty:
                                 chart_df = pd.DataFrame({
                                     "Game": [f"G-{i+1}" for i in range(len(s_exp))],
                                     "Actual": s_exp.values,
                                     "Line":   [float(leg.get("line", 0))] * len(s_exp),
                                 })
                                 chart_df = chart_df.set_index("Game")
-                                st.caption(f"Last {len(s_exp)} games — {_mkt_exp}")
+                                st.caption(f"Last {len(s_exp)} games — {_chart_label}")
                                 st.bar_chart(chart_df, use_container_width=True, height=180)
                     d1, d2, d3 = st.columns(3)
                     d1.metric("Proj Minutes",
@@ -9363,7 +9529,9 @@ with tabs[2]:
                         pname = (r.get("player") or "").strip()
                         stat_t = r.get("stat_type","")
                         mkt = map_platform_stat_to_market(stat_t)
-                        if not mkt or mkt not in MARKET_OPTIONS:
+                        if not mkt:
+                            continue
+                        if mkt not in MARKET_OPTIONS and mkt not in COMBO_MARKETS:
                             continue
                         # Filter by user's market selection
                         if mkt not in markets_sel:
@@ -9404,8 +9572,13 @@ with tabs[2]:
                 st.session_state[_bulk_cache_key] = True
             if _active_nba_names:
                 _pre_count = len(candidates)
+                def _is_active_player(pname, mkt):
+                    if is_combo_market(mkt):
+                        parts = [p.strip() for p in re.split(r'\s*\+\s*', pname) if p.strip()]
+                        return all(normalize_name(p) in _active_nba_names for p in parts)
+                    return normalize_name(pname) in _active_nba_names
                 candidates = [(p, m, l, mt) for p, m, l, mt in candidates
-                              if normalize_name(p) in _active_nba_names]
+                              if _is_active_player(p, m)]
                 _filtered_out = _pre_count - len(candidates)
                 if _filtered_out > 0:
                     st.caption(f"Filtered {_filtered_out} non-current-NBA players from candidates")
@@ -9441,16 +9614,30 @@ with tabs[2]:
                 _scan_progress = st.progress(0, text=f"Scanning {len(candidates)} candidates...")
                 _scan_done_count = 0
                 _scan_total = len(candidates)
+                def _dispatch_candidate(pname, mkt, line, meta):
+                    if is_combo_market(mkt):
+                        parts = [p.strip() for p in re.split(r'\s*\+\s*', pname) if p.strip()]
+                        if len(parts) >= 2:
+                            return compute_combo_projection(
+                                player_names=parts, market_name=mkt, line=line, meta=meta,
+                                n_games=n_games, key_teammate_out=False,
+                                bankroll=bankroll, frac_kelly=frac_kelly,
+                                max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
+                                market_prior_weight=market_prior_weight,
+                                exclude_chaotic=bool(exclude_chaotic),
+                                game_date=scan_start, injury_team_map=_inj_map, scan_mode=True,
+                            )
+                    return compute_leg_projection(
+                        pname, mkt, line, meta,
+                        n_games=n_games, key_teammate_out=False,
+                        bankroll=bankroll, frac_kelly=frac_kelly,
+                        max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
+                        market_prior_weight=market_prior_weight,
+                        exclude_chaotic=bool(exclude_chaotic),
+                        game_date=scan_start, injury_team_map=_inj_map, scan_mode=True,
+                    )
                 with ThreadPoolExecutor(max_workers=_scan_workers) as ex:
-                    futs = [ex.submit(compute_leg_projection, pname, mkt, line, meta,
-                                      n_games=n_games, key_teammate_out=False,
-                                      bankroll=bankroll, frac_kelly=frac_kelly,
-                                      max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
-                                      market_prior_weight=market_prior_weight,
-                                      exclude_chaotic=bool(exclude_chaotic),
-                                      game_date=scan_start,
-                                      injury_team_map=_inj_map,
-                                      scan_mode=True)
+                    futs = [ex.submit(_dispatch_candidate, pname, mkt, line, meta)
                             for pname, mkt, line, meta in candidates]
                     for (pname, mkt, line, meta), fut in zip(candidates, futs):
                         _scan_done_count += 1
