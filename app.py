@@ -5663,7 +5663,7 @@ def compute_combo_projection(
             bankroll=bankroll, frac_kelly=frac_kelly, max_risk_frac=max_risk_frac,
             market_prior_weight=market_prior_weight, exclude_chaotic=exclude_chaotic,
             game_date=game_date, is_home=is_home,
-            injury_team_map=injury_team_map, scan_mode=True,
+            injury_team_map=injury_team_map, scan_mode=False,
         )
 
     legs = []
@@ -5698,6 +5698,20 @@ def compute_combo_projection(
 
     z = (float(line) - combined_proj) / max(combined_sigma, 0.01)
     combined_p_over = float(np.clip(1.0 - _norm.cdf(z), 1e-4, 1 - 1e-4))
+
+    # ── Combine per-leg sim results (if both legs ran the sim engine) ──
+    _combo_sim_prob = None
+    _combo_sim_mean = None
+    _combo_sim_std  = None
+    _leg_sim_means = [lg.get("sim_mean") for lg in successful if lg.get("sim_mean") is not None]
+    _leg_sim_stds  = [lg.get("sim_std") for lg in successful if lg.get("sim_std") is not None]
+    if len(_leg_sim_means) == len(successful) and len(successful) > 0:
+        _combo_sim_mean = sum(_leg_sim_means)
+        _combo_sim_std  = math.sqrt(sum(s**2 for s in _leg_sim_stds))
+        _zs = (float(line) - _combo_sim_mean) / max(_combo_sim_std, 0.01)
+        _combo_sim_prob = float(np.clip(1.0 - _norm.cdf(_zs), 1e-4, 1 - 1e-4))
+        combined_p_over = float(0.75 * _combo_sim_prob + 0.25 * combined_p_over)
+        errors.append(f"Combo sim blend 75/25: sim_p={_combo_sim_prob:.3f}, analytical={combined_p_over:.3f}, sim_mu={_combo_sim_mean:.1f}, sim_std={_combo_sim_std:.1f}")
 
     side_str = (meta.get("side") if meta else "Over") or "Over"
     _is_under = "under" in str(side_str).lower()
@@ -5797,6 +5811,7 @@ def compute_combo_projection(
             "rest_days": lg.get("rest_days"),
             "sharpness": lg.get("sharpness_score"),
             "n_games_used": lg.get("n_games_used"),
+            "sim_mean": lg.get("sim_mean"), "sim_std": lg.get("sim_std"),
         })
 
     n_games_min = min((int(lg.get("n_games_used") or 0) for lg in successful), default=0)
@@ -5909,6 +5924,9 @@ def compute_combo_projection(
         "errors":           errors,
         "is_combo":         True,
         "sub_projections":  sub_projs,
+        "sim_prob":         float(1.0 - _combo_sim_prob if _is_under else _combo_sim_prob) if _combo_sim_prob is not None else None,
+        "sim_mean":         float(_combo_sim_mean) if _combo_sim_mean is not None else None,
+        "sim_std":          float(_combo_sim_std) if _combo_sim_std is not None else None,
     }
 
 # MAIN PROJECTION ENGINE  [FIX 3: minutes filter]
@@ -6242,7 +6260,7 @@ def compute_leg_projection(
         sim_std  = None
         if not scan_mode:
           try:
-            from simulation.game_engine import GameEngine
+            from simulation.game_engine import GameEngine, PlayerDistribution
             from simulation.config import SimulationConfig, SeasonPhase
             from simulation.player_state import PlayerProfile as SimPlayerProfile
             from simulation.data_loader import SimulationDataLoader
@@ -6256,6 +6274,9 @@ def compute_leg_projection(
                 "Blocks": "blocks", "Steals": "steals", "Turnovers": "turnovers",
                 "FGM": "fgm", "FGA": "fga", "FTM": "ftm", "FTA": "fta",
                 "Personal Fouls": "fouls",
+                "3PA": "three_pa", "2PA": "two_pa",
+                "Fantasy Score": "fantasy_score", "Stocks": "stocks",
+                "Double Double": "double_double", "Triple Double": "triple_double",
             }
             _sim_stat = _SIM_STAT_MAP.get(base_market)
             _sim_line_for_prob = float(line)
@@ -6527,6 +6548,41 @@ def compute_leg_projection(
                     )
                     _sim_output = _sim_engine.run_simulation(n=_SIM_N)
                     _sim_dist = _sim_output.get_player_dist(_sim_pid, _sim_stat)
+                    # Derive composite stats from base per-sim distributions
+                    if _sim_dist is None and _sim_stat is not None:
+                        _cpfx = ""
+                        if _sim_stat.startswith("h1_"):
+                            _cpfx = "h1_"
+                        elif _sim_stat.startswith("h2_"):
+                            _cpfx = "h2_"
+                        _cbase = _sim_stat[len(_cpfx):] if _cpfx else _sim_stat
+                        _cget = lambda s: _sim_output.get_player_dist(_sim_pid, f"{_cpfx}{s}")
+                        if _cbase == "fantasy_score":
+                            _d = [_cget(s) for s in ("points","rebounds","assists","blocks","steals","turnovers")]
+                            if all(x is not None for x in _d):
+                                _cv = _d[0].values + 1.2*_d[1].values + 1.5*_d[2].values + 3.0*_d[3].values + 3.0*_d[4].values - _d[5].values
+                                _sim_dist = PlayerDistribution(player_name=player_name, player_id=_sim_pid, stat_name=_sim_stat, n_sims=len(_cv), values=_cv)
+                                _sim_dist.compute()
+                        elif _cbase == "stocks":
+                            _db, _ds = _cget("blocks"), _cget("steals")
+                            if _db is not None and _ds is not None:
+                                _cv = _db.values + _ds.values
+                                _sim_dist = PlayerDistribution(player_name=player_name, player_id=_sim_pid, stat_name=_sim_stat, n_sims=len(_cv), values=_cv)
+                                _sim_dist.compute()
+                        elif _cbase == "two_pa":
+                            _dfga, _d3pa = _cget("fga"), _cget("three_pa")
+                            if _dfga is not None and _d3pa is not None:
+                                _cv = _dfga.values - _d3pa.values
+                                _sim_dist = PlayerDistribution(player_name=player_name, player_id=_sim_pid, stat_name=_sim_stat, n_sims=len(_cv), values=_cv)
+                                _sim_dist.compute()
+                        elif _cbase in ("double_double", "triple_double"):
+                            _dp, _dr, _da = _cget("points"), _cget("rebounds"), _cget("assists")
+                            if all(x is not None for x in [_dp, _dr, _da]):
+                                _cnt = (_dp.values >= 10).astype(float) + (_dr.values >= 10).astype(float) + (_da.values >= 10).astype(float)
+                                _thresh = 3.0 if _cbase == "triple_double" else 2.0
+                                _cv = (_cnt >= _thresh).astype(float)
+                                _sim_dist = PlayerDistribution(player_name=player_name, player_id=_sim_pid, stat_name=_sim_stat, n_sims=len(_cv), values=_cv)
+                                _sim_dist.compute()
                     if _sim_dist is not None:
                         sim_prob = _sim_dist.prob_over(_sim_line_for_prob)
                         sim_mean = _sim_dist.mean * _sim_period_scale
