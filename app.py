@@ -8403,7 +8403,7 @@ with tabs[1]:
                     _sp_col = "#00FFB2" if _sp > 0.55 else ("#FFB800" if _sp > 0.45 else "#FF3358")
                     card_html += (
                         f"<div style='margin-top:0.45rem;background:#00AAFF08;border:1px solid #00AAFF25;border-radius:3px;padding:0.3rem 0.5rem;'>"
-                        f"<div style='font-size:0.52rem;color:#00AAFF;letter-spacing:0.10em;font-family:Chakra Petch,monospace;'>SIM ENGINE (500 POSS-LEVEL SIMS)</div>"
+                        f"<div style='font-size:0.52rem;color:#00AAFF;letter-spacing:0.10em;font-family:Chakra Petch,monospace;'>SIM ENGINE ({_SIM_N} POSS-LEVEL SIMS)</div>"
                         f"<div style='display:flex;justify-content:space-between;margin-top:0.15rem;'>"
                         f"<span style='font-size:0.62rem;color:#4A607A;'>P({leg.get('bet_side','over').lower()}):</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:{_sp_col};font-weight:600;'>{_sp*100:.1f}%</span>"
                         f"<span style='font-size:0.62rem;color:#4A607A;'>Mean:</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:#EEF4FF;'>{_sm:.1f}</span>"
