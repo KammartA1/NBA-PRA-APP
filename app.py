@@ -5673,10 +5673,10 @@ def compute_combo_projection(
         for fut in futs:
             pn = futs[fut]
             try:
-                res = fut.result(timeout=45)
+                res = fut.result(timeout=90)
                 legs.append(res)
             except TimeoutError:
-                errors.append(f"{pn}: full pipeline timeout (>45s)")
+                errors.append(f"{pn}: full pipeline timeout (>90s)")
             except Exception as _e:
                 errors.append(f"{pn}: {type(_e).__name__}: {_e}")
 
@@ -10017,7 +10017,7 @@ with tabs[2]:
                                 text=f"Scanning... {_scan_done_count}/{_scan_total} ({len(out_rows)} edges found)"
                             )
                         try:
-                            _combo_timeout = 60 if is_combo_market(mkt) else 30
+                            _combo_timeout = 120 if is_combo_market(mkt) else 30
                             leg = fut.result(timeout=_combo_timeout)
                         except TimeoutError:
                             dropped.append({"player": pname, "market": mkt, "reason": f"thread timeout (NBA API ≥{_combo_timeout}s)"})
