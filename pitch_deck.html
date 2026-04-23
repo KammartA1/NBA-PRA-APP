@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NBA Prop Alpha Engine - Pitch Deck</title>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  :root { --bg: #04080F; --green: #00FFB2; --amber: #FFB800; --text: #E0E0E0; --muted: #8A9BAE; --card: #0C1420; --border: #1A2538; }
+  body { font-family: 'Chakra Petch', sans-serif; background: var(--bg); color: var(--text); }
+  .slide { min-height: 100vh; display: flex; flex-direction: column; justify-content: center; padding: 60px 80px; position: relative; page-break-after: always; }
+  .slide::after { content: ''; position: absolute; bottom: 0; left: 80px; right: 80px; height: 1px; background: linear-gradient(90deg, transparent, var(--border), transparent); }
+  h1 { font-size: 3.2rem; font-weight: 700; color: #fff; margin-bottom: 16px; }
+  h2 { font-size: 2.4rem; font-weight: 600; color: #fff; margin-bottom: 32px; }
+  h3 { font-size: 1.2rem; font-weight: 600; color: var(--green); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 2px; }
+  p { font-size: 1.1rem; line-height: 1.7; color: var(--muted); max-width: 720px; }
+  .accent { color: var(--green); }
+  .amber { color: var(--amber); }
+  .tag { display: inline-block; padding: 4px 14px; border: 1px solid var(--green); color: var(--green); border-radius: 20px; font-size: 0.8rem; margin: 4px; font-weight: 500; }
+  .tag.amber { border-color: var(--amber); color: var(--amber); }
+  .grid { display: grid; gap: 24px; margin-top: 24px; }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .grid-4 { grid-template-columns: repeat(4, 1fr); }
+  .grid-5 { grid-template-columns: repeat(5, 1fr); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 28px; }
+  .card h4 { font-size: 1rem; color: #fff; margin-bottom: 8px; }
+  .card p { font-size: 0.95rem; }
+  .stat { text-align: center; padding: 32px 20px; }
+  .stat .num { font-size: 2.8rem; font-weight: 700; color: var(--green); display: block; }
+  .stat .label { font-size: 0.85rem; color: var(--muted); margin-top: 8px; display: block; text-transform: uppercase; letter-spacing: 1px; }
+  .step-num { font-size: 3rem; font-weight: 700; color: var(--green); opacity: 0.3; position: absolute; top: 12px; right: 20px; }
+  .card.step { position: relative; overflow: hidden; }
+  .pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .slide-num { position: absolute; bottom: 24px; right: 80px; font-size: 0.8rem; color: var(--border); font-weight: 600; }
+  .hero-sub { font-size: 1.4rem; color: var(--muted); margin-bottom: 32px; max-width: 640px; }
+  .bar { height: 4px; border-radius: 2px; margin-top: 12px; }
+  .bar-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg, var(--green), var(--amber)); }
+  ul { list-style: none; padding: 0; }
+  ul li { padding: 8px 0; padding-left: 20px; position: relative; color: var(--muted); font-size: 0.95rem; }
+  ul li::before { content: '\25B8'; position: absolute; left: 0; color: var(--green); }
+  .regime { text-align: center; padding: 20px 12px; }
+  .regime .name { font-weight: 700; font-size: 1rem; display: block; margin-bottom: 4px; }
+  .contact-block { text-align: center; margin-top: 48px; }
+  .contact-block h1 { font-size: 2.4rem; }
+  .contact-block p { margin: 0 auto; }
+  .glow { text-shadow: 0 0 30px rgba(0, 255, 178, 0.3); }
+
+  @media print {
+    .slide { min-height: auto; height: 100vh; padding: 40px 60px; }
+    .slide::after { display: none; }
+    body { background: #fff; color: #222; }
+    .card { border-color: #ccc; background: #f8f8f8; }
+    h1, h2, h4 { color: #111; }
+    .accent, .stat .num, h3, ul li::before { color: #007a55; }
+    .amber, .tag.amber { color: #b38200; border-color: #b38200; }
+    .tag { border-color: #007a55; color: #007a55; }
+    p, ul li, .stat .label, .hero-sub { color: #444; }
+    .slide-num { color: #ccc; }
+  }
+</style>
+</head>
+<body>
+
+<!-- 1. TITLE -->
+<section class="slide">
+  <h3>Quantitative Sports Analytics</h3>
+  <h1 class="glow">NBA Prop <span class="accent">Alpha</span> Engine</h1>
+  <p class="hero-sub">A Monte Carlo-driven projection system that identifies mispriced player propositions across DFS sportsbooks with institutional-grade risk management.</p>
+  <div class="pill-row">
+    <span class="tag">Monte Carlo Simulation</span>
+    <span class="tag">Bayesian Shrinkage</span>
+    <span class="tag">CLV Tracking</span>
+    <span class="tag amber">Real-Time Edge Detection</span>
+  </div>
+  <span class="slide-num">01 / 10</span>
+</section>
+
+<!-- 2. PROBLEM -->
+<section class="slide">
+  <h3>The Problem</h3>
+  <h2>Retail Bettors Are Structurally Disadvantaged</h2>
+  <div class="grid grid-3">
+    <div class="card">
+      <h4>No Edge Quantification</h4>
+      <p>Bettors rely on gut feel, trends, or social media tips with zero statistical validation of expected value.</p>
+    </div>
+    <div class="card">
+      <h4>Ignored Context</h4>
+      <p>Rest days, altitude, pace differentials, referee tendencies, and back-to-backs are rarely modeled together.</p>
+    </div>
+    <div class="card">
+      <h4>No Risk Framework</h4>
+      <p>Flat-betting or emotional sizing leads to ruin. No drawdown limits, no kill switches, no bankroll governance.</p>
+    </div>
+  </div>
+  <p style="margin-top:32px;">The result: over 95% of recreational bettors lose long-term despite the explosive growth of legal sports betting.</p>
+  <span class="slide-num">02 / 10</span>
+</section>
+
+<!-- 3. SOLUTION -->
+<section class="slide">
+  <h3>The Solution</h3>
+  <h2>Quantitative Edge, <span class="accent">Systematically Extracted</span></h2>
+  <div class="grid grid-2">
+    <div>
+      <p>The NBA Prop Alpha Engine replaces intuition with a full quantitative pipeline: data ingestion, contextual adjustment, Monte Carlo simulation, edge detection, and disciplined execution.</p>
+      <ul style="margin-top:24px;">
+        <li>1,500 simulations per player projection</li>
+        <li>75/25 simulation-to-analytical blending</li>
+        <li>Real-time closing line value (CLV) tracking</li>
+        <li>Fractional Kelly sizing with hard bankroll caps</li>
+        <li>Automated kill switches for regime deterioration</li>
+      </ul>
+    </div>
+    <div class="card" style="display:flex;flex-direction:column;justify-content:center;align-items:center;">
+      <div class="stat"><span class="num">1,500</span><span class="label">Simulations / Projection</span></div>
+      <div class="stat"><span class="num" style="color:var(--amber);">75/25</span><span class="label">Sim / Analytical Blend</span></div>
+    </div>
+  </div>
+  <span class="slide-num">03 / 10</span>
+</section>
+
+<!-- 4. HOW IT WORKS -->
+<section class="slide">
+  <h3>How It Works</h3>
+  <h2>Four-Stage Projection Pipeline</h2>
+  <div class="grid grid-4">
+    <div class="card step">
+      <span class="step-num">01</span>
+      <h4>Data Ingestion</h4>
+      <p>Pull live stats, lines, and contextual data from APIs. Normalize across sources and validate freshness.</p>
+    </div>
+    <div class="card step">
+      <span class="step-num">02</span>
+      <h4>Context Engine</h4>
+      <p>Apply 15+ adjustment factors: rest, altitude, pace, referee, B2B, injuries, matchup, home/away, and more.</p>
+    </div>
+    <div class="card step">
+      <span class="step-num">03</span>
+      <h4>MC Simulation</h4>
+      <p>Run 1,500 Monte Carlo paths per prop. Blend 75% simulation with 25% analytical for robust projections.</p>
+    </div>
+    <div class="card step">
+      <span class="step-num">04</span>
+      <h4>Edge & Execution</h4>
+      <p>Detect mispriced lines, classify probability regime, size via fractional Kelly, and route to platform.</p>
+    </div>
+  </div>
+  <span class="slide-num">04 / 10</span>
+</section>
+
+<!-- 5. CORE TECHNOLOGY -->
+<section class="slide">
+  <h3>Core Technology</h3>
+  <h2>Institutional-Grade Quant Stack</h2>
+  <div class="grid grid-2">
+    <div class="card">
+      <h4>Monte Carlo Simulation Engine</h4>
+      <p>1,500 iterations per projection with Bayesian shrinkage priors. Handles non-normal distributions and tail risk natively.</p>
+    </div>
+    <div class="card">
+      <h4>15+ Contextual Factors</h4>
+      <p>Rest days, altitude, pace delta, referee stats, B2B, injuries, travel distance, lineup changes, home/away splits, minutes projections, and more.</p>
+    </div>
+    <div class="card">
+      <h4>5 Probability Regimes</h4>
+      <div class="grid grid-5" style="margin-top:12px;">
+        <div class="regime"><span class="name accent">SHARP</span><span style="font-size:0.8rem;color:var(--muted);">High confidence</span></div>
+        <div class="regime"><span class="name" style="color:#fff;">NORMAL</span><span style="font-size:0.8rem;color:var(--muted);">Standard play</span></div>
+        <div class="regime"><span class="name amber">VOLATILE</span><span style="font-size:0.8rem;color:var(--muted);">Wider bands</span></div>
+        <div class="regime"><span class="name" style="color:#FF6B6B;">CHAOTIC</span><span style="font-size:0.8rem;color:var(--muted);">Reduce size</span></div>
+        <div class="regime"><span class="name" style="color:#666;">DEAD</span><span style="font-size:0.8rem;color:var(--muted);">No action</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h4>CLV Tracking & Kill Switch</h4>
+      <p>Real-time closing line value comparison validates model accuracy. Automated kill switches halt betting when CLV degrades or drawdown limits are breached.</p>
+    </div>
+  </div>
+  <span class="slide-num">05 / 10</span>
+</section>
+
+<!-- 6. EDGE VALIDATION -->
+<section class="slide">
+  <h3>Edge Validation</h3>
+  <h2>Closing Line Value as <span class="accent">Ground Truth</span></h2>
+  <div class="grid grid-2">
+    <div>
+      <p>CLV is the gold standard for measuring betting skill. If you consistently beat the closing line, you have a genuine edge -- regardless of short-term variance.</p>
+      <ul style="margin-top:24px;">
+        <li>Every pick is timestamped at entry and compared to close</li>
+        <li>Rolling CLV windows detect model drift in real time</li>
+        <li>Negative CLV trends trigger automatic position reduction</li>
+        <li>Bayesian shrinkage prevents overfitting to recent results</li>
+      </ul>
+    </div>
+    <div>
+      <div class="card stat"><span class="num">CLV+</span><span class="label">Consistent Edge = Long-Term Profit</span></div>
+      <div class="card stat" style="margin-top:24px;"><span class="num amber">CLV-</span><span class="label">Model Drift = Kill Switch Triggered</span></div>
+    </div>
+  </div>
+  <span class="slide-num">06 / 10</span>
+</section>
+
+<!-- 7. PLATFORM COVERAGE -->
+<section class="slide">
+  <h3>Platform Coverage</h3>
+  <h2>Multi-Platform Arbitrage Layer</h2>
+  <div class="grid grid-3">
+    <div class="card" style="border-color:var(--green);">
+      <h4 style="color:var(--green);">PrizePicks</h4>
+      <p>Power plays and flex entries. Goblin mode for correlated combos. Full prop coverage for PRA markets.</p>
+      <div class="pill-row"><span class="tag">Points</span><span class="tag">Rebounds</span><span class="tag">Assists</span><span class="tag">Combos</span></div>
+    </div>
+    <div class="card" style="border-color:var(--amber);">
+      <h4 style="color:var(--amber);">Underdog Fantasy</h4>
+      <p>Higher/lower picks with rival play integration. Optimized for 2-6 leg entries with correlation analysis.</p>
+      <div class="pill-row"><span class="tag amber">Higher</span><span class="tag amber">Lower</span><span class="tag amber">Rivals</span></div>
+    </div>
+    <div class="card" style="border-color:#AB6BFF;">
+      <h4 style="color:#AB6BFF;">Sleeper</h4>
+      <p>Pick'em market coverage with insured and non-insured entries. Optimized pick counts for EV maximization.</p>
+      <div class="pill-row"><span class="tag" style="border-color:#AB6BFF;color:#AB6BFF;">Insured</span><span class="tag" style="border-color:#AB6BFF;color:#AB6BFF;">Standard</span></div>
+    </div>
+  </div>
+  <p style="margin-top:32px;">Cross-platform line comparison identifies the sharpest number for every prop, maximizing expected value per entry.</p>
+  <span class="slide-num">07 / 10</span>
+</section>
+
+<!-- 8. RISK MANAGEMENT -->
+<section class="slide">
+  <h3>Risk Management</h3>
+  <h2>Bankroll Governance Framework</h2>
+  <div class="grid grid-2">
+    <div class="card">
+      <h4>Fractional Kelly Sizing</h4>
+      <p>Position sizes derived from edge magnitude and confidence interval. Never risks more than the Kelly-optimal fraction of bankroll on any single entry.</p>
+      <div class="bar" style="background:var(--border);width:100%;"><div class="bar-fill" style="width:35%;"></div></div>
+      <span style="font-size:0.8rem;color:var(--muted);margin-top:4px;display:block;">Typical: 0.25x - 0.5x Kelly</span>
+    </div>
+    <div class="card">
+      <h4>Drawdown Controls</h4>
+      <ul>
+        <li>Daily loss limit halts all new entries</li>
+        <li>Weekly drawdown cap triggers reduced sizing</li>
+        <li>Streak-based kill switch after N consecutive losses</li>
+        <li>Session-level bankroll floor enforced</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>Regime-Based Exposure</h4>
+      <ul>
+        <li><span class="accent">SHARP</span> -- Full Kelly fraction permitted</li>
+        <li>NORMAL -- Standard sizing applied</li>
+        <li><span class="amber">VOLATILE</span> -- Reduced to 50% max size</li>
+        <li style="color:#FF6B6B;">CHAOTIC -- Minimal exposure only</li>
+        <li style="color:#666;">DEAD -- Zero allocation, no entries</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>Kill Switches</h4>
+      <ul>
+        <li>CLV degradation below threshold</li>
+        <li>Model confidence interval blowout</li>
+        <li>Data staleness or API failure</li>
+        <li>Manual override always available</li>
+      </ul>
+    </div>
+  </div>
+  <span class="slide-num">08 / 10</span>
+</section>
+
+<!-- 9. PERFORMANCE -->
+<section class="slide">
+  <h3>Performance</h3>
+  <h2>Track Record <span class="amber">(Live Results Pending)</span></h2>
+  <div class="grid grid-4">
+    <div class="card stat"><span class="num">--</span><span class="label">Win Rate</span></div>
+    <div class="card stat"><span class="num" style="color:var(--amber);">--</span><span class="label">Avg CLV Edge</span></div>
+    <div class="card stat"><span class="num">--</span><span class="label">ROI</span></div>
+    <div class="card stat"><span class="num" style="color:var(--amber);">--</span><span class="label">Max Drawdown</span></div>
+  </div>
+  <p style="margin-top:40px;text-align:center;max-width:100%;color:var(--muted);">Performance metrics will populate as the engine completes its initial validation period. All results will be independently verifiable via timestamped pick logs and CLV comparison records.</p>
+  <div class="pill-row" style="justify-content:center;margin-top:24px;">
+    <span class="tag">Timestamped Entries</span>
+    <span class="tag">CLV Verified</span>
+    <span class="tag amber">Auditable Logs</span>
+    <span class="tag amber">No Backtested Claims</span>
+  </div>
+  <span class="slide-num">09 / 10</span>
+</section>
+
+<!-- 10. CONTACT -->
+<section class="slide">
+  <div class="contact-block">
+    <h3>Get In Touch</h3>
+    <h1 class="glow">NBA Prop <span class="accent">Alpha</span> Engine</h1>
+    <p style="margin-top:24px;font-size:1.2rem;">Ready to bring quantitative rigor to player prop markets.</p>
+    <div class="pill-row" style="justify-content:center;margin-top:40px;">
+      <span class="tag">Monte Carlo Core</span>
+      <span class="tag">Bayesian Priors</span>
+      <span class="tag">CLV Validated</span>
+      <span class="tag amber">Risk-Governed</span>
+      <span class="tag amber">Multi-Platform</span>
+    </div>
+    <p style="margin-top:48px;font-size:0.9rem;color:var(--border);">Confidential -- For Intended Recipients Only</p>
+  </div>
+  <span class="slide-num">10 / 10</span>
+</section>
+
+</body>
+</html>
