@@ -3489,11 +3489,22 @@ _PP_NBA_LEAGUE_PREFIXES = ("NBA",)  # matches "NBA", "NBA 1Q", "NBA 1H", "NBA 2H
 
 def _pp_league_is_nba(league_str: str) -> bool:
     """Return True if the league string is any NBA variant from PrizePicks API.
-    Handles: 'NBA', 'NBA1H', 'NBA1Q', 'NBA 1H', 'NBA_2H', 'NBA (1H)', etc.
-    Excludes: 'WNBASZN', 'NBB', 'AUSNBL' — must start with exactly 'NBA'.
+    Handles: 'NBA', 'NBA1H', 'NBA1Q', 'NBA Props', 'NBA Combos', 'NBAPROPS', etc.
+    Excludes: 'WNBA', 'NBB', 'AUSNBL' — must start with exactly 'NBA' (not WNBA etc).
     """
     s = re.sub(r"[\s_\-\(\)]+", "", str(league_str or "").upper()).strip()
-    return s == "NBA" or (s.startswith("NBA") and len(s) > 3 and s[3:4].isdigit())
+    if not s.startswith("NBA"):
+        return False
+    if s == "NBA":
+        return True
+    # Reject WNBA-like strings that happen to contain NBA
+    # After stripping, remaining chars after "NBA" tell us what variant:
+    # digits = period (1H, 2H, 1Q) — accept
+    # alpha = specialty (PROPS, COMBOS, SPECIAL, SZN) — accept if it's NBA-prefixed
+    suffix = s[3:]
+    # Reject if the preceding character isn't the start (i.e. it's WNBA, not NBA)
+    # Already handled by startswith("NBA") check above
+    return True
 
 def _pp_league_half_prefix(league_str: str) -> str:
     """Return 'H1 ', 'H2 ', 'Q1 ' etc. if the league indicates a period, else ''."""
@@ -8306,15 +8317,29 @@ with tabs[0]:
                         # the correct direction (P(Over) vs P(Under)) from the start
                         _run_meta = dict(meta) if meta else {"side": _leg_side}
                         _run_meta["side"] = _leg_side
-                        _leg = compute_leg_projection(
-                            pname, mkt, line, _run_meta,
-                            n_games=n_games, key_teammate_out=to,
-                            bankroll=bankroll, frac_kelly=frac_kelly,
-                            max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
-                            market_prior_weight=market_prior_weight,
-                            exclude_chaotic=bool(exclude_chaotic),
-                            game_date=scan_date,
-                            injury_team_map=_inj_map)
+                        # Route combo bets (Player A + Player B) to combo engine
+                        if is_combo_market(mkt) or ("+" in pname and len([p for p in pname.split("+") if p.strip()]) >= 2):
+                            _combo_mkt = mkt if is_combo_market(mkt) else next((k for k, v in COMBO_BASE_MAP.items() if v == mkt), mkt)
+                            _parts = [p.strip() for p in re.split(r'\s*\+\s*', pname) if p.strip()]
+                            _leg = compute_combo_projection(
+                                player_names=_parts, market_name=_combo_mkt, line=line, meta=_run_meta,
+                                n_games=n_games, key_teammate_out=to,
+                                bankroll=bankroll, frac_kelly=frac_kelly,
+                                max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
+                                market_prior_weight=market_prior_weight,
+                                exclude_chaotic=bool(exclude_chaotic),
+                                game_date=scan_date,
+                                injury_team_map=_inj_map)
+                        else:
+                            _leg = compute_leg_projection(
+                                pname, mkt, line, _run_meta,
+                                n_games=n_games, key_teammate_out=to,
+                                bankroll=bankroll, frac_kelly=frac_kelly,
+                                max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
+                                market_prior_weight=market_prior_weight,
+                                exclude_chaotic=bool(exclude_chaotic),
+                                game_date=scan_date,
+                                injury_team_map=_inj_map)
                         # Store the user-selected side (Over/Under) in the leg
                         _leg["bet_side"] = _leg_side
                         results.append(_leg)
@@ -9547,10 +9572,22 @@ with tabs[2]:
                         mkt = map_platform_stat_to_market(stat_t)
                         if not mkt:
                             continue
+                        # Detect combo bets: PrizePicks sends "Player A + Player B"
+                        # with stat_type="Points" — remap to "Points (Combo)" etc.
+                        _is_pair = "+" in pname and len([p for p in pname.split("+") if p.strip()]) >= 2
+                        if _is_pair and mkt in COMBO_BASE_MAP.values():
+                            _combo_mkt = next((k for k, v in COMBO_BASE_MAP.items() if v == mkt), None)
+                            if _combo_mkt:
+                                mkt = _combo_mkt
                         if mkt not in MARKET_OPTIONS and mkt not in COMBO_MARKETS:
                             continue
                         # Filter by user's market selection
-                        if mkt not in markets_sel:
+                        # Combo markets pass if their base market is selected
+                        _mkt_selected = mkt in markets_sel
+                        if not _mkt_selected and is_combo_market(mkt):
+                            _base = COMBO_BASE_MAP.get(mkt)
+                            _mkt_selected = _base in markets_sel
+                        if not _mkt_selected:
                             continue
                         line = r.get("line")
                         if not pname or line is None or pd.isna(line):
@@ -10693,23 +10730,41 @@ with tabs[3]:
                 pp_candidates = []
                 for _, r in display_df.iterrows():
                     mkt = map_platform_stat_to_market(r.get("stat_type",""))
+                    _pn = (r.get("player") or "").strip()
                     if mkt and r.get("line"):
+                        # Detect combo bets (Player A + Player B)
+                        if "+" in _pn and len([p for p in _pn.split("+") if p.strip()]) >= 2:
+                            _combo_mkt = next((k for k, v in COMBO_BASE_MAP.items() if v == mkt), None)
+                            if _combo_mkt:
+                                mkt = _combo_mkt
                         _m = {"event_id": None, "home_team": "", "away_team": "",
                               "commence_time": str(r.get("start_time", "") or ""),
                               "price": 2.0, "book": "prizepicks", "side": "Over",
                               "market_key": ODDS_MARKETS.get(mkt)}
-                        pp_candidates.append((r["player"], mkt, float(r["line"]), _m))
+                        pp_candidates.append((_pn, mkt, float(r["line"]), _m))
                 if pp_candidates:
                     _inj_map = st.session_state.get("injury_team_map", {})
+                    def _pp_dispatch(pn, mk, ln, mt):
+                        if is_combo_market(mk):
+                            parts = [p.strip() for p in re.split(r'\s*\+\s*', pn) if p.strip()]
+                            if len(parts) >= 2:
+                                return compute_combo_projection(
+                                    player_names=parts, market_name=mk, line=ln, meta=mt,
+                                    n_games=n_games, key_teammate_out=False,
+                                    bankroll=bankroll, frac_kelly=frac_kelly,
+                                    market_prior_weight=market_prior_weight,
+                                    exclude_chaotic=bool(exclude_chaotic),
+                                    game_date=date.today(), injury_team_map=_inj_map)
+                        return compute_leg_projection(
+                            pn, mk, ln, mt,
+                            n_games=n_games, key_teammate_out=False,
+                            bankroll=bankroll, frac_kelly=frac_kelly,
+                            market_prior_weight=market_prior_weight,
+                            exclude_chaotic=bool(exclude_chaotic),
+                            game_date=date.today(), injury_team_map=_inj_map)
                     with st.spinner(f"Scanning {len(pp_candidates)} PrizePicks props..."):
                         with ThreadPoolExecutor(max_workers=min(16, len(pp_candidates))) as ex:
-                            futs_pp = [ex.submit(compute_leg_projection, pn, mk, ln, mt,
-                                                 n_games=n_games, key_teammate_out=False,
-                                                 bankroll=bankroll, frac_kelly=frac_kelly,
-                                                 market_prior_weight=market_prior_weight,
-                                                 exclude_chaotic=bool(exclude_chaotic),
-                                                 game_date=date.today(),
-                                                 injury_team_map=_inj_map)
+                            futs_pp = [ex.submit(_pp_dispatch, pn, mk, ln, mt)
                                        for pn, mk, ln, mt in pp_candidates]
                             pp_results = []
                             for fut in futs_pp:
@@ -10843,23 +10898,40 @@ with tabs[3]:
                 ud_candidates = []
                 for _, r in display_ud.iterrows():
                     mkt = map_platform_stat_to_market(r.get("stat_type",""))
+                    _pn = (r.get("player") or "").strip()
                     if mkt and r.get("line"):
+                        if "+" in _pn and len([p for p in _pn.split("+") if p.strip()]) >= 2:
+                            _combo_mkt = next((k for k, v in COMBO_BASE_MAP.items() if v == mkt), None)
+                            if _combo_mkt:
+                                mkt = _combo_mkt
                         _m = {"event_id": None, "home_team": "", "away_team": "",
                               "commence_time": str(r.get("start_time", "") or ""),
                               "price": 2.0, "book": "underdog", "side": "Over",
                               "market_key": ODDS_MARKETS.get(mkt)}
-                        ud_candidates.append((r["player"], mkt, float(r["line"]), _m))
+                        ud_candidates.append((_pn, mkt, float(r["line"]), _m))
                 if ud_candidates:
                     _inj_map = st.session_state.get("injury_team_map", {})
+                    def _ud_dispatch(pn, mk, ln, mt):
+                        if is_combo_market(mk):
+                            parts = [p.strip() for p in re.split(r'\s*\+\s*', pn) if p.strip()]
+                            if len(parts) >= 2:
+                                return compute_combo_projection(
+                                    player_names=parts, market_name=mk, line=ln, meta=mt,
+                                    n_games=n_games, key_teammate_out=False,
+                                    bankroll=bankroll, frac_kelly=frac_kelly,
+                                    market_prior_weight=market_prior_weight,
+                                    exclude_chaotic=bool(exclude_chaotic),
+                                    game_date=date.today(), injury_team_map=_inj_map)
+                        return compute_leg_projection(
+                            pn, mk, ln, mt,
+                            n_games=n_games, key_teammate_out=False,
+                            bankroll=bankroll, frac_kelly=frac_kelly,
+                            market_prior_weight=market_prior_weight,
+                            exclude_chaotic=bool(exclude_chaotic),
+                            game_date=date.today(), injury_team_map=_inj_map)
                     with st.spinner(f"Scanning {len(ud_candidates)} Underdog props..."):
                         with ThreadPoolExecutor(max_workers=min(16, len(ud_candidates))) as ex:
-                            futs_ud = [ex.submit(compute_leg_projection, pn, mk, ln, mt,
-                                                 n_games=n_games, key_teammate_out=False,
-                                                 bankroll=bankroll, frac_kelly=frac_kelly,
-                                                 market_prior_weight=market_prior_weight,
-                                                 exclude_chaotic=bool(exclude_chaotic),
-                                                 game_date=date.today(),
-                                                 injury_team_map=_inj_map)
+                            futs_ud = [ex.submit(_ud_dispatch, pn, mk, ln, mt)
                                        for pn, mk, ln, mt in ud_candidates]
                             ud_results = []
                             for fut in futs_ud:
