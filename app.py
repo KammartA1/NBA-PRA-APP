@@ -24,6 +24,7 @@ import streamlit as st
 from streamlit_cookies_controller import CookieController
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
+_SIM_N = 1500
 # ──────────────────────────────────────────────
 # CLAUDE AI INTEGRATION
 # ──────────────────────────────────────────────
@@ -5804,7 +5805,6 @@ def compute_leg_projection(
         sim_prob = None
         sim_mean = None
         sim_std  = None
-        _SIM_N = 1500
         if not scan_mode:
           try:
             from simulation.game_engine import GameEngine
