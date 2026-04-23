@@ -5656,27 +5656,33 @@ def compute_combo_projection(
 
     game_date = game_date or date.today()
 
-    def _run_leg(pn):
+    _leg_kwargs = dict(
+        market_name=base_market, line=0, meta=meta, n_games=n_games,
+        key_teammate_out=key_teammate_out, bankroll=bankroll,
+        frac_kelly=frac_kelly, max_risk_frac=max_risk_frac,
+        market_prior_weight=market_prior_weight,
+        exclude_chaotic=exclude_chaotic, game_date=game_date,
+        is_home=is_home, injury_team_map=injury_team_map,
+    )
+
+    # ── Phase 1: Analytical pipeline (scan_mode=True) ──
+    # Fast pass that gets projections and warms all @st.cache_data caches
+    # (gamelogs, boxscores, clutch splits, game totals, injury reports).
+    def _run_leg_analytical(pn):
         return compute_leg_projection(
-            player_name=pn.strip(), market_name=base_market, line=0,
-            meta=meta, n_games=n_games, key_teammate_out=key_teammate_out,
-            bankroll=bankroll, frac_kelly=frac_kelly, max_risk_frac=max_risk_frac,
-            market_prior_weight=market_prior_weight, exclude_chaotic=exclude_chaotic,
-            game_date=game_date, is_home=is_home,
-            injury_team_map=injury_team_map, scan_mode=False,
-        )
+            player_name=pn.strip(), scan_mode=True, **_leg_kwargs)
 
     legs = []
     errors = []
     with ThreadPoolExecutor(max_workers=len(player_names)) as ex:
-        futs = {ex.submit(_run_leg, pn): pn for pn in player_names}
+        futs = {ex.submit(_run_leg_analytical, pn): pn for pn in player_names}
         for fut in futs:
             pn = futs[fut]
             try:
-                res = fut.result(timeout=90)
+                res = fut.result(timeout=45)
                 legs.append(res)
             except TimeoutError:
-                errors.append(f"{pn}: full pipeline timeout (>90s)")
+                errors.append(f"{pn}: analytical pipeline timeout (>45s)")
             except Exception as _e:
                 errors.append(f"{pn}: {type(_e).__name__}: {_e}")
 
@@ -5699,12 +5705,30 @@ def compute_combo_projection(
     z = (float(line) - combined_proj) / max(combined_sigma, 0.01)
     combined_p_over = float(np.clip(1.0 - _norm.cdf(z), 1e-4, 1 - 1e-4))
 
-    # ── Combine per-leg sim results (if both legs ran the sim engine) ──
+    # ── Phase 2: Sim engine pass (scan_mode=False) — MANDATORY ──
+    # Caches are warm from Phase 1, so only the sim engine (~15-20s) actually runs.
     _combo_sim_prob = None
     _combo_sim_mean = None
     _combo_sim_std  = None
-    _leg_sim_means = [lg.get("sim_mean") for lg in successful if lg.get("sim_mean") is not None]
-    _leg_sim_stds  = [lg.get("sim_std") for lg in successful if lg.get("sim_std") is not None]
+    def _run_leg_sim(pn):
+        return compute_leg_projection(
+            player_name=pn.strip(), scan_mode=False, **_leg_kwargs)
+
+    sim_legs = []
+    with ThreadPoolExecutor(max_workers=len(player_names)) as ex:
+        sim_futs = {ex.submit(_run_leg_sim, pn): pn for pn in player_names}
+        for fut in sim_futs:
+            pn = sim_futs[fut]
+            try:
+                res = fut.result(timeout=120)
+                sim_legs.append(res)
+            except TimeoutError:
+                errors.append(f"{pn}: sim pass timeout (>120s)")
+            except Exception as _e:
+                errors.append(f"{pn}: sim pass error: {_e}")
+
+    _leg_sim_means = [lg.get("sim_mean") for lg in sim_legs if lg.get("sim_mean") is not None]
+    _leg_sim_stds  = [lg.get("sim_std") for lg in sim_legs if lg.get("sim_std") is not None]
     if len(_leg_sim_means) == len(successful) and len(successful) > 0:
         _combo_sim_mean = sum(_leg_sim_means)
         _combo_sim_std  = math.sqrt(sum(s**2 for s in _leg_sim_stds))
@@ -5801,8 +5825,10 @@ def compute_combo_projection(
     game_totals = [lg.get("game_total") for lg in successful if lg.get("game_total") is not None]
     game_spreads = [lg.get("game_spread") for lg in successful if lg.get("game_spread") is not None]
 
+    _sim_by_player = {lg.get("player"): lg for lg in sim_legs}
     sub_projs = []
     for lg in successful:
+        _slg = _sim_by_player.get(lg.get("player"), {})
         sub_projs.append({
             "player": lg.get("player"), "proj": lg.get("proj"),
             "sigma": lg.get("sigma"), "cv": lg.get("volatility_cv"),
@@ -5811,7 +5837,7 @@ def compute_combo_projection(
             "rest_days": lg.get("rest_days"),
             "sharpness": lg.get("sharpness_score"),
             "n_games_used": lg.get("n_games_used"),
-            "sim_mean": lg.get("sim_mean"), "sim_std": lg.get("sim_std"),
+            "sim_mean": _slg.get("sim_mean"), "sim_std": _slg.get("sim_std"),
         })
 
     n_games_min = min((int(lg.get("n_games_used") or 0) for lg in successful), default=0)
@@ -10017,7 +10043,7 @@ with tabs[2]:
                                 text=f"Scanning... {_scan_done_count}/{_scan_total} ({len(out_rows)} edges found)"
                             )
                         try:
-                            _combo_timeout = 120 if is_combo_market(mkt) else 30
+                            _combo_timeout = 180 if is_combo_market(mkt) else 30
                             leg = fut.result(timeout=_combo_timeout)
                         except TimeoutError:
                             dropped.append({"player": pname, "market": mkt, "reason": f"thread timeout (NBA API ≥{_combo_timeout}s)"})
