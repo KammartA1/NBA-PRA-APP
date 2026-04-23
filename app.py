@@ -5705,9 +5705,8 @@ def compute_combo_projection(
     z = (float(line) - combined_proj) / max(combined_sigma, 0.01)
     combined_p_over = float(np.clip(1.0 - _norm.cdf(z), 1e-4, 1 - 1e-4))
 
-    # ── Phase 2: Sim engine pass (scan_mode=False) ──
+    # ── Phase 2: Sim engine pass (scan_mode=False) — MANDATORY ──
     # Caches are warm from Phase 1, so only the sim engine (~15-20s) actually runs.
-    # Optional: if this times out or fails, analytical results from Phase 1 are used.
     _combo_sim_prob = None
     _combo_sim_mean = None
     _combo_sim_std  = None
@@ -5716,20 +5715,17 @@ def compute_combo_projection(
             player_name=pn.strip(), scan_mode=False, **_leg_kwargs)
 
     sim_legs = []
-    try:
-        with ThreadPoolExecutor(max_workers=len(player_names)) as ex:
-            sim_futs = {ex.submit(_run_leg_sim, pn): pn for pn in player_names}
-            for fut in sim_futs:
-                pn = sim_futs[fut]
-                try:
-                    res = fut.result(timeout=60)
-                    sim_legs.append(res)
-                except TimeoutError:
-                    errors.append(f"{pn}: sim pass timeout (>60s)")
-                except Exception as _e:
-                    errors.append(f"{pn}: sim pass error: {_e}")
-    except Exception:
-        pass
+    with ThreadPoolExecutor(max_workers=len(player_names)) as ex:
+        sim_futs = {ex.submit(_run_leg_sim, pn): pn for pn in player_names}
+        for fut in sim_futs:
+            pn = sim_futs[fut]
+            try:
+                res = fut.result(timeout=120)
+                sim_legs.append(res)
+            except TimeoutError:
+                errors.append(f"{pn}: sim pass timeout (>120s)")
+            except Exception as _e:
+                errors.append(f"{pn}: sim pass error: {_e}")
 
     _leg_sim_means = [lg.get("sim_mean") for lg in sim_legs if lg.get("sim_mean") is not None]
     _leg_sim_stds  = [lg.get("sim_std") for lg in sim_legs if lg.get("sim_std") is not None]
@@ -5829,8 +5825,10 @@ def compute_combo_projection(
     game_totals = [lg.get("game_total") for lg in successful if lg.get("game_total") is not None]
     game_spreads = [lg.get("game_spread") for lg in successful if lg.get("game_spread") is not None]
 
+    _sim_by_player = {lg.get("player"): lg for lg in sim_legs}
     sub_projs = []
     for lg in successful:
+        _slg = _sim_by_player.get(lg.get("player"), {})
         sub_projs.append({
             "player": lg.get("player"), "proj": lg.get("proj"),
             "sigma": lg.get("sigma"), "cv": lg.get("volatility_cv"),
@@ -5839,7 +5837,7 @@ def compute_combo_projection(
             "rest_days": lg.get("rest_days"),
             "sharpness": lg.get("sharpness_score"),
             "n_games_used": lg.get("n_games_used"),
-            "sim_mean": lg.get("sim_mean"), "sim_std": lg.get("sim_std"),
+            "sim_mean": _slg.get("sim_mean"), "sim_std": _slg.get("sim_std"),
         })
 
     n_games_min = min((int(lg.get("n_games_used") or 0) for lg in successful), default=0)
@@ -10045,7 +10043,7 @@ with tabs[2]:
                                 text=f"Scanning... {_scan_done_count}/{_scan_total} ({len(out_rows)} edges found)"
                             )
                         try:
-                            _combo_timeout = 120 if is_combo_market(mkt) else 30
+                            _combo_timeout = 180 if is_combo_market(mkt) else 30
                             leg = fut.result(timeout=_combo_timeout)
                         except TimeoutError:
                             dropped.append({"player": pname, "market": mkt, "reason": f"thread timeout (NBA API ≥{_combo_timeout}s)"})
