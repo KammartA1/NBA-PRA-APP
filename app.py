@@ -436,45 +436,13 @@ ODDS_MARKETS = {
     "2PA":             "player_two_point_field_goals_attempted",
     "Personal Fouls":  "player_personal_fouls",
     # ── Extended H1 markets (source from PP/UD only) ──
-    "H1 PR":           "player_points_rebounds_q1q2",
-    "H1 PA":           "player_points_assists_q1q2",
-    "H1 RA":           "player_rebounds_assists_q1q2",
-    "H1 FGM":          "player_field_goals_q1q2",
-    "H1 FGA":          "player_field_goals_attempted_q1q2",
-    "H1 FTM":          "player_free_throws_made_q1q2",
-    "H1 FTA":          "player_free_throws_attempted_q1q2",
-    "H1 Blocks":       "player_blocks_q1q2",
-    "H1 Steals":       "player_steals_q1q2",
-    "H1 Turnovers":    "player_turnovers_q1q2",
-    "H1 Stocks":       "player_blocks_steals_q1q2",
     "H1 Fantasy Score":"player_fantasy_points_q1q2",
     # ── Extended H2 markets ──
-    "H2 PR":           "player_points_rebounds_q3q4",
-    "H2 PA":           "player_points_assists_q3q4",
-    "H2 RA":           "player_rebounds_assists_q3q4",
     "H2 3PM":          "player_threes_q3q4",
-    "H2 FGM":          "player_field_goals_q3q4",
-    "H2 FGA":          "player_field_goals_attempted_q3q4",
-    "H2 FTM":          "player_free_throws_made_q3q4",
-    "H2 FTA":          "player_free_throws_attempted_q3q4",
-    "H2 Blocks":       "player_blocks_q3q4",
-    "H2 Steals":       "player_steals_q3q4",
-    "H2 Turnovers":    "player_turnovers_q3q4",
-    "H2 Stocks":       "player_blocks_steals_q3q4",
     "H2 Fantasy Score":"player_fantasy_points_q3q4",
-    # ── Extended Q1 markets ──
+    # ── Q1 markets actually on PrizePicks ──
     "Q1 3PM":          "player_threes_q1",
-    "Q1 PRA":          "player_points_rebounds_assists_q1",
-    "Q1 PR":           "player_points_rebounds_q1",
-    "Q1 PA":           "player_points_assists_q1",
-    "Q1 RA":           "player_rebounds_assists_q1",
-    "Q1 FGM":          "player_field_goals_q1",
-    "Q1 FGA":          "player_field_goals_attempted_q1",
     "Q1 FTM":          "player_free_throws_made_q1",
-    "Q1 FTA":          "player_free_throws_attempted_q1",
-    "Q1 Blocks":       "player_blocks_q1",
-    "Q1 Steals":       "player_steals_q1",
-    "Q1 Turnovers":    "player_turnovers_q1",
 }
 # Markets with no confirmed Odds API key — available via PP/UD/Sleeper only.
 # These will be skipped during Odds API fetches and the user will be warned.
@@ -482,15 +450,11 @@ ODDS_API_UNSUPPORTED_MARKETS = {
     "FGA", "3PA", "FTM", "FTA", "2PA", "Personal Fouls",
     # H1/H2 markets return HTTP 422 from Odds API — source from PrizePicks instead
     "H1 Points", "H1 Rebounds", "H1 Assists", "H1 3PM", "H1 PRA",
-    "H1 PR", "H1 PA", "H1 RA", "H1 FGM", "H1 FGA", "H1 FTM", "H1 FTA",
-    "H1 Blocks", "H1 Steals", "H1 Turnovers", "H1 Stocks", "H1 Fantasy Score",
+    "H1 Fantasy Score",
     "H2 Points", "H2 Rebounds", "H2 Assists", "H2 3PM", "H2 PRA",
-    "H2 PR", "H2 PA", "H2 RA", "H2 FGM", "H2 FGA", "H2 FTM", "H2 FTA",
-    "H2 Blocks", "H2 Steals", "H2 Turnovers", "H2 Stocks", "H2 Fantasy Score",
+    "H2 Fantasy Score",
     # Q1 markets — PP/UD only
-    "Q1 Points", "Q1 Rebounds", "Q1 Assists", "Q1 3PM", "Q1 PRA",
-    "Q1 PR", "Q1 PA", "Q1 RA", "Q1 FGM", "Q1 FGA", "Q1 FTM", "Q1 FTA",
-    "Q1 Blocks", "Q1 Steals", "Q1 Turnovers",
+    "Q1 Points", "Q1 Rebounds", "Q1 Assists", "Q1 3PM", "Q1 FTM",
 }
 # Same set but keyed by Odds API market key (for functions that work with raw API keys)
 _UNSUPPORTED_API_KEYS = {ODDS_MARKETS[m] for m in ODDS_API_UNSUPPORTED_MARKETS if m in ODDS_MARKETS}
@@ -699,76 +663,33 @@ STAT_FIELDS = {
     "FTA":             "FTA",
     "2PA":             ("FGA", "-FG3A"),  # FGA minus FG3A — handled specially in compute_stat_from_gamelog
     "Personal Fouls":  "PF",
-    # Extended H1 half-game markets (resolved to base fields, scaled via HALF_FACTOR)
-    "H1 PR":           ("PTS", "REB"),
-    "H1 PA":           ("PTS", "AST"),
-    "H1 RA":           ("REB", "AST"),
-    "H1 FGM":          "FGM",
-    "H1 FGA":          "FGA",
-    "H1 FTM":          "FTM",
-    "H1 FTA":          "FTA",
-    "H1 Blocks":       "BLK",
-    "H1 Steals":       "STL",
-    "H1 Turnovers":    "TOV",
-    "H1 Stocks":       ("BLK", "STL"),
+    # Extended H1/H2 half-game markets (resolved to base fields, scaled via HALF_FACTOR)
     "H1 Fantasy Score":("PTS", "REB", "AST", "BLK", "STL", "TOV"),
-    # Extended H2 half-game markets
-    "H2 PR":           ("PTS", "REB"),
-    "H2 PA":           ("PTS", "AST"),
-    "H2 RA":           ("REB", "AST"),
-    "H2 FGM":          "FGM",
-    "H2 FGA":          "FGA",
-    "H2 FTM":          "FTM",
-    "H2 FTA":          "FTA",
-    "H2 Blocks":       "BLK",
-    "H2 Steals":       "STL",
-    "H2 Turnovers":    "TOV",
-    "H2 Stocks":       ("BLK", "STL"),
     "H2 Fantasy Score":("PTS", "REB", "AST", "BLK", "STL", "TOV"),
-    # Q1 markets
+    # Q1 markets actually on PrizePicks
     "Q1 3PM":          "FG3M",
-    "Q1 PRA":          ("PTS", "REB", "AST"),
-    "Q1 PR":           ("PTS", "REB"),
-    "Q1 PA":           ("PTS", "AST"),
-    "Q1 RA":           ("REB", "AST"),
-    "Q1 FGM":          "FGM",
-    "Q1 FGA":          "FGA",
     "Q1 FTM":          "FTM",
-    "Q1 FTA":          "FTA",
-    "Q1 Blocks":       "BLK",
-    "Q1 Steals":       "STL",
-    "Q1 Turnovers":    "TOV",
 }
 # Half-game projection scale factors (league-average baseline)
 HALF_FACTOR = {
     "H1 Points": 0.52, "H1 Rebounds": 0.52, "H1 Assists": 0.52,
-    "H1 3PM": 0.52, "H1 PRA": 0.52, "H1 PR": 0.52, "H1 PA": 0.52, "H1 RA": 0.52,
-    "H1 FTM": 0.52, "H1 FTA": 0.52, "H1 FGM": 0.52, "H1 FGA": 0.52,
-    "H1 Blocks": 0.52, "H1 Steals": 0.52, "H1 Turnovers": 0.52,
-    "H1 Stocks": 0.52, "H1 Fantasy Score": 0.52,
+    "H1 3PM": 0.52, "H1 PRA": 0.52, "H1 Fantasy Score": 0.52,
     "H2 Points": 0.48, "H2 Rebounds": 0.48, "H2 Assists": 0.48,
-    "H2 3PM": 0.48, "H2 PRA": 0.48, "H2 PR": 0.48, "H2 PA": 0.48, "H2 RA": 0.48,
-    "H2 FTM": 0.48, "H2 FTA": 0.48, "H2 FGM": 0.48, "H2 FGA": 0.48,
-    "H2 Blocks": 0.48, "H2 Steals": 0.48, "H2 Turnovers": 0.48,
-    "H2 Stocks": 0.48, "H2 Fantasy Score": 0.48,
+    "H2 3PM": 0.48, "H2 PRA": 0.48, "H2 Fantasy Score": 0.48,
     # 1Q markets: Q1_SCORING_FRACTION of full-game (research-validated: 26.5%, not 25%)
     "Q1 Points": Q1_SCORING_FRACTION, "Q1 Rebounds": 0.25, "Q1 Assists": 0.25,
-    "Q1 3PM": 0.25, "Q1 PRA": Q1_SCORING_FRACTION, "Q1 FTM": 0.24, "Q1 FGA": Q1_SCORING_FRACTION,
-    "Q1 Blocks": 0.25, "Q1 Steals": 0.25, "Q1 Turnovers": 0.25,
-    "Q1 FGM": 0.25, "Q1 FTA": 0.25, "Q1 PA": Q1_SCORING_FRACTION,
-    "Q1 PR": Q1_SCORING_FRACTION, "Q1 RA": 0.25,
+    "Q1 3PM": 0.25, "Q1 FTM": 0.24,
 }
 # [AUDIT FIX] Position-specific half-game adjustment deltas on top of HALF_FACTOR baseline.
 # Guards attack more in H1 (faster pace, early shot attempts); Bigs grab more boards in H2
 # (closeouts, putbacks in crunch time); Wings are near-neutral.
 _HALF_POS_DELTA = {
     "Guard": {
-        "H1 Points": +0.02, "H1 3PM": +0.02, "H1 FGA": +0.02, "H1 FGM": +0.01,
-        "H2 Rebounds": -0.02, "H2 PR": -0.01,
+        "H1 Points": +0.02, "H1 3PM": +0.02,
+        "H2 Rebounds": -0.02,
     },
     "Big": {
-        "H2 Rebounds": +0.03, "H2 PR": +0.02, "H2 RA": +0.02,
-        "H1 FTM": -0.02, "H1 FTA": -0.02,   # fewer foul-drawing touches in H1
+        "H2 Rebounds": +0.03,
     },
     "Wing": {},   # near-neutral; real split captured by boxscore data when available
     "Unknown": {},
@@ -802,7 +723,7 @@ def get_half_factor(market_name, position_bucket="Unknown", spread_abs=None, gam
                 close_boost = -0.025  # Expected blowout: H2 scoring deflated (starters sit)
             else:
                 close_boost = 0.0
-            if market_name in ("H2 Points", "H2 PRA", "H2 PA", "H2 FTM", "H2 FTA", "H2 Fantasy Score"):
+            if market_name in ("H2 Points", "H2 PRA", "H2 Fantasy Score"):
                 base_adj = float(np.clip(base_adj + close_boost, 0.05, 0.60))
         except Exception:
             pass
@@ -834,77 +755,41 @@ POSITIONAL_PRIORS = {
     "Guard": {"Points":16.5,"Rebounds":3.4,"Assists":5.8,"3PM":2.1,
               "PRA":25.7,"PR":19.9,"PA":22.3,"RA":9.2,"Blocks":0.4,"Steals":1.2,"Turnovers":2.2,
               "Stocks":1.6,"Personal Fouls":2.3,"2PA":7.3,
-              "Q1 Points":4.1,"Q1 Rebounds":0.9,"Q1 Assists":1.5,"Q1 3PM":0.5,
-              "Q1 PRA":6.5,"Q1 PR":5.0,"Q1 PA":5.6,"Q1 RA":2.4,
-              "Q1 FGM":1.5,"Q1 FGA":3.4,"Q1 FTM":0.8,"Q1 FTA":1.0,
-              "Q1 Blocks":0.1,"Q1 Steals":0.3,"Q1 Turnovers":0.6,
+              "Q1 Points":4.1,"Q1 Rebounds":0.9,"Q1 Assists":1.5,"Q1 3PM":0.5,"Q1 FTM":0.8,
               "H1 Points":8.5,"H1 Rebounds":1.7,"H1 Assists":3.0,"H1 3PM":1.1,
-              "H1 PRA":13.2,"H1 PR":10.2,"H1 PA":11.5,"H1 RA":4.7,
-              "H1 FGM":3.0,"H1 FGA":7.0,"H1 FTM":1.7,"H1 FTA":2.0,
-              "H1 Blocks":0.2,"H1 Steals":0.6,"H1 Turnovers":1.1,"H1 Stocks":0.8,
-              "H1 Fantasy Score":16.2,
+              "H1 PRA":13.2,"H1 Fantasy Score":16.2,
               "H2 Points":8.0,"H2 Rebounds":1.7,"H2 Assists":2.8,"H2 3PM":1.0,
-              "H2 PRA":12.5,"H2 PR":9.7,"H2 PA":10.8,"H2 RA":4.5,
-              "H2 FGM":2.8,"H2 FGA":6.5,"H2 FTM":1.5,"H2 FTA":1.8,
-              "H2 Blocks":0.2,"H2 Steals":0.6,"H2 Turnovers":1.1,"H2 Stocks":0.8,
-              "H2 Fantasy Score":15.0,
+              "H2 PRA":12.5,"H2 Fantasy Score":15.0,
               "Fantasy Score":31.2,
               "FGM":5.8,"FGA":13.5,"3PA":6.2,"FTM":3.2,"FTA":3.8},
     "Wing":  {"Points":14.8,"Rebounds":5.9,"Assists":2.9,"3PM":1.6,
               "PRA":23.6,"PR":20.7,"PA":17.7,"RA":8.8,"Blocks":0.8,"Steals":1.0,"Turnovers":1.7,
               "Stocks":1.8,"Personal Fouls":2.5,"2PA":7.5,
-              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.7,"Q1 3PM":0.4,
-              "Q1 PRA":5.9,"Q1 PR":5.2,"Q1 PA":4.4,"Q1 RA":2.2,
-              "Q1 FGM":1.4,"Q1 FGA":3.0,"Q1 FTM":0.7,"Q1 FTA":0.8,
-              "Q1 Blocks":0.2,"Q1 Steals":0.3,"Q1 Turnovers":0.4,
+              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.7,"Q1 3PM":0.4,"Q1 FTM":0.7,
               "H1 Points":7.6,"H1 Rebounds":3.0,"H1 Assists":1.5,"H1 3PM":0.8,
-              "H1 PRA":12.1,"H1 PR":10.6,"H1 PA":9.1,"H1 RA":4.5,
-              "H1 FGM":2.8,"H1 FGA":6.2,"H1 FTM":1.4,"H1 FTA":1.7,
-              "H1 Blocks":0.4,"H1 Steals":0.5,"H1 Turnovers":0.9,"H1 Stocks":0.9,
-              "H1 Fantasy Score":14.2,
+              "H1 PRA":12.1,"H1 Fantasy Score":14.2,
               "H2 Points":7.2,"H2 Rebounds":2.9,"H2 Assists":1.4,"H2 3PM":0.8,
-              "H2 PRA":11.5,"H2 PR":10.1,"H2 PA":8.6,"H2 RA":4.3,
-              "H2 FGM":2.6,"H2 FGA":5.8,"H2 FTM":1.2,"H2 FTA":1.5,
-              "H2 Blocks":0.4,"H2 Steals":0.5,"H2 Turnovers":0.8,"H2 Stocks":0.9,
-              "H2 Fantasy Score":13.2,
+              "H2 PRA":11.5,"H2 Fantasy Score":13.2,
               "Fantasy Score":27.4,
               "FGM":5.4,"FGA":12.0,"3PA":4.5,"FTM":2.6,"FTA":3.2},
     "Big":   {"Points":13.2,"Rebounds":8.8,"Assists":2.1,"3PM":0.5,
               "PRA":24.1,"PR":22.0,"PA":15.3,"RA":10.9,"Blocks":1.4,"Steals":0.7,"Turnovers":2.0,
               "Stocks":2.1,"Personal Fouls":3.2,"2PA":9.1,
-              "Q1 Points":3.3,"Q1 Rebounds":2.2,"Q1 Assists":0.5,"Q1 3PM":0.1,
-              "Q1 PRA":6.0,"Q1 PR":5.5,"Q1 PA":3.8,"Q1 RA":2.7,
-              "Q1 FGM":1.3,"Q1 FGA":2.6,"Q1 FTM":0.8,"Q1 FTA":1.0,
-              "Q1 Blocks":0.4,"Q1 Steals":0.2,"Q1 Turnovers":0.5,
+              "Q1 Points":3.3,"Q1 Rebounds":2.2,"Q1 Assists":0.5,"Q1 3PM":0.1,"Q1 FTM":0.8,
               "H1 Points":6.8,"H1 Rebounds":4.4,"H1 Assists":1.1,"H1 3PM":0.3,
-              "H1 PRA":12.3,"H1 PR":11.2,"H1 PA":7.9,"H1 RA":5.5,
-              "H1 FGM":2.6,"H1 FGA":5.5,"H1 FTM":1.6,"H1 FTA":2.1,
-              "H1 Blocks":0.7,"H1 Steals":0.4,"H1 Turnovers":1.0,"H1 Stocks":1.1,
-              "H1 Fantasy Score":15.9,
+              "H1 PRA":12.3,"H1 Fantasy Score":15.9,
               "H2 Points":6.4,"H2 Rebounds":4.4,"H2 Assists":1.0,"H2 3PM":0.2,
-              "H2 PRA":11.8,"H2 PR":10.8,"H2 PA":7.4,"H2 RA":5.4,
-              "H2 FGM":2.4,"H2 FGA":5.0,"H2 FTM":1.4,"H2 FTA":1.9,
-              "H2 Blocks":0.7,"H2 Steals":0.3,"H2 Turnovers":1.0,"H2 Stocks":1.0,
-              "H2 Fantasy Score":14.6,
+              "H2 PRA":11.8,"H2 Fantasy Score":14.6,
               "Fantasy Score":30.5,
               "FGM":5.0,"FGA":10.5,"3PA":1.4,"FTM":3.0,"FTA":4.0},
     "Unknown":{"Points":14.8,"Rebounds":5.5,"Assists":3.5,"3PM":1.4,
               "PRA":23.8,"PR":20.3,"PA":18.3,"RA":9.0,"Blocks":0.8,"Steals":0.9,"Turnovers":1.9,
               "Stocks":1.7,"Personal Fouls":2.7,"2PA":8.0,
-              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.9,"Q1 3PM":0.4,
-              "Q1 PRA":6.1,"Q1 PR":5.2,"Q1 PA":4.6,"Q1 RA":2.4,
-              "Q1 FGM":1.4,"Q1 FGA":3.0,"Q1 FTM":0.7,"Q1 FTA":0.9,
-              "Q1 Blocks":0.2,"Q1 Steals":0.2,"Q1 Turnovers":0.5,
+              "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.9,"Q1 3PM":0.4,"Q1 FTM":0.7,
               "H1 Points":7.6,"H1 Rebounds":2.8,"H1 Assists":1.8,"H1 3PM":0.7,
-              "H1 PRA":12.2,"H1 PR":10.4,"H1 PA":9.4,"H1 RA":4.6,
-              "H1 FGM":2.8,"H1 FGA":6.2,"H1 FTM":1.5,"H1 FTA":1.9,
-              "H1 Blocks":0.4,"H1 Steals":0.5,"H1 Turnovers":1.0,"H1 Stocks":0.9,
-              "H1 Fantasy Score":15.4,
+              "H1 PRA":12.2,"H1 Fantasy Score":15.4,
               "H2 Points":7.2,"H2 Rebounds":2.7,"H2 Assists":1.7,"H2 3PM":0.7,
-              "H2 PRA":11.6,"H2 PR":9.9,"H2 PA":8.9,"H2 RA":4.4,
-              "H2 FGM":2.6,"H2 FGA":5.8,"H2 FTM":1.4,"H2 FTA":1.7,
-              "H2 Blocks":0.4,"H2 Steals":0.4,"H2 Turnovers":0.9,"H2 Stocks":0.8,
-              "H2 Fantasy Score":14.3,
+              "H2 PRA":11.6,"H2 Fantasy Score":14.3,
               "Fantasy Score":29.7,
               "FGM":5.4,"FGA":12.0,"3PA":4.0,"FTM":2.9,"FTA":3.6},
 }
@@ -925,19 +810,11 @@ LAMBDA_DECAY_BY_STAT = {
     "Personal Fouls": 0.80, "2PA": 0.82,
     "FGM": 0.84, "FGA": 0.83, "3PA": 0.80, "FTM": 0.82, "FTA": 0.82,
     "H1 Points": 0.85, "H1 Rebounds": 0.82, "H1 Assists": 0.85, "H1 3PM": 0.80,
-    "H1 PRA": 0.84, "H1 PR": 0.83, "H1 PA": 0.84, "H1 RA": 0.82,
-    "H1 FGM": 0.84, "H1 FGA": 0.83, "H1 FTM": 0.82, "H1 FTA": 0.82,
-    "H1 Blocks": 0.78, "H1 Steals": 0.80, "H1 Turnovers": 0.83,
-    "H1 Stocks": 0.78, "H1 Fantasy Score": 0.85,
+    "H1 PRA": 0.84, "H1 Fantasy Score": 0.85,
     "H2 Points": 0.85, "H2 Rebounds": 0.82, "H2 Assists": 0.85, "H2 3PM": 0.80,
-    "H2 PRA": 0.84, "H2 PR": 0.83, "H2 PA": 0.84, "H2 RA": 0.82,
-    "H2 FGM": 0.84, "H2 FGA": 0.83, "H2 FTM": 0.82, "H2 FTA": 0.82,
-    "H2 Blocks": 0.78, "H2 Steals": 0.80, "H2 Turnovers": 0.83,
-    "H2 Stocks": 0.78, "H2 Fantasy Score": 0.85,
+    "H2 PRA": 0.84, "H2 Fantasy Score": 0.85,
     "Q1 Points": 0.84, "Q1 Rebounds": 0.81, "Q1 Assists": 0.84, "Q1 3PM": 0.79,
-    "Q1 PRA": 0.83, "Q1 PR": 0.82, "Q1 PA": 0.83, "Q1 RA": 0.81,
-    "Q1 FGM": 0.83, "Q1 FGA": 0.82, "Q1 FTM": 0.81, "Q1 FTA": 0.81,
-    "Q1 Blocks": 0.77, "Q1 Steals": 0.79, "Q1 Turnovers": 0.82,
+    "Q1 FTM": 0.81,
     "Alt Points": 0.85, "Alt Rebounds": 0.82, "Alt Assists": 0.85, "Alt 3PM": 0.80,
     "Fantasy Score": 0.85,
     "default": 0.85,
@@ -4455,6 +4332,11 @@ def map_platform_stat_to_market(stat_type):
         # ── Fantasy / DFS ─────────────────────────────────────────────────
         "Fantasy Score": "Fantasy Score", "Fantasy Points": "Fantasy Score",
         "DFS Points": "Fantasy Score", "FP": "Fantasy Score",
+        # ── Alternate lines (Odds API only) ───────────────────────────────
+        "Alt Points": "Alt Points", "Alt Rebounds": "Alt Rebounds",
+        "Alt Assists": "Alt Assists", "Alt 3PM": "Alt 3PM",
+        # ── First Basket (Odds API only) ──────────────────────────────────
+        "First Basket": "First Basket", "1st Basket": "First Basket",
         # ── Binary / special ──────────────────────────────────────────────
         "Double Double": "Double Double", "Double-Double": "Double Double",
         "Dbl Dbl": "Double Double", "DD": "Double Double",
@@ -4508,62 +4390,16 @@ def map_platform_stat_to_market(stat_type):
         "Q1 3 Pointers Made": "Q1 3PM",
         "Q1 Free Throws Made": "Q1 FTM", "Q1 FTM": "Q1 FTM", "1Q FTM": "Q1 FTM",
         "1st Quarter Free Throws Made": "Q1 FTM",
-        "Q1 FTA": "Q1 FTA", "1Q FTA": "Q1 FTA",
-        "Q1 PRA": "Q1 PRA", "1Q PRA": "Q1 PRA",
-        "1st Quarter PRA": "Q1 PRA", "Q1 Pts+Reb+Ast": "Q1 PRA",
-        "Q1 PR": "Q1 PR", "Q1 Pts+Reb": "Q1 PR",
-        "Q1 PA": "Q1 PA", "Q1 Pts+Ast": "Q1 PA",
-        "Q1 RA": "Q1 RA", "Q1 Reb+Ast": "Q1 RA",
-        "Q1 Blocks": "Q1 Blocks", "1Q Blocks": "Q1 Blocks",
-        "Q1 Steals": "Q1 Steals", "1Q Steals": "Q1 Steals",
-        "Q1 Turnovers": "Q1 Turnovers", "1Q Turnovers": "Q1 Turnovers",
-        # ── Extended H1 markets ─────────────────────────────────────────
-        "H1 PR": "H1 PR", "1H PR": "H1 PR", "1st Half PR": "H1 PR",
-        "H1 Pts+Reb": "H1 PR", "1st Half Pts+Reb": "H1 PR",
-        "H1 PA": "H1 PA", "1H PA": "H1 PA", "1st Half PA": "H1 PA",
-        "H1 Pts+Ast": "H1 PA", "1st Half Pts+Ast": "H1 PA",
-        "H1 RA": "H1 RA", "1H RA": "H1 RA", "1st Half RA": "H1 RA",
-        "H1 Reb+Ast": "H1 RA", "1st Half Reb+Ast": "H1 RA",
-        "H1 FGM": "H1 FGM", "1H FGM": "H1 FGM",
-        "1st Half FG Made": "H1 FGM", "H1 Field Goals Made": "H1 FGM",
-        "H1 FGA": "H1 FGA", "1H FGA": "H1 FGA",
-        "1st Half FG Attempted": "H1 FGA", "H1 Field Goals Attempted": "H1 FGA",
-        "H1 FTM": "H1 FTM", "1H FTM": "H1 FTM",
-        "1st Half Free Throws Made": "H1 FTM", "H1 Free Throws Made": "H1 FTM",
-        "H1 FTA": "H1 FTA", "1H FTA": "H1 FTA",
-        "1st Half Free Throws Attempted": "H1 FTA",
-        "H1 Blocks": "H1 Blocks", "1H Blocks": "H1 Blocks",
-        "1st Half Blocks": "H1 Blocks", "H1 Blocked Shots": "H1 Blocks",
-        "H1 Steals": "H1 Steals", "1H Steals": "H1 Steals",
-        "1st Half Steals": "H1 Steals",
-        "H1 Turnovers": "H1 Turnovers", "1H Turnovers": "H1 Turnovers",
-        "1st Half Turnovers": "H1 Turnovers",
-        "H1 Stocks": "H1 Stocks", "H1 Blks+Stls": "H1 Stocks",
-        "1st Half Blks+Stls": "H1 Stocks",
+        # ── Extended H1 markets (only those on PrizePicks) ──────────────
         "H1 Fantasy Score": "H1 Fantasy Score", "1H Fantasy Score": "H1 Fantasy Score",
         "1st Half Fantasy Score": "H1 Fantasy Score", "H1 Fantasy Points": "H1 Fantasy Score",
         "1st Half Fantasy Points": "H1 Fantasy Score",
         "H1 Pts+Rebs+Asts": "H1 PRA",
         # ── Extended H2 markets ─────────────────────────────────────────
-        "H2 PR": "H2 PR", "2H PR": "H2 PR", "2nd Half PR": "H2 PR",
-        "H2 Pts+Reb": "H2 PR",
-        "H2 PA": "H2 PA", "2H PA": "H2 PA", "2nd Half PA": "H2 PA",
-        "H2 Pts+Ast": "H2 PA",
-        "H2 RA": "H2 RA", "2H RA": "H2 RA", "2nd Half RA": "H2 RA",
-        "H2 Reb+Ast": "H2 RA",
         "H2 3PM": "H2 3PM", "2H 3PM": "H2 3PM",
         "2nd Half 3-Pointers Made": "H2 3PM", "H2 3-PT Made": "H2 3PM",
         "2nd Half 3-PT Made": "H2 3PM", "H2 3PT Made": "H2 3PM",
         "H2 3-Pointers Made": "H2 3PM",
-        "H2 FGM": "H2 FGM", "2H FGM": "H2 FGM",
-        "H2 FGA": "H2 FGA", "2H FGA": "H2 FGA",
-        "H2 FTM": "H2 FTM", "2H FTM": "H2 FTM",
-        "2nd Half Free Throws Made": "H2 FTM",
-        "H2 FTA": "H2 FTA", "2H FTA": "H2 FTA",
-        "H2 Blocks": "H2 Blocks", "2H Blocks": "H2 Blocks",
-        "H2 Steals": "H2 Steals", "2H Steals": "H2 Steals",
-        "H2 Turnovers": "H2 Turnovers", "2H Turnovers": "H2 Turnovers",
-        "H2 Stocks": "H2 Stocks", "H2 Blks+Stls": "H2 Stocks",
         "H2 Fantasy Score": "H2 Fantasy Score", "2H Fantasy Score": "H2 Fantasy Score",
         "2nd Half Fantasy Score": "H2 Fantasy Score", "H2 Fantasy Points": "H2 Fantasy Score",
         # ── Combo bets (player-pair combinations from PrizePicks) ──────
@@ -6663,13 +6499,14 @@ def compute_leg_projection(
             sharp_div = sharp_divergence_alert(meta["event_id"], mk_key, player_norm, side_str, side_str) or {}
         except Exception: sharp_div = {}
     # [UPGRADE NEW] L3/L5/L10 trend convergence
+    # For half/Q1 markets using full-game fallback: scale stat_series so L3/L5/L10 match the period
+    _trend_series = stat_series
+    if is_half_market and half_factor < 1.0 and not stat_series.empty:
+        _trend_series = stat_series * half_factor
     _trend_score, _trend_label, _trend_slope, _l3, _l5, _l10 = compute_trend_convergence(
-        stat_series, float(line), side=side_str)
-    # [v4.0 UPGRADE] Consecutive streak signal — combined with reversion nudge in single apply.
-    # [AUDIT FIX] Using combined nudge prevents double-counting from reversion + streak signals.
-    # Only the STRONGER of the two signals contributes beyond the base; capped at ±0.045 total.
+        _trend_series, float(line), side=side_str)
     _streak_count, _streak_label, _streak_signal = compute_consecutive_streak(
-        stat_series, float(line), side=side_str)
+        _trend_series, float(line), side=side_str)
     # Combine: streak and reversion directional agreement → additive up to cap
     #           streak and reversion in opposition → take the stronger one
     _str_same_dir = (_streak_signal >= 0) == (_combined_streak_reversion_nudge >= 0) or _streak_signal == 0
@@ -8790,16 +8627,30 @@ with tabs[1]:
                     if pid:
                         gl_exp, _ = fetch_player_gamelog(player_id=pid, max_games=10)
                         if not gl_exp.empty:
-                            s_exp = compute_stat_from_gamelog(gl_exp, _mkt_exp.replace("H1 ","").replace("H2 ",""))
-                            s_exp = pd.to_numeric(s_exp, errors="coerce").dropna().reset_index(drop=True)
-                            if not s_exp.empty:
+                            _is_period_mkt = _mkt_exp in HALF_FACTOR
+                            _chart_label = _mkt_exp
+                            s_exp = None
+                            if _is_period_mkt:
+                                _hg = fetch_player_halfgame_log(pid, gl_exp, _mkt_exp, n_games=10)
+                                if _hg is not None and len(_hg.dropna()) >= 3:
+                                    s_exp = pd.to_numeric(_hg, errors="coerce").dropna().reset_index(drop=True)
+                                    _chart_label = f"{_mkt_exp} (real splits)"
+                            if s_exp is None or s_exp.empty:
+                                _base_mkt = _mkt_exp.replace("H1 ","").replace("H2 ","").replace("Q1 ","")
+                                s_exp = compute_stat_from_gamelog(gl_exp, _base_mkt)
+                                s_exp = pd.to_numeric(s_exp, errors="coerce").dropna().reset_index(drop=True)
+                                if _is_period_mkt and not s_exp.empty:
+                                    _hf = HALF_FACTOR.get(_mkt_exp, 1.0)
+                                    s_exp = (s_exp * _hf).round(1)
+                                    _chart_label = f"{_mkt_exp} (scaled ×{_hf})"
+                            if s_exp is not None and not s_exp.empty:
                                 chart_df = pd.DataFrame({
                                     "Game": [f"G-{i+1}" for i in range(len(s_exp))],
                                     "Actual": s_exp.values,
                                     "Line":   [float(leg.get("line", 0))] * len(s_exp),
                                 })
                                 chart_df = chart_df.set_index("Game")
-                                st.caption(f"Last {len(s_exp)} games — {_mkt_exp}")
+                                st.caption(f"Last {len(s_exp)} games — {_chart_label}")
                                 st.bar_chart(chart_df, use_container_width=True, height=180)
                     d1, d2, d3 = st.columns(3)
                     d1.metric("Proj Minutes",
