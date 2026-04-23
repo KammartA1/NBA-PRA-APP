@@ -3489,11 +3489,22 @@ _PP_NBA_LEAGUE_PREFIXES = ("NBA",)  # matches "NBA", "NBA 1Q", "NBA 1H", "NBA 2H
 
 def _pp_league_is_nba(league_str: str) -> bool:
     """Return True if the league string is any NBA variant from PrizePicks API.
-    Handles: 'NBA', 'NBA1H', 'NBA1Q', 'NBA 1H', 'NBA_2H', 'NBA (1H)', etc.
-    Excludes: 'WNBASZN', 'NBB', 'AUSNBL' — must start with exactly 'NBA'.
+    Handles: 'NBA', 'NBA1H', 'NBA1Q', 'NBA Props', 'NBA Combos', 'NBAPROPS', etc.
+    Excludes: 'WNBA', 'NBB', 'AUSNBL' — must start with exactly 'NBA' (not WNBA etc).
     """
     s = re.sub(r"[\s_\-\(\)]+", "", str(league_str or "").upper()).strip()
-    return s == "NBA" or (s.startswith("NBA") and len(s) > 3 and s[3:4].isdigit())
+    if not s.startswith("NBA"):
+        return False
+    if s == "NBA":
+        return True
+    # Reject WNBA-like strings that happen to contain NBA
+    # After stripping, remaining chars after "NBA" tell us what variant:
+    # digits = period (1H, 2H, 1Q) — accept
+    # alpha = specialty (PROPS, COMBOS, SPECIAL, SZN) — accept if it's NBA-prefixed
+    suffix = s[3:]
+    # Reject if the preceding character isn't the start (i.e. it's WNBA, not NBA)
+    # Already handled by startswith("NBA") check above
+    return True
 
 def _pp_league_half_prefix(league_str: str) -> str:
     """Return 'H1 ', 'H2 ', 'Q1 ' etc. if the league indicates a period, else ''."""
