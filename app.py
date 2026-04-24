@@ -16,7 +16,7 @@
 import os, re, math, time, json, difflib, hashlib, logging, threading, html as _html
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import numpy as np
 import requests
@@ -10042,31 +10042,33 @@ with tabs[2]:
                         game_date=scan_start, injury_team_map=_inj_map, scan_mode=True,
                     )
                 with ThreadPoolExecutor(max_workers=_scan_workers) as ex:
-                    futs = [ex.submit(_dispatch_candidate, pname, mkt, line, meta)
-                            for pname, mkt, line, meta in candidates]
-                    for (pname, mkt, line, meta), fut in zip(candidates, futs):
+                    fut_map = {
+                        ex.submit(_dispatch_candidate, pname, mkt, line, meta): (pname, mkt, line, meta)
+                        for pname, mkt, line, meta in candidates
+                    }
+                    _last_progress_time = time.time()
+                    for fut in as_completed(fut_map):
+                        pname, mkt, line, meta = fut_map[fut]
                         _scan_done_count += 1
-                        if _scan_total > 0 and (_scan_done_count % 10 == 0 or _scan_done_count == _scan_total):
+                        _now = time.time()
+                        if _scan_total > 0 and (_scan_done_count % 10 == 0 or _scan_done_count == _scan_total or _now - _last_progress_time >= 3.0):
                             _scan_progress.progress(
                                 min(_scan_done_count / _scan_total, 1.0),
                                 text=f"Scanning... {_scan_done_count}/{_scan_total} ({len(out_rows)} edges found)"
                             )
+                            _last_progress_time = _now
                         try:
-                            _combo_timeout = 180 if is_combo_market(mkt) else 30
-                            leg = fut.result(timeout=_combo_timeout)
+                            leg = fut.result(timeout=5)
                         except TimeoutError:
-                            dropped.append({"player": pname, "market": mkt, "reason": f"thread timeout (NBA API ≥{_combo_timeout}s)"})
+                            dropped.append({"player": pname, "market": mkt, "reason": "thread timeout"})
                             continue
                         except Exception as _te:
                             dropped.append({"player": pname, "market": mkt, "reason": f"thread error: {type(_te).__name__}: {_te}"})
                             continue
                         leg = recompute_pricing_fields(leg, st.session_state.get("calibrator_map"))
-                        # [FEATURE] Capture every computed leg for Under scan (before gate filter)
                         all_computed_legs.append((pname, mkt, float(line), meta, leg))
                         if not leg.get("gate_ok"):
                             dropped.append({"player":pname,"market":mkt,"reason":leg.get("gate_reason","gated")}); continue
-                        # [AUDIT FIX] Use p_cal exclusively after recompute_pricing_fields;
-                        # p_over fallback could use uncalibrated bootstrap prob which bypasses isotonic correction
                         pc = leg.get("p_cal")
                         if pc is None:
                             dropped.append({"player":pname,"market":mkt,"reason":"p_cal None (calibration failed)"}); continue
@@ -10086,8 +10088,8 @@ with tabs[2]:
                             str(meta.get("book","")).lower(), meta.get("book","") or "odds"
                         )
                         out_rows.append({
-                            "side": "Over",           # [AUDIT FIX] explicit side for schema parity with Under rows
-                            "src": _src_badge,        # PP / UD / book name
+                            "side": "Over",
+                            "src": _src_badge,
                             "player":pname,"market":mkt,"line":line,
                             "player_norm": normalize_name(pname),
                             "market_key": leg.get("market_key", ODDS_MARKETS.get(mkt, "")),
@@ -10103,18 +10105,16 @@ with tabs[2]:
                             "b2b": "B2B" if leg.get("b2b") else "",
                             "dnp_risk": "DNP?" if leg.get("dnp_risk") else "",
                             "vol_cv":safe_round(leg.get("volatility_cv")),
-                            "rest_d":int(leg.get("rest_days",2)),       # [AUDIT FIX] explicit int
+                            "rest_d":int(leg.get("rest_days",2)),
                             "line_mv":mv.get("direction","--"),
-                            "mv_pips":float(mv.get("pips",0.0)),        # [AUDIT FIX] explicit float
+                            "mv_pips":float(mv.get("pips",0.0)),
                             "steam": "STEAM" if mv.get("steam") else ("FADE" if mv.get("fade") else ""),
                             "stake_$":round(leg.get("stake",0),2),
-                            "n_games":int(leg.get("n_games_used",0)),   # [AUDIT FIX] explicit int
+                            "n_games":int(leg.get("n_games_used",0)),
                             "inj_boost": inj_flag,
                             "min_proj": safe_round(leg.get("proj_minutes"),0),
-                            # DFS columns — edge above the 50% flat floor
                             "pp_edge_%": round((pc - 0.50) * 100, 1),
                             "pp_2leg_ev_%": round((DFS_PP_PAYOUTS[2] * pc**2 - 1.0) * 100, 1),
-                            # [UPGRADE NEW] composite sharpness + trend signals
                             "sharp": safe_round(leg.get("sharpness_score"), 0),
                             "sharp_tier": leg.get("sharpness_tier", ""),
                             "trend": leg.get("trend_label", ""),
@@ -10364,7 +10364,7 @@ with tabs[2]:
                         }): t[0]
                         for t in _ref_odds_legs
                     }
-                    for _ref_fut in _ref_line_futs:
+                    for _ref_fut in as_completed(_ref_line_futs):
                         _ridx = _ref_line_futs[_ref_fut]
                         try:
                             _rl, _rp, _rb, _re = _ref_fut.result(timeout=15)
@@ -10415,7 +10415,7 @@ with tabs[2]:
                     ): (ridx, rpn, rmk, rln, rmt)
                     for ridx, rpn, rmk, rln, rmt in _ref_recompute_tasks
                 }
-                for _ref_fut2 in _ref_futs2:
+                for _ref_fut2 in as_completed(_ref_futs2):
                     _ref_done += 1
                     if _ref_total > 0 and (_ref_done % 10 == 0 or _ref_done == _ref_total):
                         _ref_progress.progress(
