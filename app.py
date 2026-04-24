@@ -10009,7 +10009,7 @@ with tabs[2]:
                     with st.spinner("Loading all NBA game logs (one-time ~20s)..."):
                         _fetch_bulk_gamelogs.clear()
                         bulk_ready = _fetch_bulk_gamelogs() is not None
-                _scan_workers = min(32, len(candidates)) if bulk_ready else min(10, len(candidates))
+                _scan_workers = min(16, len(candidates)) if bulk_ready else min(6, len(candidates))
                 if not bulk_ready:
                     st.warning(
                         f"Bulk game log load failed — scanning with {_scan_workers} workers "
@@ -10046,7 +10046,7 @@ with tabs[2]:
                             for pname, mkt, line, meta in candidates]
                     for (pname, mkt, line, meta), fut in zip(candidates, futs):
                         _scan_done_count += 1
-                        if _scan_total > 0:
+                        if _scan_total > 0 and (_scan_done_count % 10 == 0 or _scan_done_count == _scan_total):
                             _scan_progress.progress(
                                 min(_scan_done_count / _scan_total, 1.0),
                                 text=f"Scanning... {_scan_done_count}/{_scan_total} ({len(out_rows)} edges found)"
@@ -10400,7 +10400,7 @@ with tabs[2]:
                         _ref_meta["price"] = _ref_new_lines[_ref_idx][1]
                 _ref_recompute_tasks.append((_ref_idx, _ref_pname, _ref_mkt, _ref_line, _ref_meta))
             _ref_done = 0
-            with ThreadPoolExecutor(max_workers=min(32, len(_ref_recompute_tasks))) as _ref_ex2:
+            with ThreadPoolExecutor(max_workers=min(16, len(_ref_recompute_tasks))) as _ref_ex2:
                 _ref_futs2 = {
                     _ref_ex2.submit(
                         compute_leg_projection, rpn, rmk, rln, rmt,
@@ -10417,10 +10417,11 @@ with tabs[2]:
                 }
                 for _ref_fut2 in _ref_futs2:
                     _ref_done += 1
-                    _ref_progress.progress(
-                        min(_ref_done / _ref_total, 1.0),
-                        text=f"Refreshing... {_ref_done}/{_ref_total} ({_ref_updated} updated)"
-                    )
+                    if _ref_total > 0 and (_ref_done % 10 == 0 or _ref_done == _ref_total):
+                        _ref_progress.progress(
+                            min(_ref_done / _ref_total, 1.0),
+                            text=f"Refreshing... {_ref_done}/{_ref_total} ({_ref_updated} updated)"
+                        )
                     _ridx2, _rpn2, _rmk2, _rln2, _rmt2 = _ref_futs2[_ref_fut2]
                     try:
                         _ref_leg = _ref_fut2.result(timeout=30)
@@ -10527,10 +10528,11 @@ with tabs[2]:
                 for _pn, _mk, _ln, _mt in _se_candidates:
                     _se_meta_map[(normalize_name(_pn), _mk, float(_ln))] = _mt
                 for _se_i, (_se_idx, _se_row) in enumerate(scanner_out.iterrows()):
-                    _se_progress.progress(
-                        min((_se_i + 1) / _se_total, 1.0),
-                        text=f"Sim-enhancing... {_se_i + 1}/{_se_total} ({_se_upgraded} upgraded)"
-                    )
+                    if _se_total > 0 and ((_se_i + 1) % 5 == 0 or _se_i + 1 == _se_total):
+                        _se_progress.progress(
+                            min((_se_i + 1) / _se_total, 1.0),
+                            text=f"Sim-enhancing... {_se_i + 1}/{_se_total} ({_se_upgraded} upgraded)"
+                        )
                     _se_pname = str(_se_row.get("player", ""))
                     _se_mkt = str(_se_row.get("market", ""))
                     _se_line = float(_se_row.get("line", 0))
