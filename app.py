@@ -5714,27 +5714,28 @@ def compute_combo_projection(
     z = (float(line) - combined_proj) / max(combined_sigma, 0.01)
     combined_p_over = float(np.clip(1.0 - _norm.cdf(z), 1e-4, 1 - 1e-4))
 
-    # ── Phase 2: Sim engine pass (scan_mode=False) — MANDATORY ──
+    # ── Phase 2: Sim engine pass (only when called from Model tab, not scanner) ──
     # Caches are warm from Phase 1, so only the sim engine (~15-20s) actually runs.
     _combo_sim_prob = None
     _combo_sim_mean = None
     _combo_sim_std  = None
-    def _run_leg_sim(pn):
-        return compute_leg_projection(
-            player_name=pn.strip(), scan_mode=False, **_leg_kwargs)
-
     sim_legs = []
-    with ThreadPoolExecutor(max_workers=len(player_names)) as ex:
-        sim_futs = {ex.submit(_run_leg_sim, pn): pn for pn in player_names}
-        for fut in sim_futs:
-            pn = sim_futs[fut]
-            try:
-                res = fut.result(timeout=120)
-                sim_legs.append(res)
-            except TimeoutError:
-                errors.append(f"{pn}: sim pass timeout (>120s)")
-            except Exception as _e:
-                errors.append(f"{pn}: sim pass error: {_e}")
+    if not scan_mode:
+        def _run_leg_sim(pn):
+            return compute_leg_projection(
+                player_name=pn.strip(), scan_mode=False, **_leg_kwargs)
+
+        with ThreadPoolExecutor(max_workers=len(player_names)) as ex:
+            sim_futs = {ex.submit(_run_leg_sim, pn): pn for pn in player_names}
+            for fut in sim_futs:
+                pn = sim_futs[fut]
+                try:
+                    res = fut.result(timeout=120)
+                    sim_legs.append(res)
+                except TimeoutError:
+                    errors.append(f"{pn}: sim pass timeout (>120s)")
+                except Exception as _e:
+                    errors.append(f"{pn}: sim pass error: {_e}")
 
     _leg_sim_means = [lg.get("sim_mean") for lg in sim_legs if lg.get("sim_mean") is not None]
     _leg_sim_stds  = [lg.get("sim_std") for lg in sim_legs if lg.get("sim_std") is not None]
@@ -11108,7 +11109,8 @@ with tabs[3]:
                                     bankroll=bankroll, frac_kelly=frac_kelly,
                                     market_prior_weight=market_prior_weight,
                                     exclude_chaotic=bool(exclude_chaotic),
-                                    game_date=date.today(), injury_team_map=_inj_map)
+                                    game_date=date.today(), injury_team_map=_inj_map,
+                                    scan_mode=True)
                         return compute_leg_projection(
                             pn, mk, ln, mt,
                             n_games=n_games, key_teammate_out=False,
@@ -11275,7 +11277,8 @@ with tabs[3]:
                                     bankroll=bankroll, frac_kelly=frac_kelly,
                                     market_prior_weight=market_prior_weight,
                                     exclude_chaotic=bool(exclude_chaotic),
-                                    game_date=date.today(), injury_team_map=_inj_map)
+                                    game_date=date.today(), injury_team_map=_inj_map,
+                                    scan_mode=True)
                         return compute_leg_projection(
                             pn, mk, ln, mt,
                             n_games=n_games, key_teammate_out=False,
