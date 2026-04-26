@@ -7843,6 +7843,16 @@ section[data-testid="stSidebar"] {
 }
 </style></div>
 """)
+# ─── KEEPALIVE: prevent Streamlit Cloud from sleeping ─────────
+st.html("""<script>
+(function(){
+  if(window._keepAlive) clearInterval(window._keepAlive);
+  window._keepAlive = setInterval(function(){
+    try { fetch(window.location.href, {method:'HEAD', cache:'no-store'}); }
+    catch(e){}
+  }, 45000);
+})();
+</script>""")
 # ─── AUTH GATE ────────────────────────────────────────────────
 # ── Cookie-based session persistence ──────────────────────────
 _cookie_ctrl = CookieController(key="auth_cookie_ctrl")
