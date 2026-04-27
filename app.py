@@ -5730,10 +5730,10 @@ def compute_combo_projection(
             for fut in sim_futs:
                 pn = sim_futs[fut]
                 try:
-                    res = fut.result(timeout=120)
+                    res = fut.result(timeout=300)
                     sim_legs.append(res)
                 except TimeoutError:
-                    errors.append(f"{pn}: sim pass timeout (>120s)")
+                    errors.append(f"{pn}: sim pass timeout (>300s)")
                 except Exception as _e:
                     errors.append(f"{pn}: sim pass error: {_e}")
 
@@ -7843,16 +7843,6 @@ section[data-testid="stSidebar"] {
 }
 </style></div>
 """)
-# ─── KEEPALIVE: prevent Streamlit Cloud from sleeping ─────────
-st.html("""<script>
-(function(){
-  if(window._keepAlive) clearInterval(window._keepAlive);
-  window._keepAlive = setInterval(function(){
-    try { fetch(window.location.href, {method:'HEAD', cache:'no-store'}); }
-    catch(e){}
-  }, 45000);
-})();
-</script>""")
 # ─── AUTH GATE ────────────────────────────────────────────────
 # ── Cookie-based session persistence ──────────────────────────
 _cookie_ctrl = CookieController(key="auth_cookie_ctrl")
