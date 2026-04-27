@@ -5730,10 +5730,10 @@ def compute_combo_projection(
             for fut in sim_futs:
                 pn = sim_futs[fut]
                 try:
-                    res = fut.result(timeout=120)
+                    res = fut.result(timeout=300)
                     sim_legs.append(res)
                 except TimeoutError:
-                    errors.append(f"{pn}: sim pass timeout (>120s)")
+                    errors.append(f"{pn}: sim pass timeout (>300s)")
                 except Exception as _e:
                     errors.append(f"{pn}: sim pass error: {_e}")
 
