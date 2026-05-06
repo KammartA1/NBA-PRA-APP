@@ -184,6 +184,7 @@ mock_gl = pd.DataFrame({
     "FTM":  np.random.poisson(4, 10).astype(float),
     "FTA":  np.random.poisson(5, 10).astype(float),
     "PF":   np.random.poisson(3, 10).astype(float),
+    "DUNKS": np.random.poisson(1, 10).astype(float),
     "MIN":  np.random.normal(32, 3, 10).round(1),
 })
 
@@ -191,7 +192,7 @@ stat_failures = []
 test_stats = [
     "Points", "Rebounds", "Assists", "3PM", "PRA", "PR", "PA", "RA",
     "Blocks", "Steals", "Turnovers", "Stocks",
-    "FGM", "FGA", "3PA", "FTM", "FTA", "2PA", "Personal Fouls",
+    "FGM", "FGA", "3PA", "FTM", "FTA", "2PA", "2PM", "Dunks", "Personal Fouls",
     "Fantasy Score", "H1 Fantasy Score", "H2 Fantasy Score",
 ]
 for mkt in test_stats:

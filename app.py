@@ -428,6 +428,8 @@ ODDS_MARKETS = {
     "FTM":             "player_free_throws_made",
     "FTA":             "player_free_throws_attempted",
     "2PA":             "player_two_point_field_goals_attempted",
+    "2PM":             "player_two_point_field_goals_made",
+    "Dunks":           "player_dunks",
     "Personal Fouls":  "player_personal_fouls",
     # ── Extended H1 markets (source from PP/UD only) ──
     "H1 Fantasy Score":"player_fantasy_points_q1q2",
@@ -446,7 +448,7 @@ ODDS_MARKETS = {
 # Markets with no confirmed Odds API key — available via PP/UD/Sleeper only.
 # These will be skipped during Odds API fetches and the user will be warned.
 ODDS_API_UNSUPPORTED_MARKETS = {
-    "FGA", "3PA", "FTM", "FTA", "2PA", "Personal Fouls",
+    "FGA", "3PA", "FTM", "FTA", "2PA", "2PM", "Dunks", "Personal Fouls",
     # H1/H2 markets return HTTP 422 from Odds API — source from PrizePicks instead
     "H1 Points", "H1 Rebounds", "H1 Assists", "H1 3PM", "H1 PRA",
     "H1 Fantasy Score",
@@ -662,6 +664,8 @@ STAT_FIELDS = {
     "FTM":             "FTM",
     "FTA":             "FTA",
     "2PA":             ("FGA", "-FG3A"),  # FGA minus FG3A — handled specially in compute_stat_from_gamelog
+    "2PM":             ("FGM", "-FG3M"),  # FGM minus FG3M — handled specially in compute_stat_from_gamelog
+    "Dunks":           "DUNKS",  # computed from ShotChartDetail — handled specially in compute_stat_from_gamelog
     "Personal Fouls":  "PF",
     # Extended H1/H2 half-game markets (resolved to base fields, scaled via HALF_FACTOR)
     "H1 Fantasy Score":("PTS", "REB", "AST", "BLK", "STL", "TOV"),
@@ -752,7 +756,7 @@ def book_sharpness(k):
 POSITIONAL_PRIORS = {
     "Guard": {"Points":16.5,"Rebounds":3.4,"Assists":5.8,"3PM":2.1,
               "PRA":25.7,"PR":19.9,"PA":22.3,"RA":9.2,"Blocks":0.4,"Steals":1.2,"Turnovers":2.2,
-              "Stocks":1.6,"Personal Fouls":2.3,"2PA":7.3,
+              "Stocks":1.6,"Personal Fouls":2.3,"2PA":7.3,"2PM":3.7,"Dunks":0.3,
               "Q1 Points":4.1,"Q1 Rebounds":0.9,"Q1 Assists":1.5,"Q1 3PM":0.5,"Q1 FTM":0.8,
               "H1 Points":8.5,"H1 Rebounds":1.7,"H1 Assists":3.0,"H1 3PM":1.1,
               "H1 PRA":13.2,"H1 Fantasy Score":16.2,
@@ -763,7 +767,7 @@ POSITIONAL_PRIORS = {
               "Points (Combo)":33.0,"Rebounds (Combo)":6.8,"Assists (Combo)":11.6,"3PM (Combo)":4.2},
     "Wing":  {"Points":14.8,"Rebounds":5.9,"Assists":2.9,"3PM":1.6,
               "PRA":23.6,"PR":20.7,"PA":17.7,"RA":8.8,"Blocks":0.8,"Steals":1.0,"Turnovers":1.7,
-              "Stocks":1.8,"Personal Fouls":2.5,"2PA":7.5,
+              "Stocks":1.8,"Personal Fouls":2.5,"2PA":7.5,"2PM":3.8,"Dunks":0.8,
               "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.7,"Q1 3PM":0.4,"Q1 FTM":0.7,
               "H1 Points":7.6,"H1 Rebounds":3.0,"H1 Assists":1.5,"H1 3PM":0.8,
               "H1 PRA":12.1,"H1 Fantasy Score":14.2,
@@ -774,7 +778,7 @@ POSITIONAL_PRIORS = {
               "Points (Combo)":29.6,"Rebounds (Combo)":11.8,"Assists (Combo)":5.8,"3PM (Combo)":3.2},
     "Big":   {"Points":13.2,"Rebounds":8.8,"Assists":2.1,"3PM":0.5,
               "PRA":24.1,"PR":22.0,"PA":15.3,"RA":10.9,"Blocks":1.4,"Steals":0.7,"Turnovers":2.0,
-              "Stocks":2.1,"Personal Fouls":3.2,"2PA":9.1,
+              "Stocks":2.1,"Personal Fouls":3.2,"2PA":9.1,"2PM":4.5,"Dunks":1.4,
               "Q1 Points":3.3,"Q1 Rebounds":2.2,"Q1 Assists":0.5,"Q1 3PM":0.1,"Q1 FTM":0.8,
               "H1 Points":6.8,"H1 Rebounds":4.4,"H1 Assists":1.1,"H1 3PM":0.3,
               "H1 PRA":12.3,"H1 Fantasy Score":15.9,
@@ -785,7 +789,7 @@ POSITIONAL_PRIORS = {
               "Points (Combo)":26.4,"Rebounds (Combo)":17.6,"Assists (Combo)":4.2,"3PM (Combo)":1.0},
     "Unknown":{"Points":14.8,"Rebounds":5.5,"Assists":3.5,"3PM":1.4,
               "PRA":23.8,"PR":20.3,"PA":18.3,"RA":9.0,"Blocks":0.8,"Steals":0.9,"Turnovers":1.9,
-              "Stocks":1.7,"Personal Fouls":2.7,"2PA":8.0,
+              "Stocks":1.7,"Personal Fouls":2.7,"2PA":8.0,"2PM":4.0,"Dunks":0.8,
               "Q1 Points":3.7,"Q1 Rebounds":1.5,"Q1 Assists":0.9,"Q1 3PM":0.4,"Q1 FTM":0.7,
               "H1 Points":7.6,"H1 Rebounds":2.8,"H1 Assists":1.8,"H1 3PM":0.7,
               "H1 PRA":12.2,"H1 Fantasy Score":15.4,
@@ -809,7 +813,7 @@ LAMBDA_DECAY_BY_STAT = {
     "Points": 0.85, "Rebounds": 0.82, "Assists": 0.85,
     "3PM": 0.80, "PRA": 0.84, "PR": 0.83, "PA": 0.84, "RA": 0.82,
     "Blocks": 0.78, "Steals": 0.80, "Turnovers": 0.83, "Stocks": 0.78,
-    "Personal Fouls": 0.80, "2PA": 0.82,
+    "Personal Fouls": 0.80, "2PA": 0.82, "2PM": 0.82, "Dunks": 0.78,
     "FGM": 0.84, "FGA": 0.83, "3PA": 0.80, "FTM": 0.82, "FTA": 0.82,
     "H1 Points": 0.85, "H1 Rebounds": 0.82, "H1 Assists": 0.85, "H1 3PM": 0.80,
     "H1 PRA": 0.84, "H1 Fantasy Score": 0.85,
@@ -829,7 +833,7 @@ NEGBINOM_MARKETS = frozenset({
     "Rebounds", "RA", "PR", "Turnovers", "FTA", "FTM",
     # FGM/FGA/3PA are also overdispersed integer counts — NegBin improves calibration
     "FGM", "FGA", "3PA",
-    "Personal Fouls", "2PA",
+    "Personal Fouls", "2PA", "2PM", "Dunks",
 })
 # Persistent file paths
 OPENING_LINES_PATH   = "opening_lines.json"
@@ -1058,6 +1062,50 @@ def fetch_player_gamelog(player_id, max_games=15):
         except Exception as e:
             errs.append(f"{type(e).__name__}: {e}")
     return pd.DataFrame(), errs
+# ──────────────────────────────────────────────
+# DUNK COUNT FETCHER (via ShotChartDetail)
+# Standard gamelogs don't have a dunks column — we pull shot-level
+# data and filter ACTION_TYPE for dunks, grouped per GAME_ID.
+# ──────────────────────────────────────────────
+@st.cache_data(ttl=60*60*3, show_spinner=False)
+def _fetch_dunk_counts(player_id, season_str=None):
+    """Return {GAME_ID: dunk_count} for made dunks this season."""
+    try:
+        from nba_api.stats.endpoints import ShotChartDetail
+        if not season_str:
+            season_str = get_season_string()
+        shots = ShotChartDetail(
+            team_id=0,
+            player_id=int(player_id),
+            season_nullable=season_str,
+            context_measure_simple="FGA",
+            timeout=20,
+        ).get_data_frames()[0]
+        if shots.empty:
+            return {}
+        dunks = shots[
+            (shots["ACTION_TYPE"].str.contains("Dunk", case=False, na=False))
+            & (shots["SHOT_MADE_FLAG"] == 1)
+        ]
+        return dunks.groupby("GAME_ID").size().to_dict()
+    except Exception:
+        return {}
+
+def _merge_dunks_into_gamelog(df, player_id):
+    """Add a DUNKS column to a gamelog dataframe using ShotChartDetail data."""
+    if df.empty:
+        df["DUNKS"] = pd.Series([], dtype=float)
+        return df
+    dunk_map = _fetch_dunk_counts(player_id)
+    if not dunk_map:
+        df["DUNKS"] = 0.0
+        return df
+    game_id_col = "Game_ID" if "Game_ID" in df.columns else "GAME_ID"
+    if game_id_col not in df.columns:
+        df["DUNKS"] = 0.0
+        return df
+    df["DUNKS"] = df[game_id_col].map(dunk_map).fillna(0).astype(float)
+    return df
 # ──────────────────────────────────────────────
 # REAL HALF-GAME BOXSCORE FETCHER
 # Per-period stats via BoxScoreTraditionalV2.
@@ -1325,6 +1373,19 @@ def compute_stat_from_gamelog(df, market):
             return fga - fg3a
         except Exception:
             return pd.Series([], dtype=float)
+    # Two Pointers Made = FGM - FG3M
+    if market == "2PM":
+        try:
+            fgm = pd.to_numeric(df.get("FGM"), errors="coerce").fillna(0)
+            fg3m = pd.to_numeric(df.get("FG3M"), errors="coerce").fillna(0)
+            return fgm - fg3m
+        except Exception:
+            return pd.Series([], dtype=float)
+    if market == "Dunks":
+        col = df.get("DUNKS")
+        if col is not None:
+            return pd.to_numeric(col, errors="coerce").fillna(0)
+        return pd.Series([0.0] * len(df), index=df.index, dtype=float)
     f = STAT_FIELDS.get(market)
     if f is None:
         return pd.Series([], dtype=float)
@@ -4409,6 +4470,14 @@ def map_platform_stat_to_market(stat_type):
         "Personal Fouls": "Personal Fouls", "PF": "Personal Fouls",
         "Fouls": "Personal Fouls", "Fls": "Personal Fouls",
         "Fouls Committed": "Personal Fouls",
+        # ── Dunks ─────────────────────────────────────────────────────────
+        "Dunks": "Dunks", "Dunks Made": "Dunks", "Dunk": "Dunks",
+        "Slam Dunks": "Dunks", "DNK": "Dunks",
+        # ── Two Pointers Made ─────────────────────────────────────────────
+        "Two Pointers Made": "2PM", "2PM": "2PM",
+        "Two Point Made": "2PM", "2-Point Made": "2PM",
+        "2PT Made": "2PM", "Two Point Field Goals Made": "2PM",
+        "2-Pt Made": "2PM", "2 Pointers Made": "2PM",
         # ── Two Pointers Attempted ───────────────────────────────────────
         "Two Pointers Attempted": "2PA", "2PA": "2PA",
         "Two Point Attempts": "2PA", "2-Point Attempts": "2PA",
@@ -6012,6 +6081,8 @@ def compute_leg_projection(
     base_market = market_name
     if is_half_market:
         base_market = (market_name.replace("H1 ","").replace("H2 ","").replace("Q1 ",""))
+    if base_market == "Dunks" and not gldf_n.empty and player_id:
+        gldf_n = _merge_dunks_into_gamelog(gldf_n.copy(), player_id)
     stat_series = compute_stat_from_gamelog(gldf_n, base_market) if not gldf_n.empty else pd.Series([], dtype=float)
     # [AUDIT FIX] For half/Q1 markets: try real per-period boxscore data.
     # If successful, stat_series is replaced with actual H1/H2/Q1 values so
