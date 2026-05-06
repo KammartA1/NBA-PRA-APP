@@ -153,13 +153,13 @@ class GameEngine:
 
     STAT_KEYS = [
         "points", "rebounds", "assists", "steals", "blocks",
-        "turnovers", "minutes", "pra", "pr", "pa", "ra",
+        "turnovers", "fouls", "minutes", "pra", "pr", "pa", "ra",
         "fgm", "fga", "three_pm", "three_pa", "ftm", "fta",
         "h1_points", "h1_rebounds", "h1_assists", "h1_steals", "h1_blocks",
-        "h1_turnovers", "h1_minutes", "h1_pra", "h1_pr", "h1_pa", "h1_ra",
+        "h1_turnovers", "h1_fouls", "h1_minutes", "h1_pra", "h1_pr", "h1_pa", "h1_ra",
         "h1_fgm", "h1_fga", "h1_three_pm", "h1_three_pa", "h1_ftm", "h1_fta",
         "h2_points", "h2_rebounds", "h2_assists", "h2_steals", "h2_blocks",
-        "h2_turnovers", "h2_minutes", "h2_pra", "h2_pr", "h2_pa", "h2_ra",
+        "h2_turnovers", "h2_fouls", "h2_minutes", "h2_pra", "h2_pr", "h2_pa", "h2_ra",
         "h2_fgm", "h2_fga", "h2_three_pm", "h2_three_pa", "h2_ftm", "h2_fta",
     ]
 
