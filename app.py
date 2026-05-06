@@ -810,10 +810,10 @@ REST_MULTIPLIERS = {0: 0.965, 1: 0.985, 2: 1.00, 3: 1.01, 4: 1.015}
 # Research: NBA player performance has ~3-5 game autocorrelation windows.
 # Lowering λ gives more weight to recent games for sharper projections.
 LAMBDA_DECAY_BY_STAT = {
-    "Points": 0.85, "Rebounds": 0.82, "Assists": 0.85,
+    "Points": 0.85, "Rebounds": 0.82, "Assists": 0.87,
     "3PM": 0.80, "PRA": 0.84, "PR": 0.83, "PA": 0.84, "RA": 0.82,
     "Blocks": 0.78, "Steals": 0.80, "Turnovers": 0.83, "Stocks": 0.78,
-    "Personal Fouls": 0.80, "2PA": 0.82, "2PM": 0.82, "Dunks": 0.78,
+    "Personal Fouls": 0.80, "2PA": 0.82, "2PM": 0.82, "Dunks": 0.76,
     "FGM": 0.84, "FGA": 0.83, "3PA": 0.80, "FTM": 0.82, "FTA": 0.82,
     "H1 Points": 0.85, "H1 Rebounds": 0.82, "H1 Assists": 0.85, "H1 3PM": 0.80,
     "H1 PRA": 0.84, "H1 Fantasy Score": 0.85,
@@ -2110,7 +2110,7 @@ def volatility_penalty_factor(cv):
     v = float(cv)
     if v <= 0.0:   return 1.0
     if v >= 0.40:  return 0.0
-    anchors = [(0.0, 1.0), (0.20, 1.0), (0.25, 0.85), (0.30, 0.65), (0.35, 0.30), (0.40, 0.0)]
+    anchors = [(0.0, 1.0), (0.20, 1.0), (0.25, 0.85), (0.30, 0.65), (0.35, 0.45), (0.40, 0.0)]
     for i in range(len(anchors) - 1):
         cv0, p0 = anchors[i]
         cv1, p1 = anchors[i + 1]
@@ -2475,12 +2475,12 @@ def compute_composite_sharpness(
     tr_pts = float(np.clip(float(trend_score or 0.0) * 15.0, -10.0, 15.0))
     score += tr_pts
     components["trend"] = round(tr_pts, 1)
-    # 6. Hot/cold signal (max 8 pts)
-    hc_pts = 8.0 if hot_cold == "Hot" else (-5.0 if hot_cold == "Cold" else 0.0)
+    # 6. Hot/cold signal (max 3 pts)
+    hc_pts = 3.0 if hot_cold == "Hot" else (-3.0 if hot_cold == "Cold" else 0.0)
     score += hc_pts
     components["hot_cold"] = round(hc_pts, 1)
-    # 7. Regime penalty (max -20 pts) [v6.0] increased penalties
-    reg_pts = 0.0 if regime == "Stable" else (-10.0 if regime == "Mixed" else -20.0)
+    # 7. Regime penalty (max -12 pts)
+    reg_pts = 0.0 if regime == "Stable" else (-10.0 if regime == "Mixed" else -12.0)
     score += reg_pts
     components["regime"] = round(reg_pts, 1)
     # 8. Volatility (max -10 pts for high CV)
@@ -5813,8 +5813,8 @@ def compute_combo_projection(
         _combo_sim_std  = math.sqrt(sum(s**2 for s in _leg_sim_stds))
         _zs = (float(line) - _combo_sim_mean) / max(_combo_sim_std, 0.01)
         _combo_sim_prob = float(np.clip(1.0 - _norm.cdf(_zs), 1e-4, 1 - 1e-4))
-        combined_p_over = float(0.75 * _combo_sim_prob + 0.25 * combined_p_over)
-        errors.append(f"Combo sim blend 75/25: sim_p={_combo_sim_prob:.3f}, analytical={combined_p_over:.3f}, sim_mu={_combo_sim_mean:.1f}, sim_std={_combo_sim_std:.1f}")
+        combined_p_over = float(0.65 * _combo_sim_prob + 0.35 * combined_p_over)
+        errors.append(f"Combo sim blend 65/35: sim_p={_combo_sim_prob:.3f}, analytical={combined_p_over:.3f}, sim_mu={_combo_sim_mean:.1f}, sim_std={_combo_sim_std:.1f}")
 
     side_str = (meta.get("side") if meta else "Over") or "Over"
     _is_under = "under" in str(side_str).lower()
@@ -6348,7 +6348,7 @@ def compute_leg_projection(
                     # At n=6 (just enough), NegBin r-estimate is noisy → 50% blend.
                     # At n=15+, r-estimate is stable → up to 82% NegBin (clearly superior for counts).
                     _n_valid_nb = len(pace_adj_series.dropna())
-                    _nb_weight = float(np.clip(0.50 + (_n_valid_nb - 6) * 0.06, 0.50, 0.70))
+                    _nb_weight = float(np.clip(0.50 + (_n_valid_nb - 6) * 0.075, 0.50, 0.80))
                     p_over_raw = float(_nb_weight * _nb_p + (1.0 - _nb_weight) * p_over_raw)
                     if _nb_mu is not None:
                         mu_raw = float(0.60 * _nb_mu + 0.40 * mu_raw)
@@ -6381,7 +6381,8 @@ def compute_leg_projection(
                 "Blocks": "blocks", "Steals": "steals", "Turnovers": "turnovers",
                 "FGM": "fgm", "FGA": "fga", "FTM": "ftm", "FTA": "fta",
                 "Personal Fouls": "fouls",
-                "3PA": "three_pa", "2PA": "two_pa",
+                "3PA": "three_pa", "2PA": "two_pa", "2PM": "two_pm",
+                "Dunks": "dunks",
                 "Fantasy Score": "fantasy_score", "Stocks": "stocks",
                 "Double Double": "double_double", "Triple Double": "triple_double",
             }
@@ -6682,6 +6683,27 @@ def compute_leg_projection(
                                 _cv = _dfga.values - _d3pa.values
                                 _sim_dist = PlayerDistribution(player_name=player_name, player_id=_sim_pid, stat_name=_sim_stat, n_sims=len(_cv), values=_cv)
                                 _sim_dist.compute()
+                        elif _cbase == "two_pm":
+                            _dfgm, _d3pm = _cget("fgm"), _cget("three_pm")
+                            if _dfgm is not None and _d3pm is not None:
+                                _cv = np.maximum(_dfgm.values - _d3pm.values, 0)
+                                _sim_dist = PlayerDistribution(player_name=player_name, player_id=_sim_pid, stat_name=_sim_stat, n_sims=len(_cv), values=_cv)
+                                _sim_dist.compute()
+                        elif _cbase == "dunks":
+                            _dfgm_d = _cget("fgm")
+                            if _dfgm_d is not None:
+                                _hist_dunk_rate = 0.0
+                                try:
+                                    if gldf_n is not None and "DUNKS" in gldf_n.columns and "FGM" in gldf_n.columns:
+                                        _tot_fgm = gldf_n["FGM"].sum()
+                                        if _tot_fgm > 0:
+                                            _hist_dunk_rate = float(gldf_n["DUNKS"].sum() / _tot_fgm)
+                                except Exception:
+                                    pass
+                                if _hist_dunk_rate > 0:
+                                    _cv = np.random.binomial(np.maximum(_dfgm_d.values.astype(int), 0), np.clip(_hist_dunk_rate, 0, 1)).astype(float)
+                                    _sim_dist = PlayerDistribution(player_name=player_name, player_id=_sim_pid, stat_name=_sim_stat, n_sims=len(_cv), values=_cv)
+                                    _sim_dist.compute()
                         elif _cbase in ("double_double", "triple_double"):
                             _dp, _dr, _da = _cget("points"), _cget("rebounds"), _cget("assists")
                             if all(x is not None for x in [_dp, _dr, _da]):
@@ -6801,7 +6823,7 @@ def compute_leg_projection(
                 _nb_ctx, _, _ = negbinom_prob_over(_ctx_series, effective_line, market=base_market)
                 if _nb_ctx is not None and _p_ctx is not None:
                     _n_ctx = len(_ctx_series.dropna())
-                    _nb_w = float(np.clip(0.50 + (_n_ctx - 6) * 0.06, 0.50, 0.70))
+                    _nb_w = float(np.clip(0.50 + (_n_ctx - 6) * 0.075, 0.50, 0.80))
                     _p_ctx = float(_nb_w * _nb_ctx + (1.0 - _nb_w) * _p_ctx)
             except Exception:
                 pass
@@ -6809,8 +6831,8 @@ def compute_leg_projection(
             p_over_raw = _p_ctx
             errors.append(f"Context-adjusted P(Over): shift={_ctx_shift:+.2f}, mult={_combined_mult:.3f}")
     if sim_prob is not None and p_over_raw is not None:
-        p_over_raw = float(0.75 * sim_prob + 0.25 * p_over_raw)
-        errors.append(f"Sim blend 75/25: sim={sim_prob:.3f}, analytical={p_over_raw:.3f}")
+        p_over_raw = float(0.65 * sim_prob + 0.35 * p_over_raw)
+        errors.append(f"Sim blend 65/35: sim={sim_prob:.3f}, analytical={p_over_raw:.3f}")
     elif sim_prob is not None:
         p_over_raw = sim_prob
         errors.append(f"Sim-only: sim_p={sim_prob:.3f} (analytical unavailable)")
@@ -8448,10 +8470,10 @@ border-top:1px solid #0E1E30;'></div>""", unsafe_allow_html=True)
 _settings_defaults = {
     "market_prior_weight": 0.65,
     "n_games": 10,
-    # [v6.0] Raised frac_kelly 0.25→0.35 and max_risk 3%→6% for aggressive elite-bet sizing
-    "frac_kelly": 0.35,
+    # [v7.0] Conservative Kelly sizing: frac_kelly=0.25, max_risk=5%
+    "frac_kelly": 0.25,
     "payout_multi": 3.0,
-    "max_risk_per_bet": 6.0,
+    "max_risk_per_bet": 5.0,
     "max_daily_loss": 15,
     "max_weekly_loss": 25,
     "exclude_chaotic": True,
