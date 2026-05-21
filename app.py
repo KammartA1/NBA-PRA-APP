@@ -3675,22 +3675,35 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """Make one PrizePicks API request.
     Uses multi-browser curl_cffi impersonation (matching GOLFAPP's proven approach),
     then ScraperAPI proxy, then direct request.
+    On 429: tries ALL remaining browsers/methods before giving up (never short-circuits).
     Returns (response_object_or_None, error_str_or_None).
     single_stat='true'  → standard stats (Points, Rebounds, etc.)
     single_stat='false' → combo/specialty stats (PRA, Pts+Reb, Fantasy Score, etc.)
     """
+    import random as _rnd
     url = PRIZEPICKS_API
     params = {"per_page": str(per_page),
               "single_stat": single_stat, "in_play": "false"}
+    _user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    ]
+    _ua = _rnd.choice(_user_agents)
     headers = {
         "Accept": "application/vnd.api+json",
         "Referer": "https://app.prizepicks.com/",
         "Origin": "https://app.prizepicks.com",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
     }
-    data = None
-    resp_obj = None
+    _got_429 = False
+    _last_status = None
 
-    # Parse optional cookie string from user settings
     cookie_dict = {}
     if cookies_str and not cookies_str.strip().startswith("{"):
         for part in cookies_str.split(";"):
@@ -3702,10 +3715,12 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                 if k:
                     cookie_dict[k] = v
 
-    # ── Method 1: curl_cffi with multi-browser impersonation (proven in GOLFAPP) ──
+    # ── Method 1: curl_cffi with multi-browser impersonation ──
     try:
         from curl_cffi import requests as cffi_requests
-        for browser in ("edge101", "safari17_0", "chrome124", "chrome120"):
+        _browsers = ["chrome124", "edge101", "safari17_0", "chrome120"]
+        _rnd.shuffle(_browsers)
+        for _bi, browser in enumerate(_browsers):
             try:
                 r = cffi_requests.get(
                     url, params=params, headers=headers,
@@ -3714,14 +3729,14 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                     timeout=25,
                 )
                 if r.ok:
-                    resp_obj = r
-                    break
+                    return r, None
+                _last_status = r.status_code
                 if r.status_code == 429:
-                    return None, "HTTP 429"
+                    _got_429 = True
+                    time.sleep(2 + _bi * 2 + _rnd.random() * 2)
+                    continue
             except Exception:
                 continue
-        if resp_obj is not None:
-            return resp_obj, None
     except ImportError:
         pass
 
@@ -3733,6 +3748,8 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         scraper_key = os.environ.get("SCRAPER_API_KEY", "")
     if scraper_key:
         try:
+            if _got_429:
+                time.sleep(3 + _rnd.random() * 3)
             full_url = f"{url}?per_page={per_page}&single_stat={single_stat}&in_play=false"
             r = requests.get(
                 "https://api.scraperapi.com",
@@ -3741,26 +3758,28 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
             )
             if r.ok:
                 return r, None
+            _last_status = r.status_code
             if r.status_code == 429:
-                return None, "HTTP 429"
+                _got_429 = True
         except Exception:
             pass
 
     # ── Method 3: cloudscraper (handles Cloudflare JS challenges) ──
     try:
         import cloudscraper
+        if _got_429:
+            time.sleep(3 + _rnd.random() * 3)
         scraper = cloudscraper.create_scraper(
             browser={"browser": "chrome", "platform": "windows", "mobile": False}
         )
         r = scraper.get(url, params=params, headers={
-            **headers,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            **headers, "User-Agent": _ua,
         }, cookies=cookie_dict or None, timeout=25)
         if r.ok:
             return r, None
+        _last_status = r.status_code
         if r.status_code == 429:
-            return None, "HTTP 429"
+            _got_429 = True
     except ImportError:
         pass
     except Exception:
@@ -3768,25 +3787,31 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
 
     # ── Method 4: Direct request (works from residential IPs) ──
     try:
+        if _got_429:
+            time.sleep(5 + _rnd.random() * 5)
         r = requests.get(url, params=params, headers={
-            **headers,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            **headers, "User-Agent": _ua,
         }, cookies=cookie_dict or None, timeout=20)
         if r.ok:
             return r, None
+        _last_status = r.status_code
+        if r.status_code == 429:
+            _got_429 = True
         return None, f"HTTP {r.status_code}"
     except Exception as e:
+        if _got_429:
+            return None, "HTTP 429"
         return None, f"{type(e).__name__}: {e}"
 def _pp_fetch_one(per_page, cookies_str, single_stat):
     """Fetch one PP request with retry + 429-aware backoff. Returns (rows, error)."""
-    _MAX_ATTEMPTS = 5
+    import random as _rnd
+    _MAX_ATTEMPTS = 4
     for attempt in range(_MAX_ATTEMPTS):
         r, err = _pp_request(per_page=per_page, cookies_str=cookies_str, single_stat=single_stat)
         if err:
             is_rate_limit = "429" in str(err)
             if attempt < _MAX_ATTEMPTS - 1:
-                _wait = (10 * (attempt + 1)) if is_rate_limit else (2 ** (attempt + 1))
+                _wait = (15 + 15 * attempt + _rnd.random() * 10) if is_rate_limit else (2 ** (attempt + 1))
                 time.sleep(_wait)
                 continue
             return [], err
@@ -3812,7 +3837,9 @@ def _fetch_prizepicks_lines_cached(cookies_str=""):
             rows, err = _pp_fetch_one(per_page, cookies_str, single_stat)
             if err:
                 last_err = err
-                break  # try next single_stat value
+                if "429" in str(err):
+                    continue  # rate-limited: try smaller page size
+                break  # non-429 error: skip to next single_stat
             for row in rows:
                 key = (row["player"], row["stat_type"])
                 if key not in seen:
@@ -9735,10 +9762,14 @@ with tabs[2]:
                 if _pp_ck_new:
                     st.session_state["pp_cookies"] = _pp_ck_new
             if st.button("Fetch PP Lines", key="scanner_fetch_pp_btn", use_container_width=True):
-                with st.spinner("Fetching PrizePicks…"):
+                _fetch_prizepicks_lines_cached.clear()
+                with st.spinner("Fetching PrizePicks (retries on rate-limit)…"):
                     _pp_rows, _pp_err = fetch_prizepicks_lines()
                 if _pp_err:
-                    st.error(f"PP: {_pp_err}")
+                    if "429" in str(_pp_err):
+                        st.error("PP: Rate-limited (HTTP 429). Wait 2-3 min, then retry. Tip: paste browser cookies or PP JSON in the field above.")
+                    else:
+                        st.error(f"PP: {_pp_err}")
                 elif _pp_rows:
                     st.session_state["pp_lines"] = pd.DataFrame(_pp_rows)
                     # Count by mapped market
@@ -11048,7 +11079,8 @@ with tabs[3]:
             elif _auto_err:
                 st.error(f"Auto-fetch error: {_auto_err}")
             if st.button("Fetch Now", use_container_width=True, key="pp_fetch_now_btn"):
-                with st.spinner("Fetching PrizePicks..."):
+                _fetch_prizepicks_lines_cached.clear()
+                with st.spinner("Fetching PrizePicks (retries on rate-limit)..."):
                     pp_lines, pp_err = fetch_prizepicks_lines()
                 if pp_err:
                     st.error(f"PrizePicks: {pp_err}")
