@@ -3675,7 +3675,8 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """Make one PrizePicks API request.
     Uses multi-browser curl_cffi impersonation (matching GOLFAPP's proven approach),
     then ScraperAPI proxy, then direct request.
-    On 429: tries ALL remaining browsers/methods before giving up (never short-circuits).
+    On 403 (PerimeterX block): stops immediately — retrying makes the ban longer.
+    On 429 (rate limit): tries next method with small delay.
     Returns (response_object_or_None, error_str_or_None).
     single_stat='true'  → standard stats (Points, Rebounds, etc.)
     single_stat='false' → combo/specialty stats (PRA, Pts+Reb, Fantasy Score, etc.)
@@ -3701,8 +3702,6 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-site",
     }
-    _got_429 = False
-    _last_status = None
 
     cookie_dict = {}
     if cookies_str and not cookies_str.strip().startswith("{"):
@@ -3715,12 +3714,12 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                 if k:
                     cookie_dict[k] = v
 
-    # ── Method 1: curl_cffi with multi-browser impersonation ──
+    # ── Method 1: curl_cffi with browser impersonation (best TLS fingerprint) ──
     try:
         from curl_cffi import requests as cffi_requests
         _browsers = ["chrome124", "edge101", "safari17_0", "chrome120"]
         _rnd.shuffle(_browsers)
-        for _bi, browser in enumerate(_browsers):
+        for browser in _browsers:
             try:
                 r = cffi_requests.get(
                     url, params=params, headers=headers,
@@ -3730,10 +3729,10 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                 )
                 if r.ok:
                     return r, None
-                _last_status = r.status_code
+                if r.status_code == 403:
+                    return None, "HTTP 403"
                 if r.status_code == 429:
-                    _got_429 = True
-                    time.sleep(2 + _bi * 2 + _rnd.random() * 2)
+                    time.sleep(2 + _rnd.random() * 2)
                     continue
             except Exception:
                 continue
@@ -3748,8 +3747,6 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         scraper_key = os.environ.get("SCRAPER_API_KEY", "")
     if scraper_key:
         try:
-            if _got_429:
-                time.sleep(3 + _rnd.random() * 3)
             full_url = f"{url}?per_page={per_page}&single_stat={single_stat}&in_play=false"
             r = requests.get(
                 "https://api.scraperapi.com",
@@ -3758,17 +3755,14 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
             )
             if r.ok:
                 return r, None
-            _last_status = r.status_code
-            if r.status_code == 429:
-                _got_429 = True
+            if r.status_code == 403:
+                return None, "HTTP 403"
         except Exception:
             pass
 
     # ── Method 3: cloudscraper (handles Cloudflare JS challenges) ──
     try:
         import cloudscraper
-        if _got_429:
-            time.sleep(3 + _rnd.random() * 3)
         scraper = cloudscraper.create_scraper(
             browser={"browser": "chrome", "platform": "windows", "mobile": False}
         )
@@ -3777,9 +3771,8 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         }, cookies=cookie_dict or None, timeout=25)
         if r.ok:
             return r, None
-        _last_status = r.status_code
-        if r.status_code == 429:
-            _got_429 = True
+        if r.status_code == 403:
+            return None, "HTTP 403"
     except ImportError:
         pass
     except Exception:
@@ -3787,31 +3780,26 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
 
     # ── Method 4: Direct request (works from residential IPs) ──
     try:
-        if _got_429:
-            time.sleep(5 + _rnd.random() * 5)
         r = requests.get(url, params=params, headers={
             **headers, "User-Agent": _ua,
         }, cookies=cookie_dict or None, timeout=20)
         if r.ok:
             return r, None
-        _last_status = r.status_code
-        if r.status_code == 429:
-            _got_429 = True
         return None, f"HTTP {r.status_code}"
     except Exception as e:
-        if _got_429:
-            return None, "HTTP 429"
         return None, f"{type(e).__name__}: {e}"
 def _pp_fetch_one(per_page, cookies_str, single_stat):
     """Fetch one PP request with retry + 429-aware backoff. Returns (rows, error)."""
     import random as _rnd
-    _MAX_ATTEMPTS = 4
+    _MAX_ATTEMPTS = 3
     for attempt in range(_MAX_ATTEMPTS):
         r, err = _pp_request(per_page=per_page, cookies_str=cookies_str, single_stat=single_stat)
         if err:
+            if "403" in str(err):
+                return [], err
             is_rate_limit = "429" in str(err)
             if attempt < _MAX_ATTEMPTS - 1:
-                _wait = (15 + 15 * attempt + _rnd.random() * 10) if is_rate_limit else (2 ** (attempt + 1))
+                _wait = (10 + 10 * attempt + _rnd.random() * 5) if is_rate_limit else (2 ** (attempt + 1))
                 time.sleep(_wait)
                 continue
             return [], err
@@ -3837,9 +3825,11 @@ def _fetch_prizepicks_lines_cached(cookies_str=""):
             rows, err = _pp_fetch_one(per_page, cookies_str, single_stat)
             if err:
                 last_err = err
+                if "403" in str(err):
+                    return [], err
                 if "429" in str(err):
                     continue  # rate-limited: try smaller page size
-                break  # non-429 error: skip to next single_stat
+                break  # other error: skip to next single_stat
             for row in rows:
                 key = (row["player"], row["stat_type"])
                 if key not in seen:
@@ -3888,12 +3878,15 @@ def fetch_prizepicks_lines():
     # ── 4. Scraper service DB fallback (no cookies needed) ──
     db_rows, db_age, _ = _load_pp_from_scraper_db()
     if db_rows:
-        _age_str = f" ({db_age // 60}m ago)" if db_age else ""
         return db_rows, None
-    # ── 5. Disk cache fallback ──
-    disk_rows, disk_age = _load_pp_disk_cache(max_age_sec=3600)
+    # ── 5. Disk cache fallback (relax to 4h on 403/429 — stale lines > no lines) ──
+    _cache_max = 14400 if direct_err and ("403" in str(direct_err) or "429" in str(direct_err)) else 3600
+    disk_rows, disk_age = _load_pp_disk_cache(max_age_sec=_cache_max)
     if disk_rows:
         return disk_rows, None
+    # ── 6. Auto-fetcher rows (even if old — last resort before error) ──
+    if _auto_rows and _auto_age is not None:
+        return _auto_rows, None
     return [], direct_err
 # ──────────────────────────────────────────────
 # PP AUTO-FETCH BACKGROUND ENGINE
@@ -9766,8 +9759,19 @@ with tabs[2]:
                 with st.spinner("Fetching PrizePicks (retries on rate-limit)…"):
                     _pp_rows, _pp_err = fetch_prizepicks_lines()
                 if _pp_err:
-                    if "429" in str(_pp_err):
-                        st.error("PP: Rate-limited (HTTP 429). Wait 2-3 min, then retry. Tip: paste browser cookies or PP JSON in the field above.")
+                    if "403" in str(_pp_err):
+                        st.error("PP: Blocked by PerimeterX (HTTP 403)")
+                        st.info(
+                            "**PerimeterX is blocking this IP.** Fix options:\n\n"
+                            "1. **Paste PP JSON** — Open `app.prizepicks.com` in your browser → "
+                            "DevTools (F12) → Network → find `projections` request → "
+                            "copy the Response body → paste it in the PP Cookies field above\n"
+                            "2. **Paste browser cookies** — Copy cookies from PP browser session into the field above\n"
+                            "3. **Run locally** — `streamlit run app.py` from your home IP (residential IPs aren't blocked)\n"
+                            "4. **Use relay** — Run `pp_relay.py` on your local machine + expose via ngrok"
+                        )
+                    elif "429" in str(_pp_err):
+                        st.error("PP: Rate-limited (HTTP 429). Wait 2-3 min, then retry.")
                     else:
                         st.error(f"PP: {_pp_err}")
                 elif _pp_rows:
@@ -11085,12 +11089,14 @@ with tabs[3]:
                 if pp_err:
                     st.error(f"PrizePicks: {pp_err}")
                     st.info(
-                        "**If running on Streamlit Cloud:** PerimeterX blocks cloud IPs.\n\n"
-                        "**Fix options:**\n"
-                        "1. Run `pp_relay.py` locally + expose via ngrok, paste URL above\n"
-                        "2. Run the app locally (`streamlit run app.py`) — auto-fetch works from home IP\n"
-                        "3. Paste browser cookies in Settings → PrizePicks Cookies\n"
-                        "4. Use **Manual Import** tab"
+                        "**PerimeterX is blocking API requests from this IP.**\n\n"
+                        "**Fix options (pick one):**\n"
+                        "1. **Paste PP JSON** — Open `app.prizepicks.com` → DevTools (F12) → Network tab → "
+                        "find `projections` request → copy Response body → paste in PP Cookies field\n"
+                        "2. **Paste browser cookies** — Copy cookies from your PP browser session\n"
+                        "3. **Run locally** — `streamlit run app.py` from a residential IP\n"
+                        "4. **Use relay** — Run `pp_relay.py` locally + ngrok, paste URL above\n"
+                        "5. Use **Manual Import** tab"
                     )
                 elif not pp_lines:
                     st.warning("No lines returned.")
