@@ -3814,9 +3814,16 @@ def _pp_fetch_one(per_page, cookies_str, single_stat):
             return [], f"Parse error: {e}"
         return rows, None
     return [], None
-@st.cache_data(ttl=60*10, show_spinner=False)
+_PP_FETCH_CACHE = {"rows": [], "err": None, "ts": 0.0, "cookies": ""}
 def _fetch_prizepicks_lines_cached(cookies_str=""):
-    """Fetch both single-stat AND combo/specialty markets and merge."""
+    """Fetch both single-stat AND combo/specialty markets and merge.
+    Manual cache: only caches SUCCESSFUL results (errors are never cached).
+    """
+    _now = time.time()
+    if (cookies_str == _PP_FETCH_CACHE["cookies"]
+        and _PP_FETCH_CACHE["rows"]
+        and _now - _PP_FETCH_CACHE["ts"] < 600):
+        return list(_PP_FETCH_CACHE["rows"]), None
     all_rows = []
     seen = set()
     last_err = None
@@ -3838,6 +3845,10 @@ def _fetch_prizepicks_lines_cached(cookies_str=""):
             if rows:
                 break  # got results for this single_stat, no need to try smaller per_page
     if all_rows:
+        _PP_FETCH_CACHE["rows"] = all_rows
+        _PP_FETCH_CACHE["err"] = None
+        _PP_FETCH_CACHE["ts"] = _now
+        _PP_FETCH_CACHE["cookies"] = cookies_str
         return all_rows, None
     return [], last_err or "No NBA props found — slate may not be posted yet"
 def fetch_prizepicks_lines():
@@ -3870,7 +3881,7 @@ def fetch_prizepicks_lines():
             return [], f"Stored JSON parse error: {_je}"
     # ── 3. Direct API call with cache ──
     if st.session_state.get("_pp_last_cookies_used") != cookies_str:
-        _fetch_prizepicks_lines_cached.clear()
+        _PP_FETCH_CACHE.update(rows=[], err=None, ts=0.0, cookies="")
         st.session_state["_pp_last_cookies_used"] = cookies_str
     direct_rows, direct_err = _fetch_prizepicks_lines_cached(cookies_str=cookies_str)
     if direct_rows:
@@ -9755,7 +9766,7 @@ with tabs[2]:
                 if _pp_ck_new:
                     st.session_state["pp_cookies"] = _pp_ck_new
             if st.button("Fetch PP Lines", key="scanner_fetch_pp_btn", use_container_width=True):
-                _fetch_prizepicks_lines_cached.clear()
+                _PP_FETCH_CACHE.update(rows=[], err=None, ts=0.0, cookies="")
                 with st.spinner("Fetching PrizePicks (retries on rate-limit)…"):
                     _pp_rows, _pp_err = fetch_prizepicks_lines()
                 if _pp_err:
@@ -11000,7 +11011,7 @@ with tabs[3]:
                     _ck_val2 = _new_ck.strip()
                     st.session_state["pp_cookies"] = _ck_val2
                     save_pp_settings(pp_cookies=_ck_val2)
-                    _fetch_prizepicks_lines_cached.clear()
+                    _PP_FETCH_CACHE.update(rows=[], err=None, ts=0.0, cookies="")
                     st.session_state["_pp_last_cookies_used"] = ""
                     st.success("Saved to disk — persists across restarts.")
                     st.rerun()
@@ -11083,7 +11094,7 @@ with tabs[3]:
             elif _auto_err:
                 st.error(f"Auto-fetch error: {_auto_err}")
             if st.button("Fetch Now", use_container_width=True, key="pp_fetch_now_btn"):
-                _fetch_prizepicks_lines_cached.clear()
+                _PP_FETCH_CACHE.update(rows=[], err=None, ts=0.0, cookies="")
                 with st.spinner("Fetching PrizePicks (retries on rate-limit)..."):
                     pp_lines, pp_err = fetch_prizepicks_lines()
                 if pp_err:
@@ -12039,7 +12050,7 @@ with tabs[7]:
             _ck_val = pp_cookies_val.strip()
             st.session_state["pp_cookies"] = _ck_val
             save_pp_settings(pp_cookies=_ck_val)
-            _fetch_prizepicks_lines_cached.clear()
+            _PP_FETCH_CACHE.update(rows=[], err=None, ts=0.0, cookies="")
             st.session_state["_pp_last_cookies_used"] = ""
             _is_json = _ck_val.startswith("{") and '"data"' in _ck_val
             st.success(f"{'JSON response' if _is_json else 'Cookies'} saved to disk — will persist across restarts.")
