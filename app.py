@@ -3674,34 +3674,20 @@ def _parse_pp_response_all(data):
 def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """Make one PrizePicks API request.
     Uses multi-browser curl_cffi impersonation (matching GOLFAPP's proven approach),
-    then ScraperAPI proxy, then direct request.
-    On 403 (PerimeterX block): stops immediately — retrying makes the ban longer.
-    On 429 (rate limit): tries next method with small delay.
+    then ScraperAPI proxy, then cloudscraper, then direct request.
     Returns (response_object_or_None, error_str_or_None).
     single_stat='true'  → standard stats (Points, Rebounds, etc.)
     single_stat='false' → combo/specialty stats (PRA, Pts+Reb, Fantasy Score, etc.)
     """
-    import random as _rnd
     url = PRIZEPICKS_API
     params = {"per_page": str(per_page),
               "single_stat": single_stat, "in_play": "false"}
-    _user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    ]
-    _ua = _rnd.choice(_user_agents)
     headers = {
         "Accept": "application/vnd.api+json",
         "Referer": "https://app.prizepicks.com/",
         "Origin": "https://app.prizepicks.com",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-site",
     }
+    resp_obj = None
 
     cookie_dict = {}
     if cookies_str and not cookies_str.strip().startswith("{"):
@@ -3714,12 +3700,10 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                 if k:
                     cookie_dict[k] = v
 
-    # ── Method 1: curl_cffi with browser impersonation (best TLS fingerprint) ──
+    # ── Method 1: curl_cffi with multi-browser impersonation (proven in GOLFAPP) ──
     try:
         from curl_cffi import requests as cffi_requests
-        _browsers = ["chrome124", "edge101", "safari17_0", "chrome120"]
-        _rnd.shuffle(_browsers)
-        for browser in _browsers:
+        for browser in ("edge101", "safari17_0", "chrome124", "chrome120"):
             try:
                 r = cffi_requests.get(
                     url, params=params, headers=headers,
@@ -3728,14 +3712,14 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                     timeout=25,
                 )
                 if r.ok:
-                    return r, None
-                if r.status_code == 403:
-                    return None, "HTTP 403"
+                    resp_obj = r
+                    break
                 if r.status_code == 429:
-                    time.sleep(2 + _rnd.random() * 2)
-                    continue
+                    return None, "HTTP 429"
             except Exception:
                 continue
+        if resp_obj is not None:
+            return resp_obj, None
     except ImportError:
         pass
 
@@ -3755,8 +3739,8 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
             )
             if r.ok:
                 return r, None
-            if r.status_code == 403:
-                return None, "HTTP 403"
+            if r.status_code == 429:
+                return None, "HTTP 429"
         except Exception:
             pass
 
@@ -3767,12 +3751,14 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
             browser={"browser": "chrome", "platform": "windows", "mobile": False}
         )
         r = scraper.get(url, params=params, headers={
-            **headers, "User-Agent": _ua,
+            **headers,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }, cookies=cookie_dict or None, timeout=25)
         if r.ok:
             return r, None
-        if r.status_code == 403:
-            return None, "HTTP 403"
+        if r.status_code == 429:
+            return None, "HTTP 429"
     except ImportError:
         pass
     except Exception:
@@ -3781,7 +3767,9 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     # ── Method 4: Direct request (works from residential IPs) ──
     try:
         r = requests.get(url, params=params, headers={
-            **headers, "User-Agent": _ua,
+            **headers,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }, cookies=cookie_dict or None, timeout=20)
         if r.ok:
             return r, None
@@ -3790,16 +3778,13 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         return None, f"{type(e).__name__}: {e}"
 def _pp_fetch_one(per_page, cookies_str, single_stat):
     """Fetch one PP request with retry + 429-aware backoff. Returns (rows, error)."""
-    import random as _rnd
-    _MAX_ATTEMPTS = 3
+    _MAX_ATTEMPTS = 5
     for attempt in range(_MAX_ATTEMPTS):
         r, err = _pp_request(per_page=per_page, cookies_str=cookies_str, single_stat=single_stat)
         if err:
-            if "403" in str(err):
-                return [], err
             is_rate_limit = "429" in str(err)
             if attempt < _MAX_ATTEMPTS - 1:
-                _wait = (10 + 10 * attempt + _rnd.random() * 5) if is_rate_limit else (2 ** (attempt + 1))
+                _wait = (10 * (attempt + 1)) if is_rate_limit else (2 ** (attempt + 1))
                 time.sleep(_wait)
                 continue
             return [], err
@@ -3832,11 +3817,7 @@ def _fetch_prizepicks_lines_cached(cookies_str=""):
             rows, err = _pp_fetch_one(per_page, cookies_str, single_stat)
             if err:
                 last_err = err
-                if "403" in str(err):
-                    return [], err
-                if "429" in str(err):
-                    continue  # rate-limited: try smaller page size
-                break  # other error: skip to next single_stat
+                break  # try next single_stat value
             for row in rows:
                 key = (row["player"], row["stat_type"])
                 if key not in seen:
@@ -9757,32 +9738,47 @@ with tabs[2]:
         _plat_c1, _plat_c2, _plat_c3, _plat_c4 = st.columns(4)
         with _plat_c1:
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;'>PRIZEPICKS</div>", unsafe_allow_html=True)
-            _pp_ck = st.session_state.get("pp_cookies","")
-            if _pp_ck:
-                st.caption(f"🔑 Cookie active ({len(_pp_ck)} chars)")
-            else:
-                _pp_ck_new = st.text_input("PP Cookies", value="", type="password", key="scanner_pp_cookies",
-                                            help="Paste PrizePicks browser cookies to bypass Cloudflare")
-                if _pp_ck_new:
-                    st.session_state["pp_cookies"] = _pp_ck_new
+            st.caption("PP Cookies / JSON")
+            _pp_help = "Paste browser cookies OR full JSON response from DevTools"
+            _pp_ck_input = st.text_input("PP Cookies", value="", type="password", key="scanner_pp_cookies",
+                                         help=_pp_help, label_visibility="collapsed")
+            if _pp_ck_input:
+                st.session_state["pp_cookies"] = _pp_ck_input
+                _stripped_input = _pp_ck_input.strip()
+                if _stripped_input.startswith("{") and '"data"' in _stripped_input:
+                    try:
+                        _pasted_data = json.loads(_stripped_input)
+                        _pasted_rows = _parse_pp_response_all(_pasted_data)
+                        if _pasted_rows:
+                            st.session_state["pp_lines"] = pd.DataFrame(_pasted_rows)
+                            _save_pp_disk_cache(_pasted_rows)
+                            st.success(f"Loaded {len(_pasted_rows)} PP props from pasted JSON")
+                    except Exception as _pje:
+                        st.error(f"JSON parse error: {_pje}")
+            _pp_file = st.file_uploader("Upload PP JSON", type=["json", "txt"], key="scanner_pp_file",
+                                         label_visibility="collapsed", help="Save PP response as .json file, upload here")
+            if _pp_file is not None:
+                try:
+                    _file_content = _pp_file.read().decode("utf-8")
+                    _file_data = json.loads(_file_content)
+                    _file_rows = _parse_pp_response_all(_file_data)
+                    if _file_rows:
+                        st.session_state["pp_lines"] = pd.DataFrame(_file_rows)
+                        _save_pp_disk_cache(_file_rows)
+                        st.success(f"Loaded {len(_file_rows)} PP props from uploaded file")
+                    else:
+                        st.warning("No NBA props found in uploaded JSON")
+                except Exception as _fje:
+                    st.error(f"File parse error: {_fje}")
             if st.button("Fetch PP Lines", key="scanner_fetch_pp_btn", use_container_width=True):
                 _PP_FETCH_CACHE.update(rows=[], err=None, ts=0.0, cookies="")
-                with st.spinner("Fetching PrizePicks (retries on rate-limit)…"):
+                with st.spinner("Fetching PrizePicks…"):
                     _pp_rows, _pp_err = fetch_prizepicks_lines()
                 if _pp_err:
                     if "403" in str(_pp_err):
-                        st.error("PP: Blocked by PerimeterX (HTTP 403)")
-                        st.info(
-                            "**PerimeterX is blocking this IP.** Fix options:\n\n"
-                            "1. **Paste PP JSON** — Open `app.prizepicks.com` in your browser → "
-                            "DevTools (F12) → Network → find `projections` request → "
-                            "copy the Response body → paste it in the PP Cookies field above\n"
-                            "2. **Paste browser cookies** — Copy cookies from PP browser session into the field above\n"
-                            "3. **Run locally** — `streamlit run app.py` from your home IP (residential IPs aren't blocked)\n"
-                            "4. **Use relay** — Run `pp_relay.py` on your local machine + expose via ngrok"
-                        )
+                        st.error("PP: Blocked (HTTP 403) — use JSON paste or file upload above")
                     elif "429" in str(_pp_err):
-                        st.error("PP: Rate-limited (HTTP 429). Wait 2-3 min, then retry.")
+                        st.error("PP: Rate-limited (429). Wait a few min and retry.")
                     else:
                         st.error(f"PP: {_pp_err}")
                 elif _pp_rows:
@@ -11093,22 +11089,29 @@ with tabs[3]:
                         st.warning("Lines are >15 min old. Click Fetch Now to refresh.")
             elif _auto_err:
                 st.error(f"Auto-fetch error: {_auto_err}")
+            _pp_upload = st.file_uploader("Upload PP JSON file", type=["json", "txt"], key="platform_pp_file",
+                                           help="Save PP projections response as .json from DevTools, upload here")
+            if _pp_upload is not None:
+                try:
+                    _uf_content = _pp_upload.read().decode("utf-8")
+                    _uf_data = json.loads(_uf_content)
+                    _uf_rows = _parse_pp_response_all(_uf_data)
+                    if _uf_rows:
+                        st.session_state["pp_lines"] = pd.DataFrame(_uf_rows)
+                        _save_pp_disk_cache(_uf_rows)
+                        st.success(f"Loaded {len(_uf_rows)} PP props from uploaded file")
+                    else:
+                        st.warning("No NBA props found in uploaded JSON")
+                except Exception as _ufje:
+                    st.error(f"File parse error: {_ufje}")
             if st.button("Fetch Now", use_container_width=True, key="pp_fetch_now_btn"):
                 _PP_FETCH_CACHE.update(rows=[], err=None, ts=0.0, cookies="")
-                with st.spinner("Fetching PrizePicks (retries on rate-limit)..."):
+                with st.spinner("Fetching PrizePicks…"):
                     pp_lines, pp_err = fetch_prizepicks_lines()
                 if pp_err:
                     st.error(f"PrizePicks: {pp_err}")
-                    st.info(
-                        "**PerimeterX is blocking API requests from this IP.**\n\n"
-                        "**Fix options (pick one):**\n"
-                        "1. **Paste PP JSON** — Open `app.prizepicks.com` → DevTools (F12) → Network tab → "
-                        "find `projections` request → copy Response body → paste in PP Cookies field\n"
-                        "2. **Paste browser cookies** — Copy cookies from your PP browser session\n"
-                        "3. **Run locally** — `streamlit run app.py` from a residential IP\n"
-                        "4. **Use relay** — Run `pp_relay.py` locally + ngrok, paste URL above\n"
-                        "5. Use **Manual Import** tab"
-                    )
+                    if "403" in str(pp_err) or "429" in str(pp_err):
+                        st.info("**Upload PP JSON above** or use relay/run locally.")
                 elif not pp_lines:
                     st.warning("No lines returned.")
                 else:
