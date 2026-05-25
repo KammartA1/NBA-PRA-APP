@@ -3674,34 +3674,20 @@ def _parse_pp_response_all(data):
 def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """Make one PrizePicks API request.
     Uses multi-browser curl_cffi impersonation (matching GOLFAPP's proven approach),
-    then ScraperAPI proxy, then direct request.
-    On 403 (PerimeterX block): stops immediately — retrying makes the ban longer.
-    On 429 (rate limit): tries next method with small delay.
+    then ScraperAPI proxy, then cloudscraper, then direct request.
     Returns (response_object_or_None, error_str_or_None).
     single_stat='true'  → standard stats (Points, Rebounds, etc.)
     single_stat='false' → combo/specialty stats (PRA, Pts+Reb, Fantasy Score, etc.)
     """
-    import random as _rnd
     url = PRIZEPICKS_API
     params = {"per_page": str(per_page),
               "single_stat": single_stat, "in_play": "false"}
-    _user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    ]
-    _ua = _rnd.choice(_user_agents)
     headers = {
         "Accept": "application/vnd.api+json",
         "Referer": "https://app.prizepicks.com/",
         "Origin": "https://app.prizepicks.com",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-site",
     }
+    resp_obj = None
 
     cookie_dict = {}
     if cookies_str and not cookies_str.strip().startswith("{"):
@@ -3714,12 +3700,10 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                 if k:
                     cookie_dict[k] = v
 
-    # ── Method 1: curl_cffi with browser impersonation (best TLS fingerprint) ──
+    # ── Method 1: curl_cffi with multi-browser impersonation (proven in GOLFAPP) ──
     try:
         from curl_cffi import requests as cffi_requests
-        _browsers = ["chrome124", "edge101", "safari17_0", "chrome120"]
-        _rnd.shuffle(_browsers)
-        for browser in _browsers:
+        for browser in ("edge101", "safari17_0", "chrome124", "chrome120"):
             try:
                 r = cffi_requests.get(
                     url, params=params, headers=headers,
@@ -3728,14 +3712,14 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                     timeout=25,
                 )
                 if r.ok:
-                    return r, None
-                if r.status_code == 403:
-                    return None, "HTTP 403"
+                    resp_obj = r
+                    break
                 if r.status_code == 429:
-                    time.sleep(2 + _rnd.random() * 2)
-                    continue
+                    return None, "HTTP 429"
             except Exception:
                 continue
+        if resp_obj is not None:
+            return resp_obj, None
     except ImportError:
         pass
 
@@ -3755,8 +3739,8 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
             )
             if r.ok:
                 return r, None
-            if r.status_code == 403:
-                return None, "HTTP 403"
+            if r.status_code == 429:
+                return None, "HTTP 429"
         except Exception:
             pass
 
@@ -3767,12 +3751,14 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
             browser={"browser": "chrome", "platform": "windows", "mobile": False}
         )
         r = scraper.get(url, params=params, headers={
-            **headers, "User-Agent": _ua,
+            **headers,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }, cookies=cookie_dict or None, timeout=25)
         if r.ok:
             return r, None
-        if r.status_code == 403:
-            return None, "HTTP 403"
+        if r.status_code == 429:
+            return None, "HTTP 429"
     except ImportError:
         pass
     except Exception:
@@ -3781,7 +3767,9 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     # ── Method 4: Direct request (works from residential IPs) ──
     try:
         r = requests.get(url, params=params, headers={
-            **headers, "User-Agent": _ua,
+            **headers,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }, cookies=cookie_dict or None, timeout=20)
         if r.ok:
             return r, None
@@ -3790,16 +3778,13 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         return None, f"{type(e).__name__}: {e}"
 def _pp_fetch_one(per_page, cookies_str, single_stat):
     """Fetch one PP request with retry + 429-aware backoff. Returns (rows, error)."""
-    import random as _rnd
-    _MAX_ATTEMPTS = 3
+    _MAX_ATTEMPTS = 5
     for attempt in range(_MAX_ATTEMPTS):
         r, err = _pp_request(per_page=per_page, cookies_str=cookies_str, single_stat=single_stat)
         if err:
-            if "403" in str(err):
-                return [], err
             is_rate_limit = "429" in str(err)
             if attempt < _MAX_ATTEMPTS - 1:
-                _wait = (10 + 10 * attempt + _rnd.random() * 5) if is_rate_limit else (2 ** (attempt + 1))
+                _wait = (10 * (attempt + 1)) if is_rate_limit else (2 ** (attempt + 1))
                 time.sleep(_wait)
                 continue
             return [], err
@@ -3832,11 +3817,7 @@ def _fetch_prizepicks_lines_cached(cookies_str=""):
             rows, err = _pp_fetch_one(per_page, cookies_str, single_stat)
             if err:
                 last_err = err
-                if "403" in str(err):
-                    return [], err
-                if "429" in str(err):
-                    continue  # rate-limited: try smaller page size
-                break  # other error: skip to next single_stat
+                break  # try next single_stat value
             for row in rows:
                 key = (row["player"], row["stat_type"])
                 if key not in seen:
