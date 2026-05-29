@@ -3783,66 +3783,57 @@ def _parse_pp_response_all(data):
 def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """Make one PrizePicks API request.
     Priority order:
-      1. ScraperAPI proxy (uses residential IPs — works from cloud)
-      2. curl_cffi browser impersonation (works from residential IPs only)
-      3. cloudscraper
-      4. Direct request
+      1. Session-cookie approach: hit app.prizepicks.com first to get
+         datadome + __cf_bm cookies, then use those for the API call.
+         This works from ANY IP including Streamlit Cloud.
+      2. curl_cffi browser impersonation (backup for residential IPs)
+      3. Direct request with user-provided cookies
     Returns (response_object_or_None, error_str_or_None).
     """
-    import random
     url = PRIZEPICKS_API
     params = {"per_page": str(per_page),
               "single_stat": single_stat, "in_play": "false"}
-    headers = {
-        "Accept": "application/vnd.api+json",
-        "Referer": "https://app.prizepicks.com/",
-        "Origin": "https://app.prizepicks.com",
-    }
     last_status = None
 
-    cookie_dict = {}
-    if cookies_str and not cookies_str.strip().startswith("{"):
-        for part in cookies_str.split(";"):
-            part = part.strip()
-            if "=" in part:
-                k, v = part.split("=", 1)
-                k = k.strip().encode("latin-1", errors="ignore").decode("latin-1")
-                v = v.strip().encode("latin-1", errors="ignore").decode("latin-1")
-                if k:
-                    cookie_dict[k] = v
-
-    # ── Method 1: ScraperAPI proxy (residential IPs — works from Streamlit Cloud) ──
-    scraper_key = ""
+    # ── Method 1: Session with auto-obtained cookies ──
+    # Hit the main app page first to get datadome + __cf_bm tokens,
+    # then use those cookies to authenticate the API request.
     try:
-        scraper_key = st.secrets.get("SCRAPER_API_KEY", "") or os.environ.get("SCRAPER_API_KEY", "")
-    except Exception:
-        scraper_key = os.environ.get("SCRAPER_API_KEY", "")
-    if scraper_key:
-        try:
-            full_url = f"{url}?per_page={per_page}&single_stat={single_stat}&in_play=false"
-            r = requests.get(
-                "https://api.scraperapi.com",
-                params={"api_key": scraper_key, "url": full_url, "render": "false"},
-                timeout=30,
-            )
-            if r.ok:
-                return r, None
-            last_status = r.status_code
-        except Exception:
-            pass
+        s = requests.Session()
+        s.headers.update({
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                          "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                          "Mobile/15E148 Safari/604.1",
+        })
+        s.get("https://app.prizepicks.com", timeout=15)
+        r = s.get(url, params=params, headers={
+            "Accept": "application/json",
+            "Referer": "https://app.prizepicks.com/",
+            "Origin": "https://app.prizepicks.com",
+        }, timeout=20)
+        if r.ok:
+            return r, None
+        last_status = r.status_code
+    except Exception as e:
+        log.warning(f"PP session-cookie method failed: {e}")
 
-    # ── Method 2: curl_cffi with multi-browser impersonation ──
+    # ── Method 2: curl_cffi browser impersonation ──
     try:
+        import random
         from curl_cffi import requests as cffi_requests
         browsers = ["chrome120", "chrome124", "edge101", "safari17_0"]
         random.shuffle(browsers)
         for i, browser in enumerate(browsers):
             try:
                 if i > 0:
-                    time.sleep(2 + random.random() * 3)
+                    time.sleep(2)
                 r = cffi_requests.get(
-                    url, params=params, headers=headers,
-                    cookies=cookie_dict or None,
+                    url, params=params,
+                    headers={
+                        "Accept": "application/json",
+                        "Referer": "https://app.prizepicks.com/",
+                        "Origin": "https://app.prizepicks.com",
+                    },
                     impersonate=browser,
                     timeout=15,
                 )
@@ -3854,37 +3845,32 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     except ImportError:
         pass
 
-    # ── Method 3: cloudscraper ──
-    try:
-        import cloudscraper
-        scraper = cloudscraper.create_scraper(
-            browser={"browser": "chrome", "platform": "windows", "mobile": False}
-        )
-        r = scraper.get(url, params=params, headers={
-            **headers,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        }, cookies=cookie_dict or None, timeout=12)
-        if r.ok:
-            return r, None
-        last_status = r.status_code
-    except ImportError:
-        pass
-    except Exception:
-        pass
-
-    # ── Method 4: Direct request ──
-    try:
-        r = requests.get(url, params=params, headers={
-            **headers,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        }, cookies=cookie_dict or None, timeout=10)
-        if r.ok:
-            return r, None
-        last_status = r.status_code
-    except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
+    # ── Method 3: Direct request with user-provided cookies ──
+    cookie_dict = {}
+    if cookies_str and not cookies_str.strip().startswith("{"):
+        for part in cookies_str.split(";"):
+            part = part.strip()
+            if "=" in part:
+                k, v = part.split("=", 1)
+                k = k.strip().encode("latin-1", errors="ignore").decode("latin-1")
+                v = v.strip().encode("latin-1", errors="ignore").decode("latin-1")
+                if k:
+                    cookie_dict[k] = v
+    if cookie_dict:
+        try:
+            r = requests.get(url, params=params, headers={
+                "Accept": "application/json",
+                "Referer": "https://app.prizepicks.com/",
+                "Origin": "https://app.prizepicks.com",
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                              "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                              "Mobile/15E148 Safari/604.1",
+            }, cookies=cookie_dict, timeout=15)
+            if r.ok:
+                return r, None
+            last_status = r.status_code
+        except Exception as e:
+            return None, f"{type(e).__name__}: {e}"
 
     return None, f"HTTP {last_status}" if last_status else "All methods failed"
 def _pp_fetch_one(per_page, cookies_str, single_stat):
@@ -9878,8 +9864,8 @@ with tabs[2]:
                     _pp_rows, _pp_err = fetch_prizepicks_lines()
                 if _pp_err:
                     if "403" in str(_pp_err) or "429" in str(_pp_err):
-                        st.error(f"PP: Blocked ({_pp_err}). Server IP blocked by PrizePicks.")
-                        st.info("Use **FETCH PP LINES (via your phone)** button above instead — it fetches using your phone's residential IP.")
+                        st.error(f"PP: Blocked ({_pp_err}). PrizePicks anti-bot protection triggered.")
+                        st.info("Try again in a few seconds — the session-cookie bypass usually works on retry. If it persists, paste PP JSON directly into the text area above.")
                     else:
                         st.error(f"PP: {_pp_err}")
                 elif _pp_rows:
@@ -11102,21 +11088,15 @@ with tabs[3]:
             st.markdown(f"<div style='font-size:0.60rem;color:#00FFB2;margin-bottom:4px;'>🔑 Cookie auth active ({len(_pp_ck)} chars) — auto-fetch will use your cookies.</div>", unsafe_allow_html=True)
         else:
             with st.expander("🔑 Setup: PrizePicks on Streamlit Cloud", expanded=False):
-                st.caption("PrizePicks blocks cloud server IPs. Choose one of these solutions:")
+                st.caption("PrizePicks lines are fetched automatically using session-cookie authentication. No setup needed in most cases.")
                 st.markdown("""
-**Option A — ScraperAPI (recommended, free tier):**
-1. Sign up at [scraperapi.com](https://www.scraperapi.com/) (free: 5000 requests/month)
-2. Copy your API key
-3. In your Streamlit Cloud dashboard → App settings → Secrets, add:
-```
-SCRAPER_API_KEY = "your_key_here"
-```
-4. Redeploy — auto-fetch will work automatically
+**Auto-fetch (default):** The app automatically obtains session cookies from PrizePicks and uses them to fetch lines. Just click "Fetch PP Lines" — no configuration required.
 
-**Option B — Browser Fetch:**
-Use the green "FETCH PP LINES (via your phone)" button below — it fetches using your phone's residential IP.
+**If auto-fetch fails:**
+- **Retry** — the session-cookie method works reliably; occasional failures resolve on retry.
+- **Paste JSON** — Open PrizePicks API in your phone browser, copy the JSON response, and paste it into the text area in the Scanner tab.
 
-**Option C — Cookies:**
+**Optional — Cookies:**
 """)
                 st.caption("Paste your PrizePicks browser cookies to authenticate server-side requests.")
                 _new_ck = st.text_area("Cookie string", value="", height=60, placeholder="_pxmvid=...; __cf_bm=...", key="pp_ck_platforms")
@@ -11229,7 +11209,7 @@ Use the green "FETCH PP LINES (via your phone)" button below — it fetches usin
                 if pp_err:
                     st.error(f"PrizePicks: {pp_err}")
                     if "403" in str(pp_err) or "429" in str(pp_err):
-                        st.info("**Paste JSON below** or upload .json file above. Server IP is blocked by PrizePicks — paste/upload works from any device.")
+                        st.info("Anti-bot protection triggered — try again in a few seconds. If it persists, paste JSON below or upload a .json file.")
                 elif not pp_lines:
                     st.warning("No lines returned.")
                 else:
