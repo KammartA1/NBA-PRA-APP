@@ -3673,12 +3673,11 @@ def _parse_pp_response_all(data):
     return _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H"))
 def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """Make one PrizePicks API request.
-    Uses multi-browser curl_cffi impersonation (matching GOLFAPP's proven approach),
+    Uses multi-browser curl_cffi impersonation (each browser = different TLS fingerprint),
     then ScraperAPI proxy, then cloudscraper, then direct request.
     Returns (response_object_or_None, error_str_or_None).
-    single_stat='true'  → standard stats (Points, Rebounds, etc.)
-    single_stat='false' → combo/specialty stats (PRA, Pts+Reb, Fantasy Score, etc.)
     """
+    import random
     url = PRIZEPICKS_API
     params = {"per_page": str(per_page),
               "single_stat": single_stat, "in_play": "false"}
@@ -3687,7 +3686,7 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         "Referer": "https://app.prizepicks.com/",
         "Origin": "https://app.prizepicks.com",
     }
-    resp_obj = None
+    last_status = None
 
     cookie_dict = {}
     if cookies_str and not cookies_str.strip().startswith("{"):
@@ -3701,21 +3700,28 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                     cookie_dict[k] = v
 
     # ── Method 1: curl_cffi with multi-browser impersonation ──
+    # Each browser produces a unique TLS fingerprint — a 429 on chrome120
+    # does NOT mean safari17_0 will also get 429. Try them all with delays.
     try:
         from curl_cffi import requests as cffi_requests
-        for browser in ("chrome120", "chrome124", "edge101", "safari17_0"):
+        browsers = ["chrome120", "chrome124", "edge101", "safari17_0"]
+        random.shuffle(browsers)
+        for i, browser in enumerate(browsers):
             try:
+                if i > 0:
+                    time.sleep(2 + random.random() * 3)
                 r = cffi_requests.get(
                     url, params=params, headers=headers,
                     cookies=cookie_dict or None,
                     impersonate=browser,
-                    timeout=12,
+                    timeout=15,
                 )
                 if r.ok:
                     return r, None
-                if r.status_code == 429:
-                    return None, "HTTP 429"
+                last_status = r.status_code
                 if r.status_code == 403:
+                    continue
+                if r.status_code == 429:
                     continue
             except Exception:
                 continue
@@ -3738,8 +3744,7 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
             )
             if r.ok:
                 return r, None
-            if r.status_code == 429:
-                return None, "HTTP 429"
+            last_status = r.status_code
         except Exception:
             pass
 
@@ -3756,8 +3761,7 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         }, cookies=cookie_dict or None, timeout=12)
         if r.ok:
             return r, None
-        if r.status_code == 429:
-            return None, "HTTP 429"
+        last_status = r.status_code
     except ImportError:
         pass
     except Exception:
@@ -3772,32 +3776,23 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         }, cookies=cookie_dict or None, timeout=10)
         if r.ok:
             return r, None
-        return None, f"HTTP {r.status_code}"
+        last_status = r.status_code
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
+
+    return None, f"HTTP {last_status}" if last_status else "All methods failed"
 def _pp_fetch_one(per_page, cookies_str, single_stat):
-    """Fetch one PP request with retry + 429-aware backoff. Returns (rows, error)."""
-    _MAX_ATTEMPTS = 2
-    for attempt in range(_MAX_ATTEMPTS):
-        r, err = _pp_request(per_page=per_page, cookies_str=cookies_str, single_stat=single_stat)
-        if err:
-            if "429" in str(err):
-                return [], err
-            if attempt < _MAX_ATTEMPTS - 1:
-                time.sleep(3)
-                continue
-            return [], err
-        if r is None:
-            if attempt < _MAX_ATTEMPTS - 1:
-                time.sleep(3)
-                continue
-            return [], "No response from PrizePicks"
-        try:
-            rows = _parse_pp_response(r.json())
-        except Exception as e:
-            return [], f"Parse error: {e}"
-        return rows, None
-    return [], None
+    """Fetch one PP request with retry. Returns (rows, error)."""
+    r, err = _pp_request(per_page=per_page, cookies_str=cookies_str, single_stat=single_stat)
+    if err:
+        return [], err
+    if r is None:
+        return [], "No response from PrizePicks"
+    try:
+        rows = _parse_pp_response(r.json())
+    except Exception as e:
+        return [], f"Parse error: {e}"
+    return rows, None
 _PP_FETCH_CACHE = {"rows": [], "err": None, "ts": 0.0, "cookies": ""}
 def _fetch_prizepicks_lines_cached(cookies_str=""):
     """Fetch both single-stat AND combo/specialty markets and merge.
@@ -9775,10 +9770,9 @@ with tabs[2]:
                 with st.spinner("Fetching PrizePicks…"):
                     _pp_rows, _pp_err = fetch_prizepicks_lines()
                 if _pp_err:
-                    if "403" in str(_pp_err):
-                        st.error("PP: Blocked (HTTP 403) — use JSON paste or file upload above")
-                    elif "429" in str(_pp_err):
-                        st.error("PP: Rate-limited (429). Wait a few min and retry.")
+                    if "403" in str(_pp_err) or "429" in str(_pp_err):
+                        st.error(f"PP: Blocked ({_pp_err}). Your server IP is blocked by PrizePicks.")
+                        st.info("**Paste JSON above** — on desktop: open prizepicks.com → F12 → Network → filter `projections` → click the request → Response tab → copy all → paste above. Or upload the .json file.")
                     else:
                         st.error(f"PP: {_pp_err}")
                 elif _pp_rows:
@@ -11111,7 +11105,7 @@ with tabs[3]:
                 if pp_err:
                     st.error(f"PrizePicks: {pp_err}")
                     if "403" in str(pp_err) or "429" in str(pp_err):
-                        st.info("**Upload PP JSON above** or use relay/run locally.")
+                        st.info("**Paste JSON below** or upload .json file above. Server IP is blocked by PrizePicks — paste/upload works from any device.")
                 elif not pp_lines:
                     st.warning("No lines returned.")
                 else:
