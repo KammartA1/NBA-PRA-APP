@@ -200,8 +200,9 @@ class GameEngine:
                 from simulation.context_brain import ContextBrain
                 brain = ContextBrain(self.cfg)
                 self._context_adjustments = brain.compute_adjustments(self.game_context)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Context brain error: {e}")
 
     # ------------------------------------------------------------------
     # Default roster generation
@@ -271,12 +272,11 @@ class GameEngine:
             adjusted = []
             for p in profiles:
                 is_star = p.usage_rate >= 0.25 and p.is_starter
-                if is_perspective_team:
-                    adjusted.append(brain.apply_to_player_profile(p, adj, is_star))
-                else:
-                    adjusted.append(p)
+                adjusted.append(brain.apply_to_player_profile(p, adj, is_star))
             return adjusted
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Context profile adjustment error: {e}")
             return profiles
 
     def _apply_starting_fatigue(
@@ -344,7 +344,7 @@ class GameEngine:
         home_lineup_mgr.initialize(home)
         away_lineup_mgr.initialize(away)
 
-        base_game_pace = (self.home_pace + self.away_pace) / 2.0 * context_pace_mult
+        base_game_pace = (self.home_pace + self.away_pace) / 2.0
         base_total_poss = int(round(cfg.possessions_per_game * base_game_pace / cfg.league_avg_pace))
         base_min_per_poss = 48.0 / max(base_total_poss, 1)
 
@@ -354,7 +354,8 @@ class GameEngine:
         transition_possessions = 0
 
         previous_play_type = "made_shot"
-        hot_streaks: Dict[int, int] = {}
+        home_hot_streaks: Dict[int, int] = {}
+        away_hot_streaks: Dict[int, int] = {}
 
         elapsed_minutes = 0.0
         possession_num = 0
@@ -401,13 +402,13 @@ class GameEngine:
             for p in home.players:
                 self.fatigue_model.update_player_fatigue(
                     p, base_game_pace, min_per_poss,
-                    altitude_factor=altitude_factor if not offense_is_home else 0.0,
+                    altitude_factor=0.0,
                     schedule_density_factor=(context_fatigue_rate_mult - 1.0),
                 )
             for p in away.players:
                 self.fatigue_model.update_player_fatigue(
                     p, base_game_pace, min_per_poss,
-                    altitude_factor=altitude_factor if offense_is_home else 0.0,
+                    altitude_factor=altitude_factor,
                     schedule_density_factor=(context_fatigue_rate_mult - 1.0),
                 )
 
@@ -485,7 +486,7 @@ class GameEngine:
                     ft_draw_modifier=script_ft_mod,
                     defense_adjustment=context_defense_adj,
                     is_clutch=is_clutch,
-                    player_hot_streaks=hot_streaks,
+                    player_hot_streaks=home_hot_streaks if offense_is_home else away_hot_streaks,
                     two_for_one=two_for_one,
                     end_quarter_heave=end_quarter_heave,
                 )
@@ -493,13 +494,14 @@ class GameEngine:
             if getattr(poss_result, 'is_transition', False):
                 transition_possessions += 1
 
+            off_hot_streaks = home_hot_streaks if offense_is_home else away_hot_streaks
             if poss_result.shot_made and poss_result.shooter_idx is not None:
-                hot_streaks[poss_result.shooter_idx] = hot_streaks.get(poss_result.shooter_idx, 0) + 1
+                off_hot_streaks[poss_result.shooter_idx] = off_hot_streaks.get(poss_result.shooter_idx, 0) + 1
                 _shooter_pid = str(poss_result.shooter_idx)
                 if hasattr(off_script_model, 'record_player_make'):
                     off_script_model.record_player_make(_shooter_pid)
             elif poss_result.shot_attempted and poss_result.shooter_idx is not None:
-                hot_streaks[poss_result.shooter_idx] = 0
+                off_hot_streaks[poss_result.shooter_idx] = 0
                 _shooter_pid = str(poss_result.shooter_idx)
                 if hasattr(off_script_model, 'record_player_miss'):
                     off_script_model.record_player_miss(_shooter_pid)
@@ -516,6 +518,7 @@ class GameEngine:
                     off_script_model.record_no_score()
 
             offense.advance_possession()
+            defense.advance_possession()
 
             previous_play_type = self._determine_previous_play_type(poss_result)
 
