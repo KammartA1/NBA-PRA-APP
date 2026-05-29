@@ -338,7 +338,7 @@ def get_referee_foul_factor(crew_chief_name, market):
     fouls = float(ref_data["fouls_per_100"])
     ratio = fouls / _LEAGUE_AVG_FOULS_PER_100
     # Market-specific weight: FTA/FTM most sensitive, Points partial
-    market_weight = {"FTA": 1.0, "FTM": 1.0, "Stocks": 0.25, "Steals": 0.35, "Points": 0.20, "PRA": 0.12}
+    market_weight = {"FTA": 1.0, "FTM": 1.0, "Personal Fouls": 1.0, "Stocks": 0.25, "Steals": 0.35, "Points": 0.20, "PRA": 0.12}
     w = market_weight.get(market, 0.15)
     factor = float(np.clip(1.0 + (ratio - 1.0) * w, 0.95, 1.05))
     tier = ref_data.get("tier", "Average")
@@ -1189,7 +1189,7 @@ def fetch_player_halfgame_log(player_id, game_log_df, market_name, n_games=10):
             blk = pd.to_numeric(stats_df.get("BLK"), errors="coerce").fillna(0)
             stl = pd.to_numeric(stats_df.get("STL"), errors="coerce").fillna(0)
             tov = pd.to_numeric(stats_df.get("TOV"), errors="coerce").fillna(0)
-            return (pts + 1.2*reb + 1.5*ast + 2.0*blk + 2.0*stl - 1.0*tov).reset_index(drop=True)
+            return (pts + 1.25*reb + 1.5*ast + 2.0*blk + 2.0*stl - 0.5*tov).reset_index(drop=True)
         except Exception:
             return None
     # 2PA = FGA - FG3A
@@ -1362,7 +1362,7 @@ def compute_stat_from_gamelog(df, market):
             blk = pd.to_numeric(df.get("BLK"), errors="coerce").fillna(0)
             stl = pd.to_numeric(df.get("STL"), errors="coerce").fillna(0)
             tov = pd.to_numeric(df.get("TOV"), errors="coerce").fillna(0)
-            return pts + 1.2*reb + 1.5*ast + 2.0*blk + 2.0*stl - 1.0*tov
+            return pts + 1.25*reb + 1.5*ast + 2.0*blk + 2.0*stl - 0.5*tov
         except Exception:
             return pd.Series([], dtype=float)
     # Two Pointers Attempted = FGA - FG3A
@@ -1394,7 +1394,7 @@ def compute_stat_from_gamelog(df, market):
         for col in f:
             s = s + pd.to_numeric(df.get(col), errors="coerce").fillna(0.0)
         return s
-    return pd.to_numeric(df.get(f), errors="coerce")
+    return pd.to_numeric(df.get(f), errors="coerce").fillna(0.0)
 # ──────────────────────────────────────────────
 # VOLATILITY ENGINE  [FIX 5: skewness helper]
 # ──────────────────────────────────────────────
@@ -2106,7 +2106,7 @@ def volatility_penalty_factor(cv):
     New formula uses linear interpolation across four anchor points derived from
     the same empirical calibration — same overall shape, no artificial cliffs.
     """
-    if cv is None: return 0.0
+    if cv is None: return 0.75
     v = float(cv)
     if v <= 0.0:   return 1.0
     if v >= 0.40:  return 0.0
@@ -3700,30 +3700,29 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                 if k:
                     cookie_dict[k] = v
 
-    # ── Method 1: curl_cffi with multi-browser impersonation (proven in GOLFAPP) ──
+    # ── Method 1: curl_cffi with multi-browser impersonation ──
     try:
         from curl_cffi import requests as cffi_requests
-        for browser in ("edge101", "safari17_0", "chrome124", "chrome120"):
+        for browser in ("chrome120", "chrome124", "edge101", "safari17_0"):
             try:
                 r = cffi_requests.get(
                     url, params=params, headers=headers,
                     cookies=cookie_dict or None,
                     impersonate=browser,
-                    timeout=25,
+                    timeout=12,
                 )
                 if r.ok:
-                    resp_obj = r
-                    break
+                    return r, None
                 if r.status_code == 429:
                     return None, "HTTP 429"
+                if r.status_code == 403:
+                    continue
             except Exception:
                 continue
-        if resp_obj is not None:
-            return resp_obj, None
     except ImportError:
         pass
 
-    # ── Method 2: ScraperAPI proxy (bypasses PerimeterX on cloud IPs) ──
+    # ── Method 2: ScraperAPI proxy ──
     scraper_key = ""
     try:
         scraper_key = st.secrets.get("SCRAPER_API_KEY", "") or os.environ.get("SCRAPER_API_KEY", "")
@@ -3735,7 +3734,7 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
             r = requests.get(
                 "https://api.scraperapi.com",
                 params={"api_key": scraper_key, "url": full_url, "render": "false"},
-                timeout=30,
+                timeout=15,
             )
             if r.ok:
                 return r, None
@@ -3744,7 +3743,7 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         except Exception:
             pass
 
-    # ── Method 3: cloudscraper (handles Cloudflare JS challenges) ──
+    # ── Method 3: cloudscraper ──
     try:
         import cloudscraper
         scraper = cloudscraper.create_scraper(
@@ -3754,7 +3753,7 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
             **headers,
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        }, cookies=cookie_dict or None, timeout=25)
+        }, cookies=cookie_dict or None, timeout=12)
         if r.ok:
             return r, None
         if r.status_code == 429:
@@ -3764,13 +3763,13 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     except Exception:
         pass
 
-    # ── Method 4: Direct request (works from residential IPs) ──
+    # ── Method 4: Direct request ──
     try:
         r = requests.get(url, params=params, headers={
             **headers,
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        }, cookies=cookie_dict or None, timeout=20)
+        }, cookies=cookie_dict or None, timeout=10)
         if r.ok:
             return r, None
         return None, f"HTTP {r.status_code}"
@@ -3778,19 +3777,19 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
         return None, f"{type(e).__name__}: {e}"
 def _pp_fetch_one(per_page, cookies_str, single_stat):
     """Fetch one PP request with retry + 429-aware backoff. Returns (rows, error)."""
-    _MAX_ATTEMPTS = 5
+    _MAX_ATTEMPTS = 2
     for attempt in range(_MAX_ATTEMPTS):
         r, err = _pp_request(per_page=per_page, cookies_str=cookies_str, single_stat=single_stat)
         if err:
-            is_rate_limit = "429" in str(err)
+            if "429" in str(err):
+                return [], err
             if attempt < _MAX_ATTEMPTS - 1:
-                _wait = (10 * (attempt + 1)) if is_rate_limit else (2 ** (attempt + 1))
-                time.sleep(_wait)
+                time.sleep(3)
                 continue
             return [], err
         if r is None:
             if attempt < _MAX_ATTEMPTS - 1:
-                time.sleep(2 ** (attempt + 1))
+                time.sleep(3)
                 continue
             return [], "No response from PrizePicks"
         try:
@@ -3812,19 +3811,16 @@ def _fetch_prizepicks_lines_cached(cookies_str=""):
     all_rows = []
     seen = set()
     last_err = None
-    for single_stat in ("true", "false"):  # true=standard, false=combo/specialty
-        for per_page in (500, 250):
-            rows, err = _pp_fetch_one(per_page, cookies_str, single_stat)
-            if err:
-                last_err = err
-                break  # try next single_stat value
-            for row in rows:
-                key = (row["player"], row["stat_type"])
-                if key not in seen:
-                    seen.add(key)
-                    all_rows.append(row)
-            if rows:
-                break  # got results for this single_stat, no need to try smaller per_page
+    for single_stat in ("true", "false"):
+        rows, err = _pp_fetch_one(500, cookies_str, single_stat)
+        if err:
+            last_err = err
+            continue
+        for row in rows:
+            key = (row["player"], row["stat_type"])
+            if key not in seen:
+                seen.add(key)
+                all_rows.append(row)
     if all_rows:
         _PP_FETCH_CACHE["rows"] = all_rows
         _PP_FETCH_CACHE["err"] = None
@@ -3927,6 +3923,8 @@ def _pp_auto_loop(state: dict):
     while True:
         state["stop_evt"].wait(state.get("interval", 600))
         state["stop_evt"].clear()
+        if state.get("_shutdown"):
+            break
         if not state.get("enabled"):
             continue
         try:
@@ -4118,9 +4116,15 @@ def _parse_nba_game_time(date_str: str, status_text: str) -> str:
         t = _dtm.strptime(time_part, "%I:%M %p")
         d = _dtm.strptime(date_str[:10], "%Y-%m-%d")
         et = d.replace(hour=t.hour, minute=t.minute)
-        _et_offset = 4 if d.month in (3, 4, 5, 6, 7, 8, 9, 10) else 5
-        utc = et + _td(hours=_et_offset)
-        return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            from zoneinfo import ZoneInfo
+            et_aware = et.replace(tzinfo=ZoneInfo("America/New_York"))
+            utc = et_aware.astimezone(ZoneInfo("UTC"))
+            return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ImportError:
+            _et_offset = 4 if d.month in (3, 4, 5, 6, 7, 8, 9, 10) else 5
+            utc = et + _td(hours=_et_offset)
+            return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     except Exception:
         return ""
 
@@ -4167,7 +4171,8 @@ def _clv_auto_loop(state: dict):
         try:
             state["stop_evt"].wait(timeout=120)
             state["stop_evt"].clear()
-
+            if state.get("_shutdown"):
+                break
             if not state.get("enabled", True):
                 continue
 
@@ -5825,8 +5830,9 @@ def compute_combo_projection(
         _combo_sim_std  = math.sqrt(sum(s**2 for s in _leg_sim_stds))
         _zs = (float(line) - _combo_sim_mean) / max(_combo_sim_std, 0.01)
         _combo_sim_prob = float(np.clip(1.0 - _norm.cdf(_zs), 1e-4, 1 - 1e-4))
-        combined_p_over = float(0.65 * _combo_sim_prob + 0.35 * combined_p_over)
-        errors.append(f"Combo sim blend 65/35: sim_p={_combo_sim_prob:.3f}, analytical={combined_p_over:.3f}, sim_mu={_combo_sim_mean:.1f}, sim_std={_combo_sim_std:.1f}")
+        _combo_analytical_p = combined_p_over
+        combined_p_over = float(0.65 * _combo_sim_prob + 0.35 * _combo_analytical_p)
+        errors.append(f"Combo sim blend 65/35: sim_p={_combo_sim_prob:.3f}, analytical={_combo_analytical_p:.3f}, sim_mu={_combo_sim_mean:.1f}, sim_std={_combo_sim_std:.1f}")
 
     side_str = (meta.get("side") if meta else "Over") or "Over"
     _is_under = "under" in str(side_str).lower()
@@ -5946,7 +5952,7 @@ def compute_combo_projection(
         "p_model":          float(p_model) if p_model is not None else None,
         "p_cal":            float(p_cal) if p_cal is not None else None,
         "p_implied":        float(p_implied) if p_implied is not None else None,
-        "advantage":        float(p_cal - p_implied) if (p_cal and p_implied) else None,
+        "advantage":        float(p_cal - p_implied) if (p_cal is not None and p_implied is not None) else None,
         "price_decimal":    float(price_decimal) if price_decimal is not None else None,
         "book":             meta.get("book") if meta else None,
         "event_id":         meta.get("event_id") if meta else None,
@@ -6088,7 +6094,6 @@ def compute_leg_projection(
     half_factor = HALF_FACTOR.get(market_name, 1.0)
     is_half_market = market_name in HALF_FACTOR
     is_dd_td = market_name in DD_TD_MARKETS
-    is_fantasy = market_name in FANTASY_MARKETS
     # For half/Q1 markets, find effective full-game stat field
     base_market = market_name
     if is_half_market:
@@ -6281,8 +6286,8 @@ def compute_leg_projection(
     _expected_win_prob = 0.5
     if _home_ml is not None and _away_ml is not None:
         try:
-            _home_imp = 1.0 / float(_home_ml) if float(_home_ml) > 0 else 0.5
-            _away_imp = 1.0 / float(_away_ml) if float(_away_ml) > 0 else 0.5
+            _home_imp = 1.0 / float(_home_ml) if float(_home_ml) > 1.0 else 0.5
+            _away_imp = 1.0 / float(_away_ml) if float(_away_ml) > 1.0 else 0.5
             _total_imp = _home_imp + _away_imp
             if _total_imp > 0:
                 _home_win_prob = _home_imp / _total_imp
@@ -6713,13 +6718,19 @@ def compute_leg_projection(
                                 except Exception:
                                     pass
                                 if _hist_dunk_rate > 0:
-                                    _cv = np.random.binomial(np.maximum(_dfgm_d.values.astype(int), 0), np.clip(_hist_dunk_rate, 0, 1)).astype(float)
+                                    _dunk_rng = np.random.default_rng(_sim_cfg.random_seed if _sim_cfg else 42)
+                                    _cv = _dunk_rng.binomial(np.maximum(_dfgm_d.values.astype(int), 0), np.clip(_hist_dunk_rate, 0, 1)).astype(float)
                                     _sim_dist = PlayerDistribution(player_name=player_name, player_id=_sim_pid, stat_name=_sim_stat, n_sims=len(_cv), values=_cv)
                                     _sim_dist.compute()
                         elif _cbase in ("double_double", "triple_double"):
                             _dp, _dr, _da = _cget("points"), _cget("rebounds"), _cget("assists")
                             if all(x is not None for x in [_dp, _dr, _da]):
                                 _cnt = (_dp.values >= 10).astype(float) + (_dr.values >= 10).astype(float) + (_da.values >= 10).astype(float)
+                                _dblk, _dstl = _cget("blocks"), _cget("steals")
+                                if _dblk is not None:
+                                    _cnt = _cnt + (_dblk.values >= 10).astype(float)
+                                if _dstl is not None:
+                                    _cnt = _cnt + (_dstl.values >= 10).astype(float)
                                 _thresh = 3.0 if _cbase == "triple_double" else 2.0
                                 _cv = (_cnt >= _thresh).astype(float)
                                 _sim_dist = PlayerDistribution(player_name=player_name, player_id=_sim_pid, stat_name=_sim_stat, n_sims=len(_cv), values=_cv)
@@ -6843,8 +6854,9 @@ def compute_leg_projection(
             p_over_raw = _p_ctx
             errors.append(f"Context-adjusted P(Over): shift={_ctx_shift:+.2f}, mult={_combined_mult:.3f}")
     if sim_prob is not None and p_over_raw is not None:
-        p_over_raw = float(0.65 * sim_prob + 0.35 * p_over_raw)
-        errors.append(f"Sim blend 65/35: sim={sim_prob:.3f}, analytical={p_over_raw:.3f}")
+        _analytical_p = p_over_raw
+        p_over_raw = float(0.65 * sim_prob + 0.35 * _analytical_p)
+        errors.append(f"Sim blend 65/35: sim={sim_prob:.3f}, analytical={_analytical_p:.3f}")
     elif sim_prob is not None:
         p_over_raw = sim_prob
         errors.append(f"Sim-only: sim_p={sim_prob:.3f} (analytical unavailable)")
@@ -6922,25 +6934,6 @@ def compute_leg_projection(
     if _stop_hit:
         gate_ok = False
         gate_reason = _stop_msg
-    # [v6.0] Raised minimum EV from 2% → 5%: only stake on bets with clear edge
-    if gate_ok and p_cal is not None and price_decimal is not None and ev_adj is not None and ev_adj >= 0.05:
-        stake_dollars, stake_frac, stake_reason = recommended_stake(
-            bankroll, float(p_cal), float(price_decimal), frac_kelly, max_risk_frac)
-        # [v3.0] DNP risk: proportional scaling using probability score instead of binary half/zero
-        if stake_dollars > 0 and _dnp_prob_score > 0.05:
-            if _dnp_prob_score >= 0.65:
-                stake_dollars = 0.0
-                stake_frac    = 0.0
-                stake_reason  = "dnp_critical_risk"
-            elif _dnp_prob_score >= 0.40:
-                _dnp_scale = 1.0 - _dnp_prob_score  # e.g. 0.60 prob → scale to 0.40
-                stake_dollars *= _dnp_scale
-                stake_frac    *= _dnp_scale
-                stake_reason  = f"dnp_prob_{_dnp_prob_score:.0%}"
-            elif _dnp_prob_score >= 0.20 or (dnp_risk and float(proj_minutes or 30) < 5.0):
-                stake_dollars *= 0.50
-                stake_frac    *= 0.50
-                stake_reason  = "dnp_risk_half"
     mk_key = meta.get("market_key") if meta else ODDS_MARKETS.get(market_name,"")
     player_norm = normalize_name(player_name)
     if scan_mode:
@@ -7025,7 +7018,7 @@ def compute_leg_projection(
         "p_model":          float(p_model) if p_model is not None else None,
         "p_cal":            float(p_cal) if p_cal is not None else None,
         "p_implied":        float(p_implied) if p_implied is not None else None,
-        "advantage":        float(p_cal - p_implied) if (p_cal and p_implied) else None,
+        "advantage":        float(p_cal - p_implied) if (p_cal is not None and p_implied is not None) else None,
         "price_decimal":    float(price_decimal) if price_decimal is not None else None,
         "book":             meta.get("book") if meta else None,
         "event_id":         meta.get("event_id") if meta else None,
@@ -7302,7 +7295,7 @@ def recompute_pricing_fields(leg, calib):
     price = leg.get("price_decimal")
     p_imp = implied_prob_from_decimal(price) if price is not None else None
     leg["p_implied"] = p_imp
-    leg["advantage"] = float(p_cal-p_imp) if (p_cal and p_imp) else None
+    leg["advantage"] = float(p_cal-p_imp) if (p_cal is not None and p_imp is not None) else None
     ev_raw = ev_per_dollar(p_cal, price) if (p_cal and price) else None
     leg["ev_raw"] = ev_raw
     pen = volatility_penalty_factor(leg.get("volatility_cv"))
@@ -7417,20 +7410,30 @@ def compute_period_loss_pct(uid, bankroll, days=1):
     try:
         if bankroll <= 0: return 0.0
         h = load_history(uid)
-        if h.empty or "date" not in h.columns: return 0.0
-        cutoff = (date.today() - timedelta(days=days - 1)).isoformat()
-        recent = h[h["date"] >= cutoff] if "date" in h.columns else pd.DataFrame()
+        if h.empty: return 0.0
+        date_col = None
+        for c in ("date", "ts"):
+            if c in h.columns:
+                date_col = c; break
+        if date_col is None: return 0.0
+        h["_date"] = pd.to_datetime(h[date_col], errors="coerce").dt.date
+        cutoff = date.today() - timedelta(days=days - 1)
+        recent = h[h["_date"] >= cutoff]
         if recent.empty: return 0.0
         pnl = 0.0
         for _, row in recent.iterrows():
-            outcome = str(row.get("outcome","")).lower()
+            result = str(row.get("result", row.get("outcome", ""))).upper()
             stake = float(row.get("stake", 0) or 0)
             price = float(row.get("price_decimal", 2.0) or 2.0)
-            if outcome == "win":
-                pnl += stake * (price - 1.0)
-            elif outcome == "loss":
-                pnl -= stake
-        # Return loss as positive fraction (loss_pct = 0.10 means 10% of bankroll lost)
+            if stake > 0:
+                if result in ("HIT", "WIN"):
+                    pnl += stake * (price - 1.0)
+                elif result in ("MISS", "LOSS"):
+                    pnl -= stake
+            elif result in ("HIT", "WIN"):
+                pnl += bankroll * 0.03
+            elif result in ("MISS", "LOSS"):
+                pnl -= bankroll * 0.03
         return max(0.0, -pnl / bankroll)
     except Exception:
         return 0.0
@@ -7994,7 +7997,7 @@ if not st.session_state.get("_auth_user"):
 <div class="auth-wrap">
 <div class="auth-box">
 <div class="auth-title">NBA <span style="color:#00FFB2;">ALPHA</span> ENGINE</div>
-<div class="auth-subtitle">Quantitative Sports Analytics · v2.2</div>
+<div class="auth-subtitle">Quantitative Sports Analytics · v4.0</div>
 </div>
 </div>
 """)
@@ -8386,7 +8389,7 @@ with st.sidebar:
         <div style='width:6px;height:6px;border-radius:50%;background:#00FFB2;
                     box-shadow:0 0 6px #00FFB2;'></div>
         <div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#00FFB2;
-                    letter-spacing:0.1em;'>LIVE  ·  v2.2</div>
+                    letter-spacing:0.1em;'>LIVE  ·  v4.0</div>
         <div style='margin-left:auto;font-family:Fira Code,monospace;font-size:0.55rem;
                     color:#2A4060;'>NBA 2024-25</div>
     </div>
@@ -8473,7 +8476,7 @@ border-top:1px solid #0E1E30;'></div>""", unsafe_allow_html=True)
         SPORTSBOOK MODEL · -110 VIG REMOVED<br>
         KELLY STAKING · MC CORRELATED<br>
         <span style='color:#0E2840;'>━━━━━━━━━━━━━━━━</span><br>
-        <span style='color:#1A3050;'>NBA QUANT ENGINE v2.2</span>
+        <span style='color:#1A3050;'>NBA QUANT ENGINE v4.0</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -8530,29 +8533,20 @@ if st.session_state.get("scanner_results") is None:
 if "_scanner_alert_hashes" not in st.session_state:
     st.session_state["_scanner_alert_hashes"] = _load_alert_hashes()
 MARKET_OPTIONS = list(ODDS_MARKETS.keys())
-def _daily_pnl(uid):
-    h = load_history(uid)
-    if h.empty: return 0.0
-    try:
-        h["ts_d"] = pd.to_datetime(h["ts"],errors="coerce").dt.date
-        today_rows = h[h["ts_d"]==date.today()].copy()
-        if today_rows.empty: return 0.0
-        hits = (today_rows["result"]=="HIT").sum(); miss = (today_rows["result"]=="MISS").sum()
-        return float(hits - miss)
-    except: return 0.0
 def _check_loss_stops(uid, bankroll):
-    pnl = _daily_pnl(uid)
-    if bankroll > 0 and pnl < 0 and abs(pnl)/bankroll*100 > float(st.session_state.get("max_daily_loss",15)):
-        st.error(f"DAILY LOSS STOP HIT ({abs(pnl)/bankroll*100:.1f}%). No new bets recommended today.")
+    _stop_hit, _stop_msg = is_loss_stop_active(uid, bankroll)
+    if _stop_hit:
+        st.error(_stop_msg)
         return True
     return False
 # ── Pull settings from session state for use in tab code ──────
 bankroll           = float(st.session_state.get("bankroll", 1000.0))
+st.session_state["peak_bankroll"] = max(bankroll, float(st.session_state.get("peak_bankroll", 0)))
 n_games            = int(st.session_state.get("n_games", 10))
 frac_kelly         = float(st.session_state.get("frac_kelly", 0.25))
 payout_multi       = float(st.session_state.get("payout_multi", 3.0))
 market_prior_weight= float(st.session_state.get("market_prior_weight", 0.65))
-max_risk_per_bet   = float(st.session_state.get("max_risk_per_bet", 3.0))
+max_risk_per_bet   = float(st.session_state.get("max_risk_per_bet", 5.0))
 max_daily_loss     = int(st.session_state.get("max_daily_loss", 15))
 max_weekly_loss    = int(st.session_state.get("max_weekly_loss", 25))
 exclude_chaotic    = bool(st.session_state.get("exclude_chaotic", True))
@@ -8718,6 +8712,7 @@ with tabs[0]:
                     # Fallback: check stored PrizePicks lines before using manual
                     _pp_df = st.session_state.get("pp_lines")
                     _pp_line = None
+                    _r = None
                     if _pp_df is not None and not _pp_df.empty:
                         _norm_pname = normalize_name(pname)
                         for _, _r in _pp_df.iterrows():
@@ -8776,7 +8771,7 @@ with tabs[0]:
                                 player_names=_parts, market_name=_combo_mkt, line=line, meta=_run_meta,
                                 n_games=n_games, key_teammate_out=to,
                                 bankroll=bankroll, frac_kelly=frac_kelly,
-                                max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
+                                max_risk_frac=float(st.session_state.get("max_risk_per_bet",5.0))/100.0,
                                 market_prior_weight=market_prior_weight,
                                 exclude_chaotic=bool(exclude_chaotic),
                                 game_date=scan_date,
@@ -8786,7 +8781,7 @@ with tabs[0]:
                                 pname, mkt, line, _run_meta,
                                 n_games=n_games, key_teammate_out=to,
                                 bankroll=bankroll, frac_kelly=frac_kelly,
-                                max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
+                                max_risk_frac=float(st.session_state.get("max_risk_per_bet",5.0))/100.0,
                                 market_prior_weight=market_prior_weight,
                                 exclude_chaotic=bool(exclude_chaotic),
                                 game_date=scan_date,
@@ -9381,7 +9376,9 @@ with tabs[1]:
                         _p_imp_u = 1.0 - float(_p_imp_u_base)
                         _vol_cv_u = leg.get("volatility_cv")
                         _skew_u = leg.get("stat_skewness")
-                        _ev_u = (_p_under / _p_imp_u - 1.0) if _p_imp_u > 0 else None
+                        _ev_u_raw = (_p_under / _p_imp_u - 1.0) if _p_imp_u > 0 else None
+                        _pen_u = volatility_penalty_factor(_vol_cv_u)
+                        _ev_u = float(_ev_u_raw * _pen_u) if _ev_u_raw is not None else None
                         _gate_u, _reason_u = passes_volatility_gate(_vol_cv_u, _ev_u, skew=_skew_u, bet_type="Under", p_over=leg.get("p_over"), market=leg.get("market"))
                         if _gate_u and not leg.get("dnp_risk") and _p_under >= 0.52:
                             _ev_u_str = f"{_ev_u*100:+.1f}%" if _ev_u is not None else "--"
@@ -9738,23 +9735,26 @@ with tabs[2]:
         _plat_c1, _plat_c2, _plat_c3, _plat_c4 = st.columns(4)
         with _plat_c1:
             st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;'>PRIZEPICKS</div>", unsafe_allow_html=True)
-            st.caption("PP Cookies / JSON")
-            _pp_help = "Paste browser cookies OR full JSON response from DevTools"
-            _pp_ck_input = st.text_input("PP Cookies", value="", type="password", key="scanner_pp_cookies",
-                                         help=_pp_help, label_visibility="collapsed")
-            if _pp_ck_input:
-                st.session_state["pp_cookies"] = _pp_ck_input
-                _stripped_input = _pp_ck_input.strip()
-                if _stripped_input.startswith("{") and '"data"' in _stripped_input:
+            _pp_json_area = st.text_area("Paste PP JSON", height=80, key="scanner_pp_json_area",
+                                          placeholder='Paste full JSON response: {"data":[...],"included":[...]}',
+                                          label_visibility="collapsed")
+            if _pp_json_area and _pp_json_area.strip():
+                _stripped_input = _pp_json_area.strip()
+                if _stripped_input.startswith("{"):
                     try:
                         _pasted_data = json.loads(_stripped_input)
                         _pasted_rows = _parse_pp_response_all(_pasted_data)
                         if _pasted_rows:
                             st.session_state["pp_lines"] = pd.DataFrame(_pasted_rows)
                             _save_pp_disk_cache(_pasted_rows)
-                            st.success(f"Loaded {len(_pasted_rows)} PP props from pasted JSON")
-                    except Exception as _pje:
-                        st.error(f"JSON parse error: {_pje}")
+                            st.success(f"Loaded {len(_pasted_rows)} PP props from JSON")
+                        else:
+                            st.warning("No NBA props found in pasted JSON")
+                    except json.JSONDecodeError as _pje:
+                        st.error(f"Invalid JSON: {_pje}")
+                else:
+                    st.session_state["pp_cookies"] = _stripped_input
+                    st.caption("Cookies saved")
             _pp_file = st.file_uploader("Upload PP JSON", type=["json", "txt"], key="scanner_pp_file",
                                          label_visibility="collapsed", help="Save PP response as .json file, upload here")
             if _pp_file is not None:
@@ -10163,7 +10163,7 @@ with tabs[2]:
                                 player_names=parts, market_name=mkt, line=line, meta=meta,
                                 n_games=n_games, key_teammate_out=False,
                                 bankroll=bankroll, frac_kelly=frac_kelly,
-                                max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
+                                max_risk_frac=float(st.session_state.get("max_risk_per_bet",5.0))/100.0,
                                 market_prior_weight=market_prior_weight,
                                 exclude_chaotic=bool(exclude_chaotic),
                                 game_date=scan_start, injury_team_map=_inj_map, scan_mode=True,
@@ -10172,7 +10172,7 @@ with tabs[2]:
                         pname, mkt, line, meta,
                         n_games=n_games, key_teammate_out=False,
                         bankroll=bankroll, frac_kelly=frac_kelly,
-                        max_risk_frac=float(st.session_state.get("max_risk_per_bet",3.0))/100.0,
+                        max_risk_frac=float(st.session_state.get("max_risk_per_bet",5.0))/100.0,
                         market_prior_weight=market_prior_weight,
                         exclude_chaotic=bool(exclude_chaotic),
                         game_date=scan_start, injury_team_map=_inj_map, scan_mode=True,
@@ -10194,7 +10194,7 @@ with tabs[2]:
                             )
                             _last_progress_time = _now
                         try:
-                            leg = fut.result(timeout=5)
+                            leg = fut.result(timeout=30)
                         except TimeoutError:
                             dropped.append({"player": pname, "market": mkt, "reason": "thread timeout"})
                             continue
@@ -10542,7 +10542,7 @@ with tabs[2]:
                         compute_leg_projection, rpn, rmk, rln, rmt,
                         n_games=n_games, key_teammate_out=False,
                         bankroll=bankroll, frac_kelly=frac_kelly,
-                        max_risk_frac=float(st.session_state.get("max_risk_per_bet", 3.0)) / 100.0,
+                        max_risk_frac=float(st.session_state.get("max_risk_per_bet", 5.0)) / 100.0,
                         market_prior_weight=market_prior_weight,
                         exclude_chaotic=bool(exclude_chaotic),
                         game_date=scan_start,
@@ -10687,7 +10687,7 @@ with tabs[2]:
                             _se_pname, _se_mkt, _se_line, _se_meta,
                             n_games=n_games, key_teammate_out=False,
                             bankroll=bankroll, frac_kelly=frac_kelly,
-                            max_risk_frac=float(st.session_state.get("max_risk_per_bet", 3.0)) / 100.0,
+                            max_risk_frac=float(st.session_state.get("max_risk_per_bet", 5.0)) / 100.0,
                             market_prior_weight=market_prior_weight,
                             exclude_chaotic=bool(exclude_chaotic),
                             game_date=scan_start,
@@ -10906,10 +10906,10 @@ with tabs[2]:
             if st.button("Log This Parlay to History", use_container_width=True, key="log_parlay_btn"):
                 parlay_legs = []
                 for r in sel_rows:
-                    parlay_legs.append({k: v for k, v in r.items()})
+                    parlay_legs.append({k: (v.item() if hasattr(v, 'item') else v) for k, v in r.items()})
                 append_history(st.session_state.get("user_id","trader"), {
                     "ts": _now_iso(), "user_id": st.session_state.get("user_id","trader"),
-                    "legs": json.dumps(parlay_legs), "n_legs": len(parlay_legs),
+                    "legs": json.dumps(parlay_legs, default=str), "n_legs": len(parlay_legs),
                     "result": "Pending", "decision": "BET", "notes": "parlay-builder",
                 })
                 st.success(f"Logged {len(parlay_legs)}-leg parlay to history.")
@@ -11141,7 +11141,20 @@ with tabs[3]:
             pp_upload = st.file_uploader("Upload CSV", type=["csv"], key="pp_csv_upload")
             pp_paste = st.text_area("Or paste PrizePicks API JSON response", height=120, key="pp_json_paste",
                                     placeholder='{"data":[{"id":"...","type":"Projection",...}],"included":[...]}')
-            if st.button("Load Data", use_container_width=True, key="pp_manual_load"):
+            _auto_loaded_pp = False
+            if pp_paste and pp_paste.strip().startswith("{") and '"data"' in pp_paste:
+                try:
+                    _auto_data = json.loads(pp_paste.strip())
+                    _auto_rows = _parse_pp_response_all(_auto_data)
+                    if _auto_rows:
+                        pp_df_auto = pd.DataFrame(_auto_rows)
+                        st.session_state["pp_lines"] = pp_df_auto
+                        _save_pp_disk_cache(_auto_rows)
+                        st.success(f"Auto-loaded {len(_auto_rows)} PP props from pasted JSON")
+                        _auto_loaded_pp = True
+                except Exception:
+                    pass
+            if not _auto_loaded_pp and st.button("Load Data", use_container_width=True, key="pp_manual_load"):
                 rows = []
                 err_msg = None
                 if pp_upload is not None:
@@ -11210,7 +11223,7 @@ with tabs[3]:
             # Filter out alternate (goblin/demon) lines — their adjusted multipliers make
             # EV% misleading. Goblins pay ~0.85x, demons ~1.25x vs standard 1x.
             if "odds_type" in pp_df.columns:
-                pp_df_std = pp_df[pp_df["odds_type"].str.lower().isin(["standard", ""])]
+                pp_df_std = pp_df[pp_df["odds_type"].fillna("standard").str.lower().isin(["standard", ""])]
                 _n_filtered = len(pp_df) - len(pp_df_std)
                 if _n_filtered > 0:
                     st.caption(f"⚡ {_n_filtered} alternate (goblin/demon) lines hidden — unplayable multipliers.")
@@ -12267,7 +12280,7 @@ color:#2A5070;letter-spacing:0.18em;text-transform:uppercase;
 margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #0E1E30;'>
 ▸ RISK CONTROLS</div>""", unsafe_allow_html=True)
         _mrpb = st.slider("Max Bet Size (% Bankroll)", 0.0, 10.0,
-            float(st.session_state.get("max_risk_per_bet", 3.0)), 0.5, key="settings_mrpb")
+            float(st.session_state.get("max_risk_per_bet", 5.0)), 0.5, key="settings_mrpb")
         st.session_state["max_risk_per_bet"] = float(_mrpb)
         _mdl = st.slider("Daily Loss Stop (%)", 0, 50,
             int(st.session_state.get("max_daily_loss", 15)), key="settings_mdl")
@@ -12407,7 +12420,7 @@ Settings are applied immediately and saved to your account.</div>""",
         "n_games": st.session_state.get("n_games", 10),
         "frac_kelly": st.session_state.get("frac_kelly", 0.25),
         "payout_multi": st.session_state.get("payout_multi", 3.0),
-        "max_risk_per_bet": st.session_state.get("max_risk_per_bet", 3.0),
+        "max_risk_per_bet": st.session_state.get("max_risk_per_bet", 5.0),
         "max_daily_loss": st.session_state.get("max_daily_loss", 15),
         "max_weekly_loss": st.session_state.get("max_weekly_loss", 25),
         "exclude_chaotic": st.session_state.get("exclude_chaotic", True),

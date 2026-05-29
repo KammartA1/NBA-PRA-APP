@@ -76,9 +76,11 @@ def _standardize_position(pos: str) -> str:
     """Map free-form position strings to standard 5 positions."""
     if not pos:
         return "SF"
-    # Take first listed position (e.g., "SG-SF" -> "SG")
-    primary = pos.strip().upper().split("-")[0].split("/")[0]
-    return _POS_STANDARD.get(primary, _POS_STANDARD.get(pos.strip().upper(), "SF"))
+    full = pos.strip().upper()
+    if full in _POS_STANDARD:
+        return _POS_STANDARD[full]
+    primary = full.split("-")[0].split("/")[0]
+    return _POS_STANDARD.get(primary, "SF")
 
 
 # ---------------------------------------------------------------------------

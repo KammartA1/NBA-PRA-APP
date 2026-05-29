@@ -440,6 +440,8 @@ class GameScriptModel:
             seconds_left_in_quarter <= cfg.two_for_one_window_seconds
             and seconds_left_in_quarter > 6.0  # not at the very end
         ):
+            # NOTE: random.random() is unseeded here; for full reproducibility,
+            # this should use a numpy rng passed into the model.
             if random.random() < cfg.two_for_one_probability:
                 two_for_one = True
                 # Bias toward 3s on two-for-one
@@ -449,6 +451,8 @@ class GameScriptModel:
         # 6. End-of-quarter heave
         # ================================================================
         if seconds_left_in_quarter <= 4.0 and seconds_left_in_quarter >= 0.0:
+            # NOTE: random.random() is unseeded here; for full reproducibility,
+            # this should use a numpy rng passed into the model.
             if random.random() < cfg.end_quarter_heave_probability:
                 end_quarter_heave = True
 
