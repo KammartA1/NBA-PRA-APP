@@ -3564,6 +3564,115 @@ def compute_td_prob(game_log_df, n_games=10):
 # PRIZEPICKS INGESTION
 # ──────────────────────────────────────────────
 PRIZEPICKS_API = "https://api.prizepicks.com/projections"
+
+def _pp_browser_fetch_component():
+    """Render a JavaScript component that fetches PrizePicks lines using the
+    USER'S browser (phone/desktop residential IP) instead of the server.
+    This bypasses Streamlit Cloud's datacenter IP block entirely.
+    The JS fetches the API, then pushes the result into a hidden Streamlit
+    text area which triggers a rerun with the data available."""
+    import streamlit.components.v1 as components
+    components.html("""
+<div id="pp-fetch-ui" style="font-family:monospace;font-size:13px;color:#EEF4FF;">
+<button id="pp-btn" onclick="fetchPP()" style="
+    background:linear-gradient(135deg,#00FFB2,#00CC8E);color:#0A1628;
+    border:none;border-radius:6px;padding:10px 20px;font-weight:700;
+    font-family:inherit;font-size:13px;cursor:pointer;width:100%;
+    letter-spacing:0.08em;">
+    FETCH PP LINES (via your phone)
+</button>
+<div id="pp-status" style="margin-top:8px;font-size:12px;color:#4A607A;"></div>
+<textarea id="pp-result" style="display:none;"></textarea>
+<script>
+async function fetchPP() {
+    const btn = document.getElementById('pp-btn');
+    const status = document.getElementById('pp-status');
+    const result = document.getElementById('pp-result');
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    status.textContent = 'Fetching from PrizePicks...';
+    status.style.color = '#FFB800';
+    try {
+        const url = 'https://api.prizepicks.com/projections?per_page=500&single_stat=true&in_play=false';
+        const resp = await fetch(url, {
+            headers: {
+                'Accept': 'application/json',
+            },
+            mode: 'cors',
+        });
+        if (!resp.ok) {
+            // Try no-cors as fallback (won't give us data but worth trying)
+            status.innerHTML = 'Direct fetch blocked (HTTP ' + resp.status +
+                '). <br>Open <a href="https://api.prizepicks.com/projections?per_page=500&single_stat=true" target="_blank" style="color:#00FFB2;">this link</a> in a new tab, then Select All (Ctrl+A), Copy, and paste into the text area above.';
+            status.style.color = '#FF3358';
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            return;
+        }
+        const data = await resp.json();
+        const nData = (data.data || []).length;
+        const nIncl = (data.included || []).length;
+        if (nData === 0) {
+            status.textContent = 'No projections found (slate may not be posted yet).';
+            status.style.color = '#FFB800';
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            return;
+        }
+        // Push the JSON into the Streamlit text area
+        const jsonStr = JSON.stringify(data);
+        // Find the scanner JSON text area and set its value
+        const textareas = window.parent.document.querySelectorAll('textarea');
+        let found = false;
+        for (const ta of textareas) {
+            if (ta.placeholder && ta.placeholder.includes('Paste full JSON response')) {
+                // Set the value using React's internal setter to trigger Streamlit update
+                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                    window.HTMLTextAreaElement.prototype, 'value').set;
+                nativeInputValueSetter.call(ta, jsonStr);
+                ta.dispatchEvent(new Event('input', { bubbles: true }));
+                ta.dispatchEvent(new Event('change', { bubbles: true }));
+                found = true;
+                break;
+            }
+        }
+        if (found) {
+            status.innerHTML = '&#10003; Fetched ' + nData + ' projections (' + nIncl +
+                ' players). Data pasted into text area — it will auto-load on next rerun. <b>Click anywhere on the page</b> to trigger the load.';
+            status.style.color = '#00FFB2';
+        } else {
+            // Fallback: copy to clipboard
+            try {
+                await navigator.clipboard.writeText(jsonStr);
+                status.innerHTML = '&#10003; Fetched ' + nData + ' projections. JSON copied to clipboard — paste into the text area above.';
+                status.style.color = '#00FFB2';
+            } catch(e) {
+                // Last resort: show in a text area for manual copy
+                result.style.display = 'block';
+                result.style.width = '100%';
+                result.style.height = '60px';
+                result.style.fontSize = '11px';
+                result.style.background = '#0E1E30';
+                result.style.color = '#EEF4FF';
+                result.style.border = '1px solid #00FFB230';
+                result.value = jsonStr;
+                result.select();
+                status.innerHTML = '&#10003; Fetched ' + nData + ' projections. Select the text below, copy, and paste into the text area above.';
+                status.style.color = '#FFB800';
+            }
+        }
+    } catch(e) {
+        status.innerHTML = 'Browser fetch failed: ' + e.message +
+            '<br>PrizePicks blocks cross-origin requests. ' +
+            'Open <a href="https://api.prizepicks.com/projections?per_page=500&single_stat=true" target="_blank" style="color:#00FFB2;">this link</a> in a new tab, then Select All, Copy, and paste above.';
+        status.style.color = '#FF3358';
+    }
+    btn.disabled = false;
+    btn.style.opacity = '1';
+}
+</script>
+</div>
+""", height=100)
 _PP_NBA_LEAGUE_PREFIXES = ("NBA",)  # matches "NBA", "NBA 1Q", "NBA 1H", "NBA 2H", "NBA_1Q", etc.
 
 def _pp_league_is_nba(league_str: str) -> bool:
@@ -3673,8 +3782,11 @@ def _parse_pp_response_all(data):
     return _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H"))
 def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """Make one PrizePicks API request.
-    Uses multi-browser curl_cffi impersonation (each browser = different TLS fingerprint),
-    then ScraperAPI proxy, then cloudscraper, then direct request.
+    Priority order:
+      1. ScraperAPI proxy (uses residential IPs — works from cloud)
+      2. curl_cffi browser impersonation (works from residential IPs only)
+      3. cloudscraper
+      4. Direct request
     Returns (response_object_or_None, error_str_or_None).
     """
     import random
@@ -3699,9 +3811,27 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                 if k:
                     cookie_dict[k] = v
 
-    # ── Method 1: curl_cffi with multi-browser impersonation ──
-    # Each browser produces a unique TLS fingerprint — a 429 on chrome120
-    # does NOT mean safari17_0 will also get 429. Try them all with delays.
+    # ── Method 1: ScraperAPI proxy (residential IPs — works from Streamlit Cloud) ──
+    scraper_key = ""
+    try:
+        scraper_key = st.secrets.get("SCRAPER_API_KEY", "") or os.environ.get("SCRAPER_API_KEY", "")
+    except Exception:
+        scraper_key = os.environ.get("SCRAPER_API_KEY", "")
+    if scraper_key:
+        try:
+            full_url = f"{url}?per_page={per_page}&single_stat={single_stat}&in_play=false"
+            r = requests.get(
+                "https://api.scraperapi.com",
+                params={"api_key": scraper_key, "url": full_url, "render": "false"},
+                timeout=30,
+            )
+            if r.ok:
+                return r, None
+            last_status = r.status_code
+        except Exception:
+            pass
+
+    # ── Method 2: curl_cffi with multi-browser impersonation ──
     try:
         from curl_cffi import requests as cffi_requests
         browsers = ["chrome120", "chrome124", "edge101", "safari17_0"]
@@ -3719,34 +3849,10 @@ def _pp_request(per_page=500, cookies_str="", single_stat="true"):
                 if r.ok:
                     return r, None
                 last_status = r.status_code
-                if r.status_code == 403:
-                    continue
-                if r.status_code == 429:
-                    continue
             except Exception:
                 continue
     except ImportError:
         pass
-
-    # ── Method 2: ScraperAPI proxy ──
-    scraper_key = ""
-    try:
-        scraper_key = st.secrets.get("SCRAPER_API_KEY", "") or os.environ.get("SCRAPER_API_KEY", "")
-    except Exception:
-        scraper_key = os.environ.get("SCRAPER_API_KEY", "")
-    if scraper_key:
-        try:
-            full_url = f"{url}?per_page={per_page}&single_stat={single_stat}&in_play=false"
-            r = requests.get(
-                "https://api.scraperapi.com",
-                params={"api_key": scraper_key, "url": full_url, "render": "false"},
-                timeout=15,
-            )
-            if r.ok:
-                return r, None
-            last_status = r.status_code
-        except Exception:
-            pass
 
     # ── Method 3: cloudscraper ──
     try:
@@ -9765,14 +9871,15 @@ with tabs[2]:
                         st.warning("No NBA props found in uploaded JSON")
                 except Exception as _fje:
                     st.error(f"File parse error: {_fje}")
-            if st.button("Fetch PP Lines", key="scanner_fetch_pp_btn", use_container_width=True):
+            _pp_browser_fetch_component()
+            if st.button("Fetch PP Lines (server-side)", key="scanner_fetch_pp_btn", use_container_width=True):
                 _PP_FETCH_CACHE.update(rows=[], err=None, ts=0.0, cookies="")
                 with st.spinner("Fetching PrizePicks…"):
                     _pp_rows, _pp_err = fetch_prizepicks_lines()
                 if _pp_err:
                     if "403" in str(_pp_err) or "429" in str(_pp_err):
-                        st.error(f"PP: Blocked ({_pp_err}). Your server IP is blocked by PrizePicks.")
-                        st.info("**Paste JSON above** — on desktop: open prizepicks.com → F12 → Network → filter `projections` → click the request → Response tab → copy all → paste above. Or upload the .json file.")
+                        st.error(f"PP: Blocked ({_pp_err}). Server IP blocked by PrizePicks.")
+                        st.info("Use **FETCH PP LINES (via your phone)** button above instead — it fetches using your phone's residential IP.")
                     else:
                         st.error(f"PP: {_pp_err}")
                 elif _pp_rows:
@@ -10994,8 +11101,24 @@ with tabs[3]:
         if _pp_ck:
             st.markdown(f"<div style='font-size:0.60rem;color:#00FFB2;margin-bottom:4px;'>🔑 Cookie auth active ({len(_pp_ck)} chars) — auto-fetch will use your cookies.</div>", unsafe_allow_html=True)
         else:
-            with st.expander("🔑 Set PrizePicks Cookies (needed for auto-fetch on cloud)", expanded=False):
-                st.caption("PrizePicks blocks Streamlit Cloud IPs. Paste your browser cookies here to bypass — or use Manual Import below.")
+            with st.expander("🔑 Setup: PrizePicks on Streamlit Cloud", expanded=False):
+                st.caption("PrizePicks blocks cloud server IPs. Choose one of these solutions:")
+                st.markdown("""
+**Option A — ScraperAPI (recommended, free tier):**
+1. Sign up at [scraperapi.com](https://www.scraperapi.com/) (free: 5000 requests/month)
+2. Copy your API key
+3. In your Streamlit Cloud dashboard → App settings → Secrets, add:
+```
+SCRAPER_API_KEY = "your_key_here"
+```
+4. Redeploy — auto-fetch will work automatically
+
+**Option B — Browser Fetch:**
+Use the green "FETCH PP LINES (via your phone)" button below — it fetches using your phone's residential IP.
+
+**Option C — Cookies:**
+""")
+                st.caption("Paste your PrizePicks browser cookies to authenticate server-side requests.")
                 _new_ck = st.text_area("Cookie string", value="", height=60, placeholder="_pxmvid=...; __cf_bm=...", key="pp_ck_platforms")
                 if st.button("Save Cookies", key="pp_ck_save_plat"):
                     _ck_val2 = _new_ck.strip()
@@ -11083,6 +11206,7 @@ with tabs[3]:
                         st.warning("Lines are >15 min old. Click Fetch Now to refresh.")
             elif _auto_err:
                 st.error(f"Auto-fetch error: {_auto_err}")
+            _pp_browser_fetch_component()
             _pp_upload = st.file_uploader("Upload PP JSON file", type=["json", "txt"], key="platform_pp_file",
                                            help="Save PP projections response as .json from DevTools, upload here")
             if _pp_upload is not None:
