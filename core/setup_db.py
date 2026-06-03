@@ -152,43 +152,81 @@ RLS_POLICIES = [
 ]
 
 
+# AWS regions Supabase commonly hosts in — used to find the IPv4 pooler.
+POOLER_REGIONS = [
+    "us-east-1", "us-west-1", "us-east-2", "us-west-2",
+    "eu-west-1", "eu-west-2", "eu-central-1", "eu-central-2",
+    "ap-southeast-1", "ap-southeast-2", "ap-south-1",
+    "ap-northeast-1", "ap-northeast-2", "ca-central-1", "sa-east-1",
+]
+
+
+def _try_connect(host, user, password, port=5432):
+    """Try one connection target. Returns conn or None."""
+    try:
+        import psycopg2
+        return psycopg2.connect(
+            host=host, port=port, dbname="postgres", user=user,
+            password=password, sslmode="require", connect_timeout=10,
+        )
+    except ImportError:
+        import pg8000
+        return pg8000.connect(
+            host=host, port=port, database="postgres", user=user,
+            password=password, ssl_context=True, timeout=10,
+        )
+
+
 def main():
     supa_url = os.environ.get("SUPABASE_URL", "")
     db_host = os.environ.get("SUPABASE_DB_HOST", "")
     db_password = os.environ.get("SUPABASE_DB_PASSWORD", "")
+    db_url = os.environ.get("SUPABASE_DB_URL", "")  # full pooler URI overrides all
+    pooler_region = os.environ.get("SUPABASE_POOLER_REGION", "")
 
-    if not db_host and supa_url:
+    ref = ""
+    if supa_url:
         ref = supa_url.replace("https://", "").split(".")[0]
+    if not db_host and ref:
         db_host = f"db.{ref}.supabase.co"
 
-    if not db_host or not db_password:
-        log.error("Set SUPABASE_DB_HOST (or SUPABASE_URL) and SUPABASE_DB_PASSWORD")
+    if db_url:
+        # User supplied the exact connection string from the dashboard.
+        import urllib.parse as up
+        p = up.urlparse(db_url)
+        candidates = [(p.hostname, p.username, p.password or db_password, p.port or 5432)]
+    else:
+        if not db_password or (not db_host and not ref):
+            log.error("Set SUPABASE_DB_PASSWORD and SUPABASE_URL (or SUPABASE_DB_HOST).")
+            sys.exit(1)
+        # 1) direct host (IPv6 on new projects — works locally, often NOT on CI)
+        # 2) session pooler (IPv4) across candidate regions
+        candidates = [(db_host, "postgres", db_password, 5432)]
+        regions = [pooler_region] if pooler_region else POOLER_REGIONS
+        for region in regions:
+            if not region:
+                continue
+            candidates.append(
+                (f"aws-0-{region}.pooler.supabase.com", f"postgres.{ref}", db_password, 5432)
+            )
+
+    conn = None
+    for host, user, password, port in candidates:
+        log.info("Trying %s:%s as %s ...", host, port, user)
+        try:
+            conn = _try_connect(host, user, password, port)
+            log.info("Connected via %s", host)
+            break
+        except Exception as e:
+            log.warning("  failed: %s", str(e).splitlines()[0] if str(e) else e)
+
+    if conn is None:
+        log.error(
+            "Could not connect to Postgres by any route. "
+            "Easiest fix: open Supabase Dashboard -> SQL Editor and run "
+            "migrations/001_scanner_tables.sql by hand."
+        )
         sys.exit(1)
-
-    log.info("Connecting to %s ...", db_host)
-
-    try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host=db_host,
-            port=5432,
-            dbname="postgres",
-            user="postgres",
-            password=db_password,
-            sslmode="require",
-            connect_timeout=15,
-        )
-    except ImportError:
-        import pg8000
-        conn = pg8000.connect(
-            host=db_host,
-            port=5432,
-            database="postgres",
-            user="postgres",
-            password=db_password,
-            ssl_context=True,
-            timeout=15,
-        )
 
     conn.autocommit = True
     cur = conn.cursor()
