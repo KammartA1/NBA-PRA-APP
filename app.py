@@ -89,7 +89,7 @@ Write a 3-4 sentence analysis covering: (1) why the model projects this outcome 
         ) as stream:
             return stream.get_final_message().content[0].text.strip()
     except Exception as e:
-        return f"AI analysis unavailable: {e}"
+        raise RuntimeError(f"AI analysis unavailable: {e}") from e
 @st.cache_data(ttl=60*60*2, show_spinner=False)
 def ai_slate_briefing(slate_json, api_key=""):
     """Use Claude Sonnet to generate a comprehensive slate analysis."""
@@ -109,14 +109,14 @@ Write a structured briefing covering:
 5. **One-Liner Summary** — Today's overall slate quality (1-2 sentences)
 Be specific with player names, lines, and percentages. Write like a quant fund's morning brief. Max 350 words."""
         with client.messages.stream(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=500,
             messages=[{"role": "user", "content": prompt}]
         ) as stream:
             msg = stream.get_final_message()
             return next((b.text for b in msg.content if b.type == "text"), "").strip()
     except Exception as e:
-        return f"AI briefing unavailable: {e}"
+        raise RuntimeError(f"AI briefing unavailable: {e}") from e
 @st.cache_data(ttl=60*60*2, show_spinner=False)
 def ai_prizepicks_helper(entry_json: str, legs_json: str, api_key: str = "") -> str | None:
     """
@@ -141,13 +141,13 @@ For each entry combination, analyze:
 4. **Final Recommendation** — Pick ONE specific entry: the combo, the mode (Power Play or Flex), and the stake. Be decisive and quantitative.
 Write in concise bullet format, max 250 words. Reference specific player names and percentages."""
         with client.messages.stream(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=450,
             messages=[{"role": "user", "content": prompt}]
         ) as stream:
             return stream.get_final_message().content[0].text.strip()
     except Exception as e:
-        return f"PP Helper unavailable: {e}"
+        raise RuntimeError(f"PP Helper unavailable: {e}") from e
 @st.cache_data(ttl=60*60*2, show_spinner=False)
 def ai_edge_deepdive(legs_json: str, api_key: str = "") -> str | None:
     """
@@ -183,13 +183,13 @@ If any middle opportunities detected, explain the exact strategy: which books, w
 1-2 sentences on optimal entry: which leg(s) to fire at full Kelly vs reduced Kelly vs pass.
 Be specific, brutal, and quantitative. Max 450 words."""
         with client.messages.stream(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}]
         ) as stream:
             return stream.get_final_message().content[0].text.strip()
     except Exception as e:
-        return f"Deep dive unavailable: {e}"
+        raise RuntimeError(f"Deep dive unavailable: {e}") from e
 @st.cache_data(ttl=60*60*2, show_spinner=False)
 def ai_parlay_optimizer(legs_json, api_key=""):
     """Use Claude Sonnet to recommend optimal parlay combinations."""
@@ -209,13 +209,13 @@ For each recommended parlay:
 - Rate: ⭐⭐⭐ (Best), ⭐⭐ (Good), ⭐ (Speculative)
 Suggest 2-3 parlay combinations. Be concise and quantitative. Max 300 words."""
         with client.messages.stream(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}]
         ) as stream:
             return stream.get_final_message().content[0].text.strip()
     except Exception as e:
-        return f"AI parlay optimizer unavailable: {e}"
+        raise RuntimeError(f"AI parlay optimizer unavailable: {e}") from e
 from nba_api.stats.static import players as nba_players
 from nba_api.stats.static import teams as nba_teams
 from nba_api.stats.endpoints import (
@@ -9412,34 +9412,37 @@ with tabs[1]:
                     _ai_leg_key = f"_ai_edge_{i}_{leg.get('player','x').replace(' ','_')[:20]}"
                     if st.button("🤖 AI Edge Analysis", key=f"ai_edge_btn_{i}", use_container_width=True):
                         with st.spinner("Claude analyzing edge…"):
-                            _ai_txt = ai_explain_edge(
-                                player=str(leg.get("player","?")),
-                                market=str(leg.get("market","?")),
-                                line=float(leg.get("line") or 0),
-                                side=str(leg.get("bet_side", leg.get("side","Over"))),
-                                proj=float(leg.get("proj") or 0),
-                                p_cal=float(leg.get("p_cal") or 0),
-                                ev_pct=float(leg.get("ev_pct") or 0),
-                                edge_cat=str(leg.get("edge_cat","?")),
-                                hot_cold=str(leg.get("hot_cold","Average")),
-                                rest_days=int(leg.get("rest_days") or 2),
-                                dnp_risk=bool(leg.get("dnp_risk",False)),
-                                b2b=bool((leg.get("rest_days") or 2) == 0),
-                                opp=str(leg.get("opp","?")),
-                                vol_cv=float(leg.get("volatility_cv") or 0),
-                                n_games=int(leg.get("n_games_used") or 0),
-                                errors_str=", ".join((leg.get("errors") or [])[:3]),
-                                api_key=_get_anthropic_key(),
-                                trend_label=str(leg.get("trend_label","Neutral")),
-                                sharpness_score=leg.get("sharpness_score"),
-                                sharpness_tier=str(leg.get("sharpness_tier","?")),
-                                game_total=leg.get("game_total"),
-                                fatigue_label=str(leg.get("fatigue_label","Normal")),
-                                opp_fatigue_label=str(leg.get("opp_fatigue_label","Normal")),
-                                l3_avg=leg.get("l3_avg"),
-                                l5_avg=leg.get("l5_avg"),
-                                l10_avg=leg.get("l10_avg"),
-                            )
+                            try:
+                                _ai_txt = ai_explain_edge(
+                                    player=str(leg.get("player","?")),
+                                    market=str(leg.get("market","?")),
+                                    line=float(leg.get("line") or 0),
+                                    side=str(leg.get("bet_side", leg.get("side","Over"))),
+                                    proj=float(leg.get("proj") or 0),
+                                    p_cal=float(leg.get("p_cal") or 0),
+                                    ev_pct=float(leg.get("ev_pct") or 0),
+                                    edge_cat=str(leg.get("edge_cat","?")),
+                                    hot_cold=str(leg.get("hot_cold","Average")),
+                                    rest_days=int(leg.get("rest_days") or 2),
+                                    dnp_risk=bool(leg.get("dnp_risk",False)),
+                                    b2b=bool((leg.get("rest_days") or 2) == 0),
+                                    opp=str(leg.get("opp","?")),
+                                    vol_cv=float(leg.get("volatility_cv") or 0),
+                                    n_games=int(leg.get("n_games_used") or 0),
+                                    errors_str=", ".join((leg.get("errors") or [])[:3]),
+                                    api_key=_get_anthropic_key(),
+                                    trend_label=str(leg.get("trend_label","Neutral")),
+                                    sharpness_score=leg.get("sharpness_score"),
+                                    sharpness_tier=str(leg.get("sharpness_tier","?")),
+                                    game_total=leg.get("game_total"),
+                                    fatigue_label=str(leg.get("fatigue_label","Normal")),
+                                    opp_fatigue_label=str(leg.get("opp_fatigue_label","Normal")),
+                                    l3_avg=leg.get("l3_avg"),
+                                    l5_avg=leg.get("l5_avg"),
+                                    l10_avg=leg.get("l10_avg"),
+                                )
+                            except Exception as _ai_err:
+                                _ai_txt = str(_ai_err)
                         st.session_state[_ai_leg_key] = _ai_txt
                     _ai_leg_txt = st.session_state.get(_ai_leg_key)
                     if _ai_leg_txt:
@@ -9668,9 +9671,12 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                         }
                         for l in res
                     ]
-                    _deepdive_txt = ai_edge_deepdive(
-                        json.dumps(_dd_data, indent=2), api_key=_get_anthropic_key()
-                    )
+                    try:
+                        _deepdive_txt = ai_edge_deepdive(
+                            json.dumps(_dd_data, indent=2), api_key=_get_anthropic_key()
+                        )
+                    except Exception as _ai_err:
+                        _deepdive_txt = str(_ai_err)
                 st.session_state["_ai_deepdive_result"] = _deepdive_txt
             _deepdive_txt = st.session_state.get("_ai_deepdive_result")
             if _deepdive_txt:
@@ -9701,7 +9707,10 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                         }
                         for l in res
                     ]
-                    _parlay_ai = ai_parlay_optimizer(json.dumps(_legs_data, indent=2), api_key=_get_anthropic_key())
+                    try:
+                        _parlay_ai = ai_parlay_optimizer(json.dumps(_legs_data, indent=2), api_key=_get_anthropic_key())
+                    except Exception as _ai_err:
+                        _parlay_ai = str(_ai_err)
                 st.session_state["_ai_parlay_result"] = _parlay_ai
             _parlay_ai_txt = st.session_state.get("_ai_parlay_result")
             if _parlay_ai_txt:
@@ -9751,11 +9760,14 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                             }
                             for l in res if float(l.get("p_cal") or 0) > 0.50
                         ]
-                        _pp_ai = ai_prizepicks_helper(
-                            json.dumps(_pp_top, indent=2),
-                            json.dumps(_pp_legs_data, indent=2),
-                            api_key=_get_anthropic_key(),
-                        )
+                        try:
+                            _pp_ai = ai_prizepicks_helper(
+                                json.dumps(_pp_top, indent=2),
+                                json.dumps(_pp_legs_data, indent=2),
+                                api_key=_get_anthropic_key(),
+                            )
+                        except Exception as _ai_err:
+                            _pp_ai = str(_ai_err)
                     st.session_state["_ai_pp_helper_result"] = _pp_ai
                 _pp_ai_txt = st.session_state.get("_ai_pp_helper_result")
                 if _pp_ai_txt:
@@ -10856,7 +10868,10 @@ with tabs[2]:
                                       "l3","l5","steam","min_proj","inj_boost"]}
                             for r in _top_edges
                         ], indent=2)
-                        _slate_ai = ai_slate_briefing(_slate_payload, api_key=_get_anthropic_key())
+                        try:
+                            _slate_ai = ai_slate_briefing(_slate_payload, api_key=_get_anthropic_key())
+                        except Exception as _ai_err:
+                            _slate_ai = str(_ai_err)
                     st.session_state["_ai_slate_result"] = _slate_ai
             with _sl_clear_col:
                 if st.button("Clear", key="ai_slate_clear_btn"):
