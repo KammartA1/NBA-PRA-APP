@@ -1,0 +1,67 @@
+name: NBA Scanner Worker
+
+# Runs the background scanner every 20 minutes during NBA game hours.
+# NBA games typically: 12pm-11pm ET (16:00-03:00 UTC)
+# We scan broadly 15:00-04:00 UTC to catch early lines and late West Coast games.
+
+on:
+  schedule:
+    # Every 20 minutes from 3pm-11:59pm UTC (11am-8pm ET)
+    - cron: "*/20 15-23 * * *"
+    # Every 20 minutes from 12am-3:59am UTC (8pm-12am ET) — late games
+    - cron: "*/20 0-3 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        required: false
+        default: "scan"
+        type: choice
+        options:
+          - scan
+          - setup-db
+          - test-all
+          - test-pp
+          - test-db
+          - test-notify
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install nba_api pandas numpy scipy requests supabase psycopg2-binary
+
+      - name: Run
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          MODE="${{ github.event.inputs.mode || 'scan' }}"
+          case "$MODE" in
+            setup-db)
+              python -m core.setup_db
+              ;;
+            scan)
+              python -m core.scanner_worker
+              ;;
+            *)
+              python -m core.scanner_worker --$MODE
+              ;;
+          esac

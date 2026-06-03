@@ -68,6 +68,51 @@ CREATE TABLE IF NOT EXISTS watchlist (
     updated_at timestamptz DEFAULT now()
 );
 
+-- 7. Scan Results (background worker writes edges here, app reads them)
+CREATE TABLE IF NOT EXISTS scan_results (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    scan_id text NOT NULL,
+    sport text NOT NULL DEFAULT 'NBA',
+    scanned_at timestamptz NOT NULL DEFAULT now(),
+    player text NOT NULL,
+    team text DEFAULT '',
+    opp text DEFAULT '',
+    market text NOT NULL,
+    line float8,
+    side text DEFAULT 'Over',
+    proj float8,
+    p_cal float8,
+    ev_pct float8,
+    edge_cat text DEFAULT '',
+    l5_avg float8,
+    l10_avg float8,
+    src text DEFAULT 'PrizePicks',
+    is_active boolean DEFAULT true
+);
+CREATE INDEX IF NOT EXISTS idx_sr_active ON scan_results(sport, is_active);
+CREATE INDEX IF NOT EXISTS idx_sr_scan ON scan_results(scan_id);
+CREATE INDEX IF NOT EXISTS idx_sr_scanned ON scan_results(scanned_at DESC);
+
+-- 8. Worker Run Log (tracks every background worker execution)
+CREATE TABLE IF NOT EXISTS worker_runs (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    worker_name text NOT NULL,
+    status text NOT NULL,
+    ran_at timestamptz NOT NULL DEFAULT now(),
+    details jsonb DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_wr_worker ON worker_runs(worker_name, ran_at DESC);
+
+-- 9. Notification Log (tracks sent alerts)
+CREATE TABLE IF NOT EXISTS notification_log (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    sent_at timestamptz NOT NULL DEFAULT now(),
+    type text NOT NULL,
+    message text DEFAULT '',
+    delivered boolean DEFAULT true
+);
+CREATE INDEX IF NOT EXISTS idx_nl_type ON notification_log(type, sent_at DESC);
+
 -- Disable RLS for single-user server-side app (service_role key bypasses anyway)
 ALTER TABLE bet_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
@@ -76,6 +121,10 @@ ALTER TABLE opening_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_auth ENABLE ROW LEVEL SECURITY;
 ALTER TABLE watchlist ENABLE ROW LEVEL SECURITY;
 
+ALTER TABLE scan_results ENABLE ROW LEVEL SECURITY;
+ALTER TABLE worker_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notification_log ENABLE ROW LEVEL SECURITY;
+
 -- Permissive policies (service_role key bypasses, but add for safety)
 CREATE POLICY "allow_all" ON bet_history FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "allow_all" ON user_settings FOR ALL USING (true) WITH CHECK (true);
@@ -83,3 +132,6 @@ CREATE POLICY "allow_all" ON prop_line_history FOR ALL USING (true) WITH CHECK (
 CREATE POLICY "allow_all" ON opening_lines FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "allow_all" ON user_auth FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "allow_all" ON watchlist FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all" ON scan_results FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all" ON worker_runs FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all" ON notification_log FOR ALL USING (true) WITH CHECK (true);
