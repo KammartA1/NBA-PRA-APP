@@ -148,6 +148,38 @@ def log_worker_run(worker_name: str, status: str, details: dict | None = None) -
         return False
 
 
+def get_recent_worker_runs(hours: int = 24, worker_name: str | None = None) -> list[dict]:
+    """Return worker_runs from the last `hours` hours, newest first."""
+    sb = _get_client()
+    if not sb:
+        return []
+    try:
+        from datetime import timedelta
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        q = sb.table("worker_runs").select("*").gte("ran_at", since)
+        if worker_name:
+            q = q.eq("worker_name", worker_name)
+        resp = _retry(lambda: q.order("ran_at", desc=True).limit(500).execute())
+        return resp.data or []
+    except Exception as e:
+        log.warning("get_recent_worker_runs failed: %s", e)
+        return []
+
+
+def last_scan_age_minutes(sport: str = "NBA") -> float | None:
+    """Minutes since the last successful/partial scanner run. None if never."""
+    runs = get_recent_worker_runs(hours=48, worker_name="scanner")
+    for r in runs:
+        if r.get("status") in ("success", "partial"):
+            try:
+                ran = datetime.fromisoformat(r["ran_at"].replace("Z", "+00:00"))
+                delta = datetime.now(timezone.utc) - ran
+                return round(delta.total_seconds() / 60.0, 1)
+            except Exception:
+                continue
+    return None
+
+
 # --- Notification Log ---
 
 def log_notification(ntype: str, message: str, delivered: bool = True) -> bool:
@@ -165,6 +197,27 @@ def log_notification(ntype: str, message: str, delivered: bool = True) -> bool:
         return True
     except Exception as e:
         log.warning("log_notification failed: %s", e)
+        return False
+
+
+def was_notified_today(ntype: str) -> bool:
+    """True if a notification of `ntype` was already logged today (UTC)."""
+    sb = _get_client()
+    if not sb:
+        return False
+    try:
+        today = datetime.now(timezone.utc).date().isoformat()
+        resp = _retry(lambda: (
+            sb.table("notification_log")
+            .select("id")
+            .eq("type", ntype)
+            .gte("sent_at", f"{today}T00:00:00+00:00")
+            .limit(1)
+            .execute()
+        ))
+        return bool(resp.data)
+    except Exception as e:
+        log.warning("was_notified_today failed: %s", e)
         return False
 
 

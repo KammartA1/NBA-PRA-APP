@@ -185,7 +185,31 @@ def run_scan() -> dict:
     }
     db.log_worker_run("scanner", status, details)
 
+    # 7. Once-a-day heartbeat so you KNOW it's alive (not just silent)
+    maybe_send_daily_health()
+
     return {"ok": True, **details}
+
+
+def maybe_send_daily_health():
+    """Send a single 'still alive' summary to Telegram once per UTC day."""
+    try:
+        if db.was_notified_today("daily_health"):
+            return
+        runs = db.get_recent_worker_runs(hours=24, worker_name="scanner")
+        n_runs = len(runs)
+        n_ok = sum(1 for r in runs if r.get("status") in ("success", "partial"))
+        n_err = sum(1 for r in runs if r.get("status") == "error")
+        total_edges = sum(int((r.get("details") or {}).get("edges_found", 0) or 0) for r in runs)
+        msg = (
+            f"✅ <b>Scanner healthy</b> — last 24h\n"
+            f"• Runs: {n_runs} ({n_ok} ok, {n_err} errors)\n"
+            f"• Edges found: {total_edges}"
+        )
+        if notify.send_message(msg):
+            db.log_notification("daily_health", msg)
+    except Exception as e:
+        log.warning("daily health summary failed: %s", e)
 
 
 # --- Test utilities ---
@@ -236,8 +260,26 @@ def main():
         log.info("Results: PP=%s DB=%s Notify=%s", pp_ok, db_ok, notify_ok)
         sys.exit(0 if all([pp_ok, db_ok, notify_ok]) else 1)
 
-    result = run_scan()
+    # Full scan — wrapped so a crash becomes a LOUD Telegram alert,
+    # not a silent death (the failure mode that's bitten us before).
+    try:
+        result = run_scan()
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        log.error("Scan crashed: %s\n%s", e, tb)
+        try:
+            db.log_worker_run("scanner", "error", {"error": str(e)})
+            notify.send_worker_status("CRASHED", f"Scanner crashed: {e}")
+        except Exception:
+            pass
+        sys.exit(1)
+
     if not result.get("ok"):
+        try:
+            notify.send_worker_status("FAILED", f"Scan failed: {result.get('error', 'unknown')}")
+        except Exception:
+            pass
         sys.exit(1)
 
 
