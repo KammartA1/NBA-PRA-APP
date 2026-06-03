@@ -272,9 +272,15 @@ def scan_sharp_movements() -> list[dict]:
 
 def get_scanner_results() -> list[dict]:
     """
-    Get last scan results from disk cache.
+    Get last scan results.
+
+    Priority:
+      1. Local disk cache (results from an in-app SCAN NOW run)
+      2. Supabase `scan_results` table (results from the background
+         GitHub Actions worker) — this is what Streamlit Cloud sees.
     Returns the most recent scan results or empty list.
     """
+    # 1. Local disk cache (in-app scans)
     try:
         if os.path.exists(_SCANNER_CACHE_PATH):
             with open(_SCANNER_CACHE_PATH, "rb") as f:
@@ -283,13 +289,33 @@ def get_scanner_results() -> list[dict]:
             if results is not None:
                 # Handle both DataFrame and list formats
                 if hasattr(results, "to_dict"):
-                    return results.to_dict("records")
-                elif isinstance(results, list):
+                    results = results.to_dict("records")
+                if isinstance(results, list) and results:
                     return results
-        return []
     except Exception as exc:
-        log.warning("get_scanner_results failed: %s", exc)
-        return []
+        log.warning("get_scanner_results disk cache failed: %s", exc)
+
+    # 2. Background worker results from Supabase
+    try:
+        from core import db
+        rows = db.load_active_scan("NBA")
+        if rows:
+            return [_normalize_worker_row(r) for r in rows]
+    except Exception as exc:
+        log.warning("get_scanner_results Supabase load failed: %s", exc)
+
+    return []
+
+
+def _normalize_worker_row(r: dict) -> dict:
+    """Map background-worker scan_results columns to the UI's expected keys."""
+    out = dict(r)
+    # Worker stores EV as `ev_pct`; the UI table/metrics read `ev_adj_pct`.
+    if "ev_adj_pct" not in out and "ev_pct" in out:
+        out["ev_adj_pct"] = out.get("ev_pct")
+    out.setdefault("src", out.get("src", "PrizePicks"))
+    out.setdefault("opp", out.get("opp", ""))
+    return out
 
 
 # ---------------------------------------------------------------------------
