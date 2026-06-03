@@ -1,15 +1,26 @@
 name: NBA Scanner Worker
 
-# Runs the background scanner every 20 minutes during NBA game hours.
-# NBA games typically: 12pm-11pm ET (16:00-03:00 UTC)
-# We scan broadly 15:00-04:00 UTC to catch early lines and late West Coast games.
+# All-sports pre-game coverage. PrizePicks props LOCK at event start, so the
+# valuable window is BEFORE games — and across sports that's a wide band:
+#   - PGA tee times start ~6:30am ET (early morning)
+#   - MLB day games ~1pm ET
+#   - NBA/NHL/WNBA/MLB evening slate ~7pm ET
+#   - Late West Coast games end ~1am ET
+# GitHub cron is always UTC (no DST). ET is UTC-4 (summer) / UTC-5 (winter),
+# so the window is intentionally wide to cover both. Hourly minimum, with
+# every-30-min coverage during the evening prime pre-game window.
+# (Repo is public -> Actions minutes are unlimited/free.)
 
 on:
   schedule:
-    # Every 20 minutes from 3pm-11:59pm UTC (11am-8pm ET)
-    - cron: "*/20 15-23 * * *"
-    # Every 20 minutes from 12am-3:59am UTC (8pm-12am ET) — late games
-    - cron: "*/20 0-3 * * *"
+    # Hourly, 10:00-23:00 UTC  (~6am-7pm ET) — morning golf through evening tip
+    - cron: "0 10-23 * * *"
+    # Hourly, 00:00-06:00 UTC  (~8pm-1am ET) — night + late West Coast games
+    - cron: "0 0-6 * * *"
+    # Every-30 boost during evening prime (21:00-23:30 UTC ~ 5-7pm ET)
+    - cron: "30 21,22,23 * * *"
+    # Every-30 boost 00:30-02:30 UTC (~8-10pm ET)
+    - cron: "30 0,1,2 * * *"
   workflow_dispatch:
     inputs:
       mode:

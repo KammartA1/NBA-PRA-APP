@@ -30,6 +30,11 @@ def render() -> None:
         unsafe_allow_html=True,
     )
 
+    # -- Background worker freshness banner ---------------------------------
+    # Shows when the always-on GitHub Actions worker last refreshed the data.
+    # Green = fresh, yellow = getting stale, red = worker may be down.
+    _render_freshness_banner()
+
     # -- Controls -----------------------------------------------------------
     ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 1])
     with ctrl1:
@@ -160,3 +165,38 @@ def render() -> None:
                 f"{row.get('line', '?')} | EV {row.get('ev_adj_pct', 0):.1f}% | "
                 f"Sharp {row.get('sharp', 0)}"
             )
+
+
+def _render_freshness_banner() -> None:
+    """Show how long ago the always-on background worker last refreshed data."""
+    try:
+        from core import db
+        age = db.last_scan_age_minutes("NBA")
+    except Exception:
+        age = None
+
+    if age is None:
+        st.warning(
+            "⚠️ No background scan on record yet. The automated worker hasn't "
+            "completed a scan, or the database isn't reachable."
+        )
+        return
+
+    if age < 90:
+        color, icon, label = "#00FFB2", "🟢", "fresh"
+    elif age < 180:
+        color, icon, label = "#FFC857", "🟡", "getting stale"
+    else:
+        color, icon, label = "#FF5C5C", "🔴", "stale — worker may be down"
+
+    if age < 60:
+        ago = f"{age:.0f} min ago"
+    else:
+        ago = f"{age/60:.1f} hr ago"
+
+    st.markdown(
+        f"<div style='font-family:{FONT_MONO};font-size:0.62rem;color:{color};"
+        f"letter-spacing:0.06em;margin-bottom:0.8rem;'>"
+        f"{icon} Background worker last scan: {ago} ({label})</div>",
+        unsafe_allow_html=True,
+    )
