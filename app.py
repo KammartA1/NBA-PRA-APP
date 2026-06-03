@@ -8616,6 +8616,20 @@ if st.session_state.get("scanner_results") is None:
     if _disk_cache.get("scanner_results") is not None:
         for _ck, _cv in _disk_cache.items():
             st.session_state[_ck] = _cv
+# Fallback: load background worker scan results from Supabase if still no scanner data
+if st.session_state.get("scanner_results") is None:
+    try:
+        from core.db import load_active_scan as _load_bg_scan
+        _bg_edges = _load_bg_scan("NBA")
+        if _bg_edges:
+            _bg_df = pd.DataFrame(_bg_edges)
+            _remap = {"ev_pct": "ev_adj_pct", "p_cal": "p_cal"}
+            _bg_df = _bg_df.rename(columns={k: v for k, v in _remap.items() if k in _bg_df.columns and k != v})
+            st.session_state["scanner_results"] = _bg_df
+            st.session_state["scanner_scan_id"] = f"BG-{_bg_edges[0].get('scan_id', '?')}"
+            st.session_state["_scanner_source"] = "background_worker"
+    except Exception:
+        pass
 # Restore alert dedup hashes from disk so re-alerts don't fire after session reset
 if "_scanner_alert_hashes" not in st.session_state:
     st.session_state["_scanner_alert_hashes"] = _load_alert_hashes()
@@ -10524,7 +10538,8 @@ with tabs[2]:
     if scanner_out is not None and not scanner_out.empty:
         _scan_ts = st.session_state.get("scanner_scan_id", "")
         _ts_label = f" · scanned {_scan_ts}" if _scan_ts else ""
-        st.markdown(f"<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.10em;margin-bottom:0.6rem;'>{len(scanner_out)} EDGES FOUND{_ts_label}</div>", unsafe_allow_html=True)
+        _bg_tag = " · 🔄 FROM BACKGROUND WORKER" if st.session_state.get("_scanner_source") == "background_worker" else ""
+        st.markdown(f"<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.10em;margin-bottom:0.6rem;'>{len(scanner_out)} EDGES FOUND{_ts_label}{_bg_tag}</div>", unsafe_allow_html=True)
         # [UPGRADE 20] Color-code rows by confidence tier
         def _style_scanner_row(row):
             p = float(row.get("p_cal") or 0)
