@@ -16,7 +16,6 @@ import os
 import sys
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,6 +36,8 @@ MIN_EV_THRESHOLD = 3.0
 MIN_GAMES = 5
 ALERT_EV_THRESHOLD = 6.0
 MAX_WORKERS = 4
+MAX_PROPS = 80          # hard cap to stay well within the 12-min time budget
+TIME_BUDGET_SECS = 660  # 11 minutes — leaves 4 min for install + cleanup
 
 
 def _process_one_prop(pp_line: dict) -> dict | None:
@@ -104,39 +105,45 @@ def run_scan() -> dict:
     projectable = [p for p in pp_lines if p.get("market")]
     log.info("%d lines have mappable markets", len(projectable))
 
-    # 3. Project each prop (parallel with rate limiting)
+    # 3. Deduplicate by player+market, then cap at MAX_PROPS
+    seen_keys: dict[tuple, bool] = {}
+    deduped = []
+    for p in projectable:
+        key = (p["player"], p["market"])
+        if key not in seen_keys:
+            seen_keys[key] = True
+            deduped.append(p)
+    if len(deduped) > MAX_PROPS:
+        log.info("Capping from %d to %d props", len(deduped), MAX_PROPS)
+        deduped = deduped[:MAX_PROPS]
+
+    log.info("Processing %d unique player-market combos (from %d lines)", len(deduped), len(projectable))
+
+    # 4. Project each prop sequentially with time-budget guard
     edges = []
     processed = 0
     skipped = 0
+    timed_out = False
 
-    # Use ThreadPoolExecutor but limit concurrency to respect nba_api rate limits
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Deduplicate by player+market to avoid redundant API calls
-        seen_players = {}
-        deduped = []
-        for p in projectable:
-            key = (p["player"], p["market"])
-            if key not in seen_players:
-                seen_players[key] = True
-                deduped.append(p)
-
-        log.info("Processing %d unique player-market combos (from %d lines)", len(deduped), len(projectable))
-
-        futures = {executor.submit(_process_one_prop, p): p for p in deduped}
-        for future in as_completed(futures):
-            processed += 1
-            try:
-                result = future.result()
-                if result:
-                    edges.append(result)
-                else:
-                    skipped += 1
-            except Exception as e:
+    for p in deduped:
+        if time.time() - start > TIME_BUDGET_SECS:
+            log.warning("Time budget (%.0fs) exceeded after %d props — stopping early", TIME_BUDGET_SECS, processed)
+            timed_out = True
+            break
+        processed += 1
+        try:
+            result = _process_one_prop(p)
+            if result:
+                edges.append(result)
+            else:
                 skipped += 1
-                log.debug("Prop processing error: %s", e)
+        except Exception as e:
+            skipped += 1
+            log.debug("Prop processing error: %s", e)
 
-            if processed % 20 == 0:
-                log.info("Progress: %d/%d processed, %d edges found", processed, len(deduped), len(edges))
+        if processed % 20 == 0:
+            elapsed = time.time() - start
+            log.info("Progress: %d/%d processed, %d edges found (%.0fs elapsed)", processed, len(deduped), len(edges), elapsed)
 
     # Sort by EV descending
     edges.sort(key=lambda x: x.get("ev_pct", 0), reverse=True)
@@ -164,16 +171,19 @@ def run_scan() -> dict:
             )
 
     # 6. Log the run
+    status = "partial" if timed_out else "success"
     details = {
         "scan_id": scan_id,
         "pp_lines": len(pp_lines),
         "processed": processed,
+        "total_deduped": len(deduped),
         "edges_found": len(edges),
         "alerts_sent": len(alert_edges),
         "elapsed_seconds": round(elapsed, 1),
+        "timed_out": timed_out,
         "top_edge": edges[0] if edges else None,
     }
-    db.log_worker_run("scanner", "success", details)
+    db.log_worker_run("scanner", status, details)
 
     return {"ok": True, **details}
 
