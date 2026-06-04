@@ -3736,10 +3736,12 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
         if not league:
             league = str(attrs.get("league", "") or "")
         if league_filter:
-            if league and not _pp_league_is_nba(league):
-                continue
-            # If league is empty but stat_type maps to a known NBA market, accept it
-            # PrizePicks sometimes omits the league relationship for specialty stats
+            if league_filter == "MLB":
+                if league and not _pp_league_is_mlb(league):
+                    continue
+            else:
+                if league and not _pp_league_is_nba(league):
+                    continue
             if not league:
                 _test_mkt = map_platform_stat_to_market(attrs.get("stat_type", ""))
                 if _test_mkt is None:
@@ -3777,8 +3779,14 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
             except (TypeError, ValueError):
                 pass
     return rows
-def _parse_pp_response_all(data):
-    """Parse PP JSON — still filters NBA only (user may paste full-site JSON with all sports)."""
+def _pp_league_is_mlb(league_str: str) -> bool:
+    s = str(league_str or "").upper().strip()
+    return s.startswith("MLB") or s in ("BASEBALL", "MAJOR LEAGUE BASEBALL")
+
+def _parse_pp_response_all(data, sport=None):
+    """Parse PP JSON — filters by active sport."""
+    if sport == "MLB":
+        return _parse_pp_response(data, league_filter="MLB")
     return _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H"))
 def _pp_request(per_page=500, cookies_str="", single_stat="true"):
     """Make one PrizePicks API request.
@@ -3881,7 +3889,9 @@ def _pp_fetch_one(per_page, cookies_str, single_stat):
     if r is None:
         return [], "No response from PrizePicks"
     try:
-        rows = _parse_pp_response(r.json())
+        _active_sport = st.session_state.get("sport", "NBA")
+        _lf = "MLB" if _active_sport == "MLB" else ("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
+        rows = _parse_pp_response(r.json(), league_filter=_lf)
     except Exception as e:
         return [], f"Parse error: {e}"
     return rows, None
@@ -3914,7 +3924,8 @@ def _fetch_prizepicks_lines_cached(cookies_str=""):
         _PP_FETCH_CACHE["ts"] = _now
         _PP_FETCH_CACHE["cookies"] = cookies_str
         return all_rows, None
-    return [], last_err or "No NBA props found — slate may not be posted yet"
+    _sport_label = st.session_state.get("sport", "NBA")
+    return [], last_err or f"No {_sport_label} props found — slate may not be posted yet"
 def fetch_prizepicks_lines():
     cookies_str = st.session_state.get("pp_cookies", "")
     # ── 0. Check relay URL first (local relay script or ngrok tunnel) ──
@@ -3938,7 +3949,7 @@ def fetch_prizepicks_lines():
     if _stripped.startswith("{") and '"data"' in _stripped:
         try:
             data = json.loads(_stripped)
-            rows = _parse_pp_response_all(data)
+            rows = _parse_pp_response_all(data, sport=st.session_state.get("sport", "NBA"))
             if rows:
                 return rows, None
         except Exception as _je:
@@ -10237,13 +10248,13 @@ with tabs[2]:
                 if _stripped_input.startswith("{"):
                     try:
                         _pasted_data = json.loads(_stripped_input)
-                        _pasted_rows = _parse_pp_response_all(_pasted_data)
+                        _pasted_rows = _parse_pp_response_all(_pasted_data, sport=st.session_state.get("sport", "NBA"))
                         if _pasted_rows:
                             st.session_state["pp_lines"] = pd.DataFrame(_pasted_rows)
                             _save_pp_disk_cache(_pasted_rows)
-                            st.success(f"Loaded {len(_pasted_rows)} PP props from JSON")
+                            st.success(f"Loaded {len(_pasted_rows)} {st.session_state.get('sport', 'NBA')} props from JSON")
                         else:
-                            st.warning("No props found in pasted JSON")
+                            st.warning(f"No {st.session_state.get('sport', 'NBA')} props found in pasted JSON")
                     except json.JSONDecodeError as _pje:
                         st.error(f"Invalid JSON: {_pje}")
                 else:
@@ -10255,11 +10266,11 @@ with tabs[2]:
                 try:
                     _file_content = _pp_file.read().decode("utf-8")
                     _file_data = json.loads(_file_content)
-                    _file_rows = _parse_pp_response_all(_file_data)
+                    _file_rows = _parse_pp_response_all(_file_data, sport=st.session_state.get("sport", "NBA"))
                     if _file_rows:
                         st.session_state["pp_lines"] = pd.DataFrame(_file_rows)
                         _save_pp_disk_cache(_file_rows)
-                        st.success(f"Loaded {len(_file_rows)} PP props from uploaded file")
+                        st.success(f"Loaded {len(_file_rows)} {st.session_state.get('sport', 'NBA')} props from uploaded file")
                     else:
                         st.warning("No NBA props found in uploaded JSON")
                 except Exception as _fje:
@@ -11617,7 +11628,7 @@ with tabs[3]:
                 try:
                     _uf_content = _pp_upload.read().decode("utf-8")
                     _uf_data = json.loads(_uf_content)
-                    _uf_rows = _parse_pp_response_all(_uf_data)
+                    _uf_rows = _parse_pp_response_all(_uf_data, sport=st.session_state.get("sport", "NBA"))
                     if _uf_rows:
                         st.session_state["pp_lines"] = pd.DataFrame(_uf_rows)
                         _save_pp_disk_cache(_uf_rows)
@@ -11667,7 +11678,7 @@ with tabs[3]:
             if pp_paste and pp_paste.strip().startswith("{") and '"data"' in pp_paste:
                 try:
                     _auto_data = json.loads(pp_paste.strip())
-                    _auto_rows = _parse_pp_response_all(_auto_data)
+                    _auto_rows = _parse_pp_response_all(_auto_data, sport=st.session_state.get("sport", "NBA"))
                     if _auto_rows:
                         pp_df_auto = pd.DataFrame(_auto_rows)
                         st.session_state["pp_lines"] = pp_df_auto
@@ -11713,7 +11724,7 @@ with tabs[3]:
                         if "data" not in data:
                             raise ValueError('JSON is missing a "data" key. Copy the Response tab (not Preview or Headers).')
                         # Use _parse_pp_response_all to accept all leagues + all specialty markets
-                        rows = _parse_pp_response_all(data)
+                        rows = _parse_pp_response_all(data, sport=st.session_state.get("sport", "NBA"))
                         if not rows:
                             _types_seen = list({str(p.get("type","")) for p in data.get("data",[]) if isinstance(p,dict)})[:8]
                             err_msg = (
