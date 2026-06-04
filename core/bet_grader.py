@@ -117,7 +117,9 @@ def _split_combo(player: str) -> list[str]:
 def grade_legs(legs: list[dict], game_date_et, today_et, gamelog_cache: dict | None = None):
     """Grade each leg of a bet. Returns (leg_results, all_resolved).
 
-    leg_results is a list parallel to `legs` with values HIT/MISS/PUSH/Pending.
+    leg_results is a list parallel to `legs` with values HIT/MISS/PUSH/VOID/Pending.
+    VOID means the box score was never found and the game is >2 days old (the data
+    will never arrive). VOID legs are treated like PUSH in parlay roll-up.
     `gamelog_cache` (keyed by player_id) is reused across bets for efficiency.
     Handles combo props ('Player A + Player B') by summing each player's actual.
     """
@@ -160,9 +162,15 @@ def grade_legs(legs: list[dict], game_date_et, today_et, gamelog_cache: dict | N
             actual += val
 
         if not resolved:
-            # No box score (DNP / game not played / unresolved name) — stay Pending.
-            leg_results.append("Pending")
-            all_resolved = False
+            # No box score found. If the game date is more than 2 days in the
+            # past the data will never arrive — mark the leg VOID so it doesn't
+            # stay Pending forever. VOID legs are treated like PUSH (they don't
+            # count for or against the parlay).
+            if game_date_et and today_et and (today_et - game_date_et).days > 2:
+                leg_results.append("VOID")
+            else:
+                leg_results.append("Pending")
+                all_resolved = False
             continue
 
         line_f = float(line)
@@ -178,15 +186,22 @@ def grade_legs(legs: list[dict], game_date_et, today_et, gamelog_cache: dict | N
 
 
 def derive_parlay_result(leg_results: list[str], current: str = "Pending") -> str:
-    """Roll up per-leg results into a parlay-level result."""
-    decided = [r for r in leg_results if r in ("HIT", "MISS", "PUSH")]
+    """Roll up per-leg results into a parlay-level result.
+
+    VOID legs are treated like PUSH — they don't count for or against.
+    """
+    decided = [r for r in leg_results if r in ("HIT", "MISS", "PUSH", "VOID")]
     if not decided:
         return current
     if any(r == "MISS" for r in leg_results):
         return "MISS"
     if all(r == "HIT" for r in leg_results):
         return "HIT"
-    if all(r in ("HIT", "PUSH") for r in leg_results):
+    if all(r in ("HIT", "PUSH", "VOID") for r in leg_results):
+        # At least one real leg must have resolved to HIT for this to be a win;
+        # if every leg is PUSH/VOID, the whole bet is PUSH.
+        if any(r == "HIT" for r in leg_results):
+            return "HIT"
         return "PUSH"
     # Some legs still pending and none missed yet → still live
     return current
@@ -265,7 +280,7 @@ def run_grade_logged_bets(dry_run: bool = False) -> dict:
             continue
 
         new_result = derive_parlay_result(leg_results, bet.get("result", "Pending"))
-        is_final = all(r in ("HIT", "MISS", "PUSH") for r in leg_results)
+        is_final = all(r in ("HIT", "MISS", "PUSH", "VOID") for r in leg_results)
 
         if is_final:
             fully += 1
