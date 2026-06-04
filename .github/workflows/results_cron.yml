@@ -1,0 +1,64 @@
+name: NBA Results Grader
+
+# Grades yesterday's settled props against actual box scores.
+# West Coast games end ~1:30am ET (~5:30am UTC) and box scores settle shortly
+# after, so we grade mid-morning ET. Two passes for safety — grading is
+# idempotent (upsert on the prop's natural key), so the second pass only
+# fills in anything the first pass missed.
+#   13:30 UTC ≈ 9:30am ET   (first pass)
+#   16:30 UTC ≈ 12:30pm ET  (safety pass / late-settling box scores)
+# Like the scanner, GitHub's built-in cron can fire late — an external
+# cron-job.org trigger can hit workflow_dispatch for on-time grading.
+
+on:
+  schedule:
+    - cron: "30 13 * * *"
+    - cron: "30 16 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        required: false
+        default: "grade"
+        type: choice
+        options:
+          - grade
+          - test-grade
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install nba_api pandas numpy scipy requests supabase psycopg2-binary
+
+      - name: Run grader
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          MODE="${{ github.event.inputs.mode || 'grade' }}"
+          case "$MODE" in
+            test-grade)
+              python -m core.results_grader --test-grade
+              ;;
+            *)
+              python -m core.results_grader
+              ;;
+          esac

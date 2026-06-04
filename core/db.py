@@ -221,6 +221,97 @@ def was_notified_today(ntype: str) -> bool:
         return False
 
 
+# --- Results Tracker / Grading ---
+
+def load_ungraded_results(sport: str = "NBA", lookback_hours: int = 48) -> list[dict]:
+    """Scan results not yet graded, scanned within the lookback window.
+
+    Returns the raw scan_results rows (incl. their `id`). The grader dedups
+    these by (player, market, line, side) and grades the latest of each group.
+    """
+    sb = _get_client()
+    if not sb:
+        return []
+    try:
+        from datetime import timedelta
+        since = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
+        resp = _retry(lambda: (
+            sb.table("scan_results")
+            .select("*")
+            .eq("sport", sport)
+            .eq("graded", False)
+            .gte("scanned_at", since)
+            .order("scanned_at", desc=True)
+            .limit(2000)
+            .execute()
+        ))
+        return resp.data or []
+    except Exception as e:
+        log.warning("load_ungraded_results failed: %s", e)
+        return []
+
+
+def mark_results_graded(ids: list[int]) -> int:
+    """Flip scan_results.graded = true for the given row ids (chunked)."""
+    sb = _get_client()
+    if not sb or not ids:
+        return 0
+    marked = 0
+    try:
+        for chunk in [ids[i:i + 100] for i in range(0, len(ids), 100)]:
+            _retry(lambda c=chunk: (
+                sb.table("scan_results").update({"graded": True}).in_("id", c).execute()
+            ))
+            marked += len(chunk)
+        return marked
+    except Exception as e:
+        log.warning("mark_results_graded failed: %s", e)
+        return marked
+
+
+def upsert_bet_results(rows: list[dict]) -> int:
+    """Idempotently write graded props. Conflict key = the prop's natural key,
+    so re-running the grader never creates duplicates."""
+    sb = _get_client()
+    if not sb or not rows:
+        return 0
+    try:
+        for chunk in [rows[i:i + 100] for i in range(0, len(rows), 100)]:
+            _retry(lambda c=chunk: (
+                sb.table("bet_results")
+                .upsert(c, on_conflict="sport,game_date,player,market,line,side")
+                .execute()
+            ))
+        log.info("Upserted %d bet_results", len(rows))
+        return len(rows)
+    except Exception as e:
+        log.error("upsert_bet_results failed: %s", e)
+        return 0
+
+
+def load_bet_results(sport: str = "NBA", days: int = 60) -> list[dict]:
+    """All graded props within the last `days` (newest first) — for the UI."""
+    sb = _get_client()
+    if not sb:
+        return []
+    try:
+        from datetime import timedelta
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+        resp = _retry(lambda: (
+            sb.table("bet_results")
+            .select("*")
+            .eq("sport", sport)
+            .gte("game_date", since)
+            .order("game_date", desc=True)
+            .limit(5000)
+            .execute()
+        ))
+        return resp.data or []
+    except Exception as e:
+        log.warning("load_bet_results failed: %s", e)
+        return []
+
+
 # --- Prop Line History (CLV tracking) ---
 
 def append_pp_lines(lines: list[dict]) -> int:
