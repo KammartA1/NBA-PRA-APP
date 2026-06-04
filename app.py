@@ -7491,6 +7491,162 @@ def load_history(uid):
         if os.path.exists(fp): return pd.read_csv(fp)
     except Exception: pass
     return pd.DataFrame()
+
+
+def auto_grade_history(uid):
+    """Auto-grade all pending bets using nba_api box scores.
+
+    For each pending bet, resolves each leg's player, fetches their gamelog,
+    extracts the actual stat for the game date, and determines HIT/MISS/PUSH.
+    Returns (n_graded, n_skipped, messages).
+    """
+    from core.projections import resolve_player_id, fetch_player_gamelog, actual_stat_for_date
+    try:
+        from zoneinfo import ZoneInfo
+        _ET_TZ = ZoneInfo("America/New_York")
+    except Exception:
+        _ET_TZ = None
+
+    h = load_history(uid)
+    if h.empty:
+        return 0, 0, ["No history found."]
+
+    pending_mask = h["result"] == "Pending"
+    if not pending_mask.any():
+        return 0, 0, ["No pending bets to grade."]
+
+    msgs = []
+    n_graded = 0
+    n_skipped = 0
+    gamelog_cache = {}
+    today_et = datetime.now(timezone.utc).astimezone(_ET_TZ).date() if _ET_TZ else datetime.now(timezone.utc).date()
+
+    # Map market display names to stat codes
+    market_stat_map = {
+        "Points": "PTS", "Rebounds": "REB", "Assists": "AST",
+        "PRA": "PRA", "Pts+Rebs+Asts": "PRA", "PA": "PA", "Pts+Asts": "PA",
+        "PR": "PR", "Pts+Rebs": "PR", "RA": "RA", "Rebs+Asts": "RA",
+        "3PM": "FG3M", "3-Pt Made": "FG3M", "Steals": "STL", "Blocks": "BLK",
+        "Blocked Shots": "BLK", "Turnovers": "TOV", "Fantasy Score": "FS",
+        "FG Attempted": "FGA", "FT Made": "FTM", "Blks+Stls": "BLST",
+        "PTS": "PTS", "REB": "REB", "AST": "AST", "FG3M": "FG3M",
+        "STL": "STL", "BLK": "BLK", "TOV": "TOV",
+    }
+
+    h2 = h.copy()
+    for idx in h2.index[pending_mask]:
+        row = h2.loc[idx]
+        try:
+            legs = json.loads(row["legs"]) if isinstance(row["legs"], str) else []
+        except Exception:
+            legs = []
+        if not legs:
+            n_skipped += 1
+            continue
+
+        # Determine game date from bet timestamp
+        try:
+            bet_ts = datetime.fromisoformat(str(row["ts"]).replace("Z", "+00:00"))
+            if bet_ts.tzinfo is None:
+                bet_ts = bet_ts.replace(tzinfo=timezone.utc)
+            bet_date_et = bet_ts.astimezone(_ET_TZ).date() if _ET_TZ else bet_ts.date()
+        except Exception:
+            n_skipped += 1
+            continue
+
+        # Only grade if the game date is in the past
+        if bet_date_et >= today_et:
+            n_skipped += 1
+            continue
+
+        new_leg_results = []
+        all_resolved = True
+
+        for leg in legs:
+            player = leg.get("player", "")
+            player_id = leg.get("player_id")
+            market = leg.get("market", "")
+            line = leg.get("line")
+            side = str(leg.get("side", "over")).strip().lower()
+
+            if not player or line is None:
+                new_leg_results.append("Pending")
+                all_resolved = False
+                continue
+
+            stat_code = market_stat_map.get(market, market_stat_map.get(market.replace(" ", ""), ""))
+            if not stat_code:
+                new_leg_results.append("Pending")
+                all_resolved = False
+                continue
+
+            # Resolve player ID if not stored
+            if not player_id:
+                player_id = resolve_player_id(player)
+            else:
+                player_id = int(player_id)
+
+            if not player_id:
+                new_leg_results.append("Pending")
+                all_resolved = False
+                continue
+
+            # Fetch gamelog (cached)
+            if player_id not in gamelog_cache:
+                gamelog_cache[player_id] = fetch_player_gamelog(player_id, n_games=30)
+            gl = gamelog_cache[player_id]
+
+            if gl is None or gl.empty:
+                new_leg_results.append("Pending")
+                all_resolved = False
+                continue
+
+            actual = actual_stat_for_date(gl, stat_code, bet_date_et)
+            if actual is None:
+                # Check day after (late-night games that cross midnight ET)
+                from datetime import timedelta
+                actual = actual_stat_for_date(gl, stat_code, bet_date_et + timedelta(days=1))
+            if actual is None:
+                new_leg_results.append("Pending")
+                all_resolved = False
+                continue
+
+            line_f = float(line)
+            is_over = side.startswith("o")
+            if actual == line_f:
+                new_leg_results.append("PUSH")
+            elif (actual > line_f) == is_over:
+                new_leg_results.append("HIT")
+            else:
+                new_leg_results.append("MISS")
+
+        if not any(r != "Pending" for r in new_leg_results):
+            n_skipped += 1
+            continue
+
+        # Update the row
+        h2.loc[idx, "leg_results"] = json.dumps(new_leg_results)
+        if all(r == "HIT" for r in new_leg_results):
+            h2.loc[idx, "result"] = "HIT"
+        elif any(r == "MISS" for r in new_leg_results):
+            h2.loc[idx, "result"] = "MISS"
+        elif all(r in ("HIT", "PUSH") for r in new_leg_results):
+            h2.loc[idx, "result"] = "PUSH"
+        elif all(r != "Pending" for r in new_leg_results):
+            h2.loc[idx, "result"] = "MISS" if any(r == "MISS" for r in new_leg_results) else "HIT"
+
+        graded_legs = [r for r in new_leg_results if r != "Pending"]
+        hits = sum(1 for r in graded_legs if r == "HIT")
+        misses = sum(1 for r in graded_legs if r == "MISS")
+        msgs.append(f"Row {idx}: {hits}H/{misses}M ({len(graded_legs)}/{len(legs)} legs graded)")
+        n_graded += 1
+
+    if n_graded > 0:
+        h2.to_csv(history_path(uid), index=False)
+
+    return n_graded, n_skipped, msgs
+
+
 def compute_period_loss_pct(uid, bankroll, days=1):
     """Return net loss as a fraction of bankroll over the last `days` calendar days.
     Positive return = net loss. Returns 0.0 on any error."""
@@ -11784,6 +11940,24 @@ with tabs[4]:
         else:
             st.caption("Per-leg accuracy will appear once you mark individual leg results below.")
         st.dataframe(h, use_container_width=True)
+        # ── Auto-Grade Pending Bets ──────────────────────────────
+        _n_pending = int((h["result"] == "Pending").sum()) if "result" in h.columns else 0
+        if _n_pending > 0:
+            st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+            st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>AUTO-GRADE PENDING BETS</div>""", unsafe_allow_html=True)
+            st.caption(f"{_n_pending} pending bet(s). Auto-grade fetches actual box scores via nba_api and marks each leg HIT/MISS/PUSH automatically.")
+            if st.button("AUTO-GRADE ALL PENDING", use_container_width=True, type="primary", key="auto_grade_btn"):
+                with st.spinner("Fetching box scores and grading legs... (this may take a minute for multiple bets)"):
+                    _ag_graded, _ag_skipped, _ag_msgs = auto_grade_history(user_id)
+                if _ag_graded > 0:
+                    st.success(f"Auto-graded {_ag_graded} bet(s). {_ag_skipped} skipped (game not yet played or player not found).")
+                    for _ag_m in _ag_msgs[:10]:
+                        st.caption(_ag_m)
+                    st.rerun()
+                elif _ag_skipped > 0:
+                    st.info(f"No bets could be graded yet — {_ag_skipped} skipped (games not yet played or data not available).")
+                else:
+                    st.info("No pending bets to grade.")
         # [FIX 12] Export button
         csv_data = h.to_csv(index=False)
         _exp_col, _del_col = st.columns([2, 1])
