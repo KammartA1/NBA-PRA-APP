@@ -109,6 +109,38 @@ def resolve_player_id(name: str) -> Optional[int]:
         return None
 
 
+def actual_stat_for_date(
+    gamelog_df: pd.DataFrame,
+    market: str,
+    game_date,
+) -> Optional[float]:
+    """Return the player's ACTUAL value for `market` on `game_date`.
+
+    `game_date` is a datetime.date (the ET date the game was played).
+    Returns None if the player has no game row on that date (DNP / no game),
+    which the grader treats as a void.
+    """
+    if gamelog_df is None or gamelog_df.empty or "GAME_DATE" not in gamelog_df.columns:
+        return None
+    try:
+        dates = pd.to_datetime(
+            gamelog_df["GAME_DATE"], format="%b %d, %Y", errors="coerce"
+        ).dt.date
+    except Exception:
+        return None
+    mask = dates == game_date
+    if not mask.any():
+        return None
+    row = gamelog_df[mask]
+    stat_series = _compute_stat(row, market)
+    if stat_series is None or len(stat_series) == 0:
+        return None
+    try:
+        return float(stat_series.iloc[0])
+    except Exception:
+        return None
+
+
 def project_player_prop(
     gamelog_df: pd.DataFrame,
     market: str,
