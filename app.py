@@ -8736,18 +8736,6 @@ with st.sidebar:
     </div>
 </div>
 """, unsafe_allow_html=True)
-    # ── SPORT SELECTOR ────────────────────────────────────────
-    _sport_labels = _sports_reg.sport_options()
-    _cur_label = f"{_sp_meta['icon']} {_sp_meta['display_name']}"
-    _sel_sport_label = st.selectbox(
-        "SPORT", _sport_labels,
-        index=_sport_labels.index(_cur_label) if _cur_label in _sport_labels else 0,
-        key="_sport_selector")
-    _chosen_sport = _sports_reg.sport_from_label(_sel_sport_label)
-    if _chosen_sport != st.session_state.get("sport", _sports_reg.DEFAULT_SPORT):
-        st.session_state["sport"] = _chosen_sport
-        st.rerun()
-    st.session_state["sport"] = _chosen_sport
     # ── ACCOUNT ───────────────────────────────────────────────
     _sid_user = st.session_state.get("_auth_user", "")
     _sid_email = _get_user_email(_sid_user)
@@ -8918,6 +8906,32 @@ max_daily_loss     = int(st.session_state.get("max_daily_loss", 15))
 max_weekly_loss    = int(st.session_state.get("max_weekly_loss", 25))
 exclude_chaotic    = bool(st.session_state.get("exclude_chaotic", True))
 show_unders        = bool(st.session_state.get("show_unders", False))
+# ─── SPORT SELECTOR (main page, prominent) ───────────────────
+from core import sports as _sports_reg
+_sport_sel_cols = st.columns([1, 4])
+with _sport_sel_cols[0]:
+    _sport_labels_main = _sports_reg.sport_options()
+    _cur_sport_key = st.session_state.get("sport", _sports_reg.DEFAULT_SPORT)
+    _cur_meta = _sports_reg.SPORTS.get(_cur_sport_key, _sports_reg.SPORTS[_sports_reg.DEFAULT_SPORT])
+    _cur_label_main = f"{_cur_meta['icon']} {_cur_meta['display_name']}"
+    _sel_sport_main = st.selectbox(
+        "SPORT", _sport_labels_main,
+        index=_sport_labels_main.index(_cur_label_main) if _cur_label_main in _sport_labels_main else 0,
+        key="_sport_selector_main")
+    _chosen_main = _sports_reg.sport_from_label(_sel_sport_main)
+    if _chosen_main != st.session_state.get("sport", _sports_reg.DEFAULT_SPORT):
+        st.session_state["sport"] = _chosen_main
+        st.rerun()
+    st.session_state["sport"] = _chosen_main
+with _sport_sel_cols[1]:
+    _sp_meta_main = _sports_reg.SPORTS.get(_chosen_main, _sports_reg.SPORTS[_sports_reg.DEFAULT_SPORT])
+    st.markdown(
+        f"<div style='font-family:Chakra Petch,monospace;font-size:0.58rem;color:#4A607A;"
+        f"letter-spacing:0.10em;padding-top:1.8rem;'>"
+        f"{_sp_meta_main['icon']} {_sp_meta_main['season_label']} · "
+        f"{'AT-BAT MONTE CARLO SIM' if _chosen_main == 'MLB' else 'BOOTSTRAP + BAYESIAN ENGINE'}"
+        f"</div>",
+        unsafe_allow_html=True)
 # ─── TABS ─────────────────────────────────────────────────────
 tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "ACCURACY", "INSIGHTS", "ALERTS", "SETTINGS",
                  "EDGE MONITOR", "KILL SWITCH", "CAPITAL", "VERDICT", "RESULTS TRACKER"])
