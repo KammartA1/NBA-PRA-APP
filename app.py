@@ -9126,23 +9126,39 @@ with tabs[0]:
                 result_val = "Pending" if placed == "Yes" else "SKIP"
                 _bet_id = str(uuid.uuid4())
                 _ts_iso = _now_iso()
+                from datetime import datetime as _dt, timezone as _tz
+                try:
+                    from zoneinfo import ZoneInfo as _ZI
+                    _et = _ZI("America/New_York")
+                except Exception:
+                    _et = None
+                _gd = None
+                for _leg in res:
+                    _raw_st = _leg.get("commence_time") or _leg.get("start_time")
+                    if not _raw_st and isinstance(_leg.get("meta"), dict):
+                        _raw_st = _leg["meta"].get("commence_time") or _leg["meta"].get("start_time")
+                    if _raw_st:
+                        try:
+                            _parsed = _dt.fromisoformat(_raw_st.replace("Z", "+00:00"))
+                            _gd = (_parsed.astimezone(_et) if _et else _parsed).date().isoformat()
+                        except Exception:
+                            pass
+                    if _gd:
+                        break
+                if not _gd:
+                    try:
+                        _gd = (_dt.now(_tz.utc).astimezone(_et) if _et else _dt.now(_tz.utc)).date().isoformat()
+                    except Exception:
+                        _gd = _dt.now(_tz.utc).date().isoformat()
                 append_history(user_id, {
                     "ts":_ts_iso,"user_id":user_id,
                     "legs":json.dumps(res),"n_legs":len(res),
                     "leg_results":json.dumps(["Pending"]*len(res)),
                     "result":result_val,"decision":decision,"notes":"",
-                    "bet_id":_bet_id,
+                    "bet_id":_bet_id,"game_date":_gd,
                 })
-                # Mirror to Supabase so the morning worker can auto-grade it
-                # even while this app is asleep. Best-effort — never blocks logging.
                 try:
                     from core.db import upsert_logged_bet as _upsert_lb
-                    from datetime import datetime as _dt, timezone as _tz
-                    try:
-                        from zoneinfo import ZoneInfo as _ZI
-                        _gd = _dt.now(_tz.utc).astimezone(_ZI("America/New_York")).date().isoformat()
-                    except Exception:
-                        _gd = _dt.now(_tz.utc).date().isoformat()
                     _upsert_lb({
                         "bet_id": _bet_id, "user_id": user_id, "sport": "NBA",
                         "logged_at": _ts_iso, "game_date": _gd,
@@ -11970,7 +11986,29 @@ with tabs[4]:
             lc3.metric("Leg Misses", n_leg_miss)
         else:
             st.caption("Per-leg accuracy will appear once you mark individual leg results below.")
-        st.dataframe(h, use_container_width=True)
+        # ── Build a readable per-leg summary instead of raw JSON ──
+        h_display = h.copy()
+        def _format_legs_summary(row):
+            try:
+                _legs = json.loads(row["legs"]) if isinstance(row["legs"], str) else (row["legs"] or [])
+                _lr = json.loads(row["leg_results"]) if isinstance(row.get("leg_results", ""), str) else (row.get("leg_results") or [])
+            except Exception:
+                return ""
+            parts = []
+            for i, lg in enumerate(_legs):
+                if not isinstance(lg, dict):
+                    parts.append(str(lg))
+                    continue
+                p = lg.get("player", "?")
+                m = lg.get("market", "?")
+                ln = lg.get("line", "?")
+                sd = lg.get("side", "?")
+                res = _lr[i] if i < len(_lr) else "Pending"
+                parts.append(f"{p} {m} {ln} {sd} → {res}")
+            return " | ".join(parts)
+        h_display["legs_summary"] = h_display.apply(_format_legs_summary, axis=1)
+        _display_cols = [c for c in ["ts", "legs_summary", "n_legs", "result", "decision", "bet_id"] if c in h_display.columns]
+        st.dataframe(h_display[_display_cols], use_container_width=True)
         # ── Auto-Grade Pending Bets (automatic + manual) ──────────────
         _n_pending = int((h["result"] == "Pending").sum()) if "result" in h.columns else 0
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
