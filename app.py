@@ -13,7 +13,7 @@
 #   8. [NEW] Lineup injury boost: usage-rate-scaled absorption model
 #   9. [FIX] Calibrator: min samples 80→40, adaptive bins
 # ============================================================
-import os, re, math, time, json, difflib, hashlib, logging, threading, html as _html
+import os, re, math, time, json, difflib, hashlib, logging, threading, uuid, html as _html
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -7641,10 +7641,93 @@ def auto_grade_history(uid):
         msgs.append(f"Row {idx}: {hits}H/{misses}M ({len(graded_legs)}/{len(legs)} legs graded)")
         n_graded += 1
 
+        # Mirror the grade back to Supabase so it stays the source of truth
+        _bid = row.get("bet_id")
+        if isinstance(_bid, str) and _bid:
+            try:
+                from core.db import update_logged_bet as _upd_lb
+                _all_final = all(r != "Pending" for r in new_leg_results)
+                _upd_lb(_bid, new_leg_results, str(h2.loc[idx, "result"]), _all_final)
+            except Exception:
+                pass
+
     if n_graded > 0:
         h2.to_csv(history_path(uid), index=False)
 
     return n_graded, n_skipped, msgs
+
+
+def _sync_logged_bets_from_supabase(uid):
+    """Pull logged bets from Supabase into the local CSV.
+
+    Makes Supabase the durable source of truth: results graded by the
+    background worker show up here, and bets survive app restarts (the
+    local CSV is ephemeral on Streamlit Cloud). Best-effort; never raises.
+    """
+    try:
+        from core.db import load_logged_bets as _load_lb
+    except Exception:
+        return
+    try:
+        sb_bets = _load_lb(uid)
+    except Exception:
+        return
+    if not sb_bets:
+        return
+
+    h = load_history(uid)
+    csv_rows = h.to_dict("records") if not h.empty else []
+
+    def _to_csv_row(sb):
+        legs = sb.get("legs")
+        legr = sb.get("leg_results")
+        return {
+            "ts": sb.get("logged_at"),
+            "user_id": sb.get("user_id", uid),
+            "legs": legs if isinstance(legs, str) else json.dumps(legs or []),
+            "n_legs": sb.get("n_legs", 0),
+            "leg_results": legr if isinstance(legr, str) else json.dumps(legr or []),
+            "result": sb.get("result", "Pending"),
+            "decision": sb.get("decision", "BET"),
+            "notes": sb.get("notes", "") or "",
+            "bet_id": sb.get("bet_id"),
+        }
+
+    # Index existing CSV rows by bet_id
+    by_id = {}
+    no_id_rows = []
+    for r in csv_rows:
+        bid = r.get("bet_id")
+        if isinstance(bid, str) and bid:
+            by_id[bid] = r
+        else:
+            no_id_rows.append(r)
+
+    changed = False
+    for sb in sb_bets:
+        bid = sb.get("bet_id")
+        if not bid:
+            continue
+        sb_row = _to_csv_row(sb)
+        if bid in by_id:
+            # Worker is authoritative for grading: adopt its result if it's
+            # graded or further along than the local copy.
+            local = by_id[bid]
+            if sb.get("graded") or (str(local.get("result")) == "Pending" and sb.get("result") != "Pending"):
+                if str(local.get("result")) != str(sb.get("result")) or str(local.get("leg_results")) != sb_row["leg_results"]:
+                    by_id[bid].update({"result": sb_row["result"], "leg_results": sb_row["leg_results"]})
+                    changed = True
+        else:
+            # Bet exists in Supabase but not locally (CSV was wiped on restart) — restore it
+            by_id[bid] = sb_row
+            changed = True
+
+    if changed:
+        merged = no_id_rows + list(by_id.values())
+        try:
+            pd.DataFrame(merged).to_csv(history_path(uid), index=False)
+        except Exception:
+            pass
 
 
 def compute_period_loss_pct(uid, bankroll, days=1):
@@ -9117,12 +9200,34 @@ with tabs[0]:
             else:
                 decision = "BET" if placed == "Yes" else "PASS"
                 result_val = "Pending" if placed == "Yes" else "SKIP"
+                _bet_id = str(uuid.uuid4())
+                _ts_iso = _now_iso()
                 append_history(user_id, {
-                    "ts":_now_iso(),"user_id":user_id,
+                    "ts":_ts_iso,"user_id":user_id,
                     "legs":json.dumps(res),"n_legs":len(res),
                     "leg_results":json.dumps(["Pending"]*len(res)),
-                    "result":result_val,"decision":decision,"notes":""
+                    "result":result_val,"decision":decision,"notes":"",
+                    "bet_id":_bet_id,
                 })
+                # Mirror to Supabase so the morning worker can auto-grade it
+                # even while this app is asleep. Best-effort — never blocks logging.
+                try:
+                    from core.db import upsert_logged_bet as _upsert_lb
+                    from datetime import datetime as _dt, timezone as _tz
+                    try:
+                        from zoneinfo import ZoneInfo as _ZI
+                        _gd = _dt.now(_tz.utc).astimezone(_ZI("America/New_York")).date().isoformat()
+                    except Exception:
+                        _gd = _dt.now(_tz.utc).date().isoformat()
+                    _upsert_lb({
+                        "bet_id": _bet_id, "user_id": user_id, "sport": "NBA",
+                        "logged_at": _ts_iso, "game_date": _gd,
+                        "legs": res, "n_legs": len(res),
+                        "leg_results": ["Pending"]*len(res),
+                        "result": result_val, "decision": decision, "graded": False, "notes": "",
+                    })
+                except Exception as _lb_err:
+                    logging.warning("Supabase logged_bet mirror failed: %s", _lb_err)
                 st.success(f"Logged ({decision})")
 with tabs[1]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>PROJECTION RESULTS & EDGE ANALYSIS</div>""", unsafe_allow_html=True)
@@ -11911,6 +12016,8 @@ with tabs[3]:
 # ─── HISTORY TAB [FIX 12: export button] ──────────────────────
 with tabs[4]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>BET HISTORY & CLV TRACKER</div>""", unsafe_allow_html=True)
+    # Pull background-graded results from Supabase (durable source of truth)
+    _sync_logged_bets_from_supabase(user_id)
     h = load_history(user_id)
     if h.empty:
         st.markdown(make_card("<span style='color:#4A607A;'>No bets logged yet. Log from the Model tab.</span>"), unsafe_allow_html=True)
@@ -11940,24 +12047,34 @@ with tabs[4]:
         else:
             st.caption("Per-leg accuracy will appear once you mark individual leg results below.")
         st.dataframe(h, use_container_width=True)
-        # ── Auto-Grade Pending Bets ──────────────────────────────
+        # ── Auto-Grade Pending Bets (automatic + manual) ──────────────
         _n_pending = int((h["result"] == "Pending").sum()) if "result" in h.columns else 0
+        st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+        st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>AUTO-GRADE — AUTOMATIC BET RESULTS</div>""", unsafe_allow_html=True)
+        # Auto-run once per session when the tab opens, if there are pending bets.
+        if _n_pending > 0 and not st.session_state.get("_auto_graded_this_session"):
+            st.session_state["_auto_graded_this_session"] = True
+            with st.spinner(f"Auto-grading {_n_pending} pending bet(s) from box scores..."):
+                _ag_graded, _ag_skipped, _ag_msgs = auto_grade_history(user_id)
+            if _ag_graded > 0:
+                st.success(f"✓ Auto-graded {_ag_graded} bet(s) automatically. Refreshing...")
+                st.rerun()
         if _n_pending > 0:
-            st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
-            st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>AUTO-GRADE PENDING BETS</div>""", unsafe_allow_html=True)
-            st.caption(f"{_n_pending} pending bet(s). Auto-grade fetches actual box scores via nba_api and marks each leg HIT/MISS/PUSH automatically.")
-            if st.button("AUTO-GRADE ALL PENDING", use_container_width=True, type="primary", key="auto_grade_btn"):
-                with st.spinner("Fetching box scores and grading legs... (this may take a minute for multiple bets)"):
-                    _ag_graded, _ag_skipped, _ag_msgs = auto_grade_history(user_id)
-                if _ag_graded > 0:
-                    st.success(f"Auto-graded {_ag_graded} bet(s). {_ag_skipped} skipped (game not yet played or player not found).")
-                    for _ag_m in _ag_msgs[:10]:
-                        st.caption(_ag_m)
-                    st.rerun()
-                elif _ag_skipped > 0:
-                    st.info(f"No bets could be graded yet — {_ag_skipped} skipped (games not yet played or data not available).")
-                else:
-                    st.info("No pending bets to grade.")
+            st.caption(f"{_n_pending} pending bet(s) remaining. Bets auto-grade when you open this tab once their games finish. Click below to re-check now.")
+        else:
+            st.caption("All bets graded ✓. Auto-grading runs automatically whenever you open this tab and a game has finished.")
+        if st.button("RE-CHECK / GRADE PENDING NOW", use_container_width=True, type="primary", key="auto_grade_btn"):
+            with st.spinner("Fetching box scores and grading legs..."):
+                _ag_graded, _ag_skipped, _ag_msgs = auto_grade_history(user_id)
+            if _ag_graded > 0:
+                st.success(f"Auto-graded {_ag_graded} bet(s). {_ag_skipped} skipped (game not yet played or player not found).")
+                for _ag_m in _ag_msgs[:10]:
+                    st.caption(_ag_m)
+                st.rerun()
+            elif _ag_skipped > 0:
+                st.info(f"Nothing to grade yet — {_ag_skipped} skipped (games not yet played or data not available).")
+            else:
+                st.info("No pending bets to grade.")
         # [FIX 12] Export button
         csv_data = h.to_csv(index=False)
         _exp_col, _del_col = st.columns([2, 1])
