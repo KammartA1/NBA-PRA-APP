@@ -81,14 +81,33 @@ def _process_one_prop(pp_line: dict) -> dict | None:
     }
 
 
-def _fetch_mlb_lines() -> tuple[list[dict], str | None]:
-    """Fetch PrizePicks lines filtered to MLB only."""
-    all_rows, err = pp_fetcher.fetch_prizepicks_all_sports()
-    if err:
-        return [], err
-    mlb = [r for r in all_rows if str(r.get("league", "")).upper().startswith("MLB")]
-    log.info("Filtered %d MLB lines from %d total", len(mlb), len(all_rows))
-    return mlb, None
+def _fetch_mlb_lines(max_attempts: int = 3) -> tuple[list[dict], str | None]:
+    """Fetch PrizePicks lines filtered to MLB only.
+
+    PrizePicks intermittently 403s, so retry the whole fetch a few times with
+    exponential backoff before giving up.
+    """
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        all_rows, err = pp_fetcher.fetch_prizepicks_all_sports()
+        if not err:
+            mlb = [r for r in all_rows if str(r.get("league", "")).upper().startswith("MLB")]
+            log.info("Filtered %d MLB lines from %d total (attempt %d)", len(mlb), len(all_rows), attempt)
+            # A successful fetch can still come back MLB-empty when one of
+            # PrizePicks' internal sub-requests 403'd and returned partial data.
+            # In-season there should be MLB lines, so retry a empty payload —
+            # but a final empty result is still a clean (non-error) outcome.
+            if mlb or attempt == max_attempts:
+                return mlb, None
+            log.warning("Fetch OK but 0 MLB lines (attempt %d/%d) — retrying", attempt, max_attempts)
+            time.sleep(10 * attempt)
+            continue
+        last_err = err
+        if attempt < max_attempts:
+            wait = 15 * attempt
+            log.warning("MLB fetch attempt %d/%d failed (%s) — waiting %ds", attempt, max_attempts, err, wait)
+            time.sleep(wait)
+    return [], last_err
 
 
 def run_scan() -> dict:
@@ -98,14 +117,12 @@ def run_scan() -> dict:
 
     pp_lines, err = _fetch_mlb_lines()
     if err:
-        log.warning("First PP fetch failed (%s), waiting 30s for retry…", err)
-        time.sleep(30)
-        pp_lines, err = _fetch_mlb_lines()
-    if err:
-        log.error("PrizePicks fetch failed after retry: %s", err)
-        db.log_worker_run("mlb_scanner", "error", {"error": err})
-        notify.send_worker_status("ERROR", f"MLB PrizePicks fetch failed: {err}")
-        return {"ok": False, "error": err}
+        # PrizePicks 403s are intermittent and transient. Don't fail the whole
+        # cron run (which would show red and spam alerts) — log a soft "skipped"
+        # status and let the next scheduled tick retry. ok=True keeps exit 0.
+        log.warning("PrizePicks fetch failed after retries: %s — skipping this tick", err)
+        db.log_worker_run("mlb_scanner", "skipped", {"reason": "pp_fetch_failed", "error": err})
+        return {"ok": True, "skipped": True, "reason": "pp_fetch_failed", "error": err}
 
     log.info("Fetched %d PrizePicks MLB lines", len(pp_lines))
 
