@@ -37,7 +37,7 @@ MIN_GAMES = 5
 ALERT_EV_THRESHOLD = 6.0
 MAX_WORKERS = 4
 MAX_PROPS = 80          # hard cap to stay well within the 12-min time budget
-TIME_BUDGET_SECS = 660  # 11 minutes — leaves 4 min for install + cleanup
+TIME_BUDGET_SECS = 600  # 10 minutes — leaves headroom for PP retry overhead
 
 
 def _process_one_prop(pp_line: dict) -> dict | None:
