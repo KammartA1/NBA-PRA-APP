@@ -12004,7 +12004,8 @@ with tabs[4]:
                 ln = lg.get("line", "?")
                 sd = lg.get("side", "?")
                 res = _lr[i] if i < len(_lr) else "Pending"
-                parts.append(f"{p} {m} {ln} {sd} → {res}")
+                _emoji = {"HIT": "✅", "MISS": "❌", "PUSH": "➖", "VOID": "⚪"}.get(res, "⏳")
+                parts.append(f"{p} {m} {ln} {sd} → {_emoji} {res}")
             return " | ".join(parts)
         h_display["legs_summary"] = h_display.apply(_format_legs_summary, axis=1)
         _display_cols = [c for c in ["ts", "legs_summary", "n_legs", "result", "decision", "bet_id"] if c in h_display.columns]
@@ -12097,21 +12098,28 @@ with tabs[4]:
             new_leg_results = []
             for _li, _lleg in enumerate(_legs_to_show):
                 _default = _leg_res_stored[_li] if _li < len(_leg_res_stored) else "Pending"
-                _opts = ["Pending","HIT","MISS","PUSH"]
+                _opts = ["Pending","HIT","MISS","PUSH","VOID"]
                 _di = _opts.index(_default) if _default in _opts else 0
                 _lcols = st.columns([3,2])
-                _lcols[0].markdown(f"<span style='font-size:0.75rem;color:#A0B8C8;'>{_lleg.get('player','?')} — {_lleg.get('market','?')} {_lleg.get('line','')}</span>", unsafe_allow_html=True)
+                _leg_color = {"HIT": "#00FFB2", "MISS": "#FF3358", "PUSH": "#FFB800", "VOID": "#4A607A"}.get(_default, "#4A607A")
+                _leg_emoji = {"HIT": "✅", "MISS": "❌", "PUSH": "➖", "VOID": "⚪"}.get(_default, "⏳")
+                _leg_side = _lleg.get('side', '')
+                _leg_res_txt = f" → <span style='color:{_leg_color};font-weight:700;'>{_leg_emoji} {_default}</span>" if _default != "Pending" else ""
+                _lcols[0].markdown(f"<span style='font-size:0.75rem;color:#A0B8C8;'>{_lleg.get('player','?')} {_lleg.get('market','?')} {_lleg.get('line','')} {_leg_side}{_leg_res_txt}</span>", unsafe_allow_html=True)
                 _sel = _lcols[1].selectbox("", _opts, index=_di, key=f"legres_{leg_row_idx}_{_li}", label_visibility="collapsed")
                 new_leg_results.append(_sel)
             if st.button("Save Leg Results", key="save_leg_results"):
                 h2 = h.copy()
                 h2.loc[int(leg_row_idx), "leg_results"] = json.dumps(new_leg_results)
                 _new_result = h2.loc[int(leg_row_idx), "result"]
-                if all(r=="HIT" for r in new_leg_results):
+                _active = [r for r in new_leg_results if r not in ("VOID", "Pending")]
+                if all(r == "VOID" for r in new_leg_results):
+                    _new_result = "VOID"
+                elif all(r == "HIT" for r in _active) and _active:
                     _new_result = "HIT"
-                elif any(r=="MISS" for r in new_leg_results):
+                elif any(r == "MISS" for r in _active):
                     _new_result = "MISS"
-                elif all(r in ("HIT","PUSH") for r in new_leg_results):
+                elif all(r in ("HIT", "PUSH") for r in _active) and _active:
                     _new_result = "PUSH"
                 h2.loc[int(leg_row_idx), "result"] = _new_result
                 h2.to_csv(history_path(user_id), index=False)
@@ -13106,6 +13114,8 @@ with tabs[13]:
             import pandas as _rt_pd
             _rt_df = _rt_pd.DataFrame(_rt_all)
             # ----- headline metrics -----
+            if "profit_units" in _rt_df.columns:
+                _rt_df.loc[_rt_df["result"].isin(["void", "push"]), "profit_units"] = 0.0
             _rt_decided = _rt_df[_rt_df["result"].isin(["win","loss"])]
             _rt_wins = int((_rt_decided["result"] == "win").sum())
             _rt_losses = int((_rt_decided["result"] == "loss").sum())

@@ -1,0 +1,59 @@
+name: MLB Results Grader
+
+# MLB games end ~11pm ET (03:00 UTC). Box scores settle shortly after.
+# Grade mid-morning ET with a safety pass at noon.
+#   14:00 UTC ≈ 10:00am ET   (first pass)
+#   17:00 UTC ≈ 1:00pm ET    (safety pass)
+
+on:
+  schedule:
+    - cron: "0 14 * * *"
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        required: false
+        default: "grade"
+        type: choice
+        options:
+          - grade
+          - test-grade
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install MLB-StatsAPI pandas numpy scipy requests supabase psycopg2-binary
+
+      - name: Run MLB grader
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          MODE="${{ github.event.inputs.mode || 'grade' }}"
+          case "$MODE" in
+            test-grade)
+              python -m core.mlb_grader --test-grade
+              ;;
+            *)
+              python -m core.mlb_grader
+              ;;
+          esac

@@ -50,7 +50,8 @@ def send_message(text: str, parse_mode: str = "HTML") -> bool:
 def send_edge_alert(edges: list[dict], sport: str = "NBA") -> bool:
     if not edges:
         return False
-    header = f"🏀 <b>{sport} Edge Alert</b> — {len(edges)} high-EV props found\n"
+    emoji = {"NBA": "🏀", "MLB": "⚾", "NFL": "🏈", "WNBA": "🏀", "NHL": "🏒"}.get(sport, "📊")
+    header = f"{emoji} <b>{sport} Edge Alert</b> — {len(edges)} high-EV props found\n"
     lines = []
     for e in edges[:8]:
         ev = e.get("ev_pct", 0)

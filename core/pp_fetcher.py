@@ -17,12 +17,19 @@ log = logging.getLogger(__name__)
 PRIZEPICKS_API = "https://api.prizepicks.com/projections"
 
 MARKET_MAP = {
+    # NBA
     "Points": "PTS", "Rebounds": "REB", "Assists": "AST",
     "Pts+Rebs+Asts": "PRA", "Pts+Asts": "PA", "Pts+Rebs": "PR",
     "Rebs+Asts": "RA", "3-Pt Made": "FG3M", "Blocked Shots": "BLK",
     "Steals": "STL", "Turnovers": "TOV", "Fantasy Score": "FS",
     "FG Attempted": "FGA", "FT Made": "FTM",
     "Blks+Stls": "BLST", "Double Doubles": "DD", "Triple Doubles": "TD",
+    # MLB
+    "Pitcher Strikeouts": "K", "Pitching Outs": "OUTS",
+    "Earned Runs": "ER", "Hits Allowed": "HA", "Walks Allowed": "BB_A",
+    "Total Bases": "TB", "Hits": "H", "Runs": "R", "RBIs": "RBI",
+    "Stolen Bases": "SB", "Home Runs": "HR", "Hits+Runs+RBIs": "HRR",
+    "Walks": "BB", "Singles": "1B", "Doubles": "2B", "Triples": "3B",
 }
 
 _USER_AGENTS = [

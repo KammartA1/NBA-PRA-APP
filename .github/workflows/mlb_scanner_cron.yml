@@ -1,0 +1,59 @@
+name: MLB Scanner Worker
+
+# MLB games mostly start 1pm-10pm ET (17:00-02:00 UTC).
+# PrizePicks props lock at first pitch, so scan before game times.
+# Hourly during the day, every-30-min during prime evening slate.
+
+on:
+  schedule:
+    - cron: "0 14-23 * * *"
+    - cron: "0 0-4 * * *"
+    - cron: "30 22,23,0,1 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        required: false
+        default: "scan"
+        type: choice
+        options:
+          - scan
+          - test-pp
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install MLB-StatsAPI pandas numpy scipy requests supabase psycopg2-binary
+
+      - name: Run MLB scanner
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          MODE="${{ github.event.inputs.mode || 'scan' }}"
+          case "$MODE" in
+            test-pp)
+              python -m core.mlb_scanner --test-pp
+              ;;
+            *)
+              python -m core.mlb_scanner
+              ;;
+          esac
