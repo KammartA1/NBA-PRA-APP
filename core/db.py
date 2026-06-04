@@ -312,6 +312,85 @@ def load_bet_results(sport: str = "NBA", days: int = 60) -> list[dict]:
         return []
 
 
+# --- Logged Bets (user's placed bets — survives app restarts) ---
+
+def upsert_logged_bet(bet: dict) -> bool:
+    """Persist (or update) a user's logged bet. Conflict key = bet_id."""
+    sb = _get_client()
+    if not sb:
+        return False
+    try:
+        _retry(lambda: (
+            sb.table("logged_bets").upsert(bet, on_conflict="bet_id").execute()
+        ))
+        return True
+    except Exception as e:
+        log.warning("upsert_logged_bet failed: %s", e)
+        return False
+
+
+def load_logged_bets(user_id: str = "default", days: int = 120) -> list[dict]:
+    """All logged bets for a user within the last `days` (newest first)."""
+    sb = _get_client()
+    if not sb:
+        return []
+    try:
+        from datetime import timedelta
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        resp = _retry(lambda: (
+            sb.table("logged_bets")
+            .select("*")
+            .eq("user_id", user_id)
+            .gte("logged_at", since)
+            .order("logged_at", desc=True)
+            .limit(2000)
+            .execute()
+        ))
+        return resp.data or []
+    except Exception as e:
+        log.warning("load_logged_bets failed: %s", e)
+        return []
+
+
+def load_pending_logged_bets() -> list[dict]:
+    """All logged bets not yet fully graded (across all users) — for the worker."""
+    sb = _get_client()
+    if not sb:
+        return []
+    try:
+        resp = _retry(lambda: (
+            sb.table("logged_bets")
+            .select("*")
+            .eq("graded", False)
+            .neq("decision", "PASS")
+            .order("logged_at", desc=True)
+            .limit(1000)
+            .execute()
+        ))
+        return resp.data or []
+    except Exception as e:
+        log.warning("load_pending_logged_bets failed: %s", e)
+        return []
+
+
+def update_logged_bet(bet_id: str, leg_results: list, result: str, graded: bool) -> bool:
+    """Write graded results back to a logged bet."""
+    sb = _get_client()
+    if not sb:
+        return False
+    try:
+        _retry(lambda: (
+            sb.table("logged_bets")
+            .update({"leg_results": leg_results, "result": result, "graded": graded})
+            .eq("bet_id", bet_id)
+            .execute()
+        ))
+        return True
+    except Exception as e:
+        log.warning("update_logged_bet failed: %s", e)
+        return False
+
+
 # --- Prop Line History (CLV tracking) ---
 
 def append_pp_lines(lines: list[dict]) -> int:
