@@ -63,11 +63,63 @@ def _stat_code(market: str) -> str:
     return MARKET_STAT_MAP.get(market) or MARKET_STAT_MAP.get(market.replace(" ", ""), "")
 
 
+def _candidate_dates(game_date_et):
+    """Dates to search for a player's box score.
+
+    The bet's game_date is inferred from when it was logged, which is fragile:
+    a bet logged just after midnight ET (e.g. 1:26am) for the prior evening's
+    game gets stamped with the next calendar day. So we search the inferred
+    date, the day before (post-midnight logs), and the day after (late games
+    that settle on the next ET date) and use whichever has a real box score.
+    """
+    return [
+        game_date_et,
+        game_date_et - timedelta(days=1),
+        game_date_et + timedelta(days=1),
+    ]
+
+
+def _player_actual(player: str, player_id, stat: str, game_date_et, gamelog_cache: dict):
+    """Resolve one player's actual stat near `game_date_et`, or None."""
+    if not player:
+        return None
+    if not player_id:
+        player_id = projections.resolve_player_id(player)
+    else:
+        try:
+            player_id = int(player_id)
+        except (TypeError, ValueError):
+            player_id = projections.resolve_player_id(player)
+    if not player_id:
+        return None
+
+    if player_id not in gamelog_cache:
+        gamelog_cache[player_id] = projections.fetch_player_gamelog(player_id, n_games=30)
+    gl = gamelog_cache[player_id]
+    if gl is None or gl.empty:
+        return None
+
+    for d in _candidate_dates(game_date_et):
+        actual = projections.actual_stat_for_date(gl, stat, d)
+        if actual is not None:
+            return actual
+    return None
+
+
+def _split_combo(player: str) -> list[str]:
+    """Split a combo prop name ('A + B') into individual player names."""
+    if not player:
+        return []
+    parts = [p.strip() for p in str(player).split("+")]
+    return [p for p in parts if p]
+
+
 def grade_legs(legs: list[dict], game_date_et, today_et, gamelog_cache: dict | None = None):
     """Grade each leg of a bet. Returns (leg_results, all_resolved).
 
     leg_results is a list parallel to `legs` with values HIT/MISS/PUSH/Pending.
     `gamelog_cache` (keyed by player_id) is reused across bets for efficiency.
+    Handles combo props ('Player A + Player B') by summing each player's actual.
     """
     if gamelog_cache is None:
         gamelog_cache = {}
@@ -93,36 +145,22 @@ def grade_legs(legs: list[dict], game_date_et, today_et, gamelog_cache: dict | N
             all_resolved = False
             continue
 
-        if not player_id:
-            player_id = projections.resolve_player_id(player)
-        else:
-            try:
-                player_id = int(player_id)
-            except (TypeError, ValueError):
-                player_id = projections.resolve_player_id(player)
+        sub_players = _split_combo(player)
+        is_combo = len(sub_players) > 1
 
-        if not player_id:
-            leg_results.append("Pending")
-            all_resolved = False
-            continue
+        actual = 0.0
+        resolved = True
+        for sp in sub_players:
+            # A stored player_id only applies to a single-player leg.
+            pid = None if is_combo else player_id
+            val = _player_actual(sp, pid, stat, game_date_et, gamelog_cache)
+            if val is None:
+                resolved = False
+                break
+            actual += val
 
-        if player_id not in gamelog_cache:
-            gamelog_cache[player_id] = projections.fetch_player_gamelog(player_id, n_games=30)
-        gl = gamelog_cache[player_id]
-
-        if gl is None or gl.empty:
-            leg_results.append("Pending")
-            all_resolved = False
-            continue
-
-        actual = projections.actual_stat_for_date(gl, stat, game_date_et)
-        if actual is None:
-            # late-night game crossing midnight ET — try the next day
-            actual = projections.actual_stat_for_date(gl, stat, game_date_et + timedelta(days=1))
-
-        if actual is None:
-            # No game row. If the slate is in the past, it's a void/DNP — leave Pending
-            # so the user can decide; if future, definitely not gradeable yet.
+        if not resolved:
+            # No box score (DNP / game not played / unresolved name) — stay Pending.
             leg_results.append("Pending")
             all_resolved = False
             continue
@@ -214,8 +252,10 @@ def run_grade_logged_bets(dry_run: bool = False) -> dict:
             n_skipped += 1
             continue
 
-        # Only grade once the slate is in the past
-        if game_date_et >= today_et:
+        # Don't attempt clearly-future slates. Today's games ARE graded — if the
+        # box score isn't final yet, grade_legs returns Pending and we retry next
+        # run (self-correcting), rather than waiting a full extra day.
+        if game_date_et > today_et:
             n_skipped += 1
             continue
 
