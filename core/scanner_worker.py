@@ -88,10 +88,14 @@ def run_scan() -> dict:
     start = time.time()
     log.info("=== SCAN START (id=%s) ===", scan_id)
 
-    # 1. Fetch PrizePicks lines
+    # 1. Fetch PrizePicks lines (with top-level retry — the 403 is intermittent)
     pp_lines, err = pp_fetcher.fetch_prizepicks_nba()
     if err:
-        log.error("PrizePicks fetch failed: %s", err)
+        log.warning("First PP fetch failed (%s), waiting 30s for top-level retry…", err)
+        time.sleep(30)
+        pp_lines, err = pp_fetcher.fetch_prizepicks_nba()
+    if err:
+        log.error("PrizePicks fetch failed after retry: %s", err)
         db.log_worker_run("scanner", "error", {"error": err})
         notify.send_worker_status("ERROR", f"PrizePicks fetch failed: {err}")
         return {"ok": False, "error": err}
