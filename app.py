@@ -11940,24 +11940,34 @@ with tabs[4]:
         else:
             st.caption("Per-leg accuracy will appear once you mark individual leg results below.")
         st.dataframe(h, use_container_width=True)
-        # ── Auto-Grade Pending Bets ──────────────────────────────
+        # ── Auto-Grade Pending Bets (automatic + manual) ──────────────
         _n_pending = int((h["result"] == "Pending").sum()) if "result" in h.columns else 0
+        st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+        st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>AUTO-GRADE — AUTOMATIC BET RESULTS</div>""", unsafe_allow_html=True)
+        # Auto-run once per session when the tab opens, if there are pending bets.
+        if _n_pending > 0 and not st.session_state.get("_auto_graded_this_session"):
+            st.session_state["_auto_graded_this_session"] = True
+            with st.spinner(f"Auto-grading {_n_pending} pending bet(s) from box scores..."):
+                _ag_graded, _ag_skipped, _ag_msgs = auto_grade_history(user_id)
+            if _ag_graded > 0:
+                st.success(f"✓ Auto-graded {_ag_graded} bet(s) automatically. Refreshing...")
+                st.rerun()
         if _n_pending > 0:
-            st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
-            st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>AUTO-GRADE PENDING BETS</div>""", unsafe_allow_html=True)
-            st.caption(f"{_n_pending} pending bet(s). Auto-grade fetches actual box scores via nba_api and marks each leg HIT/MISS/PUSH automatically.")
-            if st.button("AUTO-GRADE ALL PENDING", use_container_width=True, type="primary", key="auto_grade_btn"):
-                with st.spinner("Fetching box scores and grading legs... (this may take a minute for multiple bets)"):
-                    _ag_graded, _ag_skipped, _ag_msgs = auto_grade_history(user_id)
-                if _ag_graded > 0:
-                    st.success(f"Auto-graded {_ag_graded} bet(s). {_ag_skipped} skipped (game not yet played or player not found).")
-                    for _ag_m in _ag_msgs[:10]:
-                        st.caption(_ag_m)
-                    st.rerun()
-                elif _ag_skipped > 0:
-                    st.info(f"No bets could be graded yet — {_ag_skipped} skipped (games not yet played or data not available).")
-                else:
-                    st.info("No pending bets to grade.")
+            st.caption(f"{_n_pending} pending bet(s) remaining. Bets auto-grade when you open this tab once their games finish. Click below to re-check now.")
+        else:
+            st.caption("All bets graded ✓. Auto-grading runs automatically whenever you open this tab and a game has finished.")
+        if st.button("RE-CHECK / GRADE PENDING NOW", use_container_width=True, type="primary", key="auto_grade_btn"):
+            with st.spinner("Fetching box scores and grading legs..."):
+                _ag_graded, _ag_skipped, _ag_msgs = auto_grade_history(user_id)
+            if _ag_graded > 0:
+                st.success(f"Auto-graded {_ag_graded} bet(s). {_ag_skipped} skipped (game not yet played or player not found).")
+                for _ag_m in _ag_msgs[:10]:
+                    st.caption(_ag_m)
+                st.rerun()
+            elif _ag_skipped > 0:
+                st.info(f"Nothing to grade yet — {_ag_skipped} skipped (games not yet played or data not available).")
+            else:
+                st.info("No pending bets to grade.")
         # [FIX 12] Export button
         csv_data = h.to_csv(index=False)
         _exp_col, _del_col = st.columns([2, 1])
