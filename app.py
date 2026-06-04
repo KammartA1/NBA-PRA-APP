@@ -4757,7 +4757,7 @@ def send_discord_alert(webhook_url, message):
     if not webhook_url:
         return False, "No webhook URL"
     try:
-        r = requests.post(webhook_url, json={"content": message, "username": "NBA Quant Engine"}, timeout=10)
+        r = requests.post(webhook_url, json={"content": message, "username": "Sports Quant Engine"}, timeout=10)
         r.raise_for_status()
         return True, None
     except Exception as e:
@@ -8947,7 +8947,7 @@ with tabs[0]:
         if _ks_cached is None:
             try:
                 from services.kill_switch import KillSwitch
-                _ks_init = KillSwitch(sport="NBA")
+                _ks_init = KillSwitch(sport=st.session_state.get("sport", "NBA"))
                 _ks_cached = _ks_init.check_all(
                     bankroll=bankroll,
                     peak_bankroll=float(st.session_state.get("peak_bankroll", bankroll)),
@@ -9046,7 +9046,8 @@ with tabs[0]:
             tag = f"P{leg_n}"
             with cols[col_idx]:
                 st.markdown(f"<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.14em;text-transform:uppercase;margin-bottom:0.4rem;'>LEG {leg_n}</div>", unsafe_allow_html=True)
-                pname = st.text_input(f"Player", key=f"pname_{leg_n}", placeholder="e.g. LeBron James")
+                _ph = "e.g. Aaron Judge" if st.session_state.get("sport") == "MLB" else "e.g. LeBron James"
+                pname = st.text_input(f"Player", key=f"pname_{leg_n}", placeholder=_ph)
                 _mkt_side_cols = st.columns([3, 1])
                 with _mkt_side_cols[0]:
                     _sport_markets = _sports_reg.get_markets(st.session_state.get("sport", "NBA"))
@@ -9206,7 +9207,7 @@ with tabs[0]:
                     for _leg in results:
                         if _leg.get("player") and _leg.get("line") is not None:
                             _clv_sess.add(LineMovement(
-                                sport="NBA",
+                                sport=st.session_state.get("sport", "NBA"),
                                 event=f"{_leg.get('team','?')} vs {_leg.get('opp','?')}",
                                 market=_leg.get("market"),
                                 book=_leg.get("book") or "model",
@@ -9222,7 +9223,7 @@ with tabs[0]:
             # ── [UNIFIED] Auto-kill-switch check ──
             try:
                 from services.kill_switch import KillSwitch
-                _ks = KillSwitch(sport="NBA")
+                _ks = KillSwitch(sport=st.session_state.get("sport", "NBA"))
                 _ks_status = _ks.check_all(
                     bankroll=bankroll,
                     peak_bankroll=float(st.session_state.get("peak_bankroll", bankroll)),
@@ -9293,7 +9294,7 @@ with tabs[0]:
                 try:
                     from core.db import upsert_logged_bet as _upsert_lb
                     _upsert_lb({
-                        "bet_id": _bet_id, "user_id": user_id, "sport": "NBA",
+                        "bet_id": _bet_id, "user_id": user_id, "sport": st.session_state.get("sport", "NBA"),
                         "logged_at": _ts_iso, "game_date": _gd,
                         "legs": res, "n_legs": len(res),
                         "leg_results": ["Pending"]*len(res),
@@ -9469,6 +9470,31 @@ with tabs[1]:
   CV={f"{leg['volatility_cv']:.2f}" if leg.get("volatility_cv") else "--"} | N={n_used} games<br>
   Shrunk mu: {f"{leg['mu_shrunk']:.1f}" if leg.get("mu_shrunk") else "--"} | Trend: L3={f"{leg['l3_avg']:.1f}" if leg.get("l3_avg") else "--"}/L5={f"{leg['l5_avg']:.1f}" if leg.get("l5_avg") else "--"}/L10={f"{leg['l10_avg']:.1f}" if leg.get("l10_avg") else "--"}
 </div>"""
+                if leg.get("sport") == "MLB":
+                    _mlb_park = leg.get("mlb_park", "")
+                    _mlb_opp_sp = leg.get("mlb_opp_starter", "")
+                    _mlb_notes = leg.get("mlb_notes") or []
+                    _mlb_ctx_parts = []
+                    if _mlb_park:
+                        _mlb_ctx_parts.append(f"🏟 {_mlb_park}")
+                    if _mlb_opp_sp:
+                        _mlb_ctx_parts.append(f"vs {_mlb_opp_sp}")
+                    if leg.get("median") is not None:
+                        _mlb_ctx_parts.append(f"Med: {leg['median']:.1f}")
+                    if leg.get("sigma") is not None:
+                        _mlb_ctx_parts.append(f"σ: {leg['sigma']:.2f}")
+                    _mlb_ctx_html = " · ".join(_mlb_ctx_parts) if _mlb_ctx_parts else ""
+                    _mlb_pct_html = ""
+                    if leg.get("p5") is not None:
+                        _mlb_pct_html = f"[{leg['p5']:.1f} – {leg.get('p25',0):.1f} – {leg.get('p75',0):.1f} – {leg.get('p95',0):.1f}]"
+                    card_html += (
+                        f"<div style='margin-top:0.45rem;background:#FF880008;border:1px solid #FF880025;border-radius:3px;padding:0.3rem 0.5rem;'>"
+                        f"<div style='font-size:0.52rem;color:#FF8800;letter-spacing:0.10em;font-family:Chakra Petch,monospace;'>⚾ MLB AT-BAT MONTE CARLO ({leg.get('n_games_used', 10000)} SIMS)</div>"
+                        f"<div style='font-size:0.58rem;color:#B8D0EC;margin-top:0.15rem;'>{_mlb_ctx_html}</div>"
+                        + (f"<div style='font-size:0.54rem;color:#4A607A;font-family:Fira Code,monospace;'>Dist: {_mlb_pct_html}</div>" if _mlb_pct_html else "")
+                        + ("".join(f"<div style='font-size:0.50rem;color:#FFB800;'>⚠ {n}</div>" for n in _mlb_notes) if _mlb_notes else "")
+                        + f"</div>"
+                    )
                 # [UNIFIED] Simulation overlay
                 _sp = leg.get("sim_prob")
                 _sm = leg.get("sim_mean")
@@ -10147,7 +10173,8 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
                 st.warning(f"MC error: {mc['error']}")
 # ─── LIVE SCANNER TAB [FIX 13: persistent] [FIX 14: week-ahead] ───
 with tabs[2]:
-    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>LIVE SCANNER - SWEEP ALL PLAYER PROPS FOR EDGES</div>""", unsafe_allow_html=True)
+    _scanner_sport_icon = _sports_reg.SPORTS.get(st.session_state.get("sport", "NBA"), {}).get("icon", "")
+    st.markdown(f"""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>{_scanner_sport_icon} LIVE SCANNER - SWEEP ALL {st.session_state.get('sport', 'NBA')} PLAYER PROPS FOR EDGES</div>""", unsafe_allow_html=True)
     sc1, sc2, sc3 = st.columns([2,2,2])
     with sc1:
         # [FIX 14] Week-ahead: date range selection
@@ -10157,7 +10184,13 @@ with tabs[2]:
         if scan_days > 0:
             st.caption(f"Scanning {scan_start.isoformat()} to {scan_end.isoformat()}")
     with sc2:
-        markets_sel = st.multiselect("Markets", options=MARKET_OPTIONS, default=["Points","Rebounds","Assists"])
+        _scanner_sport = st.session_state.get("sport", "NBA")
+        _scanner_sport_mkts = _sports_reg.get_markets(_scanner_sport)
+        _scanner_mkt_opts = list(_scanner_sport_mkts.keys()) if _scanner_sport_mkts else MARKET_OPTIONS
+        _scanner_mkt_defaults = (["Total Bases", "Pitcher Strikeouts", "Hits"]
+                                 if _scanner_sport == "MLB" else ["Points", "Rebounds", "Assists"])
+        _scanner_mkt_defaults = [m for m in _scanner_mkt_defaults if m in _scanner_mkt_opts]
+        markets_sel = st.multiselect("Markets", options=_scanner_mkt_opts, default=_scanner_mkt_defaults)
     with sc3:
         book_choices2, _book_err2 = get_sportsbook_choices(scan_start.isoformat())
         if "prizepicks" not in book_choices2:
@@ -10196,7 +10229,7 @@ with tabs[2]:
                             _save_pp_disk_cache(_pasted_rows)
                             st.success(f"Loaded {len(_pasted_rows)} PP props from JSON")
                         else:
-                            st.warning("No NBA props found in pasted JSON")
+                            st.warning("No props found in pasted JSON")
                     except json.JSONDecodeError as _pje:
                         st.error(f"Invalid JSON: {_pje}")
                 else:
@@ -10312,6 +10345,9 @@ with tabs[2]:
         st.session_state.pop("_scanner_lines_fetch_ts", None)
         st.session_state.pop("scanner_offers", None)
         st.toast("Cache cleared — click Fetch Live Lines to refresh.")
+    if _do_fetch and _scanner_sport == "MLB":
+        st.info("⚾ MLB uses PrizePicks lines — expand **Platform Lines** above and load PP JSON, then use **PP + UD only** scan source.")
+        _do_fetch = False
     if _do_fetch:
         selected_keys = list(dict.fromkeys(ODDS_MARKETS.get(m) for m in markets_sel if ODDS_MARKETS.get(m)))
         if not selected_keys:
@@ -10453,16 +10489,17 @@ with tabs[2]:
     # or inside Run Scan (both wrapped in st.spinner).
     _bulk_cache_key = "_bulk_gamelogs_loaded"
     bulk_loaded = st.session_state.get(_bulk_cache_key, False)
-    _bulk_label = "All Game Logs Loaded" if bulk_loaded else "Load All Game Logs (Recommended)"
-    if scan_col.button(_bulk_label, use_container_width=True, disabled=bulk_loaded):
-        with st.spinner("Loading all NBA player game logs (one-time, cached 6h)..."):
-            _fetch_bulk_gamelogs.clear()
-            result = _fetch_bulk_gamelogs()
-        if result is not None:
-            st.session_state[_bulk_cache_key] = True
-            st.success(f"Loaded {len(result):,} game log rows — scans are now near-instant.")
-        else:
-            st.warning("Bulk load failed — scanner will fall back to per-player fetches.")
+    if _scanner_sport == "NBA":
+        _bulk_label = "All Game Logs Loaded" if bulk_loaded else "Load All Game Logs (Recommended)"
+        if scan_col.button(_bulk_label, use_container_width=True, disabled=bulk_loaded):
+            with st.spinner("Loading all NBA player game logs (one-time, cached 6h)..."):
+                _fetch_bulk_gamelogs.clear()
+                result = _fetch_bulk_gamelogs()
+            if result is not None:
+                st.session_state[_bulk_cache_key] = True
+                st.success(f"Loaded {len(result):,} game log rows — scans are now near-instant.")
+            else:
+                st.warning("Bulk load failed — scanner will fall back to per-player fetches.")
     if scan_col.button("Run Scan", use_container_width=True):
         _scan_source = st.session_state.get("scan_source_radio", "Odds API only")
         df = st.session_state.get("scanner_offers")
@@ -10514,7 +10551,7 @@ with tabs[2]:
                             _combo_mkt = next((k for k, v in COMBO_BASE_MAP.items() if v == mkt), None)
                             if _combo_mkt:
                                 mkt = _combo_mkt
-                        if mkt not in MARKET_OPTIONS and mkt not in COMBO_MARKETS:
+                        if mkt not in _scanner_mkt_opts and mkt not in MARKET_OPTIONS and mkt not in COMBO_MARKETS:
                             continue
                         # Filter by user's market selection
                         # Combo markets pass if their base market is selected
@@ -10547,29 +10584,28 @@ with tabs[2]:
                             "market_key": ODDS_MARKETS.get(mkt), "side": "Over",
                         }
                         candidates.append((pname, mkt, float(line), meta))
-            # ── Pre-filter: remove non-current-NBA players ──────────────
-            # Use bulk game log to build set of active NBA player names.
-            # Wrap in spinner since this can take 30-120s on a cold cache.
-            _active_nba_names: set = set()
-            with st.spinner("Loading player roster data..."):
-                _bulk_gl = _fetch_bulk_gamelogs()
-            if _bulk_gl is not None and not _bulk_gl.empty:
-                _name_col = "PLAYER_NAME" if "PLAYER_NAME" in _bulk_gl.columns else None
-                if _name_col:
-                    _active_nba_names = {normalize_name(n) for n in _bulk_gl[_name_col].dropna().unique()}
-                st.session_state[_bulk_cache_key] = True
-            if _active_nba_names:
-                _pre_count = len(candidates)
-                def _is_active_player(pname, mkt):
-                    if is_combo_market(mkt):
-                        parts = [p.strip() for p in re.split(r'\s*\+\s*', pname) if p.strip()]
-                        return all(normalize_name(p) in _active_nba_names for p in parts)
-                    return normalize_name(pname) in _active_nba_names
-                candidates = [(p, m, l, mt) for p, m, l, mt in candidates
-                              if _is_active_player(p, m)]
-                _filtered_out = _pre_count - len(candidates)
-                if _filtered_out > 0:
-                    st.caption(f"Filtered {_filtered_out} non-current-NBA players from candidates")
+            # ── Pre-filter: remove non-current players ──────────────
+            if _scanner_sport == "NBA":
+                _active_nba_names: set = set()
+                with st.spinner("Loading player roster data..."):
+                    _bulk_gl = _fetch_bulk_gamelogs()
+                if _bulk_gl is not None and not _bulk_gl.empty:
+                    _name_col = "PLAYER_NAME" if "PLAYER_NAME" in _bulk_gl.columns else None
+                    if _name_col:
+                        _active_nba_names = {normalize_name(n) for n in _bulk_gl[_name_col].dropna().unique()}
+                    st.session_state[_bulk_cache_key] = True
+                if _active_nba_names:
+                    _pre_count = len(candidates)
+                    def _is_active_player(pname, mkt):
+                        if is_combo_market(mkt):
+                            parts = [p.strip() for p in re.split(r'\s*\+\s*', pname) if p.strip()]
+                            return all(normalize_name(p) in _active_nba_names for p in parts)
+                        return normalize_name(pname) in _active_nba_names
+                    candidates = [(p, m, l, mt) for p, m, l, mt in candidates
+                                  if _is_active_player(p, m)]
+                    _filtered_out = _pre_count - len(candidates)
+                    if _filtered_out > 0:
+                        st.caption(f"Filtered {_filtered_out} non-current-NBA players from candidates")
             # Store candidates for sim-enhance button (needs meta dicts)
             st.session_state["_scanner_candidates"] = list(candidates)
             # Reset sim-enhanced flag for new scan
@@ -10586,23 +10622,33 @@ with tabs[2]:
             all_computed_legs = []  # [FEATURE] Stores all computed legs for Under scan
             if candidates:
                 _inj_map = st.session_state.get("injury_team_map", {})
-                # Auto-load bulk game logs if not already cached (one-time, ~15-30s)
-                bulk_ready = _fetch_bulk_gamelogs() is not None
-                if not bulk_ready:
-                    with st.spinner("Loading all NBA game logs (one-time ~20s)..."):
-                        _fetch_bulk_gamelogs.clear()
-                        bulk_ready = _fetch_bulk_gamelogs() is not None
-                _scan_workers = min(32, len(candidates)) if bulk_ready else min(10, len(candidates))
-                if not bulk_ready:
-                    st.warning(
-                        f"Bulk game log load failed — scanning with {_scan_workers} workers "
-                        f"(individual NBA API calls). Click **Load All Game Logs** above for faster scans."
-                    )
+                if _scanner_sport == "NBA":
+                    bulk_ready = _fetch_bulk_gamelogs() is not None
+                    if not bulk_ready:
+                        with st.spinner("Loading all NBA game logs (one-time ~20s)..."):
+                            _fetch_bulk_gamelogs.clear()
+                            bulk_ready = _fetch_bulk_gamelogs() is not None
+                    _scan_workers = min(32, len(candidates)) if bulk_ready else min(10, len(candidates))
+                    if not bulk_ready:
+                        st.warning(
+                            f"Bulk game log load failed — scanning with {_scan_workers} workers "
+                            f"(individual NBA API calls). Click **Load All Game Logs** above for faster scans."
+                        )
+                else:
+                    bulk_ready = True
+                    _scan_workers = min(6, len(candidates))
                 _scan_t0 = time.time()
                 _scan_progress = st.progress(0, text=f"Scanning {len(candidates)} candidates...")
                 _scan_done_count = 0
                 _scan_total = len(candidates)
                 def _dispatch_candidate(pname, mkt, line, meta):
+                    if _scanner_sport == "MLB":
+                        _mlb_code = (_sports_reg.get_markets("MLB") or {}).get(mkt, mkt)
+                        return compute_leg_projection_mlb(
+                            pname, _mlb_code, line, "Over",
+                            bankroll=bankroll, frac_kelly=frac_kelly,
+                            max_risk_frac=float(st.session_state.get("max_risk_per_bet",5.0))/100.0,
+                            game_date=scan_start)
                     if is_combo_market(mkt):
                         parts = [p.strip() for p in re.split(r'\s*\+\s*', pname) if p.strip()]
                         if len(parts) >= 2:
@@ -12850,7 +12896,7 @@ with tabs[7]:
         discord_webhook = st.text_input("Webhook URL", value=st.session_state.get("discord_webhook",""), type="password", key="discord_wh_input")
         st.session_state["discord_webhook"] = discord_webhook
         if st.button("Test Discord", use_container_width=True):
-            ok, err = send_discord_alert(discord_webhook, "NBA Quant Engine — Discord alert test ✅")
+            ok, err = send_discord_alert(discord_webhook, "Sports Quant Engine — Discord alert test ✅")
             st.success("Discord OK") if ok else st.error(f"Discord failed: {err}")
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
         st.caption("Auto-alert on strong edges (EV > threshold):")
@@ -12863,7 +12909,7 @@ with tabs[7]:
         tg_chat = st.text_input("Chat ID", value=st.session_state.get("tg_chat",""), key="tg_chat_input")
         st.session_state["tg_chat"] = tg_chat
         if st.button("Test Telegram", use_container_width=True):
-            ok, err = send_telegram_alert(tg_token, tg_chat, "NBA Quant Engine — Telegram alert test ✅")
+            ok, err = send_telegram_alert(tg_token, tg_chat, "Sports Quant Engine — Telegram alert test ✅")
             st.success("Telegram OK") if ok else st.error(f"Telegram failed: {err}")
     st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
     st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>SEND SCANNER EDGES AS ALERTS</div>", unsafe_allow_html=True)
