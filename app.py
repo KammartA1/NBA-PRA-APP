@@ -8653,7 +8653,7 @@ max_weekly_loss    = int(st.session_state.get("max_weekly_loss", 25))
 exclude_chaotic    = bool(st.session_state.get("exclude_chaotic", True))
 show_unders        = bool(st.session_state.get("show_unders", False))
 # ─── TABS ─────────────────────────────────────────────────────
-tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "INSIGHTS", "ALERTS", "SETTINGS",
+tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "ACCURACY", "INSIGHTS", "ALERTS", "SETTINGS",
                  "EDGE MONITOR", "KILL SWITCH", "CAPITAL", "VERDICT", "RESULTS TRACKER"])
 # Consume staged scanner→model inputs before any widgets render (prevents StreamlitAPIException)
 for _si in range(1, 5):
@@ -11975,105 +11975,356 @@ with tabs[4]:
             st.dataframe(pd.DataFrame(_hist_clv_rows), use_container_width=True, hide_index=True)
 # ─── CALIBRATION TAB ─────────────────────────────────────────
 with tabs[5]:
-    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>CALIBRATION ENGINE</div>""", unsafe_allow_html=True)
-    h = load_history(user_id)
-    legs_df = _expand_history_legs(h)
-    # Only use settled legs for calibration metrics
-    settled_df = legs_df[legs_df["y"].notna()].copy() if not legs_df.empty else pd.DataFrame()
-    if settled_df.empty:
-        st.markdown(make_card("<span style='color:#4A607A;font-size:0.78rem;'>No settled bets yet. Log bets and mark results to enable calibration.<br><span style='font-size:0.65rem;'>Minimum ~40 settled legs needed.</span></span>"), unsafe_allow_html=True)
-    else:
-        y = settled_df["y"].values.astype(float)
-        p_raw = settled_df["p_raw"].values.astype(float)
-        brier = float(np.mean((p_raw - y)**2))
-        hit_rate_cal = float(y.mean())
-        n_settled = len(settled_df)
-        n_pass_logged = len(legs_df[legs_df.get("decision","")=="PASS"]) if "decision" in legs_df.columns else 0
-        cc1,cc2,cc3,cc4 = st.columns(4)
-        cc1.metric("Settled Legs", n_settled)
-        cc2.metric("Actual Hit Rate", f"{hit_rate_cal*100:.1f}%")
-        cc3.metric("Brier Score (raw)", f"{brier:.4f}")
-        cc4.metric("Calibrator Fitted", "Yes" if st.session_state.get("calibrator_map") else "No")
-        if "clv_line_fav" in settled_df.columns and settled_df["clv_line_fav"].notna().any():
-            clv_line_rate = float(settled_df["clv_line_fav"].dropna().astype(int).mean())
-            st.metric("CLV (line) favorable %", f"{clv_line_rate*100:.1f}%",
-                      delta="Edge exists" if clv_line_rate > 0.52 else "No edge vs closing line",
-                      delta_color="normal" if clv_line_rate > 0.52 else "inverse")
-        st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
-        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>ROI BY MARKET</div>", unsafe_allow_html=True)
-        if "market" in settled_df.columns:
-            mkt_grp = settled_df.groupby("market").agg(
-                bets=("y","size"), hit_rate=("y","mean"),
-                avg_ev=("ev_adj","mean")
-            ).reset_index()
-            mkt_grp["hit_rate_pct"] = (mkt_grp["hit_rate"]*100).round(1)
-            mkt_grp["avg_ev_pct"] = (mkt_grp["avg_ev"]*100).round(2)
-            mkt_grp = mkt_grp.sort_values("hit_rate_pct", ascending=False)
-            st.dataframe(mkt_grp, use_container_width=True)
-        st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
-        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>RELIABILITY TABLE (p_raw vs actual)</div>", unsafe_allow_html=True)
-        n_bins = st.slider("Bins", 6, 20, 10)
-        settled_df["bin"] = pd.cut(settled_df["p_raw"], bins=n_bins, labels=False, include_lowest=True)
-        rel = settled_df.groupby("bin",dropna=True).agg(
-            p_mean=("p_raw","mean"), win_rate=("y","mean"), n=("y","size")).reset_index()
-        rel["calibration_error"] = (rel["p_mean"] - rel["win_rate"]).abs().round(3)
-        st.dataframe(rel, use_container_width=True)
-        st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
-        st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>FIT CALIBRATOR</div>", unsafe_allow_html=True)
-        st.caption("Monotone isotonic calibration maps p_raw -> p_cal using your settled history.")
-        if st.button("Fit Calibrator from History", use_container_width=True):
-            calib = fit_monotone_calibrator(settled_df, n_bins=int(n_bins))
-            if calib is None:
-                st.warning(f"Need ~40+ quality legs (currently {n_settled}). Identity calibration used.")
-                st.session_state["calibrator_map"] = None
+    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>ACCURACY DASHBOARD — MODEL PERFORMANCE & CALIBRATION</div>""", unsafe_allow_html=True)
+    try:
+        from core.db import load_bet_results as _load_acc_results
+        _acc_days = st.selectbox("Lookback period", [7, 14, 30, 60, 90], index=2, key="_acc_lookback")
+        _acc_all = _load_acc_results("NBA", days=int(_acc_days))
+        if not _acc_all:
+            st.info("No graded results yet. The Results Grader runs each morning — accuracy metrics will appear once bets are settled and graded.")
+        else:
+            _acc_df = pd.DataFrame(_acc_all)
+            _acc_decided = _acc_df[_acc_df["result"].isin(["win", "loss"])].copy()
+            _acc_n = len(_acc_decided)
+
+            if _acc_n < 5:
+                st.warning(f"Only {_acc_n} decided bets so far. Metrics become meaningful at 30+ bets. Data will accumulate automatically as the grader runs daily.")
             else:
-                st.session_state["calibrator_map"] = calib
-                st.success(f"Calibrator fitted on {calib.get('n','?')} legs (range: {calib.get('training_min',0):.2f}-{calib.get('training_max',1):.2f})")
-        calib = st.session_state.get("calibrator_map")
-        if calib:
-            settled_df["p_cal_fit"] = settled_df["p_raw"].apply(lambda p: apply_calibrator(p, calib))
-            brier_cal = float(np.mean((settled_df["p_cal_fit"].values.astype(float)-y)**2))
-            st.metric("Brier Score (calibrated)", f"{brier_cal:.4f}",
-                      delta=f"{(brier_cal-brier)*100:.2f}% vs raw",
-                      delta_color="inverse")
-            # [FIX 9] Show training range
-            st.caption(f"Training range: [{calib.get('training_min',0):.3f}, {calib.get('training_max',1):.3f}]")
-            settled_df["bin2"] = pd.cut(settled_df["p_cal_fit"], bins=n_bins, labels=False, include_lowest=True)
-            rel2 = settled_df.groupby("bin2",dropna=True).agg(
-                p_mean=("p_cal_fit","mean"),win_rate=("y","mean"),n=("y","size")).reset_index()
-            st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00AAFF;letter-spacing:0.12em;text-transform:uppercase;margin:0.6rem 0;'>POST-CALIBRATION RELIABILITY</div>", unsafe_allow_html=True)
-            st.dataframe(rel2, use_container_width=True)
-            st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
-            st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#4A607A;'>POLICY AUDIT</div>", unsafe_allow_html=True)
-            if hit_rate_cal < 0.48:
-                st.error("Hit rate below 48% - cut volume, tighten EV threshold, review market selection.")
-            elif hit_rate_cal > 0.58:
-                st.success("Strong hit rate - consider increasing Kelly fraction gradually.")
-            else:
-                st.info("Moderate hit rate. Continue collecting data, focus on CLV tracking.")
-            if brier_cal > brier:
-                st.warning("Calibrator is WORSENING Brier score - needs more data or a reset.")
-                if st.button("Reset Calibrator to Identity", key="reset_calib_brier_btn"):
-                    st.session_state["calibrator_map"] = None
-                    st.success("Calibrator reset to identity. Raw probabilities will be used.")
-                    st.rerun()
-    # ── Rolling Brier Score ────────────────────────────────────
-    st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
-    st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>ROLLING BRIER SCORE (TRAILING WINDOWS)</div>", unsafe_allow_html=True)
-    rb = compute_rolling_brier(settled_df if not settled_df.empty else pd.DataFrame())
-    if rb:
-        rb_cols = st.columns(3)
-        for i, w in enumerate([25, 50, 100]):
-            key = f"last_{w}"
-            if key in rb:
-                rb_cols[i].metric(f"Last {w} Legs", f"{rb[key]:.4f}", help="Brier score: lower = better calibrated")
-        if "rolling_series" in rb and len(rb["rolling_series"]) > 5:
-            st.caption("Trailing 25-leg rolling Brier (lower = better):")
-            import pandas as _pd_rb
-            series_df = _pd_rb.DataFrame({"Brier": rb["rolling_series"]})
-            st.line_chart(series_df, use_container_width=True, height=150)
-    else:
-        st.caption("Need 10+ settled legs for rolling Brier.")
+                _acc_decided["p_cal"] = pd.to_numeric(_acc_decided["p_cal"], errors="coerce")
+                _acc_decided["ev_pct"] = pd.to_numeric(_acc_decided["ev_pct"], errors="coerce")
+                _acc_decided["hit"] = _acc_decided["hit"].astype(float)
+                _acc_decided["profit_units"] = pd.to_numeric(_acc_decided["profit_units"], errors="coerce").fillna(0)
+
+                # ═══════════════════════════════════════════════════════
+                # SECTION 1: HEADLINE ACCURACY METRICS
+                # ═══════════════════════════════════════════════════════
+                _acc_wins = int(_acc_decided["hit"].sum())
+                _acc_losses = _acc_n - _acc_wins
+                _acc_wr = _acc_wins / _acc_n * 100
+                _acc_p_valid = _acc_decided["p_cal"].dropna()
+
+                # Brier Score: mean of (predicted_prob - actual_outcome)^2
+                if len(_acc_p_valid) >= 5:
+                    _acc_brier = float(np.mean((_acc_p_valid.values - _acc_decided.loc[_acc_p_valid.index, "hit"].values) ** 2))
+                else:
+                    _acc_brier = None
+
+                # Log loss: -mean(y*log(p) + (1-y)*log(1-p))
+                if len(_acc_p_valid) >= 5:
+                    _p_clip = np.clip(_acc_p_valid.values, 0.01, 0.99)
+                    _y_vals = _acc_decided.loc[_acc_p_valid.index, "hit"].values
+                    _acc_logloss = float(-np.mean(_y_vals * np.log(_p_clip) + (1 - _y_vals) * np.log(1 - _p_clip)))
+                else:
+                    _acc_logloss = None
+
+                _acc_units = float(_acc_decided["profit_units"].sum())
+                _acc_roi = _acc_units / _acc_n * 100
+
+                _ha1, _ha2, _ha3, _ha4, _ha5, _ha6 = st.columns(6)
+                _ha1.metric("Decided Bets", _acc_n)
+                _ha2.metric("Record", f"{_acc_wins}W-{_acc_losses}L")
+                _wr_col = "#00FFB2" if _acc_wr >= 55 else ("#FFC857" if _acc_wr >= 50 else "#FF3358")
+                _ha3.metric("Win Rate", f"{_acc_wr:.1f}%")
+                _ha4.metric("Brier Score", f"{_acc_brier:.4f}" if _acc_brier is not None else "--")
+                _ha5.metric("Log Loss", f"{_acc_logloss:.4f}" if _acc_logloss is not None else "--")
+                _ha6.metric("ROI (flat)", f"{_acc_roi:+.1f}%")
+
+                # Brier + Log Loss interpretation
+                if _acc_brier is not None:
+                    if _acc_brier < 0.15:
+                        _brier_label, _brier_color = "Excellent", "#00FFB2"
+                    elif _acc_brier < 0.20:
+                        _brier_label, _brier_color = "Good", "#00FFB2"
+                    elif _acc_brier < 0.25:
+                        _brier_label, _brier_color = "Fair", "#FFC857"
+                    else:
+                        _brier_label, _brier_color = "Poor — model needs work", "#FF3358"
+                    st.markdown(f"""<div style='font-family:Fira Code,monospace;font-size:0.58rem;color:{_brier_color};margin:0.3rem 0 0.8rem;'>
+                    Brier: {_brier_label} (0=perfect, 0.25=coin flip) &nbsp;|&nbsp; Log Loss: {'< 0.60 is good' if _acc_logloss and _acc_logloss < 0.60 else '> 0.60 — room for improvement' if _acc_logloss else '--'}</div>""", unsafe_allow_html=True)
+
+                st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+
+                # ═══════════════════════════════════════════════════════
+                # SECTION 2: CALIBRATION CURVE
+                # ═══════════════════════════════════════════════════════
+                st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>CALIBRATION CURVE — PREDICTED vs ACTUAL WIN RATE</div>""", unsafe_allow_html=True)
+
+                if len(_acc_p_valid) >= 10:
+                    _cal_df = _acc_decided.dropna(subset=["p_cal"]).copy()
+                    _cal_df["bucket"] = pd.cut(_cal_df["p_cal"], bins=[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 1.0], include_lowest=True)
+                    _cal_grp = _cal_df.groupby("bucket", observed=True).agg(
+                        predicted_avg=("p_cal", "mean"),
+                        actual_rate=("hit", "mean"),
+                        n_bets=("hit", "count"),
+                    ).reset_index()
+                    _cal_grp = _cal_grp[_cal_grp["n_bets"] >= 2]
+
+                    if not _cal_grp.empty:
+                        _cal_grp["Predicted %"] = (_cal_grp["predicted_avg"] * 100).round(1)
+                        _cal_grp["Actual Win %"] = (_cal_grp["actual_rate"] * 100).round(1)
+                        _cal_grp["N Bets"] = _cal_grp["n_bets"].astype(int)
+                        _cal_grp["Cal Error"] = ((_cal_grp["predicted_avg"] - _cal_grp["actual_rate"]).abs() * 100).round(1)
+                        _cal_grp["Direction"] = _cal_grp.apply(
+                            lambda r: "OVERCONFIDENT" if r["predicted_avg"] > r["actual_rate"] + 0.02
+                            else ("UNDERCONFIDENT" if r["actual_rate"] > r["predicted_avg"] + 0.02 else "CALIBRATED"), axis=1)
+
+                        # Chart: Predicted vs Actual
+                        _cal_chart = _cal_grp[["Predicted %", "Actual Win %"]].copy()
+                        _cal_chart["Perfect (45° line)"] = _cal_chart["Predicted %"]
+                        st.line_chart(_cal_chart.set_index("Predicted %"), use_container_width=True, height=300)
+
+                        # Table detail
+                        st.dataframe(_cal_grp[["Predicted %", "Actual Win %", "N Bets", "Cal Error", "Direction"]],
+                                     use_container_width=True, hide_index=True)
+
+                        # Weighted average calibration error
+                        _wt_err = float(sum(_cal_grp["Cal Error"] * _cal_grp["N Bets"]) / max(_cal_grp["N Bets"].sum(), 1))
+                        _wt_col = "#00FFB2" if _wt_err < 3 else ("#FFC857" if _wt_err < 6 else "#FF3358")
+                        st.markdown(f"""<div style='font-family:Fira Code,monospace;font-size:0.58rem;color:{_wt_col};'>
+                        Weighted avg calibration error: {_wt_err:.1f}pp &nbsp;({'Excellent' if _wt_err < 3 else 'Good' if _wt_err < 6 else 'Needs improvement'}. Under 3pp is elite.)</div>""", unsafe_allow_html=True)
+                    else:
+                        st.caption("Not enough bets per probability bucket yet (need ≥2 per bucket).")
+                else:
+                    st.caption(f"Need 10+ decided bets with probability data for calibration curve (currently {len(_acc_p_valid)}).")
+
+                st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+
+                # ═══════════════════════════════════════════════════════
+                # SECTION 3: EDGE CATEGORY DISCRIMINATION
+                # ═══════════════════════════════════════════════════════
+                st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>DISCRIMINATION — DOES EDGE CATEGORY PREDICT OUTCOMES?</div>""", unsafe_allow_html=True)
+
+                if "edge_cat" in _acc_decided.columns:
+                    _disc = _acc_decided.groupby("edge_cat").agg(
+                        Bets=("hit", "count"),
+                        Wins=("hit", "sum"),
+                        Avg_Prob=("p_cal", "mean"),
+                        Units=("profit_units", "sum"),
+                    ).reset_index()
+                    _disc["Win %"] = (_disc["Wins"] / _disc["Bets"] * 100).round(1)
+                    _disc["Avg Pred %"] = (_disc["Avg_Prob"] * 100).round(1)
+                    _disc["ROI %"] = (_disc["Units"] / _disc["Bets"] * 100).round(1)
+                    _disc["Units"] = _disc["Units"].round(2)
+                    _disc["Wins"] = _disc["Wins"].astype(int)
+                    _cat_ord = {"ELITE": 0, "STRONG": 1, "GOOD": 2, "LEAN": 3, "SKIP": 4}
+                    _disc["_s"] = _disc["edge_cat"].map(_cat_ord).fillna(5)
+                    _disc = _disc.sort_values("_s").drop(columns=["_s", "Avg_Prob"])
+                    _disc = _disc.rename(columns={"edge_cat": "Edge Category"})
+                    st.dataframe(_disc[["Edge Category", "Bets", "Wins", "Win %", "Avg Pred %", "Units", "ROI %"]],
+                                 use_container_width=True, hide_index=True)
+
+                    # Monotonicity check
+                    _wr_vals = _disc["Win %"].values
+                    if len(_wr_vals) >= 2:
+                        _is_mono = all(_wr_vals[i] >= _wr_vals[i + 1] for i in range(len(_wr_vals) - 1))
+                        if _is_mono:
+                            st.markdown("<div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#00FFB2;'>✓ Win rate is monotonically decreasing across edge tiers — model discrimination is working correctly.</div>", unsafe_allow_html=True)
+                        else:
+                            st.markdown("<div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#FFC857;'>⚠ Win rate is NOT monotonic — higher edge categories aren't always winning more. Collect more data or review edge categorization thresholds.</div>", unsafe_allow_html=True)
+
+                st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+
+                # ═══════════════════════════════════════════════════════
+                # SECTION 4: MARKET-LEVEL ACCURACY
+                # ═══════════════════════════════════════════════════════
+                st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>ACCURACY BY MARKET — WHERE IS THE MODEL BEST?</div>""", unsafe_allow_html=True)
+
+                if "market" in _acc_decided.columns:
+                    _mkt = _acc_decided.groupby("market").agg(
+                        Bets=("hit", "count"),
+                        Wins=("hit", "sum"),
+                        Avg_Prob=("p_cal", "mean"),
+                        Units=("profit_units", "sum"),
+                    ).reset_index()
+                    _mkt["Win %"] = (_mkt["Wins"] / _mkt["Bets"] * 100).round(1)
+                    _mkt["Avg Pred %"] = (_mkt["Avg_Prob"] * 100).round(1)
+                    _mkt["ROI %"] = (_mkt["Units"] / _mkt["Bets"] * 100).round(1)
+                    _mkt["Units"] = _mkt["Units"].round(2)
+                    _mkt["Wins"] = _mkt["Wins"].astype(int)
+
+                    # Brier per market
+                    _mkt_brier = []
+                    for mname in _mkt["market"]:
+                        _msub = _acc_decided[(_acc_decided["market"] == mname) & _acc_decided["p_cal"].notna()]
+                        if len(_msub) >= 3:
+                            _mb = float(np.mean((_msub["p_cal"].values - _msub["hit"].values) ** 2))
+                            _mkt_brier.append(round(_mb, 4))
+                        else:
+                            _mkt_brier.append(None)
+                    _mkt["Brier"] = _mkt_brier
+                    _mkt = _mkt.rename(columns={"market": "Market"}).drop(columns=["Avg_Prob"])
+                    _mkt = _mkt.sort_values("Bets", ascending=False)
+                    st.dataframe(_mkt[["Market", "Bets", "Wins", "Win %", "Avg Pred %", "Brier", "Units", "ROI %"]],
+                                 use_container_width=True, hide_index=True)
+
+                    # Best / worst market callout
+                    _mkt_valid = _mkt[_mkt["Bets"] >= 5]
+                    if not _mkt_valid.empty:
+                        _best_mkt = _mkt_valid.loc[_mkt_valid["Win %"].idxmax()]
+                        _worst_mkt = _mkt_valid.loc[_mkt_valid["Win %"].idxmin()]
+                        st.markdown(f"""<div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#4A607A;margin-top:0.3rem;'>
+                        Best market: <span style='color:#00FFB2;'>{_best_mkt['Market']}</span> ({_best_mkt['Win %']}% on {int(_best_mkt['Bets'])} bets)
+                        &nbsp;|&nbsp; Worst: <span style='color:#FF3358;'>{_worst_mkt['Market']}</span> ({_worst_mkt['Win %']}% on {int(_worst_mkt['Bets'])} bets)</div>""", unsafe_allow_html=True)
+
+                st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+
+                # ═══════════════════════════════════════════════════════
+                # SECTION 5: ROLLING PERFORMANCE OVER TIME
+                # ═══════════════════════════════════════════════════════
+                st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>ROLLING PERFORMANCE — MODEL TREND</div>""", unsafe_allow_html=True)
+
+                if "game_date" in _acc_decided.columns and _acc_n >= 10:
+                    _roll = _acc_decided.sort_values("game_date").copy()
+                    _roll = _roll.reset_index(drop=True)
+
+                    # Rolling win rate (trailing 20 bets)
+                    _window = min(20, _acc_n // 2) if _acc_n >= 6 else _acc_n
+                    _roll["rolling_wr"] = _roll["hit"].rolling(_window, min_periods=3).mean() * 100
+                    _roll["rolling_brier"] = (_roll["p_cal"] - _roll["hit"]).pow(2).rolling(_window, min_periods=3).mean()
+                    _roll["bet_number"] = range(1, len(_roll) + 1)
+
+                    _rc1, _rc2 = st.columns(2)
+                    with _rc1:
+                        st.caption(f"Rolling {_window}-bet win rate (%)")
+                        _wr_chart = _roll.dropna(subset=["rolling_wr"])
+                        if not _wr_chart.empty:
+                            st.line_chart(_wr_chart.set_index("bet_number")["rolling_wr"], use_container_width=True, height=200)
+                    with _rc2:
+                        st.caption(f"Rolling {_window}-bet Brier score (lower = better)")
+                        _br_chart = _roll.dropna(subset=["rolling_brier"])
+                        if not _br_chart.empty:
+                            st.line_chart(_br_chart.set_index("bet_number")["rolling_brier"], use_container_width=True, height=200)
+
+                    # Recent vs overall comparison
+                    _recent_n = min(20, _acc_n)
+                    _recent = _acc_decided.tail(_recent_n)
+                    _recent_wr = float(_recent["hit"].mean() * 100)
+                    _recent_brier = float(np.mean((_recent["p_cal"].dropna().values - _recent.loc[_recent["p_cal"].notna(), "hit"].values) ** 2)) if len(_recent["p_cal"].dropna()) >= 3 else None
+                    _trend_col = "#00FFB2" if _recent_wr >= _acc_wr else "#FF3358"
+                    st.markdown(f"""<div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#4A607A;margin-top:0.3rem;'>
+                    Last {_recent_n} bets: <span style='color:{_trend_col};'>{_recent_wr:.1f}%</span> win rate
+                    (overall: {_acc_wr:.1f}%)
+                    {f" | Recent Brier: {_recent_brier:.4f}" if _recent_brier else ""}
+                    &nbsp;→&nbsp; {'📈 Improving' if _recent_wr > _acc_wr + 2 else '📉 Declining' if _recent_wr < _acc_wr - 2 else '→ Stable'}</div>""", unsafe_allow_html=True)
+                else:
+                    st.caption(f"Need 10+ decided bets for rolling performance charts (currently {_acc_n}).")
+
+                st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+
+                # ═══════════════════════════════════════════════════════
+                # SECTION 6: OVERCONFIDENCE REPORT
+                # ═══════════════════════════════════════════════════════
+                st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>OVERCONFIDENCE REPORT — WHERE IS THE MODEL WRONG?</div>""", unsafe_allow_html=True)
+
+                if len(_acc_p_valid) >= 15:
+                    _oc_df = _acc_decided.dropna(subset=["p_cal"]).copy()
+                    _oc_df["bucket"] = pd.cut(_oc_df["p_cal"], bins=[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.90, 1.0], include_lowest=True)
+                    _oc_grp = _oc_df.groupby("bucket", observed=True).agg(
+                        pred=("p_cal", "mean"), actual=("hit", "mean"), n=("hit", "count"),
+                    ).reset_index()
+                    _oc_grp = _oc_grp[_oc_grp["n"] >= 3]
+                    _oc_problems = _oc_grp[(_oc_grp["pred"] - _oc_grp["actual"]).abs() > 0.05]
+
+                    if _oc_problems.empty:
+                        st.markdown("<div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#00FFB2;'>✓ No probability ranges with >5pp calibration error. Model is well-calibrated across all buckets.</div>", unsafe_allow_html=True)
+                    else:
+                        for _, _oc_row in _oc_problems.iterrows():
+                            _oc_pred = _oc_row["pred"] * 100
+                            _oc_act = _oc_row["actual"] * 100
+                            _oc_err = _oc_pred - _oc_act
+                            _oc_type = "OVERCONFIDENT" if _oc_err > 0 else "UNDERCONFIDENT"
+                            _oc_icon = "🔴" if abs(_oc_err) > 10 else "🟡"
+                            _oc_col = "#FF3358" if abs(_oc_err) > 10 else "#FFC857"
+                            st.markdown(f"""<div style='font-family:Fira Code,monospace;font-size:0.60rem;color:{_oc_col};margin-bottom:0.3rem;'>
+                            {_oc_icon} {_oc_row['bucket']}: predicted {_oc_pred:.0f}% → actual {_oc_act:.0f}% ({_oc_type} by {abs(_oc_err):.0f}pp, n={int(_oc_row['n'])})</div>""", unsafe_allow_html=True)
+
+                        st.markdown("""<div style='font-family:Fira Code,monospace;font-size:0.56rem;color:#4A607A;margin-top:0.5rem;'>
+                        Action: Consider reducing stake size for bets in overconfident ranges, or adjusting the projection model's confidence for those probability tiers.</div>""", unsafe_allow_html=True)
+                else:
+                    st.caption(f"Need 15+ decided bets for overconfidence analysis (currently {len(_acc_p_valid)}).")
+
+                st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+
+                # ═══════════════════════════════════════════════════════
+                # SECTION 7: OVER vs UNDER SPLIT
+                # ═══════════════════════════════════════════════════════
+                st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>OVER vs UNDER ACCURACY</div>""", unsafe_allow_html=True)
+
+                if "side" in _acc_decided.columns:
+                    _side = _acc_decided.groupby("side").agg(
+                        Bets=("hit", "count"), Wins=("hit", "sum"), Units=("profit_units", "sum"),
+                    ).reset_index()
+                    _side["Win %"] = (_side["Wins"] / _side["Bets"] * 100).round(1)
+                    _side["ROI %"] = (_side["Units"] / _side["Bets"] * 100).round(1)
+                    _side["Units"] = _side["Units"].round(2)
+                    _side["Wins"] = _side["Wins"].astype(int)
+                    _side = _side.rename(columns={"side": "Side"})
+                    st.dataframe(_side[["Side", "Bets", "Wins", "Win %", "Units", "ROI %"]], use_container_width=True, hide_index=True)
+
+                # ═══════════════════════════════════════════════════════
+                # SECTION 8: MODEL GRADE CARD (overall summary)
+                # ═══════════════════════════════════════════════════════
+                st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
+                st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.6rem;'>MODEL GRADE CARD</div>""", unsafe_allow_html=True)
+
+                _grade_score = 0
+                _grade_items = []
+                if _acc_wr >= 57:
+                    _grade_score += 3; _grade_items.append(("Win Rate", "A+", "#00FFB2"))
+                elif _acc_wr >= 54:
+                    _grade_score += 2; _grade_items.append(("Win Rate", "A", "#00FFB2"))
+                elif _acc_wr >= 51:
+                    _grade_score += 1; _grade_items.append(("Win Rate", "B", "#FFC857"))
+                else:
+                    _grade_items.append(("Win Rate", "C", "#FF3358"))
+
+                if _acc_brier is not None:
+                    if _acc_brier < 0.18:
+                        _grade_score += 3; _grade_items.append(("Brier Score", "A+", "#00FFB2"))
+                    elif _acc_brier < 0.22:
+                        _grade_score += 2; _grade_items.append(("Brier Score", "A", "#00FFB2"))
+                    elif _acc_brier < 0.25:
+                        _grade_score += 1; _grade_items.append(("Brier Score", "B", "#FFC857"))
+                    else:
+                        _grade_items.append(("Brier Score", "C", "#FF3358"))
+
+                if _acc_roi > 5:
+                    _grade_score += 3; _grade_items.append(("ROI", "A+", "#00FFB2"))
+                elif _acc_roi > 0:
+                    _grade_score += 2; _grade_items.append(("ROI", "A", "#00FFB2"))
+                elif _acc_roi > -5:
+                    _grade_score += 1; _grade_items.append(("ROI", "B", "#FFC857"))
+                else:
+                    _grade_items.append(("ROI", "C", "#FF3358"))
+
+                if _grade_score >= 7:
+                    _overall = "ELITE"; _ov_col = "#00FFB2"
+                elif _grade_score >= 5:
+                    _overall = "STRONG"; _ov_col = "#00FFB2"
+                elif _grade_score >= 3:
+                    _overall = "SOLID"; _ov_col = "#FFC857"
+                else:
+                    _overall = "NEEDS WORK"; _ov_col = "#FF3358"
+
+                _gc_cols = st.columns(len(_grade_items) + 1)
+                _gc_cols[0].markdown(f"""<div style='text-align:center;padding:0.4rem;background:{_ov_col}10;border:1px solid {_ov_col}35;border-radius:4px;'>
+                <div style='font-size:0.50rem;color:#4A607A;font-family:Chakra Petch,monospace;letter-spacing:0.12em;'>OVERALL</div>
+                <div style='font-size:1.1rem;color:{_ov_col};font-weight:700;font-family:Fira Code,monospace;'>{_overall}</div>
+                </div>""", unsafe_allow_html=True)
+                for _gi, (_gname, _gletter, _gcol) in enumerate(_grade_items):
+                    _gc_cols[_gi + 1].markdown(f"""<div style='text-align:center;padding:0.4rem;background:{_gcol}10;border:1px solid {_gcol}35;border-radius:4px;'>
+                    <div style='font-size:0.50rem;color:#4A607A;font-family:Chakra Petch,monospace;letter-spacing:0.12em;'>{_gname.upper()}</div>
+                    <div style='font-size:1.1rem;color:{_gcol};font-weight:700;font-family:Fira Code,monospace;'>{_gletter}</div>
+                    </div>""", unsafe_allow_html=True)
+
+                if _acc_n < 30:
+                    st.markdown(f"""<div style='font-family:Fira Code,monospace;font-size:0.56rem;color:#4A607A;margin-top:0.5rem;'>
+                    ⚠ Sample size: {_acc_n} bets. Grades stabilize at 50+ bets and become reliable at 100+. Keep the scanner running daily.</div>""", unsafe_allow_html=True)
+
+    except Exception as _acc_err:
+        st.error(f"Accuracy Dashboard failed to load: {_acc_err}")
+        import traceback
+        st.code(traceback.format_exc())
 # ─── INSIGHTS TAB (CLV leaderboard, book efficiency, prop breakdown, Bayesian priors) ───
 with tabs[6]:
     st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>INSIGHTS — EDGE ANALYTICS & INTELLIGENCE</div>""", unsafe_allow_html=True)
