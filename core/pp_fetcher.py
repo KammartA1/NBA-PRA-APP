@@ -138,6 +138,12 @@ def _parse_response(data: dict, league_filter: set | None = None) -> list[dict]:
         odds_type = str(attrs.get("odds_type", "") or "").lower().strip()
 
         if player_name and stat_type and line_score is not None:
+            # Goblin/demon lines have adjusted multipliers (~0.85x / ~1.25x)
+            # and shifted lines that corrupt EV calculations. Only ingest
+            # standard lines — the app UI already does this filtering.
+            effective_odds = odds_type or "standard"
+            if effective_odds not in ("standard", ""):
+                continue
             try:
                 market = MARKET_MAP.get(stat_type)
                 rows.append({
@@ -148,7 +154,7 @@ def _parse_response(data: dict, league_filter: set | None = None) -> list[dict]:
                     "team": team,
                     "start_time": attrs.get("start_time", ""),
                     "source": "PrizePicks",
-                    "odds_type": odds_type or "standard",
+                    "odds_type": effective_odds,
                     "league": league,
                 })
             except (TypeError, ValueError):
