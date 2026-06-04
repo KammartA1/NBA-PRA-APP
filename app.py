@@ -9126,23 +9126,39 @@ with tabs[0]:
                 result_val = "Pending" if placed == "Yes" else "SKIP"
                 _bet_id = str(uuid.uuid4())
                 _ts_iso = _now_iso()
+                from datetime import datetime as _dt, timezone as _tz
+                try:
+                    from zoneinfo import ZoneInfo as _ZI
+                    _et = _ZI("America/New_York")
+                except Exception:
+                    _et = None
+                _gd = None
+                for _leg in res:
+                    _raw_st = _leg.get("commence_time") or _leg.get("start_time")
+                    if not _raw_st and isinstance(_leg.get("meta"), dict):
+                        _raw_st = _leg["meta"].get("commence_time") or _leg["meta"].get("start_time")
+                    if _raw_st:
+                        try:
+                            _parsed = _dt.fromisoformat(_raw_st.replace("Z", "+00:00"))
+                            _gd = (_parsed.astimezone(_et) if _et else _parsed).date().isoformat()
+                        except Exception:
+                            pass
+                    if _gd:
+                        break
+                if not _gd:
+                    try:
+                        _gd = (_dt.now(_tz.utc).astimezone(_et) if _et else _dt.now(_tz.utc)).date().isoformat()
+                    except Exception:
+                        _gd = _dt.now(_tz.utc).date().isoformat()
                 append_history(user_id, {
                     "ts":_ts_iso,"user_id":user_id,
                     "legs":json.dumps(res),"n_legs":len(res),
                     "leg_results":json.dumps(["Pending"]*len(res)),
                     "result":result_val,"decision":decision,"notes":"",
-                    "bet_id":_bet_id,
+                    "bet_id":_bet_id,"game_date":_gd,
                 })
-                # Mirror to Supabase so the morning worker can auto-grade it
-                # even while this app is asleep. Best-effort — never blocks logging.
                 try:
                     from core.db import upsert_logged_bet as _upsert_lb
-                    from datetime import datetime as _dt, timezone as _tz
-                    try:
-                        from zoneinfo import ZoneInfo as _ZI
-                        _gd = _dt.now(_tz.utc).astimezone(_ZI("America/New_York")).date().isoformat()
-                    except Exception:
-                        _gd = _dt.now(_tz.utc).date().isoformat()
                     _upsert_lb({
                         "bet_id": _bet_id, "user_id": user_id, "sport": "NBA",
                         "logged_at": _ts_iso, "game_date": _gd,
@@ -11970,7 +11986,30 @@ with tabs[4]:
             lc3.metric("Leg Misses", n_leg_miss)
         else:
             st.caption("Per-leg accuracy will appear once you mark individual leg results below.")
-        st.dataframe(h, use_container_width=True)
+        # ── Build a readable per-leg summary instead of raw JSON ──
+        h_display = h.copy()
+        def _format_legs_summary(row):
+            try:
+                _legs = json.loads(row["legs"]) if isinstance(row["legs"], str) else (row["legs"] or [])
+                _lr = json.loads(row["leg_results"]) if isinstance(row.get("leg_results", ""), str) else (row.get("leg_results") or [])
+            except Exception:
+                return ""
+            parts = []
+            for i, lg in enumerate(_legs):
+                if not isinstance(lg, dict):
+                    parts.append(str(lg))
+                    continue
+                p = lg.get("player", "?")
+                m = lg.get("market", "?")
+                ln = lg.get("line", "?")
+                sd = lg.get("side", "?")
+                res = _lr[i] if i < len(_lr) else "Pending"
+                _emoji = {"HIT": "✅", "MISS": "❌", "PUSH": "➖", "VOID": "⚪"}.get(res, "⏳")
+                parts.append(f"{p} {m} {ln} {sd} → {_emoji} {res}")
+            return " | ".join(parts)
+        h_display["legs_summary"] = h_display.apply(_format_legs_summary, axis=1)
+        _display_cols = [c for c in ["ts", "legs_summary", "n_legs", "result", "decision", "bet_id"] if c in h_display.columns]
+        st.dataframe(h_display[_display_cols], use_container_width=True)
         # ── Auto-Grade Pending Bets (automatic + manual) ──────────────
         _n_pending = int((h["result"] == "Pending").sum()) if "result" in h.columns else 0
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.8rem 0;'>", unsafe_allow_html=True)
@@ -12059,21 +12098,28 @@ with tabs[4]:
             new_leg_results = []
             for _li, _lleg in enumerate(_legs_to_show):
                 _default = _leg_res_stored[_li] if _li < len(_leg_res_stored) else "Pending"
-                _opts = ["Pending","HIT","MISS","PUSH"]
+                _opts = ["Pending","HIT","MISS","PUSH","VOID"]
                 _di = _opts.index(_default) if _default in _opts else 0
                 _lcols = st.columns([3,2])
-                _lcols[0].markdown(f"<span style='font-size:0.75rem;color:#A0B8C8;'>{_lleg.get('player','?')} — {_lleg.get('market','?')} {_lleg.get('line','')}</span>", unsafe_allow_html=True)
+                _leg_color = {"HIT": "#00FFB2", "MISS": "#FF3358", "PUSH": "#FFB800", "VOID": "#4A607A"}.get(_default, "#4A607A")
+                _leg_emoji = {"HIT": "✅", "MISS": "❌", "PUSH": "➖", "VOID": "⚪"}.get(_default, "⏳")
+                _leg_side = _lleg.get('side', '')
+                _leg_res_txt = f" → <span style='color:{_leg_color};font-weight:700;'>{_leg_emoji} {_default}</span>" if _default != "Pending" else ""
+                _lcols[0].markdown(f"<span style='font-size:0.75rem;color:#A0B8C8;'>{_lleg.get('player','?')} {_lleg.get('market','?')} {_lleg.get('line','')} {_leg_side}{_leg_res_txt}</span>", unsafe_allow_html=True)
                 _sel = _lcols[1].selectbox("", _opts, index=_di, key=f"legres_{leg_row_idx}_{_li}", label_visibility="collapsed")
                 new_leg_results.append(_sel)
             if st.button("Save Leg Results", key="save_leg_results"):
                 h2 = h.copy()
                 h2.loc[int(leg_row_idx), "leg_results"] = json.dumps(new_leg_results)
                 _new_result = h2.loc[int(leg_row_idx), "result"]
-                if all(r=="HIT" for r in new_leg_results):
+                _active = [r for r in new_leg_results if r not in ("VOID", "Pending")]
+                if all(r == "VOID" for r in new_leg_results):
+                    _new_result = "VOID"
+                elif all(r == "HIT" for r in _active) and _active:
                     _new_result = "HIT"
-                elif any(r=="MISS" for r in new_leg_results):
+                elif any(r == "MISS" for r in _active):
                     _new_result = "MISS"
-                elif all(r in ("HIT","PUSH") for r in new_leg_results):
+                elif all(r in ("HIT", "PUSH") for r in _active) and _active:
                     _new_result = "PUSH"
                 h2.loc[int(leg_row_idx), "result"] = _new_result
                 h2.to_csv(history_path(user_id), index=False)
@@ -13068,6 +13114,8 @@ with tabs[13]:
             import pandas as _rt_pd
             _rt_df = _rt_pd.DataFrame(_rt_all)
             # ----- headline metrics -----
+            if "profit_units" in _rt_df.columns:
+                _rt_df.loc[_rt_df["result"].isin(["void", "push"]), "profit_units"] = 0.0
             _rt_decided = _rt_df[_rt_df["result"].isin(["win","loss"])]
             _rt_wins = int((_rt_decided["result"] == "win").sum())
             _rt_losses = int((_rt_decided["result"] == "loss").sum())

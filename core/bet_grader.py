@@ -35,6 +35,12 @@ except Exception:  # pragma: no cover
 
 from core import db, notify, projections
 
+def _get_projections_module(sport: str = "NBA"):
+    if sport.upper() == "MLB":
+        from core import mlb_projections
+        return mlb_projections
+    return projections
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
@@ -79,28 +85,30 @@ def _candidate_dates(game_date_et):
     ]
 
 
-def _player_actual(player: str, player_id, stat: str, game_date_et, gamelog_cache: dict):
+def _player_actual(player: str, player_id, stat: str, game_date_et, gamelog_cache: dict, proj_mod=None):
     """Resolve one player's actual stat near `game_date_et`, or None."""
+    if proj_mod is None:
+        proj_mod = projections
     if not player:
         return None
     if not player_id:
-        player_id = projections.resolve_player_id(player)
+        player_id = proj_mod.resolve_player_id(player)
     else:
         try:
             player_id = int(player_id)
         except (TypeError, ValueError):
-            player_id = projections.resolve_player_id(player)
+            player_id = proj_mod.resolve_player_id(player)
     if not player_id:
         return None
 
     if player_id not in gamelog_cache:
-        gamelog_cache[player_id] = projections.fetch_player_gamelog(player_id, n_games=30)
+        gamelog_cache[player_id] = proj_mod.fetch_player_gamelog(player_id, n_games=30)
     gl = gamelog_cache[player_id]
     if gl is None or gl.empty:
         return None
 
     for d in _candidate_dates(game_date_et):
-        actual = projections.actual_stat_for_date(gl, stat, d)
+        actual = proj_mod.actual_stat_for_date(gl, stat, d)
         if actual is not None:
             return actual
     return None
@@ -114,15 +122,26 @@ def _split_combo(player: str) -> list[str]:
     return [p for p in parts if p]
 
 
-def grade_legs(legs: list[dict], game_date_et, today_et, gamelog_cache: dict | None = None):
+def grade_legs(legs: list[dict], game_date_et, today_et, gamelog_cache: dict | None = None, sport: str = "NBA"):
     """Grade each leg of a bet. Returns (leg_results, all_resolved).
 
-    leg_results is a list parallel to `legs` with values HIT/MISS/PUSH/Pending.
+    leg_results is a list parallel to `legs` with values HIT/MISS/PUSH/VOID/Pending.
+    VOID means the box score was never found and the game is >2 days old (the data
+    will never arrive). VOID legs are treated like PUSH in parlay roll-up.
     `gamelog_cache` (keyed by player_id) is reused across bets for efficiency.
     Handles combo props ('Player A + Player B') by summing each player's actual.
     """
     if gamelog_cache is None:
         gamelog_cache = {}
+
+    proj_mod = _get_projections_module(sport)
+
+    # For MLB, use the MLB market map; for NBA use the existing one
+    if sport.upper() == "MLB":
+        from core.mlb_projections import MLB_MARKET_MAP
+        stat_fn = lambda m: MLB_MARKET_MAP.get(m) or MLB_MARKET_MAP.get(m.replace(" ", ""), "")
+    else:
+        stat_fn = _stat_code
 
     leg_results = []
     all_resolved = True
@@ -138,7 +157,7 @@ def grade_legs(legs: list[dict], game_date_et, today_et, gamelog_cache: dict | N
         market = leg.get("market", "")
         line = leg.get("line")
         side = str(leg.get("side", "over")).strip().lower()
-        stat = _stat_code(market)
+        stat = stat_fn(market)
 
         if not player or line is None or not stat:
             leg_results.append("Pending")
@@ -151,18 +170,23 @@ def grade_legs(legs: list[dict], game_date_et, today_et, gamelog_cache: dict | N
         actual = 0.0
         resolved = True
         for sp in sub_players:
-            # A stored player_id only applies to a single-player leg.
             pid = None if is_combo else player_id
-            val = _player_actual(sp, pid, stat, game_date_et, gamelog_cache)
+            val = _player_actual(sp, pid, stat, game_date_et, gamelog_cache, proj_mod=proj_mod)
             if val is None:
                 resolved = False
                 break
             actual += val
 
         if not resolved:
-            # No box score (DNP / game not played / unresolved name) — stay Pending.
-            leg_results.append("Pending")
-            all_resolved = False
+            # No box score found. If the game date is more than 2 days in the
+            # past the data will never arrive — mark the leg VOID so it doesn't
+            # stay Pending forever. VOID legs are treated like PUSH (they don't
+            # count for or against the parlay).
+            if game_date_et and today_et and (today_et - game_date_et).days > 2:
+                leg_results.append("VOID")
+            else:
+                leg_results.append("Pending")
+                all_resolved = False
             continue
 
         line_f = float(line)
@@ -178,15 +202,22 @@ def grade_legs(legs: list[dict], game_date_et, today_et, gamelog_cache: dict | N
 
 
 def derive_parlay_result(leg_results: list[str], current: str = "Pending") -> str:
-    """Roll up per-leg results into a parlay-level result."""
-    decided = [r for r in leg_results if r in ("HIT", "MISS", "PUSH")]
+    """Roll up per-leg results into a parlay-level result.
+
+    VOID legs are treated like PUSH — they don't count for or against.
+    """
+    decided = [r for r in leg_results if r in ("HIT", "MISS", "PUSH", "VOID")]
     if not decided:
         return current
     if any(r == "MISS" for r in leg_results):
         return "MISS"
     if all(r == "HIT" for r in leg_results):
         return "HIT"
-    if all(r in ("HIT", "PUSH") for r in leg_results):
+    if all(r in ("HIT", "PUSH", "VOID") for r in leg_results):
+        # At least one real leg must have resolved to HIT for this to be a win;
+        # if every leg is PUSH/VOID, the whole bet is PUSH.
+        if any(r == "HIT" for r in leg_results):
+            return "HIT"
         return "PUSH"
     # Some legs still pending and none missed yet → still live
     return current
@@ -259,13 +290,14 @@ def run_grade_logged_bets(dry_run: bool = False) -> dict:
             n_skipped += 1
             continue
 
-        leg_results, all_resolved = grade_legs(legs, game_date_et, today_et, gamelog_cache)
+        bet_sport = bet.get("sport", "NBA")
+        leg_results, all_resolved = grade_legs(legs, game_date_et, today_et, gamelog_cache, sport=bet_sport)
         if not any(r in ("HIT", "MISS", "PUSH") for r in leg_results):
             n_skipped += 1
             continue
 
         new_result = derive_parlay_result(leg_results, bet.get("result", "Pending"))
-        is_final = all(r in ("HIT", "MISS", "PUSH") for r in leg_results)
+        is_final = all(r in ("HIT", "MISS", "PUSH", "VOID") for r in leg_results)
 
         if is_final:
             fully += 1

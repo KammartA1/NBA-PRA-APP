@@ -54,7 +54,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install nba_api pandas numpy scipy requests supabase psycopg2-binary
+          pip install nba_api MLB-StatsAPI pandas numpy scipy requests supabase psycopg2-binary
 
       - name: Run
         env:
