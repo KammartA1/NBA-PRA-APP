@@ -7496,11 +7496,12 @@ def load_history(uid):
 def auto_grade_history(uid):
     """Auto-grade all pending bets using nba_api box scores.
 
-    For each pending bet, resolves each leg's player, fetches their gamelog,
-    extracts the actual stat for the game date, and determines HIT/MISS/PUSH.
+    Uses the SAME grading core as the background worker (core.bet_grader) so
+    the app and the morning worker never disagree. Handles combo props
+    ('A + B') and the after-midnight log-date quirk (searches a date window).
     Returns (n_graded, n_skipped, messages).
     """
-    from core.projections import resolve_player_id, fetch_player_gamelog, actual_stat_for_date
+    from core.bet_grader import grade_legs, derive_parlay_result
     try:
         from zoneinfo import ZoneInfo
         _ET_TZ = ZoneInfo("America/New_York")
@@ -7521,18 +7522,6 @@ def auto_grade_history(uid):
     gamelog_cache = {}
     today_et = datetime.now(timezone.utc).astimezone(_ET_TZ).date() if _ET_TZ else datetime.now(timezone.utc).date()
 
-    # Map market display names to stat codes
-    market_stat_map = {
-        "Points": "PTS", "Rebounds": "REB", "Assists": "AST",
-        "PRA": "PRA", "Pts+Rebs+Asts": "PRA", "PA": "PA", "Pts+Asts": "PA",
-        "PR": "PR", "Pts+Rebs": "PR", "RA": "RA", "Rebs+Asts": "RA",
-        "3PM": "FG3M", "3-Pt Made": "FG3M", "Steals": "STL", "Blocks": "BLK",
-        "Blocked Shots": "BLK", "Turnovers": "TOV", "Fantasy Score": "FS",
-        "FG Attempted": "FGA", "FT Made": "FTM", "Blks+Stls": "BLST",
-        "PTS": "PTS", "REB": "REB", "AST": "AST", "FG3M": "FG3M",
-        "STL": "STL", "BLK": "BLK", "TOV": "TOV",
-    }
-
     h2 = h.copy()
     for idx in h2.index[pending_mask]:
         row = h2.loc[idx]
@@ -7544,7 +7533,8 @@ def auto_grade_history(uid):
             n_skipped += 1
             continue
 
-        # Determine game date from bet timestamp
+        # Game date inferred from the bet timestamp (grade_legs searches a
+        # surrounding window, so an after-midnight log still resolves).
         try:
             bet_ts = datetime.fromisoformat(str(row["ts"]).replace("Z", "+00:00"))
             if bet_ts.tzinfo is None:
@@ -7554,71 +7544,12 @@ def auto_grade_history(uid):
             n_skipped += 1
             continue
 
-        # Only grade if the game date is in the past
-        if bet_date_et >= today_et:
+        # Skip only clearly-future slates; today's finished games still grade.
+        if bet_date_et > today_et:
             n_skipped += 1
             continue
 
-        new_leg_results = []
-        all_resolved = True
-
-        for leg in legs:
-            player = leg.get("player", "")
-            player_id = leg.get("player_id")
-            market = leg.get("market", "")
-            line = leg.get("line")
-            side = str(leg.get("side", "over")).strip().lower()
-
-            if not player or line is None:
-                new_leg_results.append("Pending")
-                all_resolved = False
-                continue
-
-            stat_code = market_stat_map.get(market, market_stat_map.get(market.replace(" ", ""), ""))
-            if not stat_code:
-                new_leg_results.append("Pending")
-                all_resolved = False
-                continue
-
-            # Resolve player ID if not stored
-            if not player_id:
-                player_id = resolve_player_id(player)
-            else:
-                player_id = int(player_id)
-
-            if not player_id:
-                new_leg_results.append("Pending")
-                all_resolved = False
-                continue
-
-            # Fetch gamelog (cached)
-            if player_id not in gamelog_cache:
-                gamelog_cache[player_id] = fetch_player_gamelog(player_id, n_games=30)
-            gl = gamelog_cache[player_id]
-
-            if gl is None or gl.empty:
-                new_leg_results.append("Pending")
-                all_resolved = False
-                continue
-
-            actual = actual_stat_for_date(gl, stat_code, bet_date_et)
-            if actual is None:
-                # Check day after (late-night games that cross midnight ET)
-                from datetime import timedelta
-                actual = actual_stat_for_date(gl, stat_code, bet_date_et + timedelta(days=1))
-            if actual is None:
-                new_leg_results.append("Pending")
-                all_resolved = False
-                continue
-
-            line_f = float(line)
-            is_over = side.startswith("o")
-            if actual == line_f:
-                new_leg_results.append("PUSH")
-            elif (actual > line_f) == is_over:
-                new_leg_results.append("HIT")
-            else:
-                new_leg_results.append("MISS")
+        new_leg_results, _all_resolved = grade_legs(legs, bet_date_et, today_et, gamelog_cache)
 
         if not any(r != "Pending" for r in new_leg_results):
             n_skipped += 1
@@ -7626,14 +7557,7 @@ def auto_grade_history(uid):
 
         # Update the row
         h2.loc[idx, "leg_results"] = json.dumps(new_leg_results)
-        if all(r == "HIT" for r in new_leg_results):
-            h2.loc[idx, "result"] = "HIT"
-        elif any(r == "MISS" for r in new_leg_results):
-            h2.loc[idx, "result"] = "MISS"
-        elif all(r in ("HIT", "PUSH") for r in new_leg_results):
-            h2.loc[idx, "result"] = "PUSH"
-        elif all(r != "Pending" for r in new_leg_results):
-            h2.loc[idx, "result"] = "MISS" if any(r == "MISS" for r in new_leg_results) else "HIT"
+        h2.loc[idx, "result"] = derive_parlay_result(new_leg_results, "Pending")
 
         graded_legs = [r for r in new_leg_results if r != "Pending"]
         hits = sum(1 for r in graded_legs if r == "HIT")
