@@ -8654,7 +8654,7 @@ exclude_chaotic    = bool(st.session_state.get("exclude_chaotic", True))
 show_unders        = bool(st.session_state.get("show_unders", False))
 # ─── TABS ─────────────────────────────────────────────────────
 tabs = st.tabs(["MODEL", "RESULTS", "LIVE SCANNER", "PLATFORMS", "HISTORY", "CALIBRATION", "INSIGHTS", "ALERTS", "SETTINGS",
-                 "EDGE MONITOR", "KILL SWITCH", "CAPITAL", "MARKET REACTION", "GOVERNANCE", "ADVERSARIAL", "VERDICT"])
+                 "EDGE MONITOR", "KILL SWITCH", "CAPITAL", "VERDICT", "RESULTS TRACKER"])
 # Consume staged scanner→model inputs before any widgets render (prevents StreamlitAPIException)
 for _si in range(1, 5):
     if f"_staged_pname_{_si}" in st.session_state:
@@ -12584,31 +12584,147 @@ with tabs[11]:
 
 with tabs[12]:
     try:
-        from streamlit_app.pages.market_reaction_tab import render as _render_market_reaction
-        _render_market_reaction()
-    except Exception as _e:
-        st.error(f"Market Reaction failed to load: {_e}")
-
-with tabs[13]:
-    try:
-        from streamlit_app.pages.governance_tab import render as _render_governance
-        _render_governance()
-    except Exception as _e:
-        st.error(f"Governance failed to load: {_e}")
-
-with tabs[14]:
-    try:
-        from streamlit_app.pages.adversarial_tab import render as _render_adversarial
-        _render_adversarial()
-    except Exception as _e:
-        st.error(f"Adversarial failed to load: {_e}")
-
-with tabs[15]:
-    try:
         from streamlit_app.pages.verdict_tab import render as _render_verdict
         _render_verdict()
     except Exception as _e:
         st.error(f"Verdict failed to load: {_e}")
+
+# ─── RESULTS TRACKER TAB ──────────────────────────────────────────────────
+with tabs[13]:
+    st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>RESULTS TRACKER -- GRADED BETS &amp; ROI</div>""", unsafe_allow_html=True)
+    try:
+        from core.db import load_bet_results as _load_bet_results
+        _rt_days = st.selectbox("Lookback", [7, 14, 30, 60, 90], index=2, key="_rt_days")
+        _rt_all = _load_bet_results("NBA", days=int(_rt_days))
+        if not _rt_all:
+            st.info("No graded results yet. The Results Grader runs each morning after games settle, or you can trigger it manually from GitHub Actions.")
+        else:
+            import pandas as _rt_pd
+            _rt_df = _rt_pd.DataFrame(_rt_all)
+            # ----- headline metrics -----
+            _rt_decided = _rt_df[_rt_df["result"].isin(["win","loss"])]
+            _rt_wins = int((_rt_decided["result"] == "win").sum())
+            _rt_losses = int((_rt_decided["result"] == "loss").sum())
+            _rt_pushes = int((_rt_df["result"] == "push").sum())
+            _rt_voids = int((_rt_df["result"] == "void").sum())
+            _rt_total = _rt_wins + _rt_losses
+            _rt_wr = (_rt_wins / _rt_total * 100) if _rt_total else 0
+            _rt_units = float(_rt_decided["profit_units"].sum()) if "profit_units" in _rt_decided.columns and _rt_total else 0.0
+            _rt_roi = (_rt_units / _rt_total * 100) if _rt_total else 0
+
+            _rt_h1, _rt_h2, _rt_h3, _rt_h4, _rt_h5 = st.columns(5)
+            _rt_h1.metric("Record", f"{_rt_wins}W - {_rt_losses}L")
+            _wr_color = "#00FFB2" if _rt_wr >= 55 else ("#FFC857" if _rt_wr >= 50 else "#FF3358")
+            _rt_h2.metric("Win Rate", f"{_rt_wr:.1f}%")
+            _rt_h3.metric("Units P/L", f"{_rt_units:+.2f}u")
+            _rt_h4.metric("ROI (flat -110)", f"{_rt_roi:+.1f}%")
+            _rt_h5.metric("Push / Void", f"{_rt_pushes} / {_rt_voids}")
+
+            # ----- PrizePicks break-even context -----
+            st.markdown(f"""<div style='font-family:Fira Code,monospace;font-size:0.60rem;color:#4A607A;margin:0.5rem 0 0.8rem;'>
+            PP break-even: 2-pick 57.7% | 3-pick 58.5% | 4-pick 54.5% | 5-pick 50.4% | 6-pick 45.4%
+            &nbsp;&nbsp;|&nbsp;&nbsp; Your win rate: <span style='color:{_wr_color};font-weight:700;'>{_rt_wr:.1f}%</span></div>""", unsafe_allow_html=True)
+
+            st.markdown("---")
+
+            # ----- by-market breakdown -----
+            st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#2A5070;letter-spacing:0.12em;margin-bottom:0.6rem;'>PERFORMANCE BY MARKET</div>""", unsafe_allow_html=True)
+            if "market" in _rt_decided.columns and _rt_total > 0:
+                _rt_mkt = _rt_decided.groupby("market").agg(
+                    Bets=("result", "count"),
+                    Wins=("hit", "sum"),
+                    Units=("profit_units", "sum"),
+                ).reset_index()
+                _rt_mkt["Win %"] = (_rt_mkt["Wins"] / _rt_mkt["Bets"] * 100).round(1)
+                _rt_mkt["ROI %"] = (_rt_mkt["Units"] / _rt_mkt["Bets"] * 100).round(1)
+                _rt_mkt = _rt_mkt.rename(columns={"market": "Market"})
+                _rt_mkt["Units"] = _rt_mkt["Units"].round(2)
+                _rt_mkt["Wins"] = _rt_mkt["Wins"].astype(int)
+                _rt_mkt = _rt_mkt.sort_values("Bets", ascending=False)
+                st.dataframe(_rt_mkt[["Market", "Bets", "Wins", "Win %", "Units", "ROI %"]], use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+
+            # ----- by edge category -----
+            st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#2A5070;letter-spacing:0.12em;margin-bottom:0.6rem;'>PERFORMANCE BY EDGE CATEGORY</div>""", unsafe_allow_html=True)
+            if "edge_cat" in _rt_decided.columns and _rt_total > 0:
+                _rt_ecat = _rt_decided.groupby("edge_cat").agg(
+                    Bets=("result", "count"),
+                    Wins=("hit", "sum"),
+                    Units=("profit_units", "sum"),
+                ).reset_index()
+                _rt_ecat["Win %"] = (_rt_ecat["Wins"] / _rt_ecat["Bets"] * 100).round(1)
+                _rt_ecat["ROI %"] = (_rt_ecat["Units"] / _rt_ecat["Bets"] * 100).round(1)
+                _rt_ecat = _rt_ecat.rename(columns={"edge_cat": "Edge Category"})
+                _rt_ecat["Units"] = _rt_ecat["Units"].round(2)
+                _rt_ecat["Wins"] = _rt_ecat["Wins"].astype(int)
+                _cat_order = {"ELITE": 0, "STRONG": 1, "GOOD": 2, "LEAN": 3, "SKIP": 4}
+                _rt_ecat["_sort"] = _rt_ecat["Edge Category"].map(_cat_order).fillna(5)
+                _rt_ecat = _rt_ecat.sort_values("_sort").drop(columns=["_sort"])
+                st.dataframe(_rt_ecat[["Edge Category", "Bets", "Wins", "Win %", "Units", "ROI %"]], use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+
+            # ----- by game date -----
+            st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#2A5070;letter-spacing:0.12em;margin-bottom:0.6rem;'>DAILY RESULTS</div>""", unsafe_allow_html=True)
+            if "game_date" in _rt_decided.columns and _rt_total > 0:
+                _rt_daily = _rt_decided.groupby("game_date").agg(
+                    Bets=("result", "count"),
+                    Wins=("hit", "sum"),
+                    Units=("profit_units", "sum"),
+                ).reset_index()
+                _rt_daily["Win %"] = (_rt_daily["Wins"] / _rt_daily["Bets"] * 100).round(1)
+                _rt_daily = _rt_daily.rename(columns={"game_date": "Date"})
+                _rt_daily["Units"] = _rt_daily["Units"].round(2)
+                _rt_daily["Wins"] = _rt_daily["Wins"].astype(int)
+                _rt_daily = _rt_daily.sort_values("Date", ascending=False)
+                st.dataframe(_rt_daily, use_container_width=True, hide_index=True)
+
+            # ----- Cumulative P/L chart -----
+            if _rt_total >= 3:
+                st.markdown("---")
+                st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#2A5070;letter-spacing:0.12em;margin-bottom:0.6rem;'>CUMULATIVE UNITS P/L</div>""", unsafe_allow_html=True)
+                _rt_cum = _rt_decided.sort_values("game_date")
+                _rt_cum = _rt_cum.copy()
+                _rt_cum["cum_units"] = _rt_cum["profit_units"].cumsum()
+                _rt_cum["bet_number"] = range(1, len(_rt_cum) + 1)
+                st.line_chart(_rt_cum.set_index("bet_number")["cum_units"], use_container_width=True)
+
+            # ----- Calibration preview (predicted prob vs actual hit rate) -----
+            if "p_cal" in _rt_decided.columns and _rt_total >= 10:
+                st.markdown("---")
+                st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#2A5070;letter-spacing:0.12em;margin-bottom:0.6rem;'>CALIBRATION PREVIEW (predicted prob vs actual win rate)</div>""", unsafe_allow_html=True)
+                _rt_cal = _rt_decided.copy()
+                _rt_cal["p_cal"] = _rt_pd.to_numeric(_rt_cal["p_cal"], errors="coerce")
+                _rt_cal = _rt_cal.dropna(subset=["p_cal"])
+                _rt_cal["prob_bucket"] = (_rt_cal["p_cal"] * 20).round() / 20  # 5pp buckets
+                _cal_grp = _rt_cal.groupby("prob_bucket").agg(
+                    n_bets=("hit", "count"),
+                    actual_rate=("hit", "mean"),
+                ).reset_index()
+                _cal_grp = _cal_grp[_cal_grp["n_bets"] >= 3]
+                if not _cal_grp.empty:
+                    _cal_grp["predicted"] = _cal_grp["prob_bucket"]
+                    _cal_grp["actual_rate"] = (_cal_grp["actual_rate"] * 100).round(1)
+                    _cal_grp["predicted"] = (_cal_grp["predicted"] * 100).round(1)
+                    _cal_grp["n_bets"] = _cal_grp["n_bets"].astype(int)
+                    st.dataframe(_cal_grp[["predicted", "actual_rate", "n_bets"]].rename(
+                        columns={"predicted": "Predicted %", "actual_rate": "Actual Win %", "n_bets": "N Bets"}
+                    ), use_container_width=True, hide_index=True)
+                else:
+                    st.caption("Not enough data per probability bucket yet (need ≥3 bets per bucket).")
+
+            # ----- Full graded props table -----
+            st.markdown("---")
+            st.markdown("""<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#2A5070;letter-spacing:0.12em;margin-bottom:0.6rem;'>ALL GRADED PROPS</div>""", unsafe_allow_html=True)
+            _rt_show_cols = ["game_date", "player", "market", "side", "line", "proj", "actual_value", "result", "p_cal", "ev_pct", "edge_cat", "profit_units"]
+            _rt_avail = [c for c in _rt_show_cols if c in _rt_df.columns]
+            if _rt_avail:
+                st.dataframe(_rt_df[_rt_avail], use_container_width=True, hide_index=True, height=400)
+    except Exception as _rt_err:
+        st.error(f"Results Tracker failed to load: {_rt_err}")
+        import traceback
+        st.code(traceback.format_exc())
 
 # ── FOOTER ──────────────────────────────────────────────────
 st.markdown("""
