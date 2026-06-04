@@ -7375,7 +7375,95 @@ def apply_calibrator(p_raw, calib):
             return float(np.clip(p, 0.0, 1.0))
         return float(np.clip(np.interp(p, xs, ys), 0.0, 1.0))
     except: return float(np.clip(p, 0.0, 1.0))
+def compute_leg_projection_mlb(player_name, market_code, line, side,
+                               bankroll=0.0, frac_kelly=0.25, max_risk_frac=0.05,
+                               game_date=None, n_sims=10000):
+    """Project an MLB prop via the at-bat Monte Carlo and return a leg dict in
+    the same schema NBA legs use. Pricing/gating/sizing is applied later by
+    recompute_pricing_fields() (which branches to MLB-appropriate logic)."""
+    from simulation.mlb import projection as _mlbproj
+    side_str = "Under" if str(side).lower().startswith("u") else "Over"
+    try:
+        r = _mlbproj.project(player_name, market_code, float(line),
+                             game_date=game_date, n_sims=int(n_sims))
+    except Exception as e:
+        return {"player": player_name, "market": market_code, "line": float(line),
+                "errors": [f"MLB sim error: {type(e).__name__}: {e}"],
+                "gate_ok": False, "gate_reason": "sim error",
+                "sport": "MLB", "bet_side": side_str}
+    if "error" in r:
+        return {"player": player_name, "market": market_code, "line": float(line),
+                "errors": [r["error"]], "gate_ok": False, "gate_reason": r["error"],
+                "sport": "MLB", "bet_side": side_str}
+    p_over = r["p_over"]; p_under = r["p_under"]
+    p_sel = p_over if side_str == "Over" else p_under
+    cv = (r["std"] / r["proj"]) if r.get("proj") else None
+    return {
+        "player": r["player"], "player_id": r.get("player_id"),
+        "market": market_code, "line": float(line),
+        "proj": r["proj"], "proj_vs_line": r["proj"] - float(line),
+        "p_over": p_over, "p_raw": p_sel, "p_model": p_sel,
+        "side": side_str, "bet_side": side_str, "price_decimal": 1.909,
+        "volatility_cv": cv, "stat_skewness": None,
+        "blowout_prob": 0.0, "context_mult": 1.0,
+        "team": "", "opp": r.get("opponent", ""), "is_home": None,
+        "n_games_used": r.get("n_sims"), "sport": "MLB",
+        "median": r.get("median"), "sigma": r.get("std"),
+        "mlb_park": r.get("park", ""), "mlb_opp_starter": r.get("opp_starter", ""),
+        "mlb_notes": r.get("notes", []),
+        "p5": r.get("p5"), "p25": r.get("p25"), "p75": r.get("p75"), "p95": r.get("p95"),
+        "headshot": None, "commence_time": "", "is_pitcher": r.get("is_pitcher"),
+        "errors": r.get("notes", []),
+    }
+
+
+def _recompute_pricing_mlb(leg):
+    """MLB pricing/gating. The sim is a structural model so its probabilities
+    are calibrated by construction — the NBA calibrator is NOT applied. The
+    gate is EV + probability-edge based because baseball counting stats are
+    inherently high-CV and the NBA volatility gate does not transfer."""
+    p_cal = leg.get("p_raw")
+    leg["p_cal"] = p_cal
+    price = leg.get("price_decimal") or 1.909
+    p_imp = implied_prob_from_decimal(price)
+    leg["p_implied"] = p_imp
+    advantage = (p_cal - p_imp) if p_cal is not None else None
+    leg["advantage"] = advantage
+    ev_raw = ev_per_dollar(p_cal, price) if p_cal else None
+    leg["ev_raw"] = ev_raw
+    leg["vol_penalty"] = 1.0
+    gate_ok, gate_reason = True, ""
+    if p_cal is None or ev_raw is None:
+        gate_ok, gate_reason = False, "no projection"
+    elif not (0.05 <= p_cal <= 0.95):
+        gate_ok, gate_reason = False, "degenerate probability"
+    elif ev_raw < 0.03:
+        gate_ok, gate_reason = False, "EV<3% (below noise floor)"
+    elif advantage is None or advantage < 0.04:
+        gate_ok, gate_reason = False, "edge<4% vs implied line"
+    bankroll = float(st.session_state.get("bankroll", 0.0) or 0)
+    uid = st.session_state.get("_auth_user", "")
+    _stop_active, _stop_reason = is_loss_stop_active(uid, bankroll)
+    if _stop_active:
+        gate_ok, gate_reason = False, _stop_reason
+    leg["gate_ok"] = gate_ok; leg["gate_reason"] = gate_reason
+    leg["ev_adj"] = ev_raw if gate_ok else None
+    leg["ev_pct"] = float(leg["ev_adj"] * 100) if leg["ev_adj"] is not None else None
+    leg["edge"] = leg["ev_adj"]; leg["edge_cat"] = classify_edge(leg["ev_adj"])
+    leg["regime"] = "MLB-Sim"; leg["regime_score"] = 0.0
+    frac_k = float(st.session_state.get("frac_kelly", 0.25) or 0.25)
+    cap_frac = float(st.session_state.get("max_risk_per_bet", 5.0) or 5.0) / 100.0
+    if gate_ok and p_cal and price and leg.get("ev_adj") and float(leg["ev_adj"]) > 0 and bankroll > 0:
+        sd, sf, sr = recommended_stake(bankroll, float(p_cal), float(price), frac_k, cap_frac)
+        leg["stake"] = float(sd); leg["stake_frac"] = float(sf); leg["stake_reason"] = sr
+    else:
+        leg["stake"] = 0.0; leg["stake_frac"] = 0.0; leg["stake_reason"] = "gated"
+    return leg
+
+
 def recompute_pricing_fields(leg, calib):
+    if leg.get("sport") == "MLB":
+        return _recompute_pricing_mlb(leg)
     p_raw = leg.get("p_raw")
     p_cal = apply_calibrator(p_raw, calib)
     leg["p_cal"] = p_cal
@@ -7710,7 +7798,7 @@ def append_history(uid, row):
 # STREAMLIT UI
 # ============================================================
 st.set_page_config(
-    page_title="NBA ALPHA ENGINE",
+    page_title="SPORTS ALPHA ENGINE",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="auto"
@@ -8246,7 +8334,7 @@ if not st.session_state.get("_auth_user"):
 </style>
 <div class="auth-wrap">
 <div class="auth-box">
-<div class="auth-title">NBA <span style="color:#00FFB2;">ALPHA</span> ENGINE</div>
+<div class="auth-title">SPORTS <span style="color:#00FFB2;">ALPHA</span> ENGINE</div>
 <div class="auth-subtitle">Quantitative Sports Analytics · v4.0</div>
 </div>
 </div>
@@ -8346,7 +8434,7 @@ _hdr = (
     "<div style='font-family:Chakra Petch,monospace;font-size:0.55rem;color:#2A5070;"
     "letter-spacing:0.30em;text-transform:uppercase;margin-bottom:0.2rem;'>QUANTITATIVE SPORTS ANALYTICS</div>"
     "<div style='font-family:Chakra Petch,monospace;font-size:1.75rem;font-weight:700;"
-    "color:#EEF4FF;letter-spacing:0.05em;line-height:1.05;'>NBA "
+    "color:#EEF4FF;letter-spacing:0.05em;line-height:1.05;'>SPORTS "
     "<span style='color:#00FFB2;'>ALPHA</span> ENGINE "
     "<span style='font-size:0.60rem;color:#2A5070;vertical-align:middle;"
     "margin-left:0.6rem;font-weight:400;letter-spacing:0.12em;'>v3.0</span></div>"
@@ -8619,8 +8707,11 @@ st.html("""
 """)
 # ─── SIDEBAR ──────────────────────────────────────────────────
 with st.sidebar:
-    # ── BRAND HEADER ──────────────────────────────────────────
-    st.markdown("""
+    # ── SPORT + BRAND HEADER ──────────────────────────────────
+    from core import sports as _sports_reg
+    _active_sport = st.session_state.get("sport", _sports_reg.DEFAULT_SPORT)
+    _sp_meta = _sports_reg.SPORTS.get(_active_sport, _sports_reg.SPORTS[_sports_reg.DEFAULT_SPORT])
+    st.markdown(f"""
 <div style='
     padding: 1rem 0.2rem 0.8rem 0.2rem;
     border-bottom: 1px solid #0E1E30;
@@ -8632,19 +8723,31 @@ with st.sidebar:
     </div>
     <div style='font-family:Chakra Petch,monospace;font-size:1.05rem;font-weight:700;
                 color:#EEF4FF;letter-spacing:0.08em;line-height:1.1;'>
-        NBA PROP<br>
+        {_sp_meta['icon']} SPORTS<br>
         <span style='color:#00FFB2;'>ALPHA</span> ENGINE
     </div>
     <div style='display:flex;align-items:center;gap:0.5rem;margin-top:0.45rem;'>
         <div style='width:6px;height:6px;border-radius:50%;background:#00FFB2;
                     box-shadow:0 0 6px #00FFB2;'></div>
         <div style='font-family:Fira Code,monospace;font-size:0.58rem;color:#00FFB2;
-                    letter-spacing:0.1em;'>LIVE  ·  v4.0</div>
+                    letter-spacing:0.1em;'>LIVE  ·  v5.0</div>
         <div style='margin-left:auto;font-family:Fira Code,monospace;font-size:0.55rem;
-                    color:#2A4060;'>NBA 2024-25</div>
+                    color:#2A4060;'>{_sp_meta['season_label']}</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
+    # ── SPORT SELECTOR ────────────────────────────────────────
+    _sport_labels = _sports_reg.sport_options()
+    _cur_label = f"{_sp_meta['icon']} {_sp_meta['display_name']}"
+    _sel_sport_label = st.selectbox(
+        "SPORT", _sport_labels,
+        index=_sport_labels.index(_cur_label) if _cur_label in _sport_labels else 0,
+        key="_sport_selector")
+    _chosen_sport = _sports_reg.sport_from_label(_sel_sport_label)
+    if _chosen_sport != st.session_state.get("sport", _sports_reg.DEFAULT_SPORT):
+        st.session_state["sport"] = _chosen_sport
+        st.rerun()
+    st.session_state["sport"] = _chosen_sport
     # ── ACCOUNT ───────────────────────────────────────────────
     _sid_user = st.session_state.get("_auth_user", "")
     _sid_email = _get_user_email(_sid_user)
@@ -8946,7 +9049,9 @@ with tabs[0]:
                 pname = st.text_input(f"Player", key=f"pname_{leg_n}", placeholder="e.g. LeBron James")
                 _mkt_side_cols = st.columns([3, 1])
                 with _mkt_side_cols[0]:
-                    mkt = st.selectbox(f"Market", options=MARKET_OPTIONS, key=f"mkt_{leg_n}")
+                    _sport_markets = _sports_reg.get_markets(st.session_state.get("sport", "NBA"))
+                    _mkt_opts = list(_sport_markets.keys()) if _sport_markets else MARKET_OPTIONS
+                    mkt = st.selectbox(f"Market", options=_mkt_opts, key=f"mkt_{leg_n}")
                 with _mkt_side_cols[1]:
                     leg_side = st.selectbox("Side", options=["Over", "Under"], key=f"side_{leg_n}")
                 manual = st.checkbox(f"Manual line", key=f"manual_{leg_n}")
@@ -8964,6 +9069,25 @@ with tabs[0]:
         for (tag, pname, mkt, manual, mline, teammate_out, leg_side) in leg_configs:
             pname = (pname or "").strip()
             if not pname: continue
+            # ── MLB: skip NBA Odds-API auto-line; use manual or stored PP line ──
+            if st.session_state.get("sport", "NBA") == "MLB":
+                _mlb_line = float(mline) if mline else 0.0
+                if (not _mlb_line or _mlb_line <= 0):
+                    _pp_df = st.session_state.get("pp_lines")
+                    if _pp_df is not None and not _pp_df.empty:
+                        _np = normalize_name(pname)
+                        for _, _rr in _pp_df.iterrows():
+                            if normalize_name(str(_rr.get("player", ""))) == _np and \
+                               str(_rr.get("stat_type", "")) == mkt:
+                                _rl = _rr.get("line")
+                                if _rl is not None and not pd.isna(_rl):
+                                    _mlb_line = float(_rl); break
+                if not _mlb_line or _mlb_line <= 0:
+                    warnings.append(f"{tag}: enter a line for {pname} ({mkt})"); continue
+                _mlb_meta = {"event_id": None, "book": "prizepicks", "side": leg_side,
+                             "price": 1.909, "commence_time": "", "market_key": mkt}
+                tasks.append((tag, pname, mkt, _mlb_line, _mlb_meta, bool(teammate_out), leg_side))
+                continue
             market_key = ODDS_MARKETS.get(mkt)
             if not market_key: warnings.append(f"{tag}: unsupported market {mkt}"); continue
             line = mline; meta = None
@@ -9027,8 +9151,17 @@ with tabs[0]:
                         # the correct direction (P(Over) vs P(Under)) from the start
                         _run_meta = dict(meta) if meta else {"side": _leg_side}
                         _run_meta["side"] = _leg_side
+                        _active_sport_run = st.session_state.get("sport", "NBA")
+                        # Route MLB props to the at-bat Monte Carlo engine
+                        if _active_sport_run == "MLB":
+                            _mlb_code = (_sports_reg.get_markets("MLB") or {}).get(mkt, mkt)
+                            _leg = compute_leg_projection_mlb(
+                                pname, _mlb_code, line, _leg_side,
+                                bankroll=bankroll, frac_kelly=frac_kelly,
+                                max_risk_frac=float(st.session_state.get("max_risk_per_bet",5.0))/100.0,
+                                game_date=scan_date)
                         # Route combo bets (Player A + Player B) to combo engine
-                        if is_combo_market(mkt) or ("+" in pname and len([p for p in pname.split("+") if p.strip()]) >= 2):
+                        elif is_combo_market(mkt) or ("+" in pname and len([p for p in pname.split("+") if p.strip()]) >= 2):
                             _combo_mkt = mkt if is_combo_market(mkt) else next((k for k, v in COMBO_BASE_MAP.items() if v == mkt), mkt)
                             _parts = [p.strip() for p in re.split(r'\s*\+\s*', pname) if p.strip()]
                             _leg = compute_combo_projection(
