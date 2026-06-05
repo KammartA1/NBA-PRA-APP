@@ -7419,9 +7419,15 @@ def compute_leg_projection_mlb(player_name, market_code, line, side,
         r = _mlbproj.project(player_name, market_code, float(line),
                              game_date=game_date, n_sims=int(n_sims))
     except Exception as e:
+        import traceback as _tb
+        _err_detail = f"{type(e).__name__}: {e}"
+        _err_tb = _tb.format_exc()
+        import logging as _lg
+        _lg.getLogger("mlb_sim").error("MLB sim error for %s/%s: %s\n%s",
+                                       player_name, market_code, _err_detail, _err_tb)
         return {"player": player_name, "market": market_code, "line": float(line),
-                "errors": [f"MLB sim error: {type(e).__name__}: {e}"],
-                "gate_ok": False, "gate_reason": "sim error",
+                "errors": [f"MLB sim error: {_err_detail}"],
+                "gate_ok": False, "gate_reason": f"sim: {_err_detail[:80]}",
                 "sport": "MLB", "bet_side": side_str}
     if "error" in r:
         return {"player": player_name, "market": market_code, "line": float(line),
