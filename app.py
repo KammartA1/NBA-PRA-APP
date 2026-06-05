@@ -7303,6 +7303,7 @@ def compute_leg_projection(
         "sim_prob":          float(1.0 - sim_prob if _is_under else sim_prob) if sim_prob is not None else None,
         "sim_mean":          float(sim_mean) if sim_mean is not None else None,
         "sim_std":           float(sim_std) if sim_std is not None else None,
+        "sport":             "NBA",
         "errors":            errors,
     }
 # ──────────────────────────────────────────────
@@ -8988,7 +8989,7 @@ with _sport_sel_cols[1]:
         f"<div style='font-family:Chakra Petch,monospace;font-size:0.58rem;color:#4A607A;"
         f"letter-spacing:0.10em;padding-top:1.8rem;'>"
         f"{_sp_meta_main['icon']} {_sp_meta_main['season_label']} · "
-        f"{'AT-BAT MONTE CARLO SIM' if _chosen_main == 'MLB' else 'BOOTSTRAP + BAYESIAN ENGINE'}"
+        f"{'AT-BAT MONTE CARLO SIM' if _chosen_main == 'MLB' else 'BOOTSTRAP + BAYESIAN ENGINE'} · MULTI-SPORT"
         f"</div>",
         unsafe_allow_html=True)
 # ─── TABS ─────────────────────────────────────────────────────
@@ -9121,11 +9122,19 @@ with tabs[0]:
             tag = f"P{leg_n}"
             with cols[col_idx]:
                 st.markdown(f"<div style='font-family:Chakra Petch,monospace;font-size:0.62rem;color:#00FFB2;letter-spacing:0.14em;text-transform:uppercase;margin-bottom:0.4rem;'>LEG {leg_n}</div>", unsafe_allow_html=True)
-                _ph = "e.g. Aaron Judge" if st.session_state.get("sport") == "MLB" else "e.g. LeBron James"
+                _leg_sport_labels = _sports_reg.sport_options()
+                _leg_sport_default = st.session_state.get(f"leg_sport_{leg_n}", st.session_state.get("sport", "NBA"))
+                _leg_sport_meta = _sports_reg.SPORTS.get(_leg_sport_default, _sports_reg.SPORTS[_sports_reg.DEFAULT_SPORT])
+                _leg_sport_label = f"{_leg_sport_meta['icon']} {_leg_sport_meta['display_name']}"
+                _leg_sport_idx = _leg_sport_labels.index(_leg_sport_label) if _leg_sport_label in _leg_sport_labels else 0
+                _leg_sport_sel = st.selectbox("Sport", options=_leg_sport_labels, index=_leg_sport_idx, key=f"leg_sport_sel_{leg_n}")
+                _leg_sport_key = _sports_reg.sport_from_label(_leg_sport_sel)
+                st.session_state[f"leg_sport_{leg_n}"] = _leg_sport_key
+                _ph = "e.g. Aaron Judge" if _leg_sport_key == "MLB" else "e.g. LeBron James"
                 pname = st.text_input(f"Player", key=f"pname_{leg_n}", placeholder=_ph)
                 _mkt_side_cols = st.columns([3, 1])
                 with _mkt_side_cols[0]:
-                    _sport_markets = _sports_reg.get_markets(st.session_state.get("sport", "NBA"))
+                    _sport_markets = _sports_reg.get_markets(_leg_sport_key)
                     _mkt_opts = list(_sport_markets.keys()) if _sport_markets else MARKET_OPTIONS
                     mkt = st.selectbox(f"Market", options=_mkt_opts, key=f"mkt_{leg_n}")
                 with _mkt_side_cols[1]:
@@ -9135,18 +9144,18 @@ with tabs[0]:
                     st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.60rem;color:#FFB800;letter-spacing:0.10em;margin:-4px 0 2px 0;'>⚠ MANUAL — not from Odds API</div>", unsafe_allow_html=True)
                 mline = st.number_input(f"Line", min_value=0.0, value=float(st.session_state.get(f"line_{leg_n}",22.5)), step=0.5, key=f"mline_{leg_n}")
                 out_cb = st.checkbox(f"Key teammate OUT?", key=f"out_{leg_n}")
-                leg_configs.append((tag, pname, mkt, manual, mline, out_cb, leg_side))
+                leg_configs.append((tag, pname, mkt, manual, mline, out_cb, leg_side, _leg_sport_key))
     if st.session_state.get("_auto_run_model"):
         st.info("⚡ Legs loaded from Live Scanner — running model automatically...")
     run_btn = (st.button("RUN MODEL", use_container_width=True, disabled=_loss_stop_hit)
                or bool(st.session_state.pop("_auto_run_model", False)))
     if run_btn and not _loss_stop_hit:
         results = []; warnings = []; tasks = []
-        for (tag, pname, mkt, manual, mline, teammate_out, leg_side) in leg_configs:
+        for (tag, pname, mkt, manual, mline, teammate_out, leg_side, leg_sport) in leg_configs:
             pname = (pname or "").strip()
             if not pname: continue
             # ── MLB: skip NBA Odds-API auto-line; use manual or stored PP line ──
-            if st.session_state.get("sport", "NBA") == "MLB":
+            if leg_sport == "MLB":
                 _mlb_line = float(mline) if mline else 0.0
                 if (not _mlb_line or _mlb_line <= 0):
                     _pp_df = st.session_state.get("pp_lines")
@@ -9162,7 +9171,7 @@ with tabs[0]:
                     warnings.append(f"{tag}: enter a line for {pname} ({mkt})"); continue
                 _mlb_meta = {"event_id": None, "book": "prizepicks", "side": leg_side,
                              "price": 1.909, "commence_time": "", "market_key": mkt}
-                tasks.append((tag, pname, mkt, _mlb_line, _mlb_meta, bool(teammate_out), leg_side))
+                tasks.append((tag, pname, mkt, _mlb_line, _mlb_meta, bool(teammate_out), leg_side, leg_sport))
                 continue
             market_key = ODDS_MARKETS.get(mkt)
             if not market_key: warnings.append(f"{tag}: unsupported market {mkt}"); continue
@@ -9203,7 +9212,7 @@ with tabs[0]:
                 meta = {"event_id": None, "home_team": "", "away_team": "",
                         "commence_time": "", "price": 1.909,
                         "book": "manual", "market_key": market_key, "side": leg_side}
-            tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out), leg_side))
+            tasks.append((tag, pname, mkt, float(line), meta, bool(teammate_out), leg_side, leg_sport))
         if tasks:
             # Ensure today's team schedule is built for opponent resolution
             if "_today_team_schedule" not in st.session_state:
@@ -9217,19 +9226,18 @@ with tabs[0]:
             with st.spinner("Computing projections..."):
                 results = []
                 _model_progress = st.progress(0, text=f"Running model on {len(tasks)} legs...")
-                for _ti, (tag, pname, mkt, line, meta, to, _leg_side) in enumerate(tasks):
+                for _ti, (tag, pname, mkt, line, meta, to, _leg_side, _leg_sport) in enumerate(tasks):
                     _model_progress.progress(
                         min((_ti + 1) / len(tasks), 1.0),
-                        text=f"Running model... {_ti + 1}/{len(tasks)}: {pname} {mkt}"
+                        text=f"Running model... {_ti + 1}/{len(tasks)}: {pname} {mkt} ({_leg_sport})"
                     )
                     try:
                         # Inject user-selected side into meta so engine computes
                         # the correct direction (P(Over) vs P(Under)) from the start
                         _run_meta = dict(meta) if meta else {"side": _leg_side}
                         _run_meta["side"] = _leg_side
-                        _active_sport_run = st.session_state.get("sport", "NBA")
-                        # Route MLB props to the at-bat Monte Carlo engine
-                        if _active_sport_run == "MLB":
+                        # Route to sport-specific engine based on per-leg sport selection
+                        if _leg_sport == "MLB":
                             _mlb_code = (_sports_reg.get_markets("MLB") or {}).get(mkt, mkt)
                             _leg = compute_leg_projection_mlb(
                                 pname, _mlb_code, line, _leg_side,
@@ -9282,7 +9290,7 @@ with tabs[0]:
                     for _leg in results:
                         if _leg.get("player") and _leg.get("line") is not None:
                             _clv_sess.add(LineMovement(
-                                sport=st.session_state.get("sport", "NBA"),
+                                sport=_leg.get("sport", st.session_state.get("sport", "NBA")),
                                 event=f"{_leg.get('team','?')} vs {_leg.get('opp','?')}",
                                 market=_leg.get("market"),
                                 book=_leg.get("book") or "model",
@@ -9449,12 +9457,18 @@ with tabs[1]:
                     "</div>", unsafe_allow_html=True)
             # Simulation Engine Status
             _n_sim_legs = sum(1 for l in res if l.get("sim_prob") is not None)
+            _n_mlb_legs = sum(1 for l in res if l.get("sport") == "MLB")
+            _n_nba_legs = len(res) - _n_mlb_legs
             _sim_col = "#00FFB2" if _n_sim_legs > 0 else "#4A607A"
+            _sim_detail = []
+            if _n_nba_legs > 0: _sim_detail.append(f"NBA: {_SIM_N}/leg")
+            if _n_mlb_legs > 0: _sim_detail.append(f"MLB: 10K/leg")
+            _sim_detail_str = " · ".join(_sim_detail) if _sim_detail else "multi-sport"
             _status_cols[3].markdown(
                 f"<div style='text-align:center;padding:0.3rem;background:{_sim_col}12;border:1px solid {_sim_col}40;border-radius:4px;'>"
                 f"<div style='font-size:0.52rem;color:#4A607A;letter-spacing:0.12em;font-family:Chakra Petch,monospace;'>SIM ENGINE</div>"
                 f"<div style='font-size:0.72rem;color:{_sim_col};font-weight:600;font-family:Fira Code,monospace;'>{_n_sim_legs}/{len(res)} BLENDED</div>"
-                f"<div style='font-size:0.50rem;color:#3A5570;'>3000 sims/leg</div>"
+                f"<div style='font-size:0.50rem;color:#3A5570;'>{_sim_detail_str}</div>"
                 f"</div>", unsafe_allow_html=True)
         except Exception:
             pass
@@ -9527,11 +9541,13 @@ with tabs[1]:
                     _ctx_detail = (f"ctx x{leg.get('context_mult',1):.3f} | rest x{leg.get('rest_mult',1):.2f} | ha x{leg.get('ha_mult',1):.2f}<br>"
                                    f"CV={_cv_s} | N={n_used} games<br>"
                                    f"Shrunk mu: {_mu_s} | Trend: L3={_l3}/L5={_l5}/L10={_l10}")
+                _sport_icon = "⚾" if leg.get("sport") == "MLB" else "🏀"
+                _sport_tag = leg.get("sport", "NBA")
                 card_html = f"""
 <div style='margin-bottom:0.5rem;'>
   {hs_html}
-  <div style='font-family:Chakra Petch,monospace;font-size:0.82rem;font-weight:700;color:#EEF4FF;'>{leg["player"]}</div>
-  <div style='font-size:0.65rem;color:#4A607A;letter-spacing:0.08em;'>{leg.get("team","??")} vs {leg.get("opp","??")}</div>
+  <div style='font-family:Chakra Petch,monospace;font-size:0.82rem;font-weight:700;color:#EEF4FF;'>{_sport_icon} {leg["player"]}</div>
+  <div style='font-size:0.65rem;color:#4A607A;letter-spacing:0.08em;'>{leg.get("team","??")} vs {leg.get("opp","??")} · <span style='color:#FF8800;'>{_sport_tag}</span></div>
   <div style='clear:both;'></div>
 </div>
 <div style='font-size:0.70rem;color:#4A607A;margin:0.15rem 0;text-transform:uppercase;letter-spacing:0.06em;'>{leg["market"]} {"<span style='color:#FF8080;font-weight:700;'>UNDER</span>" if leg.get("bet_side","Over")=="Under" else "<span style='color:#00FFB2;font-weight:700;'>OVER</span>"} | {rest_tag} | {leg.get("position_bucket","?")}</div>
@@ -11423,7 +11439,8 @@ with tabs[2]:
                 # Staged values are consumed before widgets render on the next rerun.
                 st.session_state[f"_staged_pname_{i}"]  = str(r.get("player", ""))
                 _mkt_v = str(r.get("market", "Points"))
-                if _mkt_v in MARKET_OPTIONS:
+                _all_mkt_opts = set(MARKET_OPTIONS) | set((_sports_reg.get_markets("MLB") or {}).keys())
+                if _mkt_v in _all_mkt_opts:
                     st.session_state[f"_staged_mkt_{i}"] = _mkt_v
                 st.session_state[f"_staged_mline_{i}"]  = float(r.get("line", 22.5))
                 # If source is a platform (PP/UD/Sleeper), use manual mode — these markets
@@ -11435,6 +11452,8 @@ with tabs[2]:
                 # Pass the side (Over/Under) from scanner to model
                 _r_side = str(r.get("side", "Over")).strip()
                 st.session_state[f"_staged_side_{i}"]   = "Under" if _r_side.lower() == "under" else "Over"
+                # Pass the sport so per-leg sport selector is set correctly
+                st.session_state[f"_staged_leg_sport_{i}"] = str(r.get("sport", _scanner_sport))
             # Clear unused legs beyond selection count
             for i in range(len(_legs_for_model) + 1, 5):
                 st.session_state[f"_staged_pname_{i}"] = ""
