@@ -4628,6 +4628,27 @@ def map_platform_stat_to_market(stat_type):
         "Assists (Combo)": "Assists (Combo)",
         "3-PT Made (Combo)": "3PM (Combo)", "3PM (Combo)": "3PM (Combo)",
         "3-Pointers Made (Combo)": "3PM (Combo)",
+        # ── MLB ──────────────────────────────────────────────────────────
+        "Total Bases": "Total Bases", "TB": "Total Bases",
+        "Hits": "Hits", "H": "Hits",
+        "Runs": "Runs", "R": "Runs",
+        "RBIs": "RBIs", "RBI": "RBIs",
+        "Hits+Runs+RBIs": "Hits+Runs+RBIs", "HRR": "Hits+Runs+RBIs",
+        "Hits + Runs + RBIs": "Hits+Runs+RBIs",
+        "Home Runs": "Home Runs", "HR": "Home Runs",
+        "Stolen Bases": "Stolen Bases", "SB": "Stolen Bases",
+        "Walks": "Walks", "BB": "Walks",
+        "Singles": "Singles", "1B": "Singles",
+        "Doubles": "Doubles", "2B": "Doubles",
+        "Triples": "Triples", "3B": "Triples",
+        "Pitcher Strikeouts": "Pitcher Strikeouts", "K": "Pitcher Strikeouts",
+        "Pitching Outs": "Pitching Outs", "Outs": "Pitching Outs",
+        "Earned Runs": "Earned Runs", "ER": "Earned Runs",
+        "Hits Allowed": "Hits Allowed", "HA": "Hits Allowed",
+        "Walks Allowed": "Walks Allowed",
+        "Earned Runs Allowed": "Earned Runs",
+        "Strikeouts": "Pitcher Strikeouts",
+        "Batting Strikeouts": "Pitcher Strikeouts",
     }
     s = str(stat_type).strip()
     s_lower = s.lower()
