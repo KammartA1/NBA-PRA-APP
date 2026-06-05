@@ -3737,15 +3737,15 @@ def _parse_pp_response(data, league_filter=("NBA", "NBA 1Q", "NBA 1H", "NBA 2H")
             league = str(attrs.get("league", "") or "")
         if league_filter:
             if league_filter == "MLB":
-                if league and not _pp_league_is_mlb(league):
+                if not _pp_league_is_mlb(league):
                     continue
             else:
                 if league and not _pp_league_is_nba(league):
                     continue
-            if not league:
-                _test_mkt = map_platform_stat_to_market(attrs.get("stat_type", ""))
-                if _test_mkt is None:
-                    continue
+                if not league:
+                    _test_mkt = map_platform_stat_to_market(attrs.get("stat_type", ""))
+                    if _test_mkt is None:
+                        continue
         player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
         if not player_id:
             player_id = (rels.get("player", {}).get("data", {}) or {}).get("id")
