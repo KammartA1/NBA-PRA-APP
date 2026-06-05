@@ -5,15 +5,13 @@ Mirrors the NBA GameEngine interface (PlayerDistribution / SimulationOutput /
 get_player_dist) so the app's MODEL tab can consume MLB and NBA identically.
 
 Each simulated game:
-  • Plays 9+ innings (extra innings capped), alternating half-innings.
-  • Every plate appearance: the current pitcher (starter or bullpen, per the
+  * Plays 9+ innings (extra innings capped), alternating half-innings.
+  * Every plate appearance: the current pitcher (starter or bullpen, per the
     removal model) is matched against the batter via the odds-ratio (log5)
-    method against league baselines, with park + weather applied to HR.
-  • A full base-state is tracked so Runs and RBI are simulated, not assumed.
-  • Earned runs are charged to the pitcher who allowed the runner to reach.
-
-The engine accumulates raw counters per player, then exposes per-stat
-distributions (including composites TB / Hits / HRR / Fantasy).
+    method with platoon-aware splits, park + weather adjustments.
+  * Third-time-through-order penalty is applied to starters.
+  * A full base-state is tracked so Runs and RBI are simulated, not assumed.
+  * Earned runs are charged to the pitcher who allowed the runner to reach.
 """
 from __future__ import annotations
 
@@ -41,10 +39,7 @@ PITCHER_STAT_KEYS = [
 
 @dataclass
 class PlayerDistribution:
-    """Statistical summary of a player's simulated stat distribution.
-
-    Identical interface to simulation/game_engine.PlayerDistribution.
-    """
+    """Statistical summary of a player's simulated stat distribution."""
     player_name: str
     player_id: str
     stat_name: str
@@ -107,6 +102,8 @@ class MLBGameEngine:
         temp_f: float | None = None,
         wind_mph: float | None = None,
         wind_out: bool | None = None,
+        home_bullpen: PitcherProfile | None = None,
+        away_bullpen: PitcherProfile | None = None,
     ) -> None:
         self.cfg = config or MLBSimConfig()
         self.home_lineup = home_lineup or []
@@ -115,21 +112,21 @@ class MLBGameEngine:
         self.away_sp = away_sp
         self.home_name = home_name
         self.away_name = away_name
+        self.home_bullpen = home_bullpen
+        self.away_bullpen = away_bullpen
         runs_pf, hr_pf = park_factor(park)
         self.runs_pf = runs_pf
         self.hr_pf = hr_pf * weather_hr_factor(temp_f, wind_mph, wind_out)
-
-        # Pre-compute league vector list aligned to PA_OUTCOMES order.
         self._league = np.array([LEAGUE_VECTOR[o] for o in PA_OUTCOMES])
 
-    # ── matchup outcome distribution ───────────────────────────────
     def _pa_distribution(self, batter: BatterProfile, pitcher: PitcherProfile,
                          tto_pass: int) -> np.ndarray:
-        """Categorical PA-outcome probabilities via odds-ratio, park+weather."""
-        bvec = batter.outcome_vector()
-        pvec = pitcher.outcome_vector()
+        """Categorical PA-outcome probabilities via platoon-aware odds-ratio."""
+        # Use platoon-specific vectors when available
+        bvec = batter.outcome_vector_vs(pitcher.throws)
+        pvec = pitcher.outcome_vector_vs(batter.bats)
 
-        # Third-time-through-order drift for starters: K down, hits/HR up.
+        # Third-time-through-order drift for starters
         if pitcher.is_starter and tto_pass >= 2:
             drift = self.cfg.tto_penalty_per_pass * (tto_pass - 1)
             pvec = dict(pvec)
@@ -144,61 +141,56 @@ class MLBGameEngine:
             if o == "HR":
                 p *= self.hr_pf
             elif o in ("1B", "2B", "3B"):
-                p *= self.runs_pf ** 0.5  # park nudges hits modestly
+                p *= self.runs_pf ** 0.5
             probs.append(p)
         arr = np.array(probs, dtype=np.float64)
         s = arr.sum()
         return arr / s if s > 0 else self._league.copy()
 
-    # ── single game simulation ─────────────────────────────────────
     def _play_full_game(self, rng, _bstat, _pstat, stats):
         away_score = 0
         home_score = 0
         away_idx = 0
         home_idx = 0
-        away_state = _TeamPitchState(self.home_sp, self.cfg)  # away bats vs home pitcher
-        home_state = _TeamPitchState(self.away_sp, self.cfg)  # home bats vs away pitcher
+        # Away bats vs home pitcher; home bats vs away pitcher.
+        away_state = _TeamPitchState(self.home_sp, self.cfg,
+                                     bullpen=self.home_bullpen)
+        home_state = _TeamPitchState(self.away_sp, self.cfg,
+                                     bullpen=self.away_bullpen)
 
         for inning in range(1, self.cfg.max_innings + 1):
-            # Top half: away bats
             runs, away_idx = self._half_inning(
                 rng, self.away_lineup, away_idx, away_state, _bstat, _pstat)
             away_score += runs
-            # Bottom half: home bats (skip if home already wins after 9 — walk-off
-            # handled by breaking before playing if home leads entering 9th+)
             if inning >= 9 and home_score > away_score:
-                break  # home doesn't bat in bottom of 9th+ when already ahead
+                break
             runs, home_idx = self._half_inning(
                 rng, self.home_lineup, home_idx, home_state, _bstat, _pstat)
             home_score += runs
             if inning >= 9 and home_score > away_score:
-                break  # walk-off
+                break
             if inning >= 9 and away_score != home_score:
-                break  # game decided after a complete inning
+                break
 
-        # Credit wins to starters (approximate): team that scored more, SP went 5+.
         self._finalize_pitcher_derived(stats, self.home_sp, home_score > away_score)
         self._finalize_pitcher_derived(stats, self.away_sp, away_score > home_score)
         return stats
 
     def _half_inning(self, rng, lineup, start_idx, pstate, _bstat, _pstat):
-        """Simulate one half-inning. Returns (runs_scored, next_batter_idx)."""
         if not lineup:
             return 0, start_idx
         outs = 0
-        # bases hold tuples (batter_pid, responsible_pitcher_pid) or None
         bases: List[Optional[tuple]] = [None, None, None]
         runs = 0
         idx = start_idx
         n = len(lineup)
-        # steal bookkeeping: attempt at top of a PA if runner on 1B only
         while outs < 3:
             batter = lineup[idx % n]
             pitcher = pstate.current_pitcher()
             pstat = _pstat(pitcher.player_id, pitcher.name)
             bstat = _bstat(batter.player_id, batter.name)
 
-            # ── stolen base attempt (runner on 1B, 2B empty) ──
+            # Stolen base attempt
             if bases[0] is not None and bases[1] is None:
                 runner_pid, resp_p = bases[0]
                 rb = self._lineup_batter(lineup, runner_pid)
@@ -229,22 +221,17 @@ class MLBGameEngine:
             elif outcome == "OUT":
                 outs += 1; pstat["OUTS"] += 1
                 scored += self._out_in_play(bases, batter, pitcher, outs, rng, _bstat, pstat)
-            else:  # hit: 1B/2B/3B/HR
+            else:
                 pstat["H"] += 1; bstat[outcome] += 1
                 scored += self._hit_advance(outcome, bases, batter, pitcher, rng, _bstat)
             runs += scored
-            # RBI credited for every run driven in (sac flies included). Errors,
-            # wild pitches and GIDP-runs are not modeled, so RBI == runs scored
-            # on the play is exact for this model.
             bstat["RBI"] += scored
             idx += 1
-            if (idx - start_idx) > 25:  # safety against pathological loops
+            if (idx - start_idx) > 25:
                 break
         return runs, idx
 
-    # ── advancement helpers ────────────────────────────────────────
     def _force_advance(self, bases, batter, pitcher, _bstat) -> int:
-        """Walk/HBP: force runners only. Returns runs scored."""
         runs = 0
         new_runner = (batter.player_id, pitcher.player_id)
         if bases[0] is None:
@@ -254,7 +241,6 @@ class MLBGameEngine:
         elif bases[2] is None:
             bases[2] = bases[1]; bases[1] = bases[0]; bases[0] = new_runner
         else:
-            # bases loaded → runner on 3rd forced home
             runs += self._score_runner(bases[2], _bstat, pitcher)
             bases[2] = bases[1]; bases[1] = bases[0]; bases[0] = new_runner
         return runs
@@ -290,7 +276,7 @@ class MLBGameEngine:
             bases[1] = (batter.player_id, pitcher.player_id)
             bases[0] = None
             return runs
-        # 1B (single)
+        # Single
         if bases[2] is not None:
             runs += self._score_runner(bases[2], _bstat, pitcher)
             bases[2] = None
@@ -310,26 +296,20 @@ class MLBGameEngine:
         return runs
 
     def _out_in_play(self, bases, batter, pitcher, outs, rng, _bstat, pstat) -> int:
-        """Non-K out. Sac fly / productive out scoring; modest GIDP."""
         runs = 0
-        # Sac fly: runner on 3rd, fewer than 2 outs after this out
         if bases[2] is not None and outs < 3 and rng.random() < 0.28:
             runs += self._score_runner(bases[2], _bstat, pitcher)
             bases[2] = None
-            return runs  # the out already counted by caller
+            return runs
         return runs
 
     def _score_runner(self, runner, _bstat, scoring_pitcher) -> int:
-        """Score a runner: credit R to runner, ER to the responsible pitcher."""
         runner_pid, resp_pid = runner
         _bstat(runner_pid, runner_pid)["R"] += 1
-        # earned run charged to responsible pitcher tracked via stats dict
         self._charge_er(resp_pid)
         return 1
 
     def _charge_er(self, pitcher_pid):
-        # ER accumulation is handled through the shared stats dict via closure;
-        # set during simulate; here we stash on a side ledger.
         self._er_ledger[pitcher_pid] = self._er_ledger.get(pitcher_pid, 0) + 1
 
     def _lineup_batter(self, lineup, pid) -> Optional[BatterProfile]:
@@ -346,12 +326,10 @@ class MLBGameEngine:
         s["W"] = 1.0 if (won and s.get("OUTS", 0) >= 15) else 0.0
         s["QS"] = 1.0 if (s.get("OUTS", 0) >= 18 and s["ER"] <= 3) else 0.0
 
-    # ── multi-sim driver ────────────────────────────────────────────
     def run_simulation(self, n: int | None = None) -> SimulationOutput:
         n = n or self.cfg.n_sims
         rng = np.random.default_rng(self.cfg.random_seed)
 
-        # Accumulate per-player per-stat arrays.
         batter_acc: Dict[str, Dict[str, np.ndarray]] = {}
         pitcher_acc: Dict[str, Dict[str, np.ndarray]] = {}
         names: Dict[str, str] = {}
@@ -426,11 +404,12 @@ class MLBGameEngine:
 
 
 class _TeamPitchState:
-    """Tracks the active pitcher for a team and the starter→bullpen handoff."""
-    def __init__(self, starter: Optional[PitcherProfile], cfg: MLBSimConfig):
+    """Tracks the active pitcher and the starter-to-bullpen handoff."""
+    def __init__(self, starter: Optional[PitcherProfile], cfg: MLBSimConfig,
+                 bullpen: Optional[PitcherProfile] = None):
         self.starter = starter
         self.cfg = cfg
-        self.bullpen = league_average_reliever()
+        self.bullpen = bullpen or league_average_reliever()
         self.bf = 0
         self.pitches = 0.0
         self._removed = starter is None
@@ -438,8 +417,6 @@ class _TeamPitchState:
     def current_pitcher(self) -> PitcherProfile:
         if self._removed or self.starter is None:
             return self.bullpen
-        # Pull at the pitcher's established pitch workload, hard-capped. Modern
-        # managers rarely exceed ~100-110 pitches or the 3rd time through order.
         max_p = self.starter.avg_pitches if self.starter.avg_pitches else self.cfg.starter_max_pitches
         max_p = min(max_p, self.cfg.starter_max_pitches + 10)
         if self.pitches >= max_p or self.bf >= self.cfg.starter_max_batters_faced:

@@ -7443,9 +7443,10 @@ def compute_leg_projection_mlb(player_name, market_code, line, side,
         "median": r.get("median"), "sigma": r.get("std"),
         "mlb_park": r.get("park", ""), "mlb_opp_starter": r.get("opp_starter", ""),
         "mlb_notes": r.get("notes", []),
+        "mlb_confidence": r.get("confidence", ""),
         "p5": r.get("p5"), "p25": r.get("p25"), "p75": r.get("p75"), "p95": r.get("p95"),
         "headshot": None, "commence_time": "", "is_pitcher": r.get("is_pitcher"),
-        "errors": r.get("notes", []),
+        "errors": [],
     }
 
 
@@ -7454,6 +7455,15 @@ def _recompute_pricing_mlb(leg):
     are calibrated by construction — the NBA calibrator is NOT applied. The
     gate is EV + probability-edge based because baseball counting stats are
     inherently high-CV and the NBA volatility gate does not transfer."""
+    if leg.get("gate_ok") is False and leg.get("gate_reason"):
+        leg.setdefault("p_cal", None)
+        leg.setdefault("ev_raw", None)
+        leg.setdefault("ev_adj", None)
+        leg.setdefault("ev_pct", None)
+        leg.setdefault("stake", 0.0)
+        leg.setdefault("stake_frac", 0.0)
+        leg.setdefault("stake_reason", "gated")
+        return leg
     p_cal = leg.get("p_raw")
     leg["p_cal"] = p_cal
     price = leg.get("price_decimal") or 1.909
@@ -10694,7 +10704,7 @@ with tabs[2]:
                             pname, _mlb_code, line, "Over",
                             bankroll=bankroll, frac_kelly=frac_kelly,
                             max_risk_frac=float(st.session_state.get("max_risk_per_bet",5.0))/100.0,
-                            game_date=scan_start)
+                            game_date=scan_start, n_sims=5000)
                     if is_combo_market(mkt):
                         parts = [p.strip() for p in re.split(r'\s*\+\s*', pname) if p.strip()]
                         if len(parts) >= 2:
