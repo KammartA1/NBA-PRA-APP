@@ -7436,6 +7436,8 @@ def compute_leg_projection_mlb(player_name, market_code, line, side,
     p_over = r["p_over"]; p_under = r["p_under"]
     p_sel = p_over if side_str == "Over" else p_under
     cv = (r["std"] / r["proj"]) if r.get("proj") else None
+    _conf = r.get("confidence", "")
+    _conf_label = {"high": "High", "medium": "Medium", "low": "Low"}.get(_conf, "")
     return {
         "player": r["player"], "player_id": r.get("player_id"),
         "market": market_code, "line": float(line),
@@ -7449,9 +7451,18 @@ def compute_leg_projection_mlb(player_name, market_code, line, side,
         "median": r.get("median"), "sigma": r.get("std"),
         "mlb_park": r.get("park", ""), "mlb_opp_starter": r.get("opp_starter", ""),
         "mlb_notes": r.get("notes", []),
-        "mlb_confidence": r.get("confidence", ""),
+        "mlb_confidence": _conf,
         "p5": r.get("p5"), "p25": r.get("p25"), "p75": r.get("p75"), "p95": r.get("p95"),
         "headshot": None, "commence_time": "", "is_pitcher": r.get("is_pitcher"),
+        "sim_prob": float(p_sel) if p_sel is not None else None,
+        "sim_mean": float(r["proj"]) if r.get("proj") is not None else None,
+        "sim_std": float(r["std"]) if r.get("std") is not None else None,
+        "sim_used": True,
+        "sim_blend_weight": 1.0,
+        "sim_n_sims": int(n_sims),
+        "regime": "MLB-Sim",
+        "hot_cold": _conf_label + " Confidence" if _conf_label else "--",
+        "trend_label": "Neutral",
         "errors": [],
     }
 
@@ -9496,6 +9507,26 @@ with tabs[1]:
                     sharp_html = "<div style='color:#00FFB2;font-size:0.62rem;'>SHARP CONFIRM</div>"
                 hs = leg.get("headshot","")
                 hs_html = f"<img src='{hs}' style='width:52px;height:38px;object-fit:cover;border-radius:2px;border:1px solid #1E2D3D;float:right;'>" if hs else ""
+                if leg.get("sport") == "MLB":
+                    _cv_s = f"{leg['volatility_cv']:.2f}" if leg.get("volatility_cv") else "--"
+                    _pk = leg.get("mlb_park", "--") or "--"
+                    _sp = leg.get("mlb_opp_starter", "--") or "--"
+                    _cf = (leg.get("mlb_confidence") or "--").title()
+                    _ns = leg.get("n_games_used", 0)
+                    _p5 = leg.get("p5", 0) or 0; _p25 = leg.get("p25", 0) or 0
+                    _p75 = leg.get("p75", 0) or 0; _p95 = leg.get("p95", 0) or 0
+                    _ctx_detail = (f"Park: {_pk} | vs {_sp}<br>"
+                                   f"CV={_cv_s} | {_ns:,} sims | Confidence: {_cf}<br>"
+                                   f"Dist: [{_p5:.1f} – {_p25:.1f} – {_p75:.1f} – {_p95:.1f}]")
+                else:
+                    _mu_s = f"{leg['mu_shrunk']:.1f}" if leg.get("mu_shrunk") else "--"
+                    _cv_s = f"{leg['volatility_cv']:.2f}" if leg.get("volatility_cv") else "--"
+                    _l3 = f"{leg['l3_avg']:.1f}" if leg.get("l3_avg") else "--"
+                    _l5 = f"{leg['l5_avg']:.1f}" if leg.get("l5_avg") else "--"
+                    _l10 = f"{leg['l10_avg']:.1f}" if leg.get("l10_avg") else "--"
+                    _ctx_detail = (f"ctx x{leg.get('context_mult',1):.3f} | rest x{leg.get('rest_mult',1):.2f} | ha x{leg.get('ha_mult',1):.2f}<br>"
+                                   f"CV={_cv_s} | N={n_used} games<br>"
+                                   f"Shrunk mu: {_mu_s} | Trend: L3={_l3}/L5={_l5}/L10={_l10}")
                 card_html = f"""
 <div style='margin-bottom:0.5rem;'>
   {hs_html}
@@ -9530,44 +9561,27 @@ with tabs[1]:
 {sharp_html}
 {"<div style='color:#FFA500;font-size:0.62rem;'>🏥 AUTO TEAMMATE OUT: " + (leg.get("auto_inj_player") or "").title() + "</div>" if leg.get("auto_inj") else ""}
 <div style='margin-top:0.7rem;font-size:0.64rem;color:#4A607A;'>
-  ctx x{leg.get("context_mult",1):.3f} | rest x{leg.get("rest_mult",1):.2f} | ha x{leg.get("ha_mult",1):.2f}<br>
-  CV={f"{leg['volatility_cv']:.2f}" if leg.get("volatility_cv") else "--"} | N={n_used} games<br>
-  Shrunk mu: {f"{leg['mu_shrunk']:.1f}" if leg.get("mu_shrunk") else "--"} | Trend: L3={f"{leg['l3_avg']:.1f}" if leg.get("l3_avg") else "--"}/L5={f"{leg['l5_avg']:.1f}" if leg.get("l5_avg") else "--"}/L10={f"{leg['l10_avg']:.1f}" if leg.get("l10_avg") else "--"}
+  {_ctx_detail}
 </div>"""
                 if leg.get("sport") == "MLB":
-                    _mlb_park = leg.get("mlb_park", "")
-                    _mlb_opp_sp = leg.get("mlb_opp_starter", "")
                     _mlb_notes = leg.get("mlb_notes") or []
-                    _mlb_ctx_parts = []
-                    if _mlb_park:
-                        _mlb_ctx_parts.append(f"🏟 {_mlb_park}")
-                    if _mlb_opp_sp:
-                        _mlb_ctx_parts.append(f"vs {_mlb_opp_sp}")
-                    if leg.get("median") is not None:
-                        _mlb_ctx_parts.append(f"Med: {leg['median']:.1f}")
-                    if leg.get("sigma") is not None:
-                        _mlb_ctx_parts.append(f"σ: {leg['sigma']:.2f}")
-                    _mlb_ctx_html = " · ".join(_mlb_ctx_parts) if _mlb_ctx_parts else ""
-                    _mlb_pct_html = ""
-                    if leg.get("p5") is not None:
-                        _mlb_pct_html = f"[{leg['p5']:.1f} – {leg.get('p25',0):.1f} – {leg.get('p75',0):.1f} – {leg.get('p95',0):.1f}]"
-                    card_html += (
-                        f"<div style='margin-top:0.45rem;background:#FF880008;border:1px solid #FF880025;border-radius:3px;padding:0.3rem 0.5rem;'>"
-                        f"<div style='font-size:0.52rem;color:#FF8800;letter-spacing:0.10em;font-family:Chakra Petch,monospace;'>⚾ MLB AT-BAT MONTE CARLO ({leg.get('n_games_used', 10000)} SIMS)</div>"
-                        f"<div style='font-size:0.58rem;color:#B8D0EC;margin-top:0.15rem;'>{_mlb_ctx_html}</div>"
-                        + (f"<div style='font-size:0.54rem;color:#4A607A;font-family:Fira Code,monospace;'>Dist: {_mlb_pct_html}</div>" if _mlb_pct_html else "")
-                        + ("".join(f"<div style='font-size:0.50rem;color:#FFB800;'>⚠ {n}</div>" for n in _mlb_notes) if _mlb_notes else "")
-                        + f"</div>"
-                    )
+                    if _mlb_notes:
+                        card_html += (
+                            "<div style='margin-top:0.35rem;'>"
+                            + "".join(f"<div style='font-size:0.50rem;color:#FFB800;'>⚠ {n}</div>" for n in _mlb_notes)
+                            + "</div>"
+                        )
                 # [UNIFIED] Simulation overlay
                 _sp = leg.get("sim_prob")
                 _sm = leg.get("sim_mean")
                 _ss = leg.get("sim_std")
                 if _sp is not None:
                     _sp_col = "#00FFB2" if _sp > 0.55 else ("#FFB800" if _sp > 0.45 else "#FF3358")
+                    _sim_label = f"AT-BAT MONTE CARLO ({leg.get('sim_n_sims', leg.get('n_games_used', 10000)):,} SIMS)" if leg.get("sport") == "MLB" else f"SIM ENGINE ({_SIM_N} POSS-LEVEL SIMS)"
+                    _sim_accent = "#FF8800" if leg.get("sport") == "MLB" else "#00AAFF"
                     card_html += (
-                        f"<div style='margin-top:0.45rem;background:#00AAFF08;border:1px solid #00AAFF25;border-radius:3px;padding:0.3rem 0.5rem;'>"
-                        f"<div style='font-size:0.52rem;color:#00AAFF;letter-spacing:0.10em;font-family:Chakra Petch,monospace;'>SIM ENGINE ({_SIM_N} POSS-LEVEL SIMS)</div>"
+                        f"<div style='margin-top:0.45rem;background:{_sim_accent}08;border:1px solid {_sim_accent}25;border-radius:3px;padding:0.3rem 0.5rem;'>"
+                        f"<div style='font-size:0.52rem;color:{_sim_accent};letter-spacing:0.10em;font-family:Chakra Petch,monospace;'>{_sim_label}</div>"
                         f"<div style='display:flex;justify-content:space-between;margin-top:0.15rem;'>"
                         f"<span style='font-size:0.62rem;color:#4A607A;'>P({leg.get('bet_side','over').lower()}):</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:{_sp_col};font-weight:600;'>{_sp*100:.1f}%</span>"
                         f"<span style='font-size:0.62rem;color:#4A607A;'>Mean:</span><span style='font-family:Fira Code,monospace;font-size:0.66rem;color:#EEF4FF;'>{_sm:.1f}</span>"

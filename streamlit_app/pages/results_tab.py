@@ -134,7 +134,12 @@ def _display_signal_cards(results: list[dict]) -> None:
 
             # Engine / simulation info row
             sim_used = leg.get("sim_used", False)
-            if sim_used:
+            _is_mlb = leg.get("sport") == "MLB"
+            if _is_mlb and sim_used:
+                _sn = leg.get("sim_n_sims", 10000)
+                _engine_label = f"At-Bat Monte Carlo ({_sn:,} sims)"
+                _engine_color = COLOR_PRIMARY
+            elif sim_used:
                 _sw = leg.get("sim_blend_weight", 0.80)
                 _sn = leg.get("sim_n_sims", 3000)
                 _engine_label = f"MC Possession Sim ({_sn:,} runs, {_sw:.0%} weight)"
@@ -150,11 +155,18 @@ def _display_signal_cards(results: list[dict]) -> None:
             )
 
             # Trend / context row
-            tc1, tc2, tc3, tc4 = st.columns(4)
-            tc1.caption(f"Trend: {leg.get('trend_label', '--')}")
-            tc2.caption(f"Hot/Cold: {leg.get('hot_cold', '--')}")
-            tc3.caption(f"Regime: {leg.get('regime', '--')}")
-            tc4.caption(f"Fatigue: {leg.get('fatigue_label', 'Normal')}")
+            if _is_mlb:
+                tc1, tc2, tc3, tc4 = st.columns(4)
+                tc1.caption(f"Park: {leg.get('mlb_park', '--')}")
+                tc2.caption(f"vs: {leg.get('mlb_opp_starter', '--')}")
+                tc3.caption(f"Regime: {leg.get('regime', '--')}")
+                tc4.caption(f"Confidence: {(leg.get('mlb_confidence') or '--').title()}")
+            else:
+                tc1, tc2, tc3, tc4 = st.columns(4)
+                tc1.caption(f"Trend: {leg.get('trend_label', '--')}")
+                tc2.caption(f"Hot/Cold: {leg.get('hot_cold', '--')}")
+                tc3.caption(f"Regime: {leg.get('regime', '--')}")
+                tc4.caption(f"Fatigue: {leg.get('fatigue_label', 'Normal')}")
 
             # AI analysis
             if get_anthropic_key():
