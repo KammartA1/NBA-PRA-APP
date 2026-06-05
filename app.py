@@ -10269,6 +10269,58 @@ Individual legs 50% breakeven on {dfs_platform.title()} — edge is purely model
 with tabs[2]:
     _scanner_sport_icon = _sports_reg.SPORTS.get(st.session_state.get("sport", "NBA"), {}).get("icon", "")
     st.markdown(f"""<div style='font-family:Chakra Petch,monospace;font-size:0.68rem;color:#4A607A;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:1rem;'>{_scanner_sport_icon} LIVE SCANNER - SWEEP ALL {st.session_state.get('sport', 'NBA')} PLAYER PROPS FOR EDGES</div>""", unsafe_allow_html=True)
+    # ── MULTI-SPORT CART ──────────────────────────────────────────
+    if "scanner_cart" not in st.session_state:
+        st.session_state["scanner_cart"] = []
+    _cart = st.session_state["scanner_cart"]
+    if _cart:
+        _cart_icons = {"NBA": "🏀", "MLB": "⚾"}
+        _cart_html_items = []
+        for _ci, _cl in enumerate(_cart):
+            _ci_icon = _cart_icons.get(_cl.get("sport", "NBA"), "🏀")
+            _ci_side = "U" if str(_cl.get("side", "")).lower() == "under" else "O"
+            _ci_ev = _cl.get("ev_adj_pct", 0) or 0
+            _cart_html_items.append(
+                f"<span style='display:inline-block;background:#00AAFF15;border:1px solid #00AAFF40;"
+                f"border-radius:3px;padding:0.15rem 0.4rem;margin:0.1rem;font-size:0.58rem;"
+                f"color:#B8D0EC;font-family:Chakra Petch,monospace;'>"
+                f"{_ci_icon} {_cl.get('player','?')} — {_cl.get('market','?')} "
+                f"{_ci_side}{_cl.get('line', 0):.1f} "
+                f"<span style='color:#00FFB2;'>{_ci_ev:+.1f}%</span></span>"
+            )
+        st.markdown(
+            f"<div style='background:#0A1929;border:1px solid #00AAFF30;border-radius:4px;"
+            f"padding:0.4rem 0.6rem;margin-bottom:0.8rem;'>"
+            f"<div style='font-size:0.52rem;color:#00AAFF;letter-spacing:0.12em;"
+            f"font-family:Chakra Petch,monospace;margin-bottom:0.3rem;'>"
+            f"MULTI-SPORT CART ({len(_cart)}/4 LEGS)</div>"
+            f"<div style='display:flex;flex-wrap:wrap;gap:0.2rem;'>{''.join(_cart_html_items)}</div>"
+            f"</div>", unsafe_allow_html=True
+        )
+        _cart_btn_cols = st.columns([1, 1, 3])
+        with _cart_btn_cols[0]:
+            if st.button("▶ Send Cart to MODEL + Run", key="cart_send_btn", use_container_width=True):
+                for _ci, _cl in enumerate(_cart[:4], 1):
+                    st.session_state[f"_staged_pname_{_ci}"] = str(_cl.get("player", ""))
+                    _mkt_v = str(_cl.get("market", "Points"))
+                    st.session_state[f"_staged_mkt_{_ci}"] = _mkt_v
+                    st.session_state[f"_staged_mline_{_ci}"] = float(_cl.get("line", 22.5))
+                    st.session_state[f"_staged_manual_{_ci}"] = True
+                    st.session_state[f"_staged_out_{_ci}"] = False
+                    _r_side = str(_cl.get("side", "Over")).strip()
+                    st.session_state[f"_staged_side_{_ci}"] = "Under" if _r_side.lower() == "under" else "Over"
+                    st.session_state[f"_staged_leg_sport_{_ci}"] = str(_cl.get("sport", "NBA"))
+                for _ci in range(len(_cart) + 1, 5):
+                    st.session_state[f"_staged_pname_{_ci}"] = ""
+                    st.session_state[f"_staged_side_{_ci}"] = "Over"
+                st.session_state["_staged_model_date"] = st.session_state.get("scan_start", date.today())
+                st.session_state["_auto_run_model"] = True
+                st.session_state["scanner_cart"] = []
+                st.rerun()
+        with _cart_btn_cols[1]:
+            if st.button("Clear Cart", key="cart_clear_btn", use_container_width=True):
+                st.session_state["scanner_cart"] = []
+                st.rerun()
     sc1, sc2, sc3 = st.columns([2,2,2])
     with sc1:
         # [FIX 14] Week-ahead: date range selection
@@ -10812,6 +10864,7 @@ with tabs[2]:
                         )
                         out_rows.append({
                             "side": "Over",
+                            "sport": leg.get("sport", _scanner_sport),
                             "src": _src_badge,
                             "player":pname,"market":mkt,"line":line,
                             "player_norm": normalize_name(pname),
@@ -10973,6 +11026,7 @@ with tabs[2]:
                     )
                     under_rows.append({
                         "side": "Under",
+                        "sport": _leg.get("sport", _scanner_sport),
                         "src": _u_src_badge,
                         "price_decimal": _leg.get("price_decimal"),
                         "book": _leg.get("book") or ((_mt or {}).get("book")),
@@ -11398,12 +11452,12 @@ with tabs[2]:
                     st.dataframe(under_out, use_container_width=True)
             elif under_out is not None:
                 st.caption("↓ No Under edges found meeting threshold criteria.")
-        # ── SEND TO MODEL ────────────────────────────────────────────────
+        # ── SEND TO MODEL / ADD TO CART ──────────────────────────────────
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
         st.markdown(
             "<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00AAFF;"
             "letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>"
-            "▶ SEND TO MODEL TAB</div>",
+            "▶ SEND TO MODEL TAB / ADD TO CART</div>",
             unsafe_allow_html=True
         )
         # Build labels for both OVER and Under results combined
@@ -11422,42 +11476,64 @@ with tabs[2]:
             options=_model_labels,
             max_selections=4,
             key="scanner_model_pick",
-            help="Selected legs will populate MODEL tab inputs and auto-run projections"
+            help="Select legs then 'Add to Cart' to collect from multiple sports, or 'Send to MODEL' for immediate run"
         )
-        if _legs_for_model and st.button("▶ Send to MODEL + Run", key="send_to_model_btn", use_container_width=True):
-            # Build combined row lookup (Over rows first, then Under)
-            _all_model_rows = list(scanner_out.iterrows())
-            if bool(st.session_state.get("show_unders", False)) and _under_res_for_model is not None and not _under_res_for_model.empty:
-                _all_model_rows += list(_under_res_for_model.iterrows())
-            _row_by_label = {lbl: row for lbl, (_, row) in zip(_model_labels, _all_model_rows)}
-            for i, lbl in enumerate(_legs_for_model[:4], 1):
-                r = _row_by_label.get(lbl)
-                if r is None:
-                    continue
-                # Use staging keys — widget-owned keys (pname_{i} etc.) cannot be set
-                # after the Model tab widgets have already rendered this cycle.
-                # Staged values are consumed before widgets render on the next rerun.
-                st.session_state[f"_staged_pname_{i}"]  = str(r.get("player", ""))
-                _mkt_v = str(r.get("market", "Points"))
-                _all_mkt_opts = set(MARKET_OPTIONS) | set((_sports_reg.get_markets("MLB") or {}).keys())
-                if _mkt_v in _all_mkt_opts:
-                    st.session_state[f"_staged_mkt_{i}"] = _mkt_v
-                st.session_state[f"_staged_mline_{i}"]  = float(r.get("line", 22.5))
-                # If source is a platform (PP/UD/Sleeper), use manual mode — these markets
-                # aren't on Odds API so auto-line will fail for many stat types
-                _r_book = str(r.get("book", "") or r.get("src", "")).lower()
-                _is_pp_source = (sportsbook2 == "prizepicks") or _r_book in ("prizepicks", "pp", "underdog", "ud", "sleeper")
-                st.session_state[f"_staged_manual_{i}"] = _is_pp_source
-                st.session_state[f"_staged_out_{i}"]    = False
-                # Pass the side (Over/Under) from scanner to model
-                _r_side = str(r.get("side", "Over")).strip()
-                st.session_state[f"_staged_side_{i}"]   = "Under" if _r_side.lower() == "under" else "Over"
-                # Pass the sport so per-leg sport selector is set correctly
-                st.session_state[f"_staged_leg_sport_{i}"] = str(r.get("sport", _scanner_sport))
-            # Clear unused legs beyond selection count
-            for i in range(len(_legs_for_model) + 1, 5):
-                st.session_state[f"_staged_pname_{i}"] = ""
-                st.session_state[f"_staged_side_{i}"] = "Over"
+        _send_cols = st.columns([1, 1, 2])
+        # "Add to Cart" — persists across sport switches
+        with _send_cols[0]:
+            _cart_slots_left = 4 - len(st.session_state.get("scanner_cart", []))
+            if _legs_for_model and st.button(
+                f"+ Add to Cart ({_cart_slots_left} slots left)",
+                key="add_to_cart_btn", use_container_width=True,
+                disabled=(_cart_slots_left <= 0)
+            ):
+                _all_model_rows = list(scanner_out.iterrows())
+                if bool(st.session_state.get("show_unders", False)) and _under_res_for_model is not None and not _under_res_for_model.empty:
+                    _all_model_rows += list(_under_res_for_model.iterrows())
+                _row_by_label = {lbl: row for lbl, (_, row) in zip(_model_labels, _all_model_rows)}
+                _existing_cart = st.session_state.get("scanner_cart", [])
+                for lbl in _legs_for_model[:_cart_slots_left]:
+                    r = _row_by_label.get(lbl)
+                    if r is None:
+                        continue
+                    _existing_cart.append({
+                        "player": str(r.get("player", "")),
+                        "market": str(r.get("market", "")),
+                        "line": float(r.get("line", 0)),
+                        "side": str(r.get("side", "Over")),
+                        "sport": str(r.get("sport", _scanner_sport)),
+                        "ev_adj_pct": float(r.get("ev_adj_pct", 0) or 0),
+                        "book": str(r.get("book", "") or r.get("src", "")),
+                    })
+                st.session_state["scanner_cart"] = _existing_cart[:4]
+                st.rerun()
+        # "Send to MODEL" — immediate (single-sport, backward compatible)
+        with _send_cols[1]:
+            if _legs_for_model and st.button("▶ Send to MODEL + Run", key="send_to_model_btn", use_container_width=True):
+                _all_model_rows = list(scanner_out.iterrows())
+                if bool(st.session_state.get("show_unders", False)) and _under_res_for_model is not None and not _under_res_for_model.empty:
+                    _all_model_rows += list(_under_res_for_model.iterrows())
+                _row_by_label = {lbl: row for lbl, (_, row) in zip(_model_labels, _all_model_rows)}
+                for i, lbl in enumerate(_legs_for_model[:4], 1):
+                    r = _row_by_label.get(lbl)
+                    if r is None:
+                        continue
+                    st.session_state[f"_staged_pname_{i}"]  = str(r.get("player", ""))
+                    _mkt_v = str(r.get("market", "Points"))
+                    _all_mkt_opts = set(MARKET_OPTIONS) | set((_sports_reg.get_markets("MLB") or {}).keys())
+                    if _mkt_v in _all_mkt_opts:
+                        st.session_state[f"_staged_mkt_{i}"] = _mkt_v
+                    st.session_state[f"_staged_mline_{i}"]  = float(r.get("line", 22.5))
+                    _r_book = str(r.get("book", "") or r.get("src", "")).lower()
+                    _is_pp_source = (sportsbook2 == "prizepicks") or _r_book in ("prizepicks", "pp", "underdog", "ud", "sleeper")
+                    st.session_state[f"_staged_manual_{i}"] = _is_pp_source
+                    st.session_state[f"_staged_out_{i}"]    = False
+                    _r_side = str(r.get("side", "Over")).strip()
+                    st.session_state[f"_staged_side_{i}"]   = "Under" if _r_side.lower() == "under" else "Over"
+                    st.session_state[f"_staged_leg_sport_{i}"] = str(r.get("sport", _scanner_sport))
+                for i in range(len(_legs_for_model) + 1, 5):
+                    st.session_state[f"_staged_pname_{i}"] = ""
+                    st.session_state[f"_staged_side_{i}"] = "Over"
             # Sync scanner date and book to MODEL tab
             st.session_state["_staged_model_date"] = scan_start
             if sportsbook2 and sportsbook2 != "all":
