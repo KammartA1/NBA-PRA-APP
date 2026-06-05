@@ -145,11 +145,18 @@ def project(name: str, market: str, line: float,
 
     if is_pitcher:
         stat_key = PITCHER_MARKET_TO_STAT.get(market)
+        if not stat_key:
+            stat_key = BATTER_MARKET_TO_STAT.get(market)
+            if stat_key:
+                is_pitcher = False
     else:
         stat_key = BATTER_MARKET_TO_STAT.get(market)
+        if not stat_key:
+            stat_key = PITCHER_MARKET_TO_STAT.get(market)
+            if stat_key:
+                is_pitcher = True
     if not stat_key:
-        return {"error": f"Market '{market}' not valid for "
-                         f"{'pitcher' if is_pitcher else 'batter'} {full}"}
+        return {"error": f"Market '{market}' not recognized"}
 
     ctx = _resolve_context(team_id, team_name, game_date)
     park = ctx.get("venue", "")
