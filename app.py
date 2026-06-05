@@ -8997,6 +8997,8 @@ for _si in range(1, 5):
         st.session_state[f"out_{_si}"]    = st.session_state.pop(f"_staged_out_{_si}")
     if f"_staged_side_{_si}" in st.session_state:
         st.session_state[f"side_{_si}"]   = st.session_state.pop(f"_staged_side_{_si}")
+    if f"_staged_leg_sport_{_si}" in st.session_state:
+        st.session_state[f"leg_sport_{_si}"] = st.session_state.pop(f"_staged_leg_sport_{_si}")
 if "_staged_model_date" in st.session_state:
     st.session_state["model_date"] = st.session_state.pop("_staged_model_date")
 with tabs[0]:
