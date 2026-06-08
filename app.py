@@ -11534,12 +11534,12 @@ with tabs[2]:
                 for i in range(len(_legs_for_model) + 1, 5):
                     st.session_state[f"_staged_pname_{i}"] = ""
                     st.session_state[f"_staged_side_{i}"] = "Over"
-            # Sync scanner date and book to MODEL tab
-            st.session_state["_staged_model_date"] = scan_start
-            if sportsbook2 and sportsbook2 != "all":
-                st.session_state["_staged_sportsbook"] = sportsbook2
-            st.session_state["_auto_run_model"] = True   # MODEL tab will detect and auto-run
-            st.rerun()
+                # Sync scanner date and book to MODEL tab
+                st.session_state["_staged_model_date"] = scan_start
+                if sportsbook2 and sportsbook2 != "all":
+                    st.session_state["_staged_sportsbook"] = sportsbook2
+                st.session_state["_auto_run_model"] = True   # MODEL tab will detect and auto-run
+                st.rerun()
         # [UPGRADE 21] One-click parlay builder from scanner results
         st.markdown("<hr style='border-color:#1E2D3D;margin:0.6rem 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-family:Chakra Petch,monospace;font-size:0.65rem;color:#00FFB2;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.4rem;'>ONE-CLICK PARLAY BUILDER</div>", unsafe_allow_html=True)
